@@ -334,7 +334,7 @@ describe("5x template render", () => {
 				const data = json.data as Record<string, unknown>;
 				expect(data.template).toBe("reviewer-plan");
 				expect(data.selected_template).toBe("reviewer-plan");
-				expect(data.step_name).toBe("reviewer:review");
+				expect(data.step_name).toBe("reviewer:plan");
 				expect(typeof data.prompt).toBe("string");
 				// No run-aware fields
 				expect(data.run_id).toBeUndefined();

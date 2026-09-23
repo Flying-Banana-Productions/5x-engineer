@@ -279,23 +279,42 @@ export function getLatestStep(
 }
 
 /**
- * Get the latest step scoped to (run, step_name, phase). Used by continued
- * reviewer templates to retrieve the prior review's head_commit for delta
- * context. `phase` may be null; SQL uses `IS` for null-safe equality.
+ * Get the latest step with an exact (run, step_name, phase, iteration)
+ * identity. `phase` may be null; SQL uses `IS` for null-safe equality.
  */
-export function getLatestStepForPhase(
+export function getStepByIdentity(
 	db: Database,
 	runId: string,
 	stepName: string,
 	phase: string | null,
+	iteration: number,
 ): StepRow | null {
 	return db
 		.query(
 			`SELECT * FROM steps
-			 WHERE run_id = ?1 AND step_name = ?2 AND phase IS ?3
+			 WHERE run_id = ?1 AND step_name = ?2 AND phase IS ?3 AND iteration = ?4
 			 ORDER BY id DESC LIMIT 1`,
 		)
-		.get(runId, stepName, phase) as StepRow | null;
+		.get(runId, stepName, phase, iteration) as StepRow | null;
+}
+
+/**
+ * Get every `reviewer:*` step in a phase, newest first. Continued reviewer
+ * templates use this to find the prior review regardless of which
+ * `--record-step` name the orchestrator recorded it under.
+ */
+export function getReviewerStepsForPhase(
+	db: Database,
+	runId: string,
+	phase: string | null,
+): StepRow[] {
+	return db
+		.query(
+			`SELECT * FROM steps
+			 WHERE run_id = ?1 AND phase IS ?2 AND step_name LIKE 'reviewer:%'
+			 ORDER BY id DESC`,
+		)
+		.all(runId, phase) as StepRow[];
 }
 
 // --- Run operations ---

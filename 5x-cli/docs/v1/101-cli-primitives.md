@@ -252,7 +252,7 @@ Record a completed step. This is the primary persistence primitive.
 
 | Arg/Flag | Required | Description |
 |---|---|---|
-| `step-name` | Yes | Step identifier (e.g., `author:implement`, `quality:check`, `reviewer:review`) |
+| `step-name` | Yes | Step identifier (e.g., `author:implement`, `quality:check`, `reviewer:commit`) |
 | `--run` | No | Run ID. Ambient-resolved when omitted (see Ambient run identity). Required-run: missing identity is `RUN_CONTEXT_REQUIRED`. |
 | `--result` | Yes | Step result as JSON string. Use `-` to read from stdin, or `@path` to read from a file. |
 | `--phase` | No | Phase identifier |
@@ -265,7 +265,7 @@ Record a completed step. This is the primary persistence primitive.
   "ok": true,
   "data": {
     "step_id": 3,
-    "step_name": "reviewer:review",
+    "step_name": "reviewer:commit",
     "phase": "1",
     "iteration": 1,
     "recorded": true
@@ -449,7 +449,7 @@ Same interface as `invoke author`, but returns a ReviewerVerdict.
   "ok": true,
   "data": {
     "run_id": "run_abc123",
-    "step_name": "reviewer:review",
+    "step_name": "reviewer:commit",
     "phase": "1",
     "model": "anthropic/claude-sonnet-4-6",
     "result": {
@@ -496,7 +496,7 @@ Validation uses `assertReviewerVerdict()`. Same error behavior as `invoke author
 
 ```
 cat verdict.json | 5x protocol validate reviewer \
-  --record --step reviewer:review --phase plan --iteration 2 \
+  --record --step reviewer:plan --phase plan --iteration 2 \
   --opt-in-budget-baseline
 ```
 
@@ -1315,7 +1315,8 @@ v0 uses **upsert** semantics for `agent_results` and `quality_results` — re-ru
 | `author:fix-quality` | `{ type: "status", status: AuthorStatus }` | After author fixes quality failures |
 | `author:revise-plan` | `{ type: "status", status: AuthorStatus }` | After author revises plan |
 | `author:generate-plan` | `{ type: "status", status: AuthorStatus }` | After author generates initial plan |
-| `reviewer:review` | `{ type: "verdict", verdict: ReviewerVerdict }` | After reviewer reviews code/plan |
+| `reviewer:plan` | `{ type: "verdict", verdict: ReviewerVerdict }` | After reviewer reviews the plan |
+| `reviewer:commit` | `{ type: "verdict", verdict: ReviewerVerdict }` | After reviewer reviews a phase commit |
 | `quality:check` | `{ type: "quality", passed: bool, results: [...] }` | After quality gates run |
 | `phase:complete` | `{ type: "phase", phase: "<id>" }` | When a phase is approved |
 | `human:gate` | `{ type: "human", choice: "<option>" }` | After human responds to a prompt |

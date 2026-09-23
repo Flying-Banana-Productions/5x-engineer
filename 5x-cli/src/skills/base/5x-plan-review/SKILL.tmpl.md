@@ -119,7 +119,7 @@ worktree mapping, or `.5x/current-run` already identifies the run. Pass
 {{#if reviewer_native}}
 ### Delegating sub-agent work (native reviewer)
 
-**Canonical delegation example (reviewer:review):**
+**Canonical delegation example (reviewer:plan):**
 
 ```bash
 # 1. Render the prompt (output follows standard outputSuccess envelope)
@@ -166,7 +166,7 @@ common source of stale re-reviews.
 {{#if reviewer_invoke}}
 ### Delegating review/author work with invoke (invoke reviewer)
 
-**Canonical delegation example (reviewer:review):**
+**Canonical delegation example (reviewer:plan):**
 
 ```bash
 RESULT=$(5x invoke reviewer reviewer-plan \
@@ -567,6 +567,18 @@ Report to the human: plan review is complete. Verdict: approved
   Native recovery also uses
   `5x protocol validate reviewer --record --run $FIVEX_RUN --step $STEP --phase plan --iteration $ITERATION` and
   `5x protocol validate author --record --run $FIVEX_RUN --step $STEP --phase plan --no-phase-checklist-validate`.
+{{/if}}
+{{#if reviewer_invoke}}
+- **Invoke reviewer verdict rejected by budget/governance validation**
+  (e.g. `BASELINE_ASSESSMENT_UNEXPECTED`): the provider finished but the
+  verdict was not recorded. The error envelope's `detail` carries
+  `session_id`, `log_path`, the rejected verdict (`raw`), and
+  `recovery.command`. Do not edit the rejected verdict. Either re-invoke,
+  or record the reviewer's own correct output (for example its
+  `5x protocol emit reviewer` result in the log) with `recovery.command`,
+  which passes `--invocation-log` so the step keeps the invocation's
+  session/model/token/cost metadata. The corrected verdict is fully
+  re-validated.
 {{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires a
   continuation signal because `continuePhaseSessions` is enabled and

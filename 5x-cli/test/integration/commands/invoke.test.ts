@@ -918,7 +918,7 @@ describe("invoke CLI integration", () => {
 					const json = parseJson(result.stdout);
 					expect(json.ok).toBe(true);
 					const data = json.data as Record<string, unknown>;
-					expect(data.step_name).toBe("reviewer:review");
+					expect(data.step_name).toBe("reviewer:plan");
 				} finally {
 					cleanupDir(dir);
 				}

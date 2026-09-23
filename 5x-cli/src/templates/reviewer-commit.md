@@ -1,9 +1,9 @@
 ---
 name: reviewer-commit
 description: Review implementation commits
-version: 3
+version: 4
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
-step_name: "reviewer:review"
+step_name: "reviewer:commit"
 variable_defaults:
   run_id: ""
 ---

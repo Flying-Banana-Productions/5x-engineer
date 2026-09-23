@@ -5,9 +5,12 @@ import {
 	type RecordOrigin,
 	RUN_RECORD_FORMAT_VERSION,
 } from "../../../src/control-plane/index.js";
+import type { ReviewBudgetSnapshotRecord } from "../../../src/control-plane/review-budget-store.js";
 import type { ReviewerVerdict } from "../../../src/protocol.js";
+import { reviewerVerdictSchemaFor } from "../../../src/protocol.js";
 import {
 	applyPlanReviewBudget,
+	baselineAssessmentContract,
 	findIncompleteDebtClaimItem,
 } from "../../../src/review-budget/apply.js";
 import {
@@ -384,5 +387,64 @@ describe("applyPlanReviewBudget", () => {
 		expect(store.getBaseline("run1")?.mode).toBe("enforced");
 		if (result.status === "applied")
 			expect(result.verdict.readiness).toBe("ready_with_corrections");
+	});
+});
+
+describe("baselineAssessment contract", () => {
+	const snapshot = (
+		stepName: string,
+		iteration: number,
+		withAssessment: boolean,
+	): ReviewBudgetSnapshotRecord =>
+		({
+			stepName,
+			phase: "plan",
+			iteration,
+			...(withAssessment
+				? {
+						baselineAssessment: {
+							independentEffortEstimate: 2,
+							confidence: "high",
+							reason: "estimate",
+						},
+					}
+				: {}),
+		}) as ReviewBudgetSnapshotRecord;
+	const step = (iteration: number) => ({
+		stepName: "reviewer:plan",
+		phase: "plan",
+		iteration,
+	});
+
+	test("first active review requires, initial retry allows, closure prohibits", () => {
+		const initial = snapshot("reviewer:plan", 1, true);
+		expect(baselineAssessmentContract([], step(1))).toBe("required");
+		expect(baselineAssessmentContract([initial], step(1))).toBe("optional");
+		expect(baselineAssessmentContract([initial], step(2))).toBe("prohibited");
+		expect(
+			baselineAssessmentContract(
+				[initial, snapshot("reviewer:plan", 2, false)],
+				step(2),
+			),
+		).toBe("prohibited");
+	});
+
+	test("provider schema mirrors each contract", () => {
+		const required = reviewerVerdictSchemaFor("required");
+		expect(required.required).toEqual([
+			"readiness",
+			"items",
+			"baselineAssessment",
+		]);
+		const prohibited = reviewerVerdictSchemaFor("prohibited") as {
+			properties: Record<string, unknown>;
+			not: unknown;
+		};
+		expect(prohibited.properties).not.toHaveProperty("baselineAssessment");
+		expect(prohibited.properties).toHaveProperty("priorFindings");
+		expect(prohibited.not).toEqual({ required: ["baselineAssessment"] });
+		expect(reviewerVerdictSchemaFor("optional")).toHaveProperty(
+			"properties.baselineAssessment",
+		);
 	});
 });

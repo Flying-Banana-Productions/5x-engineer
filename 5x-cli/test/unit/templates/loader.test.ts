@@ -501,9 +501,10 @@ describe("template stepName", () => {
 		"author-next-phase": "author:implement",
 		"author-process-plan-review": "author:fix-review",
 		"author-process-impl-review": "author:fix-review",
-		"reviewer-plan": "reviewer:review",
-		"reviewer-commit": "reviewer:review",
-		"reviewer-commit-continued": "reviewer:review",
+		"reviewer-plan": "reviewer:plan",
+		"reviewer-plan-continued": "reviewer:plan",
+		"reviewer-commit": "reviewer:commit",
+		"reviewer-commit-continued": "reviewer:commit",
 	};
 
 	test("all bundled templates have correct stepName in parsed metadata", () => {

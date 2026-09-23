@@ -1,9 +1,9 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 7
+version: 8
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
-step_name: "reviewer:review"
+step_name: "reviewer:plan"
 variable_defaults:
   run_id: ""
   previous_review_commit: ""

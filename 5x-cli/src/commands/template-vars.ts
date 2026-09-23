@@ -11,7 +11,11 @@ import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
-import { getLatestStepForPhase } from "../db/operations-v1.js";
+import {
+	getReviewerStepsForPhase,
+	getStepByIdentity,
+	type StepRow,
+} from "../db/operations-v1.js";
 import { getLatestCommit } from "../git.js";
 import { outputError } from "../output.js";
 import {
@@ -359,14 +363,70 @@ export interface ReviewDelta {
 	diffAppend: string | null;
 }
 
+/**
+ * Step identity of the review a continued prompt diffs against. For plan
+ * reviews under an active budget this is the latest durable snapshot's step
+ * key — the same identity closure composition resolves.
+ */
+export interface PriorReviewIdentity {
+	stepName: string;
+	phase: string | null;
+	iteration: number | null;
+}
+
 export interface ResolveReviewDeltaOptions {
 	db: Database;
 	runId: string;
 	phase: string | null;
 	planPath: string;
 	workdir: string;
-	/** Must match steps.step_name — typically "reviewer:review". */
-	stepName: string;
+	/** Durable identity of the prior review, when governance state has one. */
+	priorReview?: PriorReviewIdentity;
+}
+
+function isAcceptedReviewerVerdict(step: StepRow): boolean {
+	try {
+		const result = JSON.parse(step.result_json) as unknown;
+		return (
+			typeof result === "object" &&
+			result !== null &&
+			typeof (result as { readiness?: unknown }).readiness === "string"
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Locate the prior review step for a continued reviewer prompt.
+ *
+ * Prefers the durable identity when supplied. Otherwise falls back to the
+ * newest `reviewer:*` step in the phase that recorded an actual verdict, so
+ * the lookup works whichever `--record-step` name the orchestrator used
+ * (`reviewer:review`, `reviewer:plan`, `reviewer:commit`) and never diffs
+ * from a recorded invoke failure.
+ */
+export function findPriorReviewStep(
+	db: Database,
+	runId: string,
+	phase: string | null,
+	priorReview?: PriorReviewIdentity,
+): StepRow | null {
+	if (priorReview && priorReview.iteration !== null) {
+		const exact = getStepByIdentity(
+			db,
+			runId,
+			priorReview.stepName,
+			priorReview.phase,
+			priorReview.iteration,
+		);
+		if (exact) return exact;
+	}
+	return (
+		getReviewerStepsForPhase(db, runId, phase).find(
+			isAcceptedReviewerVerdict,
+		) ?? null
+	);
 }
 
 /**
@@ -380,10 +440,10 @@ export interface ResolveReviewDeltaOptions {
 export async function resolveReviewDelta(
 	opts: ResolveReviewDeltaOptions,
 ): Promise<ReviewDelta> {
-	const { db, runId, phase, planPath, workdir, stepName } = opts;
+	const { db, runId, phase, planPath, workdir, priorReview } = opts;
 	const empty: ReviewDelta = { vars: {}, diffAppend: null };
 
-	const priorStep = getLatestStepForPhase(db, runId, stepName, phase);
+	const priorStep = findPriorReviewStep(db, runId, phase, priorReview);
 	const previousCommit = priorStep?.head_commit ?? null;
 	if (!previousCommit) return empty;
 

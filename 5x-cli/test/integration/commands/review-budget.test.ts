@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -579,5 +579,176 @@ describe("review-budget CLI integration", () => {
 			}
 		},
 		{ timeout: 30000 },
+	);
+
+	test(
+		"documented invoke sequence (--record-step reviewer:plan) diffs the continued review and recovers a rejected closure verdict",
+		async () => {
+			const ctx = await setup();
+			const sampleConfig = (verdict: string) =>
+				`[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "advisory"\n\n[sample]\necho = true\n\n[sample.structured]\n${verdict}`;
+			const tomlVerdict = (withBaseline: boolean) =>
+				`readiness = "ready"\nitems = []\ncreditAssessments = []\n${
+					withBaseline
+						? '\n[sample.structured.baselineAssessment]\nindependentEffortEstimate = 2\nconfidence = "high"\nreason = "Independent estimate"\n'
+						: ""
+				}`;
+			const invokeReview = (iteration: number, session?: string) =>
+				run5x(ctx.dir, [
+					"invoke",
+					"reviewer",
+					"reviewer-plan",
+					"--run",
+					ctx.runId,
+					...(session ? ["--session", session] : []),
+					"--record",
+					"--record-step",
+					"reviewer:plan",
+					"--phase",
+					"plan",
+					"--iteration",
+					String(iteration),
+					"--quiet",
+				]);
+			try {
+				writeFileSync(
+					join(ctx.dir, "5x.toml"),
+					sampleConfig(tomlVerdict(true)),
+				);
+				git(ctx.dir, "add", "-A");
+				git(ctx.dir, "commit", "-m", "configure sample reviewer");
+				const first = await invokeReview(1);
+				expect(first.exitCode).toBe(0);
+				const sessionId = JSON.parse(first.stdout).data.session_id as string;
+				const reviewedHead = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: ctx.dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				})
+					.stdout.toString()
+					.trim();
+
+				writeFileSync(
+					ctx.planPath,
+					VALID_BUDGET.replace(
+						"- [ ] Deliver behavior\n",
+						"- [ ] Deliver behavior\n- [ ] Address review finding\n",
+					),
+				);
+				git(ctx.dir, "commit", "-am", "plan: revise");
+
+				// Native render path resolves the same prior review.
+				const rendered = await run5x(ctx.dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					ctx.runId,
+					"--session",
+					sessionId,
+				]);
+				expect(rendered.exitCode).toBe(0);
+				const renderedData = JSON.parse(rendered.stdout).data;
+				expect(renderedData.selected_template).toBe("reviewer-plan-continued");
+				expect(renderedData.variables.previous_review_commit).toBe(
+					reviewedHead,
+				);
+				expect(renderedData.prompt).toContain("## Plan Diff Since Last Review");
+				expect(renderedData.prompt).toContain("+- [ ] Address review finding");
+
+				// The closure reviewer wrongly re-emits baselineAssessment.
+				const rejected = await invokeReview(2, sessionId);
+				expect(rejected.exitCode).not.toBe(0);
+				const failure = JSON.parse(rejected.stdout).error;
+				expect(failure.code).toBe("BASELINE_ASSESSMENT_UNEXPECTED");
+				expect(failure.detail).toMatchObject({
+					session_id: sessionId,
+					provider: "sample",
+					model: "sample/test",
+					template: "reviewer-plan-continued",
+					raw: { baselineAssessment: { independentEffortEstimate: 2 } },
+					recovery: { step_name: "reviewer:plan", phase: "plan", iteration: 2 },
+				});
+				const logPath = failure.detail.log_path as string;
+				expect(failure.detail.recovery.command).toContain(
+					`--invocation-log ${logPath}`,
+				);
+				const donePrompt = (
+					readFileSync(logPath, "utf-8")
+						.split("\n")
+						.filter(Boolean)
+						.map((line) => JSON.parse(line))
+						.find((entry) => entry.type === "done") as {
+						result: { text: string };
+					}
+				).result.text;
+				expect(donePrompt).toContain(
+					`Previous review commit: \`${reviewedHead}\``,
+				);
+				expect(donePrompt).toContain("+- [ ] Address review finding");
+				// Rejected: nothing recorded for iteration 2.
+				expect(lines(ctx.dir, ctx.runId, "steps")).toHaveLength(1);
+
+				const recovered = await run5x(
+					ctx.dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						ctx.runId,
+						"--record",
+						"--step",
+						"reviewer:plan",
+						"--phase",
+						"plan",
+						"--iteration",
+						"2",
+						"--invocation-log",
+						logPath,
+					],
+					V1_VERDICT,
+				);
+				expect(recovered.exitCode).toBe(0);
+				expect(lines(ctx.dir, ctx.runId, "steps")).toHaveLength(2);
+				const db = new Database(join(ctx.dir, ".5x", "5x.db"));
+				expect(
+					db
+						.query(
+							"SELECT session_id, model, log_path FROM steps WHERE step_name = 'reviewer:plan' AND iteration = 2",
+						)
+						.get(),
+				).toEqual({
+					session_id: sessionId,
+					model: "sample/test",
+					log_path: logPath,
+				});
+				db.close();
+
+				// The recovery log must match the run and role it records.
+				const mismatched = await run5x(
+					ctx.dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--run",
+						ctx.runId,
+						"--record",
+						"--step",
+						"author:x",
+						"--phase",
+						"plan",
+						"--invocation-log",
+						logPath,
+					],
+					JSON.stringify({ result: "needs_human", reason: "x" }),
+				);
+				expect(mismatched.exitCode).not.toBe(0);
+			} finally {
+				rmSync(ctx.dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60000 },
 	);
 });

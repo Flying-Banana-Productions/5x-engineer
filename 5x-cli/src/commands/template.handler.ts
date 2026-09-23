@@ -36,6 +36,7 @@ import { RecordContextError } from "./record-context.js";
 import {
 	createReviewBudgetContext,
 	ensurePlanReviewBaselineForContext,
+	latestPlanReviewIdentity,
 	type ReviewBudgetCommandContext,
 } from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
@@ -44,6 +45,7 @@ import { validateSessionContinuity } from "./session-check.js";
 import {
 	isPlanReviewTemplate,
 	needsReviewDelta,
+	type PriorReviewIdentity,
 	parseVars,
 	resolveAndRenderTemplate,
 	resolveReviewDelta,
@@ -225,6 +227,23 @@ export async function templateRender(
 		resolvedPlanPath &&
 		needsReviewDelta(params.template)
 	) {
+		// Plan reviews diff against the durable snapshot's step identity, so
+		// the delta follows whatever --record-step name recorded the prior
+		// review. Legacy runs without record files fall back to a step scan.
+		let priorReview: PriorReviewIdentity | undefined;
+		if (isPlanReviewTemplate(params.template)) {
+			try {
+				renderBudgetContext = await (
+					deps?.createReviewBudgetContext ?? createReviewBudgetContext
+				)(
+					{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
+					warn,
+				);
+				priorReview = latestPlanReviewIdentity(renderBudgetContext, params.run);
+			} catch (err) {
+				if (!(err instanceof RecordContextError)) throw err;
+			}
+		}
 		const delta = await resolveReviewDelta({
 			db: runDb,
 			runId: params.run,
@@ -233,7 +252,7 @@ export async function templateRender(
 				: (explicitVars.phase_number ?? "1"),
 			planPath: resolvedPlanPath,
 			workdir: resolvedWorktreeRoot ?? projectRoot,
-			stepName: "reviewer:review",
+			priorReview,
 		});
 		if (Object.keys(delta.vars).length > 0) {
 			mergedVars = { ...delta.vars, ...explicitVars };
@@ -275,7 +294,7 @@ export async function templateRender(
 		config.reviewBudget.mode !== "off"
 	) {
 		try {
-			renderBudgetContext = await (
+			renderBudgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
 			)(
 				{

@@ -477,6 +477,94 @@ ${structured}
 		}
 	});
 
+	test("provider schema follows the baselineAssessment contract the budget validator enforces", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			const schemas: Record<string, unknown>[] = [];
+			const initialVerdict = {
+				readiness: "ready",
+				items: [],
+				creditAssessments: [],
+				baselineAssessment: {
+					independentEffortEstimate: 2,
+					confidence: "high",
+					reason: "estimate",
+				},
+			};
+			const invoke = (iteration: number) =>
+				invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-plan",
+						run: "run1",
+						vars: [`plan_path=${planPath}`],
+						phase: "plan",
+						record: true,
+						recordStep: "reviewer:plan",
+						iteration,
+						quiet: true,
+						workdir: dir,
+						newSession: true,
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => {
+							const provider = structuredProvider(initialVerdict);
+							const session = await provider.startSession({
+								model: "m",
+								workingDirectory: dir,
+							});
+							const streamed = session.runStreamed.bind(session);
+							session.runStreamed = (prompt, opts) => {
+								schemas.push(opts?.outputSchema as Record<string, unknown>);
+								return streamed(prompt, opts);
+							};
+							return provider;
+						},
+					},
+				);
+
+			// Initial active review: the independent estimate is required.
+			await invoke(1);
+			expect(schemas[0]?.required).toContain("baselineAssessment");
+			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+
+			// Closure review: the schema forbids what validation rejects, and
+			// validation stays the final authority when the model ignores it.
+			let rejection: unknown;
+			await invoke(2).catch((err) => {
+				rejection = err;
+			});
+			expect(schemas[1]?.properties).not.toHaveProperty("baselineAssessment");
+			expect(schemas[1]?.not).toEqual({ required: ["baselineAssessment"] });
+			expect(rejection).toMatchObject({
+				code: "BASELINE_ASSESSMENT_UNEXPECTED",
+				detail: {
+					session_id: "session-governance",
+					raw: { baselineAssessment: { independentEffortEstimate: 2 } },
+					recovery: { step_name: "reviewer:plan", phase: "plan", iteration: 2 },
+				},
+			});
+			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+
+			// A retry of the initial step may repeat its estimate.
+			await invoke(1);
+			const { ReviewerVerdictSchema } = await import(
+				"../../../src/protocol.js"
+			);
+			expect(schemas[2]).toEqual(ReviewerVerdictSchema);
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
 	test("opt-in on an author invocation is rejected before provider creation", async () => {
 		const dir = makeTmpDir();
 		try {
@@ -1069,7 +1157,7 @@ describe("invoke — enriched output fields (unit)", () => {
 			plan_path: "p.md",
 			review_template_path: "t.md",
 		});
-		expect(r3.stepName).toBe("reviewer:review");
+		expect(r3.stepName).toBe("reviewer:commit");
 	});
 });
 

@@ -1,6 +1,9 @@
 import { createReviewBudgetId } from "../control-plane/ids.js";
 import type { RecordOrigin } from "../control-plane/record-types.js";
-import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import type {
+	ReviewBudgetSnapshotRecord,
+	ReviewBudgetStore,
+} from "../control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	type ReviewerVerdict,
@@ -101,6 +104,38 @@ export function findIncompleteDebtClaimItem(
 	);
 }
 
+/**
+ * Whether a plan-reviewer verdict for this step identity must, may, or must
+ * not carry `baselineAssessment`. The first active review supplies the
+ * independent estimate; a retry of that same step may repeat it; every later
+ * review is a closure review and must omit it.
+ *
+ * Shared by the budget validator and the provider-facing output schema so
+ * the generation contract never admits what validation will reject.
+ */
+export type BaselineAssessmentContract = "required" | "optional" | "prohibited";
+
+export function baselineAssessmentContract(
+	snapshots: readonly ReviewBudgetSnapshotRecord[],
+	step: {
+		stepName: string;
+		phase: string | undefined;
+		iteration: number | undefined;
+	},
+): BaselineAssessmentContract {
+	const first = snapshots[0];
+	if (!first) return "required";
+	const matching = snapshots.find(
+		(snapshot) =>
+			snapshot.stepName === step.stepName &&
+			(snapshot.phase ?? undefined) === step.phase &&
+			(snapshot.iteration ?? undefined) === step.iteration,
+	);
+	return matching === first && first.baselineAssessment !== undefined
+		? "optional"
+		: "prohibited";
+}
+
 export function applyPlanReviewBudget(
 	input: ApplyPlanReviewBudgetInput,
 ): ApplyPlanReviewBudgetResult {
@@ -161,17 +196,15 @@ export function applyPlanReviewBudget(
 			(snapshot.phase ?? undefined) === input.phase &&
 			(snapshot.iteration ?? undefined) === input.iteration,
 	);
-	const isInitialRetry =
-		matchingSnapshot !== undefined &&
-		matchingSnapshot === firstSnapshot &&
-		firstSnapshot.baselineAssessment !== undefined;
-	if (!latest && !input.verdict.baselineAssessment) {
+	const contract = baselineAssessmentContract(snapshots, input);
+	const isInitialRetry = contract === "optional";
+	if (contract === "required" && !input.verdict.baselineAssessment) {
 		return error(
 			"BASELINE_ASSESSMENT_REQUIRED",
 			"baselineAssessment is required on the first active plan review",
 		);
 	}
-	if (latest && input.verdict.baselineAssessment && !isInitialRetry) {
+	if (contract === "prohibited" && input.verdict.baselineAssessment) {
 		return error(
 			"BASELINE_ASSESSMENT_UNEXPECTED",
 			"baselineAssessment is initial-review only",
@@ -302,7 +335,7 @@ export function applyPlanReviewBudget(
 	const firstAssessment =
 		firstSnapshot?.baselineAssessment ?? input.verdict.baselineAssessment;
 	const snapshotBaselineAssessment = isInitialRetry
-		? firstSnapshot.baselineAssessment
+		? firstSnapshot?.baselineAssessment
 		: latest
 			? undefined
 			: input.verdict.baselineAssessment;

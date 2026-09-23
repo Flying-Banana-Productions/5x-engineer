@@ -11,9 +11,9 @@
  * - Supports both synchronous and asynchronous writing
  */
 
-import { appendFileSync, mkdirSync, readdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentEvent } from "./types.js";
+import type { AgentEvent, RunResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -194,4 +194,60 @@ export function appendLogLines(
 		return JSON.stringify(entry);
 	});
 	appendFileSync(logPath, `${lines.join("\n")}\n`);
+}
+
+// ---------------------------------------------------------------------------
+// Log Reading
+// ---------------------------------------------------------------------------
+
+/** Invocation metadata recovered from a completed invoke NDJSON log. */
+export interface InvocationLogSummary {
+	run: string;
+	role: string;
+	template: string;
+	provider?: string;
+	model?: string;
+	sessionId: string;
+	durationMs: number;
+	tokens: { in: number; out: number };
+	costUsd?: number;
+}
+
+/**
+ * Read the session_start header and final done event of an invoke log.
+ * Throws when the file is unreadable or is not a completed invocation log.
+ */
+export function readInvocationLogSummary(
+	logPath: string,
+): InvocationLogSummary {
+	const lines = readFileSync(logPath, "utf-8").split("\n");
+	let start: SessionStartEntry | undefined;
+	let done: RunResult | undefined;
+	for (const line of lines) {
+		if (!line.trim()) continue;
+		let entry: { type?: unknown; result?: unknown };
+		try {
+			entry = JSON.parse(line) as { type?: unknown; result?: unknown };
+		} catch {
+			continue;
+		}
+		if (entry.type === "session_start" && !start) {
+			start = entry as unknown as SessionStartEntry;
+		} else if (entry.type === "done" && entry.result) {
+			done = entry.result as RunResult;
+		}
+	}
+	if (!start) throw new Error("log has no session_start entry");
+	if (!done) throw new Error("log has no done event (invocation incomplete)");
+	return {
+		run: start.run,
+		role: start.role,
+		template: start.template,
+		...(start.provider ? { provider: start.provider } : {}),
+		...(start.model ? { model: start.model } : {}),
+		sessionId: done.sessionId,
+		durationMs: done.durationMs,
+		tokens: done.tokens,
+		...(done.costUsd !== undefined ? { costUsd: done.costUsd } : {}),
+	};
 }

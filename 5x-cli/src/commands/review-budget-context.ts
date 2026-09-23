@@ -21,6 +21,8 @@ import {
 import type { ReviewerVerdict } from "../protocol.js";
 import {
 	applyPlanReviewBudget,
+	type BaselineAssessmentContract,
+	baselineAssessmentContract,
 	type PendingBudgetSnapshot,
 } from "../review-budget/apply.js";
 import {
@@ -51,6 +53,7 @@ import {
 	type RecordStepResult,
 	type RunRecordParams,
 } from "./run-v1.handler.js";
+import type { PriorReviewIdentity } from "./template-vars.js";
 
 export interface ReviewBudgetCommandContext extends RecordCommandContext {
 	store: ReviewBudgetStore;
@@ -146,6 +149,53 @@ export function hasPriorPlanReviewerStep(
 		const payload = line.payload as Partial<StepRecordPayload>;
 		return isPlanReviewer(payload.step_name, payload.phase);
 	});
+}
+
+/** Durable snapshots of an active-budget run; null when no baseline governs it. */
+function activePlanReviewSnapshots(
+	ctx: Pick<ReviewBudgetCommandContext, "recordStore" | "store">,
+	runId: string,
+) {
+	try {
+		if (ctx.recordStore.getRun(runId) === null) return null;
+	} catch {
+		// A mode-off legacy run may not have an authoritative records directory.
+		return null;
+	}
+	return ctx.store.getBaseline(runId) ? ctx.store.listSnapshots(runId) : null;
+}
+
+/**
+ * Step identity of the latest recorded plan review, taken from the durable
+ * budget snapshot — the same identity closure composition diffs against.
+ */
+export function latestPlanReviewIdentity(
+	ctx: Pick<ReviewBudgetCommandContext, "recordStore" | "store">,
+	runId: string,
+): PriorReviewIdentity | undefined {
+	const latest = activePlanReviewSnapshots(ctx, runId)?.at(-1);
+	return latest?.stepName
+		? {
+				stepName: latest.stepName,
+				phase: latest.phase,
+				iteration: latest.iteration,
+			}
+		: undefined;
+}
+
+/**
+ * The `baselineAssessment` contract the budget validator will apply to a
+ * plan-reviewer verdict recorded under `step`. Undefined when no active
+ * baseline governs the run (mode off or v1-compatible), where the generic
+ * schema applies.
+ */
+export function planReviewBaselineAssessmentContract(
+	ctx: Pick<ReviewBudgetCommandContext, "recordStore" | "store">,
+	runId: string,
+	step: Parameters<typeof baselineAssessmentContract>[1],
+): BaselineAssessmentContract | undefined {
+	const snapshots = activePlanReviewSnapshots(ctx, runId);
+	return snapshots ? baselineAssessmentContract(snapshots, step) : undefined;
 }
 
 export type ComposePlanReviewerRecordResult =

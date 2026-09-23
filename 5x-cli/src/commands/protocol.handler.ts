@@ -15,6 +15,10 @@ import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
 import type { ReviewerVerdict } from "../protocol.js";
+import {
+	type InvocationLogSummary,
+	readInvocationLogSummary,
+} from "../providers/log-writer.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
 import { validateRunId } from "../run-id.js";
 import {
@@ -61,6 +65,12 @@ export interface ProtocolValidateParams {
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
 	optInBudgetBaseline?: boolean;
+	/**
+	 * Invoke NDJSON log whose session/model/token/cost metadata the recorded
+	 * step retains — recovery for a verdict `5x invoke` rejected after the
+	 * provider finished. The verdict itself is still the validated input.
+	 */
+	invocationLog?: string;
 	warn?: (message: string) => void;
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
 }
@@ -469,6 +479,35 @@ export async function protocolValidate(
 		recordStepName = params.step;
 		resolvedPhase = resolveRecordPhase(params.phase, validated);
 	}
+	let invocation: InvocationLogSummary | undefined;
+	if (params.invocationLog) {
+		if (!params.record) {
+			outputError(
+				"INVALID_ARGS",
+				"--invocation-log is only valid with --record",
+			);
+		}
+		try {
+			invocation = readInvocationLogSummary(resolve(params.invocationLog));
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			outputError(
+				"INVOCATION_LOG_INVALID",
+				`Cannot read invocation log: ${msg}`,
+			);
+		}
+		if (invocation.run !== params.run || invocation.role !== role) {
+			outputError(
+				"INVOCATION_LOG_MISMATCH",
+				`Invocation log belongs to ${invocation.role} on run ${invocation.run}, not ${role} on run ${params.run}`,
+			);
+		}
+	}
+	const performer = {
+		kind: "agent",
+		role,
+		...(invocation?.provider ? { provider: invocation.provider } : {}),
+	} as const;
 	if (
 		params.optInBudgetBaseline &&
 		(role !== "reviewer" || !params.record || resolvedPhase !== "plan")
@@ -526,7 +565,7 @@ export async function protocolValidate(
 								result: JSON.stringify(validated),
 								phase: resolvedPhase,
 								iteration: params.iteration,
-								performer: { kind: "agent", role },
+								performer,
 							},
 							budgetContext,
 						);
@@ -553,11 +592,10 @@ export async function protocolValidate(
 					if (planReadFailed) {
 						// Dry validation remains v1-compatible when its optional context vanished.
 					} else {
-						const performer = { kind: "agent", role: "reviewer" } as const;
 						const applied = await composePlanReviewerRecord({
 							ctx: budgetContext,
 							runId: params.run,
-							stepName: recordStepName ?? params.step ?? "reviewer:review",
+							stepName: recordStepName ?? params.step ?? "reviewer:plan",
 							phase: resolvedPhase,
 							iteration: params.iteration,
 							planMarkdown,
@@ -626,7 +664,18 @@ export async function protocolValidate(
 				result: JSON.stringify(validated),
 				phase: resolvedPhase,
 				iteration: params.iteration,
-				performer: { kind: "agent", role } as const,
+				...(invocation
+					? {
+							sessionId: invocation.sessionId,
+							model: invocation.model,
+							durationMs: invocation.durationMs,
+							tokensIn: invocation.tokens.in,
+							tokensOut: invocation.tokens.out,
+							costUsd: invocation.costUsd,
+							logPath: resolve(params.invocationLog as string),
+						}
+					: {}),
+				performer,
 			};
 			if (pendingSnapshot && budgetContext) {
 				await recordPlanReviewerStepWithSnapshot(

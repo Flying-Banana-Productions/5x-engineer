@@ -294,7 +294,7 @@ describe("validateSessionContinuity", () => {
 		insertRun(db, runId);
 		insertStep(db, runId, "reviewer:review", "plan");
 
-		// reviewer-plan has step_name "reviewer:review" → role "reviewer"
+		// reviewer-plan has step_name "reviewer:plan" → role "reviewer"
 		// Only reviewer config matters here
 		try {
 			validateSessionContinuity(
@@ -351,7 +351,8 @@ describe("validateSessionContinuity", () => {
 		const db = makeDb();
 		const runId = "run_phase_01";
 		insertRun(db, runId);
-		// Insert step with phase "plan"
+		// Legacy plan review recorded under "reviewer:review"; the template now
+		// records "reviewer:plan", and reviewer steps group by role per phase.
 		insertStep(db, runId, "reviewer:review", "plan");
 
 		// reviewer-plan is a plan-review template → phase is auto-derived as "plan"

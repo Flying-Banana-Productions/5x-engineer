@@ -299,6 +299,36 @@ export const ReviewerVerdictSchema = {
 	required: ["readiness", "items"],
 } as const;
 
+/**
+ * Provider-facing reviewer schema for an active-budget plan review round.
+ * `required` (initial review) demands the independent baseline estimate;
+ * `prohibited` (closure review) removes it and forbids its presence;
+ * `optional` (initial-review retry) keeps the generic schema. The
+ * contextual budget validator remains the final authority.
+ */
+export function reviewerVerdictSchemaFor(
+	baselineAssessment: "required" | "optional" | "prohibited",
+): Record<string, unknown> {
+	if (baselineAssessment === "required") {
+		return {
+			...ReviewerVerdictSchema,
+			required: [...ReviewerVerdictSchema.required, "baselineAssessment"],
+		};
+	}
+	if (baselineAssessment === "prohibited") {
+		const { baselineAssessment: _omitted, ...properties } =
+			ReviewerVerdictSchema.properties;
+		return {
+			...ReviewerVerdictSchema,
+			description:
+				"Closure review: omit baselineAssessment; it is initial-review only.",
+			properties,
+			not: { required: ["baselineAssessment"] },
+		};
+	}
+	return ReviewerVerdictSchema;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
 	if (!value || typeof value !== "object") return null;
 	return value as Record<string, unknown>;

@@ -1,9 +1,9 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 7
+version: 8
 variables: [plan_path, review_path, review_template_path, run_id]
-step_name: "reviewer:review"
+step_name: "reviewer:plan"
 variable_defaults:
   run_id: ""
 ---
