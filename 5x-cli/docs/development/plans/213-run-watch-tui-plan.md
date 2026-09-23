@@ -115,12 +115,12 @@ All source/test paths below are relative to `5x-cli/` unless explicitly qualifie
 
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
-| W1 | Terminal adapter and compatibility decision (phase 1) | 5 | +1 | - | - | New platform-facing lifecycle boundary, Bun/compiled validation, input and terminal restoration; adapter tests included. |
-| W2 | Optional normalized metadata across bundled providers (phase 2) | 3 | +2 | - | - | Crosses public provider API, three mappers, invocation header producer, and compatibility fixtures; adds a maintained external contract without migration. |
-| W3 | Replay-aware bounded tailing and decoding (phase 3) | 5 | +1 | - | - | Adds watermark/backpressure semantics to a filesystem boundary and a watch decoder; race, partial-record, polling, and legacy tests belong here. |
-| W4 | Watch reducer, attribution, and retention (phase 4) | 5 | +2 | - | - | New bounded state machine for concurrent invocations, tools, prose, counters, and evictions; deterministic fixtures and stress tests included. |
-| W5 | Responsive views and safe display formatting (phase 5) | 5 | +2 | - | - | New layout/formatting surface for compact/expanded views, Markdown, Unicode, path safety, inspectors, and activity clocks. |
-| W6 | Keyboard controller and watch command wiring (phase 6) | 3 | +1 | - | - | Integrates CLI validation, async collection, viewport state, lifecycle adapter, and rendering while preserving stream modes. |
+| W1 | Terminal adapter and compatibility decision (phase 1) | 5 | 1 | - | - | New platform-facing lifecycle boundary, Bun/compiled validation, input and terminal restoration; adapter tests included. |
+| W2 | Optional normalized metadata across bundled providers (phase 2) | 3 | 2 | - | - | Crosses public provider API, three mappers, invocation header producer, and compatibility fixtures; adds a maintained external contract without migration. |
+| W3 | Replay-aware bounded tailing and decoding (phase 3) | 5 | 1 | - | - | Adds watermark/backpressure semantics to a filesystem boundary and a watch decoder; race, partial-record, polling, and legacy tests belong here. |
+| W4 | Watch reducer, attribution, and retention (phase 4) | 5 | 2 | - | - | New bounded state machine for concurrent invocations, tools, prose, counters, and evictions; deterministic fixtures and stress tests included. |
+| W5 | Responsive views and safe display formatting (phase 5) | 5 | 2 | - | - | New layout/formatting surface for compact/expanded views, Markdown, Unicode, path safety, inspectors, and activity clocks. |
+| W6 | Keyboard controller and watch command wiring (phase 6) | 3 | 1 | - | - | Integrates CLI validation, async collection, viewport state, lifecycle adapter, and rendering while preserving stream modes. |
 | W7 | Release failure handling, capability polish, and documentation (phase 7) | 2 | 0 | - | - | Finishes the existing watcher slice: failure/slow-terminal fixes, CLI help and docs, compiled/PTY validation, and manual acceptance; no new subsystem. |
 
 ### Surface Snapshot
@@ -530,3 +530,11 @@ The dependency path is phase 1 → 2 → 3 → 4 → 5 → 6 → 7. Phases 2 and
 ## Provenance
 
 This plan implements [208-run-watch-tui](../../v2/208-run-watch-tui.md), motivated by tool traffic obscuring agent narrative in the existing human-readable watcher. It builds on the current watch command and normalized NDJSON pipeline, not the external OpenCode attach UI or the proposed control-plane dashboard.
+
+---
+
+## Revision History
+
+### September 23, 2026 — Pre-review parser recovery
+
+Normalized positive Architecture delta literals from `+1`/`+2` to `1`/`2` after `BUDGET_INVALID_ARCHITECTURE` parser feedback. Scores, work-item IDs, phases, Surface Snapshot, and substantive content are unchanged. No reviewer has run; this is a syntax correction, not a response to review findings.
