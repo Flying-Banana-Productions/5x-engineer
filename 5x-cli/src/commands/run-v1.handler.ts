@@ -145,6 +145,7 @@ import type {
 	ReviewBudgetMode,
 } from "../review-budget/types.js";
 import {
+	type GoverningReviewState,
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
@@ -1016,10 +1017,13 @@ export function buildReviewGovernanceState(input: {
 	b0: number;
 	recordStore: RecordStore;
 	reviewBudgetStore: ReviewBudgetStore;
+	governingState?: GoverningReviewState;
 }): ReviewGovernanceState {
 	const listed = listGovernanceDecisions(input.recordStore, input.runId);
 	const governanceStore = createReviewGovernanceStore(input.recordStore);
-	const governing = governanceStore.deriveGoverningState(input.runId, input.b0);
+	const governing =
+		input.governingState ??
+		governanceStore.deriveGoverningState(input.runId, input.b0);
 	const latestSnapshot = input.reviewBudgetStore.latestSnapshot(input.runId);
 	const activeGate = governanceStore.deriveOpenGate(input.runId);
 	let normalizedRoute: ReviewDecisionRoute | undefined;
@@ -1143,6 +1147,25 @@ export function tryBuildReviewGovernanceState(
 	}
 }
 
+function tryDeriveGoverningReviewState(
+	recordStore: RecordStore,
+	runId: string,
+	b0: number,
+	warn: (message: string) => void,
+): GoverningReviewState | undefined {
+	try {
+		return createReviewGovernanceStore(recordStore).deriveGoverningState(
+			runId,
+			b0,
+		);
+	} catch (error) {
+		warn(
+			`Unable to fold review governance records for run ${runId}; using the captured baseline: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
+
 /**
  * Build the delivery-budget header from authoritative record lines. The
  * facade deliberately reads through (and repairs) an empty SQLite index.
@@ -1169,7 +1192,13 @@ export function buildReviewBudgetState(input: {
 	}
 	const pinnedMode = baseline.mode;
 
-	const snapshots = input.store.listSnapshots(input.runId);
+	let snapshots: ReturnType<ReviewBudgetStore["listSnapshots"]> = [];
+	try {
+		snapshots = input.store.listSnapshots(input.runId);
+	} catch {
+		// Run-state governance reports the malformed history. Preserve baseline-only
+		// budget telemetry here so a valid governing B never reverts to baseline.b.
+	}
 	const latest = snapshots.at(-1);
 	const initialAssessment = snapshots.find(
 		(snapshot) => snapshot.baselineAssessment !== undefined,
@@ -2215,18 +2244,27 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					} catch {
 						// The budget wrapper below emits the canonical baseline-decode warning.
 					}
+					let governingState: GoverningReviewState | undefined;
 					if (archivedBaseline) {
-						reviewGovernance = tryBuildReviewGovernanceState(
-							{
-								runId: gitRecord.summary.id,
-								b0: archivedBaseline.b0,
-								recordStore: records,
-								reviewBudgetStore: archivedBudgetStore,
-							},
+						governingState = tryDeriveGoverningReviewState(
+							records,
+							gitRecord.summary.id,
+							archivedBaseline.b0,
 							warn,
 						);
+						if (governingState)
+							reviewGovernance = tryBuildReviewGovernanceState(
+								{
+									runId: gitRecord.summary.id,
+									b0: archivedBaseline.b0,
+									recordStore: records,
+									reviewBudgetStore: archivedBudgetStore,
+									governingState,
+								},
+								warn,
+							);
 					}
-					const governingBaseline = reviewGovernance?.governing_baseline;
+					const governingBaseline = governingState?.governingBaseline;
 					reviewBudget = tryBuildReviewBudgetState(
 						{
 							runId: gitRecord.summary.id,
@@ -2363,16 +2401,24 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				// The budget wrapper below emits the canonical baseline-decode warning.
 			}
 			if (baseline) {
-				reviewGovernance = tryBuildReviewGovernanceState(
-					{
-						runId: run.id,
-						b0: baseline.b0,
-						recordStore: recordContext.recordStore,
-						reviewBudgetStore: reviewStore,
-					},
+				const governingState = tryDeriveGoverningReviewState(
+					recordContext.recordStore,
+					run.id,
+					baseline.b0,
 					warn,
 				);
-				governingBaseline = reviewGovernance?.governing_baseline;
+				governingBaseline = governingState?.governingBaseline;
+				if (governingState)
+					reviewGovernance = tryBuildReviewGovernanceState(
+						{
+							runId: run.id,
+							b0: baseline.b0,
+							recordStore: recordContext.recordStore,
+							reviewBudgetStore: reviewStore,
+							governingState,
+						},
+						warn,
+					);
 			}
 		}
 		const isPlanReviewer = (stepName: unknown, phase: unknown) =>

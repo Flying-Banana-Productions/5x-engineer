@@ -201,6 +201,63 @@ function appendHumanReview(ctx: ReturnType<typeof setup>): void {
 	});
 }
 
+function appendAdjustedBaselineDecision(ctx: ReturnType<typeof setup>): void {
+	appendHumanReview(ctx);
+	const snapshot = createReviewBudgetStore(ctx.records).latestSnapshot("run1");
+	if (!snapshot) throw new Error("missing snapshot fixture");
+	const decision = createReviewDecision({
+		gateId: "gate-baseline",
+		snapshotId: snapshot.id,
+		choice: "adjust_baseline",
+		findingRefs: [],
+		rationale: "The independent estimate establishes the larger baseline.",
+		evidence: [],
+		approvedScope: { retained: [], removed: [] },
+		governingBaselineChange: { from: 5, to: 8 },
+		decisionId: "44444444-4444-4444-8444-444444444444",
+		createdAt: "2026-09-17 00:00:02",
+	});
+	createReviewGovernanceStore(ctx.records).resolveGate({
+		runId: "run1",
+		decision,
+		humanStep: {
+			step_name: "human:review-governance",
+			phase: "plan",
+			iteration: 1,
+			result_json: {
+				decisionId: decision.decisionId,
+				gateId: decision.gateId,
+			},
+			head_commit: null,
+			patch_id: null,
+			diff_summary: null,
+			duration_ms: null,
+			tokens_in: null,
+			tokens_out: null,
+			cost_usd: null,
+			model: null,
+		},
+		origin: {
+			...origin,
+			performer: { kind: "human", role: "operator" },
+		},
+	});
+}
+
+function appendMalformedSnapshot(ctx: ReturnType<typeof setup>): void {
+	ctx.records.append({
+		runId: "run1",
+		stream: "budget",
+		idempotencyKey: "budget:snapshot:run1:malformed:plan:2",
+		payload: {
+			kind: "snapshot",
+			id: "malformed-snapshot",
+			runId: "run1",
+		},
+		...recordedEnvelope(origin),
+	});
+}
+
 describe("run state review-budget wiring", () => {
 	test("runV1State includes active review_budget even after config changes to off", async () => {
 		const advisory = setup();
@@ -311,48 +368,7 @@ describe("run state review-budget wiring", () => {
 	test("archived run state folds decisions into governing B", async () => {
 		const ctx = setup();
 		try {
-			appendHumanReview(ctx);
-			const snapshot = createReviewBudgetStore(ctx.records).latestSnapshot(
-				"run1",
-			);
-			if (!snapshot) throw new Error("missing snapshot fixture");
-			const decision = createReviewDecision({
-				gateId: "gate-baseline",
-				snapshotId: snapshot.id,
-				choice: "adjust_baseline",
-				findingRefs: [],
-				rationale: "The independent estimate establishes the larger baseline.",
-				evidence: [],
-				approvedScope: { retained: [], removed: [] },
-				governingBaselineChange: { from: 5, to: 8 },
-				decisionId: "44444444-4444-4444-8444-444444444444",
-				createdAt: "2026-09-17 00:00:02",
-			});
-			createReviewGovernanceStore(ctx.records).resolveGate({
-				runId: "run1",
-				decision,
-				humanStep: {
-					step_name: "human:review-governance",
-					phase: "plan",
-					iteration: 1,
-					result_json: {
-						decisionId: decision.decisionId,
-						gateId: decision.gateId,
-					},
-					head_commit: null,
-					patch_id: null,
-					diff_summary: null,
-					duration_ms: null,
-					tokens_in: null,
-					tokens_out: null,
-					cost_usd: null,
-					model: null,
-				},
-				origin: {
-					...origin,
-					performer: { kind: "human", role: "operator" },
-				},
-			});
+			appendAdjustedBaselineDecision(ctx);
 			const liveEnvelope = (await captureState(ctx)) as {
 				data?: {
 					review_budget?: Record<string, unknown>;
@@ -443,17 +459,7 @@ describe("run state review-budget wiring", () => {
 		const ctx = setup();
 		const warnings: string[] = [];
 		try {
-			ctx.records.append({
-				runId: "run1",
-				stream: "budget",
-				idempotencyKey: "budget:snapshot:run1:malformed:plan:1",
-				payload: {
-					kind: "snapshot",
-					id: "malformed-snapshot",
-					runId: "run1",
-				},
-				...recordedEnvelope(origin),
-			});
+			appendMalformedSnapshot(ctx);
 
 			const live = (await captureState(ctx, { run: "run1" }, (message) =>
 				warnings.push(message),
@@ -477,6 +483,49 @@ describe("run state review-budget wiring", () => {
 				expect.stringContaining(
 					"Unable to read review governance records for run run1; omitting review_governance",
 				),
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("malformed later snapshot preserves adjusted governing B in live and archived state", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			appendAdjustedBaselineDecision(ctx);
+			appendMalformedSnapshot(ctx);
+
+			const live = (await captureState(ctx, { run: "run1" }, (message) =>
+				warnings.push(message),
+			)) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: unknown;
+				};
+			};
+			expect(live.data?.review_budget?.B).toBe(8);
+			expect(live.data?.review_governance).toBeUndefined();
+			expect(warnings).toContainEqual(
+				expect.stringContaining("omitting review_governance"),
+			);
+
+			warnings.length = 0;
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const archived = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: unknown;
+				};
+			};
+			expect(archived.data?.review_budget?.B).toBe(8);
+			expect(archived.data?.review_governance).toBeUndefined();
+			expect(warnings).toContainEqual(
+				expect.stringContaining("omitting review_governance"),
 			);
 		} finally {
 			ctx.db.close();
