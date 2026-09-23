@@ -184,3 +184,30 @@ This is the only production call site of `createReviewBudgetContext` (`src/comma
 ### Updated readiness
 
 **Readiness:** Ready with corrections. All prior blocking and P2 findings through Addendum 2 are now fully resolved, with regression tests that reproduce each originally-reported scenario and typecheck/full suite passing (3595/0). The one new item is a P2 operability gap (incomplete diagnostic wiring outside `run state`), not a correctness regression — the shared decode fix already protects the enforcement path from crashing or losing data; only the diagnostic surfacing is missing there. No `human_required` items; the fix is a mechanical, same-pattern extension of what this commit already did for `run-v1.handler.ts`.
+
+---
+
+## Addendum 4 — Re-review at `5384facdf4c223930f7f4abd4375729b5a7fe0c5`
+
+**Diff reviewed:** `dfb026d..5384fac` (`fix: surface budget corruption across review commands`) — touches `invoke.handler.ts`, `protocol.handler.ts`, `review-budget-context.ts`, `review-decision.handler.ts`, `review.ts`, `template.handler.ts`, and three test files.
+**Local verification:** `bun run typecheck` (`bunx --bun tsc --noEmit`) passes. `bun test` → 3597 pass / 0 fail (230 files, +2 tests vs. the prior round).
+
+### Prior findings
+
+- **Addendum 3's P2 (enforcement path doesn't wire the corrupt-snapshot diagnostic)** — **Addressed, comprehensively.** `createReviewBudgetContext`'s signature changed from a variadic `...args: Parameters<typeof createRecordContext>` (which only ever forwarded a single object anyway — confirmed against `createRecordContext(opts: {...})`'s one-parameter signature, and locked in by the updated `slice-10-phase-boundary.test.ts` assertion for the literal `createRecordContext(input)` call) to an explicit `(input, onDiagnostic?)`, and `onDiagnostic` is now threaded straight into `createReviewBudgetStore(record.recordStore, createReviewBudgetIndex(record.db), onDiagnostic)`. Every call site I flagged, and more, was updated:
+  - `protocol.handler.ts` (`protocolValidate`, the `protocol validate --record` path): computes `warn` once and passes it to both `contextFactory(...)` and `composePlanReviewerRecord`'s `warn` field, removing the previous duplicated inline fallback.
+  - `review.ts`'s `contextFor` (backing the real `review gate show` / `review decide` CLI commands): now passes `(message) => console.error(...)` directly into `createReviewBudgetContext`. This is the actual code path exercised by the CLI — `review-decision.handler.ts`'s own `deps.warn` fallback only applies when `deps.context` isn't pre-supplied, which is never true for the CLI (`review.ts` always passes `{ context }`), so the fix correctly targets where the real gap was, not just the unused fallback branch.
+  - `invoke.handler.ts` and `template.handler.ts`: each now compute a single `warn` closure once per function and reuse it across all `createReviewBudgetContext` call sites and the adjacent `ensureBaseline`/`composePlanReviewerRecord` `warn` fields, which also collapses three previously-duplicated inline fallback expressions into one — a correctness-neutral but welcome consistency cleanup that removes a class of "one call site's fallback drifts from another's" risk.
+  - `review-decision.handler.ts`'s `showPlanReviewGate`/`submitPlanReviewDecision` also gained a `deps.warn` field with the same fallback, for callers that don't pre-supply a context.
+
+  Two new tests confirm this isn't just plumbing that type-checks: `protocol-validate.test.ts`'s "forwards corrupt snapshot diagnostics from the budget context factory" verifies `protocolValidate` forwards a stubbed factory's `onDiagnostic` call into its own `warn` sink. More importantly, `review-budget-context.test.ts`'s "factory surfaces corrupt snapshot diagnostics during reviewer composition" is a real end-to-end test with no stubs: it builds a genuine `createReviewBudgetContext` with a real `onDiagnostic` callback, captures a baseline, appends one valid snapshot and one malformed budget-stream record directly into the record store, then calls the real `composePlanReviewerRecord` (the exact function `protocol.handler.ts`/`invoke.handler.ts` use to apply a recorded reviewer verdict) and asserts both that the call still succeeds (`result.status === "applied"`) and that the `Skipping malformed review budget snapshot record budget:snapshot:run1:malformed:plan:2` diagnostic fires. This directly reproduces the scenario I asked for and confirms the fix holds through the real enforcement path, not just at the factory boundary.
+
+I checked for any remaining `createReviewBudgetContext` call site left unwired and found none — `grep` for direct calls turns up only `review.ts`'s (fixed), and every `deps.createReviewBudgetContext ?? createReviewBudgetContext` indirection across `invoke.handler.ts`, `protocol.handler.ts`, and `template.handler.ts` now passes its local `warn` as the second argument.
+
+### New issues found in this revision
+
+None. This is a narrowly-scoped, correctly-targeted fix with real (not stubbed-only) regression coverage, and it does not introduce any new behavior change beyond wiring the already-existing diagnostic hook through the remaining call sites.
+
+### Updated readiness
+
+**Readiness:** Ready. All findings raised across this review and its three prior addenda (P1.1, the two P2 traceability/redundant-fold items, P1.2 governing-baseline coupling, and both P2 snapshot-history/diagnostic-wiring gaps) are now fully addressed with regression tests reproducing each originally-reported scenario, and typecheck/full suite pass (3597/0). No open P0/P1 items and no `human_required` items remain. Plan 209's phase 9 (end-to-end audit, compatibility, and documentation) is complete, and with it, plan 209 as a whole is ready for production in its documented scope: plan-review governance only, with the dashboard explicitly deferred to the follow-up plan input already on file.
