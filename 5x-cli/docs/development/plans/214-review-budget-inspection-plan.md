@@ -2,7 +2,7 @@
 
 **Version:** 1.1
 **Created:** September 23, 2026
-**Status:** Draft — pending review
+**Status:** Reviewed — approved by closure review and human architecture approval on September 23, 2026; implementation requires completed and integrated plan 210
 
 ## Executive Summary
 
@@ -445,7 +445,7 @@ Generated from design 209 (inspection, distinct from implementation plan 209) wi
 
 ### v1.1 (September 23, 2026) — Resolve review prerequisites and canonical reconstruction gaps
 
-Addresses [the initial plan review](../reviews/5x-cli-docs-development-plans-214-review-budget-inspection-plan-review.md) and the retained-scope human decision above. Status remains draft pending reviewer approval.
+Addresses [the initial plan review](../reviews/5x-cli-docs-development-plans-214-review-budget-inspection-plan-review.md) and the retained-scope human decision above. This revision was submitted for closure review before the approval recorded below.
 
 - **P1.1:** Retain every W ID, including W6. Front-load completed/integrated 210 plus actual-interface verification before any 214 product work; remove the split release, deferred/unchecked W6 and independent plan-only completion path. Summary, scope, prerequisite/checklist gates, phases, timeline and provenance consistently require all six phases.
 - **P1.2:** Name the shared recorded-budget reconstruction/input assembly in `apply.ts`; recording, run-state reconstruction and inspection reuse it. Explicitly carry bounded first assessment, paired-verdict semantic human requirement, pinned config and boundary governing B. Effective routing accepts an explicit base rather than nullable projection state; preserve wrapper behavior and require null-derived/recorded-decoration parity tests.
@@ -453,3 +453,9 @@ Addresses [the initial plan review](../reviews/5x-cli-docs-development-plans-214
 - **Straightforward follow-ups:** Correct `loadGitRecordForPlan` extraction to line 1963; specify explicit archived-run access without a DB and ref candidates before slug discovery; distinguish B0, captured b and the governing fold's b0 seed without changing policy.
 - **Budget/surface accounting:** Preserve individual W1–W6 effort/architecture scores with explicit rationale for the bounded refinements and incorporated Addresses; add apply.ts and decisions.ts to the production inventory and their tests to W2. No debt claims, new policy authority or dependency-plan changes. Actual integrated-interface verification remains a pre-start condition, not a claim that unimplemented 210 APIs have been verified today.
 - **Validation:** Plan parser only; no source/test/config edits or test/quality execution in this revision.
+
+### Approval (September 23, 2026)
+
+Closure review returned `ready`, with P1.1–P1.3 addressed and no new blockers. Human architecture approval `15e2ce2c-2bec-4772-93c4-f5063236291d` resolved the remaining gate in planning run `run_ab5add0a5102`; the CLI returned `complete`. All W1–W6 remain required, with completed and integrated plan 210 a prerequisite before execution.
+
+This planning run exposed an aggregate-only architecture-approval validation defect in dependency branch `5x/209-plan-review-governance-plan`. The separately committed fix is `6165dc141fb1d6c448ba7bdfc289debbcd818fa9`; approval was recorded successfully after the global CLI was updated to that commit. The inspected source references above remain anchored to 38f348e.
