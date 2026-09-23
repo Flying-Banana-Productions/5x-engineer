@@ -216,6 +216,8 @@ export async function templateRender(
 	let mergedVars = explicitVars;
 	let reviewDiffAppend: string | null = null;
 	let renderBudgetContext: ReviewBudgetCommandContext | undefined;
+	const warn =
+		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	if (
 		wantContinued &&
 		runDb &&
@@ -275,10 +277,13 @@ export async function templateRender(
 		try {
 			renderBudgetContext = await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
-			)({
-				runId: params.run,
-				startDir: resolvedWorktreeRoot ?? projectRoot,
-			});
+			)(
+				{
+					runId: params.run,
+					startDir: resolvedWorktreeRoot ?? projectRoot,
+				},
+				warn,
+			);
 		} catch (err) {
 			if (err instanceof RecordContextError) {
 				outputError(err.code, err.message, err.detail);
@@ -300,7 +305,7 @@ export async function templateRender(
 			planMarkdown,
 			optIn: false,
 			performer: { kind: "system", role: "cli" },
-			warn: deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+			warn,
 		});
 		if (ensured.status === "error") {
 			outputError(ensured.code, ensured.message);
@@ -312,7 +317,10 @@ export async function templateRender(
 		try {
 			renderBudgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
-			)({ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot });
+			)(
+				{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
+				warn,
+			);
 			const governanceContext = buildPlanReviewPromptContext({
 				runId: params.run,
 				configuredMode: config.reviewBudget.mode,

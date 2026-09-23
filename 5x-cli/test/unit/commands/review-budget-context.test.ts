@@ -1,9 +1,21 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	composePlanReviewerRecord,
+	createReviewBudgetContext,
 	hasPriorPlanReviewerStep,
 } from "../../../src/commands/review-budget-context.js";
-import { recordedEnvelope } from "../../../src/control-plane/index.js";
+import { FiveXConfigSchema } from "../../../src/config.js";
+import {
+	RUN_RECORD_FORMAT_VERSION,
+	recordedEnvelope,
+} from "../../../src/control-plane/index.js";
+import { createRunV1 } from "../../../src/db/operations-v1.js";
+import { runMigrations } from "../../../src/db/schema.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { PlanDiffError } from "../../../src/review-governance/plan-diff.js";
 import {
 	makeBudgetContext,
@@ -107,6 +119,117 @@ const validInitialVerdict = {
 		reason: "The plan is small and self-contained.",
 	},
 };
+
+test("factory surfaces corrupt snapshot diagnostics during reviewer composition", async () => {
+	const root = mkdtempSync(join(tmpdir(), "5x-budget-context-warning-"));
+	const planPath = join(root, "plans", "plan.md");
+	mkdirSync(join(root, "plans"));
+	writeFileSync(planPath, planMarkdown);
+	const db = new Database(":memory:");
+	const warnings: string[] = [];
+	try {
+		runMigrations(db);
+		createRunV1(db, { id: "run1", planPath });
+		const config = FiveXConfigSchema.parse({
+			reviewBudget: { mode: "advisory" },
+			paths: { records: join(root, "records") },
+		});
+		const ctx = await createReviewBudgetContext(
+			{
+				runId: "run1",
+				dbContext: {
+					projectRoot: root,
+					db,
+					config,
+					controlPlane: {
+						controlPlaneRoot: root,
+						stateDir: join(root, ".5x"),
+						mode: "none",
+					},
+				},
+			},
+			(message) => warnings.push(message),
+		);
+		ctx.recordStore.putRun({
+			id: "run1",
+			plan_path: planPath,
+			config_json: null,
+			created_at: "2026-09-17 00:00:00",
+			sealed_at: null,
+			status: "active",
+			final_head_commit: null,
+			cli_version: "1.3.0",
+			format_version: RUN_RECORD_FORMAT_VERSION,
+			creator: TEST_ORIGIN.recorder,
+		});
+		const parsed = {
+			estimateConfidence: "high" as const,
+			workItems: [
+				{
+					id: "W1",
+					title: "Work",
+					effort: 2 as const,
+					architectureDelta: 0 as const,
+					debtClaim: null,
+					addresses: [],
+					rationale: "Required",
+					line: 1,
+				},
+			],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		};
+		ctx.store.captureBaseline({
+			runId: "run1",
+			captureKind: "initial",
+			parsed,
+			configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
+			mode: "advisory",
+			origin: TEST_ORIGIN,
+		});
+		ctx.store.appendSnapshot({
+			runId: "run1",
+			stepName: "reviewer:review",
+			phase: "plan",
+			iteration: 1,
+			currentLedger: parsed,
+			findings: [],
+			assessments: [],
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: "budget:snapshot:run1:malformed:plan:2",
+			payload: { kind: "snapshot", id: "malformed", runId: "run1" },
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+
+		const result = await composePlanReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: "reviewer:review",
+			phase: "plan",
+			iteration: 2,
+			planMarkdown,
+			verdict: { readiness: "ready", items: [], priorFindings: [] },
+			optInBaseline: false,
+			origin: TEST_ORIGIN,
+			warn: () => {},
+		});
+		expect(result.status).toBe("applied");
+		expect(warnings).toContainEqual(
+			expect.stringContaining(
+				"Skipping malformed review budget snapshot record budget:snapshot:run1:malformed:plan:2",
+			),
+		);
+	} finally {
+		db.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 describe("composePlanReviewerRecord", () => {
 	test("keeps protocol and invoke composition byte-for-byte equivalent", async () => {

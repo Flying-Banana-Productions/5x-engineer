@@ -73,6 +73,7 @@ export interface ReviewDecisionDeps {
 	context?: ReviewBudgetCommandContext;
 	promptStore?: PromptStore;
 	createContext?: typeof createReviewBudgetContext;
+	warn?: (message: string) => void;
 	now?: () => string;
 	abortRun?: (input: {
 		runId: string;
@@ -87,7 +88,10 @@ export async function showPlanReviewGate(
 ) {
 	const ctx =
 		deps.context ??
-		(await (deps.createContext ?? createReviewBudgetContext)({ runId }));
+		(await (deps.createContext ?? createReviewBudgetContext)(
+			{ runId },
+			deps.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		));
 	const promptStore =
 		deps.promptStore ?? createSqlitePromptStore(ctx.db as Database);
 	const baseline = ctx.store.getBaseline(runId);
@@ -504,9 +508,12 @@ export async function submitPlanReviewDecision(
 }> {
 	const ctx =
 		deps.context ??
-		(await (deps.createContext ?? createReviewBudgetContext)({
-			runId: input.runId,
-		}));
+		(await (deps.createContext ?? createReviewBudgetContext)(
+			{
+				runId: input.runId,
+			},
+			deps.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		));
 	const promptStore =
 		deps.promptStore ?? createSqlitePromptStore(ctx.db as Database);
 	const run = getRunV1(ctx.db, input.runId);

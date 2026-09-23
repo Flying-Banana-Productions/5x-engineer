@@ -481,14 +481,19 @@ export async function protocolValidate(
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	const warn =
+		params.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	if (role === "reviewer" && resolvedPhase === "plan" && params.run) {
 		const contextFactory =
 			params.createReviewBudgetContext ?? createReviewBudgetContext;
 		try {
-			budgetContext = await contextFactory({
-				runId: params.run,
-				startDir: params.startDir,
-			});
+			budgetContext = await contextFactory(
+				{
+					runId: params.run,
+					startDir: params.startDir,
+				},
+				warn,
+			);
 		} catch (err) {
 			if (!params.record && err instanceof RecordContextError) {
 				budgetContext = undefined;
@@ -559,9 +564,7 @@ export async function protocolValidate(
 							verdict: validated as ReviewerVerdict,
 							optInBaseline: params.optInBudgetBaseline ?? false,
 							origin: budgetContext.originFor(performer),
-							warn:
-								params.warn ??
-								((message) => console.error(`Warning: ${message}`)),
+							warn,
 						});
 						if (applied.status === "error") {
 							outputError(applied.code, applied.message, applied.detail);

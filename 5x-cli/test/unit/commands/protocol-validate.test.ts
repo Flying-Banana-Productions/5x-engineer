@@ -331,6 +331,37 @@ describe("protocol validate reviewer — active review budget", () => {
 		}
 	});
 
+	test("forwards corrupt snapshot diagnostics from the budget context factory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		const warnings: string[] = [];
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async (_input, onDiagnostic) => {
+					onDiagnostic?.("corrupt snapshot requires repair");
+					return ctx;
+				},
+			});
+			expect(warnings).toContain("corrupt snapshot requires repair");
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
 	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ mode: "enforced" });

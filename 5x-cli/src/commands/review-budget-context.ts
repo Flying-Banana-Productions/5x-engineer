@@ -113,14 +113,16 @@ function repairGovernanceProjection(
 }
 
 export async function createReviewBudgetContext(
-	...args: Parameters<typeof createRecordContext>
+	input: Parameters<typeof createRecordContext>[0],
+	onDiagnostic?: (message: string) => void,
 ): Promise<ReviewBudgetCommandContext> {
-	const record = await createRecordContext(...args);
+	const record = await createRecordContext(input);
 	return {
 		...record,
 		store: createReviewBudgetStore(
 			record.recordStore,
 			createReviewBudgetIndex(record.db),
+			onDiagnostic,
 		),
 	};
 }

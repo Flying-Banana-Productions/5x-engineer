@@ -32,7 +32,7 @@ describe("Phase 6 command context boundary", () => {
 		expect(text).toContain(
 			'import { createRecordContext } from "./record-context.js"',
 		);
-		expect(text).toContain("await createRecordContext(...args)");
+		expect(text).toContain("await createRecordContext(input)");
 		expect(text).not.toContain("createRecordAttribution");
 	});
 });

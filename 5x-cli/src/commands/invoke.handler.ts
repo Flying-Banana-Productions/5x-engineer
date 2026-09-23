@@ -459,6 +459,8 @@ export async function invokeAgent(
 		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let optInCapturedBeforeInvoke = false;
+	const warn =
+		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 
 	// Fail closed before provider/session creation so an unbudgeted initial
 	// plan review spends no tokens. Continued templates remain v1-compatible.
@@ -473,7 +475,7 @@ export async function invokeAgent(
 		try {
 			budgetContext = await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
-			)({ runId: params.run, startDir: invocationWorkdir });
+			)({ runId: params.run, startDir: invocationWorkdir }, warn);
 		} catch (err) {
 			if (err instanceof RecordContextError) {
 				outputError(err.code, err.message, err.detail);
@@ -509,8 +511,7 @@ export async function invokeAgent(
 							role: "reviewer",
 							provider: providerName,
 						},
-						warn:
-							deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+						warn,
 					})
 				: ({ status: "skipped", reason: "off" } as const);
 		if (ensured.status === "error") {
@@ -527,7 +528,7 @@ export async function invokeAgent(
 		try {
 			budgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
-			)({ runId: params.run, startDir: invocationWorkdir });
+			)({ runId: params.run, startDir: invocationWorkdir }, warn);
 			const governanceContext = buildPlanReviewPromptContext({
 				runId: params.run,
 				configuredMode: config.reviewBudget.mode,
@@ -756,7 +757,7 @@ export async function invokeAgent(
 		try {
 			budgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
-			)({ runId, startDir: workdir });
+			)({ runId, startDir: workdir }, warn);
 		} catch (err) {
 			if (!params.record && err instanceof RecordContextError) {
 				budgetContext = undefined;
@@ -828,8 +829,7 @@ export async function invokeAgent(
 							(params.optInBudgetBaseline ?? false) &&
 							!optInCapturedBeforeInvoke,
 						origin: budgetContext.originFor(performer),
-						warn:
-							deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+						warn,
 					});
 					if (applied.status === "error")
 						outputError(applied.code, applied.message, applied.detail);

@@ -35,7 +35,10 @@ async function contextFor(run: string | undefined) {
 		db: dbContext.db,
 		controlPlane: dbContext.controlPlane,
 	});
-	const context = await createReviewBudgetContext({ runId, dbContext });
+	const context = await createReviewBudgetContext(
+		{ runId, dbContext },
+		(message) => console.error(`Warning: ${message}`),
+	);
 	return { runId, context };
 }
 
