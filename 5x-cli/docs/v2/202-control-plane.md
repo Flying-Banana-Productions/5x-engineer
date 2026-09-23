@@ -105,7 +105,16 @@ The control plane gets no new mutation surface where an existing idempotent prim
 | Abort a run | `5x run complete --status aborted` | `run:abort` step |
 | Reopen a run | `5x run reopen` | `run:reopen` step |
 | Record a human decision/override | `5x run record human:*` | `human:*` step |
+| Inspect a plan-review gate | exported `showPlanReviewGate` / `5x review gate show` | read-only derived record view |
+| Resolve a plan-review gate | exported `submitPlanReviewDecision` / `5x review decide` | paired `human:review-governance` step + governance decision line |
 | Re-run a quality gate | `5x quality run` | `quality:check` step |
+
+Plan-review gate prompts are notifications, not generic answer forms.
+`answerPrompt` rejects them with `REVIEW_GATE_DECISION_REQUIRED`; all CLI and
+future authenticated dashboard actions must call `submitPlanReviewDecision` so
+the RecordStore gate key remains the sole CAS authority. The exported redacted
+prompt view, `showPlanReviewGate`, and `submitPlanReviewDecision` are the
+dashboard handoff seams. This document does not define HTTP routes for them.
 
 - _TODO:_ whether the HTTP API shells these commands or calls the handlers in-process. Leaning in-process (the server links the CLI lib) to avoid subprocess overhead, but must respect the same store interface so a remote server stays possible.
 - **Auth.** Extend the token / HttpOnly-cookie scheme already specified in `docs/10-dashboard.md` to cover write endpoints. _TODO:_ single-token sufficient for local v2; multi-user authz remains out of scope (and is a cloud-service concern, not v2).

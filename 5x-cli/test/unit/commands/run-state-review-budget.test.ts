@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
 	buildReviewBudgetState,
+	buildReviewGovernanceState,
 	formatStateText,
 	tryBuildReviewBudgetState,
 } from "../../../src/commands/run-v1.handler.js";
@@ -123,7 +124,7 @@ function fixture(
 			...(options.cacheDerived === false ? {} : { derived }),
 		});
 	}
-	return { db, store };
+	return { db, store, records, baseline };
 }
 
 describe("run state review budget", () => {
@@ -331,6 +332,73 @@ describe("run state review budget", () => {
 			expect(lines.join("\n")).toContain("W+R=5");
 		} finally {
 			console.log = original;
+			db.close();
+		}
+	});
+
+	test("governance read model exposes route, gate, stable IDs, and malformed history", () => {
+		const { db, store, records, baseline } = fixture({ withSnapshot: false });
+		try {
+			const snapshot = store.appendSnapshot({
+				runId: "run1",
+				stepName: "reviewer:plan",
+				phase: "plan",
+				iteration: 1,
+				currentLedger: ledger,
+				findings: [],
+				assessments: [],
+				effectiveGateCauses: [
+					{ kind: "budget_alert", alert: "baseline_disputed" },
+				],
+			});
+			records.append({
+				runId: "run1",
+				stream: "steps",
+				idempotencyKey: "step:run1:reviewer:plan:plan:1",
+				payload: {
+					step_name: "reviewer:plan",
+					phase: "plan",
+					iteration: 1,
+					result_json: {
+						governance: {
+							route: "human_gate",
+							normalizedReadiness: "not_ready",
+						},
+					},
+				},
+				createdAt: "2026-09-17T00:01:00.000Z",
+				schemaVersion: 1,
+				provenance: "recorded",
+				origin,
+			});
+			records.append({
+				runId: "run1",
+				stream: "decisions",
+				idempotencyKey: "decision:review-gate:malformed",
+				payload: { kind: "plan-review-governance", version: 999 },
+				createdAt: "2026-09-17T00:02:00.000Z",
+				schemaVersion: 1,
+				provenance: "recorded",
+				origin,
+			});
+			const state = buildReviewGovernanceState({
+				runId: "run1",
+				b0: baseline.b0,
+				recordStore: records,
+				reviewBudgetStore: store,
+			});
+			expect(state).toMatchObject({
+				normalized_route: "human_gate",
+				normalized_readiness: "not_ready",
+				governing_baseline: baseline.b0,
+				active_gate: { snapshot_id: snapshot.id },
+			});
+			expect(state.active_gate?.gate_id).toMatch(/^sha256:/);
+			expect(state.active_gate?.allowed_choices).toContain("retain_baseline");
+			expect(state.diagnostics.join("\n")).toContain(
+				"unsupported review decision kind or version",
+			);
+		} finally {
 			db.close();
 		}
 	});

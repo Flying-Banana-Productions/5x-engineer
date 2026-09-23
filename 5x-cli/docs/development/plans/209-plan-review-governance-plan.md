@@ -736,33 +736,33 @@ export interface PlanReviewPromptContext {
 
 ### 9.1 End-to-end governance scenarios — new `test/integration/commands/plan-review-governance.test.ts`
 
-- [ ] Initial exhaustive review → author revision → top-level closure outcomes → `--ready` with only addressed outcomes and empty routing `items[]`.
-- [ ] New ordinary blocker with exact introducing hunk succeeds; stale/fabricated hunk fails without records.
-- [ ] Critical late safety issue opens a human gate even when within limits.
-- [ ] Deferred/accepted finding stays nonblocking; re-raise without decision/new evidence fails; re-raise with both routes correctly.
-- [ ] Baseline dispute, each budget band, architecture threshold, semantic human item, valid/invalid final corrections, and intrinsic/adjacent/unrelated debt claims.
-- [ ] Cross-round baseline convergence: retain and adjust in round 1 suppress immutable `baseline_disputed` in round 2 while adjust's `B` still changes bands; re-estimate routes to author once and the next disputed gate exposes only retain/adjust/abort.
-- [ ] Every human choice, repeated/conflicting gate-scoped choice, two-process working-tree CAS race, both reviewer/human step orders, index deletion/rebuild, prompt repair, restart/resume, and full audit history.
-- [ ] Simultaneous and after-winner decision losers return the winner (no iteration exhaustion/pair corruption); a two-cause decision creates one successor; generic prompt answer is rejected while decision-key wait resumes.
-- [ ] `review gate show` exposes eligible finding IDs/fingerprints; ID-only `--finding` persists the resolved pair, while unknown IDs and mismatched JSON identity pairs write nothing.
-- [ ] A new reviewer step between the gate reviewer and human steps makes the decision audit-only: baseline/scope/prompt/abort side effects are skipped and `REVIEW_GATE_STALE` is returned. A reviewer step after the human step leaves the decision governing even when it lands before live classification; rebuilding a wiped index reproduces both live outcomes exactly.
-- [ ] Advisory-pinned runs record diagnostics/hypothetical governance without rejecting or rerouting; enforced-pinned runs fail closed and route; config mode changes affect only later baseline captures; off/v1-compat do not demand new fields.
-- [ ] A fixture with `human-step`, `answered-prompt`, and governance decision lines folds/indexes only governance decisions without diagnostics for known unrelated kinds.
+- [x] Initial exhaustive review → author revision → top-level closure outcomes → `--ready` with only addressed outcomes and empty routing `items[]`.
+- [x] New ordinary blocker with exact introducing hunk succeeds; stale/fabricated hunk fails without records.
+- [x] Critical late safety issue opens a human gate even when within limits.
+- [x] Deferred/accepted finding stays nonblocking; re-raise without decision/new evidence fails; re-raise with both routes correctly.
+- [x] Baseline dispute, each budget band, architecture threshold, semantic human item, valid/invalid final corrections, and intrinsic/adjacent/unrelated debt claims.
+- [x] Cross-round baseline convergence: retain and adjust in round 1 suppress immutable `baseline_disputed` in round 2 while adjust's `B` still changes bands; re-estimate routes to author once and the next disputed gate exposes only retain/adjust/abort.
+- [x] Every human choice, repeated/conflicting gate-scoped choice, two-process working-tree CAS race, both reviewer/human step orders, index deletion/rebuild, prompt repair, restart/resume, and full audit history.
+- [x] Simultaneous and after-winner decision losers return the winner (no iteration exhaustion/pair corruption); a two-cause decision creates one successor; generic prompt answer is rejected while decision-key wait resumes.
+- [x] `review gate show` exposes eligible finding IDs/fingerprints; ID-only `--finding` persists the resolved pair, while unknown IDs and mismatched JSON identity pairs write nothing.
+- [x] A new reviewer step between the gate reviewer and human steps makes the decision audit-only: baseline/scope/prompt/abort side effects are skipped and `REVIEW_GATE_STALE` is returned. A reviewer step after the human step leaves the decision governing even when it lands before live classification; rebuilding a wiped index reproduces both live outcomes exactly.
+- [x] Advisory-pinned runs record diagnostics/hypothetical governance without rejecting or rerouting; enforced-pinned runs fail closed and route; config mode changes affect only later baseline captures; off/v1-compat do not demand new fields.
+- [x] A fixture with `human-step`, `answered-prompt`, and governance decision lines folds/indexes only governance decisions without diagnostics for known unrelated kinds.
 
 ### 9.2 Run state and CLI presentation — plan-208 run-state formatter; new review command formatter
 
-- [ ] Extend `5x run state` with active gate summary, normalized route, latest decisions, governing scope/baseline, and stable IDs while retaining plan-208 gross forecast fields.
-- [ ] Provide concise text output and complete JSON fields; never hide absolute limits or positive architecture burden behind debt credit.
-- [ ] Ensure malformed index/history reports an actionable diagnostic and does not silently return an empty decision ledger.
+- [x] Extend `5x run state` with active gate summary, normalized route, latest decisions, governing scope/baseline, and stable IDs while retaining plan-208 gross forecast fields.
+- [x] Provide concise text output and complete JSON fields; never hide absolute limits or positive architecture burden behind debt credit.
+- [x] Ensure malformed index/history reports an actionable diagnostic and does not silently return an empty decision ledger.
 
 ### 9.3 Documentation and exports
 
-- [ ] Update `docs/v2/206-review-budget-governance.md` implementation status/contracts and `docs/v2/202-control-plane.md` budget-specific action mapping.
-- [ ] Update `docs/v1/101-cli-primitives.md` for review gate/decision commands, ID-only `--finding` with CLI fingerprint resolution, machine JSON/stdin identity pairs, `requiredFieldsByChoice`, and structured errors; keep skill examples identical to this canonical syntax.
-- [ ] Update `README.md`, `CHANGELOG.md`, default config comments, public `src/index.ts` exports, and CLI help.
-- [ ] Document that baselines captured before this slice decode as advisory and cannot be promoted to enforced in place; enforcement requires a new run/baseline.
-- [ ] Mark `docs/v2/plan-inputs/07-plan-review-governance.plan-input.md` generated/implemented only after all gates pass; leave slice-08 handoff explicit.
-- [ ] Create a follow-up plan input/handoff for dashboard forecast/ceiling/debt/alert/history views and authenticated decision actions after slice 04 merges; reference the exported read/action seams from this slice.
+- [x] Update `docs/v2/206-review-budget-governance.md` implementation status/contracts and `docs/v2/202-control-plane.md` budget-specific action mapping.
+- [x] Update `docs/v1/101-cli-primitives.md` for review gate/decision commands, ID-only `--finding` with CLI fingerprint resolution, machine JSON/stdin identity pairs, `requiredFieldsByChoice`, and structured errors; keep skill examples identical to this canonical syntax.
+- [x] Update `README.md`, `CHANGELOG.md`, default config comments, public `src/index.ts` exports, and CLI help.
+- [x] Document that baselines captured before this slice decode as advisory and cannot be promoted to enforced in place; enforcement requires a new run/baseline.
+- [x] Mark `docs/v2/plan-inputs/07-plan-review-governance.plan-input.md` generated/implemented only after all gates pass; leave slice-08 handoff explicit.
+- [x] Create a follow-up plan input/handoff for dashboard forecast/ceiling/debt/alert/history views and authenticated decision actions after slice 04 merges; reference the exported read/action seams from this slice.
 
 ---
 

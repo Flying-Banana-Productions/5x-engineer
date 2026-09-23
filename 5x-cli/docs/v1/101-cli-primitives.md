@@ -502,7 +502,36 @@ cat verdict.json | 5x protocol validate reviewer \
 
 `--opt-in-budget-baseline` is valid only for a recorded plan-review verdict when prior plan-review steps exist and no baseline has been captured. The current plan must first contain a valid Delivery Budget, complete debt evidence, and Surface Snapshot. Skills must obtain and record human confirmation before passing this flag.
 
-Review-budget mode is advisory: validation and recording do not rewrite `readiness`, alter command exit codes, or route on derived `budget.requiresHuman`. Existing `auto_fix` / `human_required` action semantics remain authoritative. The same rules apply when `invoke reviewer ... --record` records a plan review; `invoke` also accepts `--opt-in-budget-baseline` for the explicitly confirmed compatibility transition.
+Review-budget mode is pinned when the baseline is captured. Advisory validation records diagnostics and a hypothetical enforced route without rejecting or rerouting. Enforced validation fails closed and records the CLI-derived `governance.normalizedReadiness` and `governance.route`. Editing config later does not change an active baseline; historical baselines without a mode decode as advisory and require a new run/baseline for enforcement. The same rules apply when `invoke reviewer ... --record` records a plan review; `invoke` also accepts `--opt-in-budget-baseline` for the explicitly confirmed compatibility transition.
+
+### `5x review gate show` and `5x review decide`
+
+Inspect the current derived gate before deciding:
+
+```bash
+5x review gate show --run <run_id>
+```
+
+The response contains stable `gateId`/`snapshotId`, causes,
+`eligibleFindings` (ID plus authoritative fingerprint), `allowedChoices`, and
+`requiredFieldsByChoice`. Simple terminal decisions pass only the displayed
+finding ID; the CLI resolves its fingerprint:
+
+```bash
+5x review decide --gate <gate_id> --choice defer_accept_risk \
+  --rationale "bounded accepted risk" --evidence "operator evidence" \
+  --finding P1.2
+```
+
+Other repeatable fields are `--retain`, `--remove`, `--approved-item`, and
+`--approved-work-item`; scalar fields are `--baseline` and `--approved-p`.
+Machine callers use `--input-json '<json>'` or `--input-json -` on stdin. Only
+that form accepts full `findingRefs`; every ID/fingerprint pair is checked
+against the gate snapshot. JSON input is mutually exclusive with decision
+flags. Generic `prompt answer` is rejected for gate notifications with
+`REVIEW_GATE_DECISION_REQUIRED`. Unknown/stale findings, mismatched fingerprints,
+inapplicable fields, stale-at-acceptance decisions, and conflicting gate winners
+return structured errors and do not silently mutate governing state.
 
 ---
 

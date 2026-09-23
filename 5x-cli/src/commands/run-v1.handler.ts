@@ -123,6 +123,7 @@ import {
 	readUpstreamEnvelope,
 } from "../pipe.js";
 import { resolveProjectRoot } from "../project-root.js";
+import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
 	envelopeAttribution,
@@ -143,7 +144,19 @@ import type {
 	BudgetBand,
 	ReviewBudgetMode,
 } from "../review-budget/types.js";
-import { createReviewGovernanceStore } from "../review-governance/store.js";
+import {
+	listGovernanceDecisions,
+	type ReviewDecisionPayload,
+} from "../review-governance/decisions.js";
+import { routeAfterDecision } from "../review-governance/routing.js";
+import {
+	allowedChoicesForGate,
+	createReviewGovernanceStore,
+} from "../review-governance/store.js";
+import type {
+	ReviewDecisionRoute,
+	ReviewGateCause,
+} from "../review-governance/types.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -970,6 +983,139 @@ export interface ReviewBudgetState {
 	enforcement_implemented: boolean;
 }
 
+export interface ReviewGovernanceState {
+	normalized_route?: ReviewDecisionRoute;
+	normalized_readiness?: "ready" | "ready_with_corrections" | "not_ready";
+	active_gate?: {
+		gate_id: string;
+		snapshot_id: string;
+		causes: ReviewGateCause[];
+		allowed_choices: ReviewDecisionPayload["choice"][];
+	};
+	governing_baseline: number;
+	approved_scope: { retained: string[]; removed: string[] };
+	accepted_risks: Array<{
+		decision_id: string;
+		finding_id: string;
+		fingerprint: string;
+	}>;
+	latest_decisions: Array<{
+		decision_id: string;
+		gate_id: string;
+		choice: ReviewDecisionPayload["choice"];
+		snapshot_id: string;
+		created_at: string;
+	}>;
+	diagnostics: string[];
+}
+
+/** Build the dashboard/CLI read model strictly from authoritative records. */
+export function buildReviewGovernanceState(input: {
+	runId: string;
+	b0: number;
+	recordStore: RecordStore;
+	reviewBudgetStore: ReviewBudgetStore;
+}): ReviewGovernanceState {
+	const listed = listGovernanceDecisions(input.recordStore, input.runId);
+	const governanceStore = createReviewGovernanceStore(input.recordStore);
+	const governing = governanceStore.deriveGoverningState(input.runId, input.b0);
+	const latestSnapshot = input.reviewBudgetStore.latestSnapshot(input.runId);
+	const activeGate = governanceStore.deriveOpenGate(input.runId);
+	let normalizedRoute: ReviewDecisionRoute | undefined;
+	let normalizedReadiness: ReviewGovernanceState["normalized_readiness"];
+	let latestVerdict: ReviewerVerdict | undefined;
+	if (latestSnapshot?.stepName && latestSnapshot.iteration !== null) {
+		const key = stepIdempotencyKey({
+			runId: input.runId,
+			stepName: latestSnapshot.stepName,
+			phase: latestSnapshot.phase,
+			iteration: latestSnapshot.iteration,
+		});
+		const result = (
+			input.recordStore.getLine(input.runId, "steps", key)?.payload as
+				| Partial<StepRecordPayload>
+				| undefined
+		)?.result_json;
+		if (result && typeof result === "object") {
+			latestVerdict = result as ReviewerVerdict;
+			const governance = (result as { governance?: unknown }).governance;
+			if (governance && typeof governance === "object") {
+				const route = (governance as { route?: unknown }).route;
+				if (
+					route === "complete" ||
+					route === "author_revision" ||
+					route === "final_corrections" ||
+					route === "human_gate"
+				)
+					normalizedRoute = route;
+				const readiness = (governance as { normalizedReadiness?: unknown })
+					.normalizedReadiness;
+				if (
+					readiness === "ready" ||
+					readiness === "ready_with_corrections" ||
+					readiness === "not_ready"
+				)
+					normalizedReadiness = readiness;
+			}
+		}
+	}
+	const latestDecision = governing.history.at(-1);
+	if (
+		latestDecision &&
+		latestSnapshot &&
+		latestVerdict &&
+		latestDecision.snapshotId === latestSnapshot.id
+	) {
+		normalizedRoute = routeAfterDecision({
+			latestVerdict,
+			latestBudgetSnapshot: latestSnapshot,
+			newGoverningState: governing,
+			decision: latestDecision,
+		});
+	}
+	const diagnostics = [
+		...listed.diagnostics,
+		...governing.auditOnly.map(
+			(entry) => `${entry.decision.decisionId}: ${entry.diagnostic}`,
+		),
+	];
+	return {
+		...(normalizedRoute ? { normalized_route: normalizedRoute } : {}),
+		...(normalizedReadiness
+			? { normalized_readiness: normalizedReadiness }
+			: {}),
+		...(activeGate
+			? {
+					active_gate: {
+						gate_id: activeGate.gateId,
+						snapshot_id: activeGate.snapshotId,
+						causes: structuredClone(activeGate.causes),
+						allowed_choices: allowedChoicesForGate({
+							causes: activeGate.causes,
+							baselineReestimatePending:
+								governing.baselineReestimatePending !== undefined,
+						}),
+					},
+				}
+			: {}),
+		governing_baseline: governing.governingBaseline,
+		approved_scope: structuredClone(governing.approvedScope),
+		accepted_risks: governing.acceptedRisks.map((risk) => ({
+			decision_id: risk.decisionId,
+			finding_id: risk.findingId,
+			fingerprint: risk.fingerprint,
+		})),
+		latest_decisions: [...listed.decisions].slice(-10).map((decision) => ({
+			decision_id: decision.decisionId,
+			gate_id: decision.gateId,
+			choice: decision.choice,
+			snapshot_id: decision.snapshotId,
+			created_at: decision.createdAt,
+		})),
+		diagnostics,
+	};
+}
+
 /**
  * Build the delivery-budget header from authoritative record lines. The
  * facade deliberately reads through (and repairs) an empty SQLite index.
@@ -1197,6 +1343,7 @@ export function formatStateText(data: {
 	sealer?: RecordRecorder | null;
 	exported_by?: RecordOrigin;
 	review_budget?: ReviewBudgetState;
+	review_governance?: ReviewGovernanceState;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1256,6 +1403,20 @@ export function formatStateText(data: {
 		} else {
 			console.log(`Budget:  status=${budget.status}  (${modeLabel})`);
 		}
+	}
+	if (data.review_governance) {
+		const governance = data.review_governance;
+		const route = governance.normalized_route ?? "pending";
+		const gate = governance.active_gate
+			? ` gate=${governance.active_gate.gate_id}`
+			: "";
+		console.log(
+			`Governance: route=${route}  B=${governance.governing_baseline}  decisions=${governance.latest_decisions.length}${gate}`,
+		);
+		if (governance.diagnostics.length > 0)
+			console.log(
+				`Governance diagnostics: ${governance.diagnostics.join("; ")}`,
+			);
 	}
 
 	if (steps.length === 0) {
@@ -1985,6 +2146,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			);
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
+			let reviewGovernance: ReviewGovernanceState | undefined;
 			if (
 				config.reviewBudget.mode !== "off" ||
 				gitRecord.budgetLines.length > 0
@@ -2019,6 +2181,14 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					const archivedBaseline = archivedBudgetStore.getBaseline(
 						gitRecord.summary.id,
 					);
+					if (archivedBaseline) {
+						reviewGovernance = buildReviewGovernanceState({
+							runId: gitRecord.summary.id,
+							b0: archivedBaseline.b0,
+							recordStore: records,
+							reviewBudgetStore: archivedBudgetStore,
+						});
+					}
 					const governingBaseline = archivedBaseline
 						? createReviewGovernanceStore(records).deriveGoverningState(
 								gitRecord.summary.id,
@@ -2059,6 +2229,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					max_steps: budget.max,
 					steps_remaining: budget.remaining,
 					...(reviewBudget ? { review_budget: reviewBudget } : {}),
+					...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
 					...progressFields,
 					...envelopeAttribution(gitRecord.summary),
 				},
@@ -2136,6 +2307,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		worktreePath,
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
+	let reviewGovernance: ReviewGovernanceState | undefined;
 	{
 		const warn =
 			params.warn ??
@@ -2154,10 +2326,17 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		if (hasRecordRun) {
 			try {
 				const baseline = reviewStore.getBaseline(run.id);
-				if (baseline)
+				if (baseline) {
 					governingBaseline = createReviewGovernanceStore(
 						recordContext.recordStore,
 					).deriveGoverningState(run.id, baseline.b0).governingBaseline;
+					reviewGovernance = buildReviewGovernanceState({
+						runId: run.id,
+						b0: baseline.b0,
+						recordStore: recordContext.recordStore,
+						reviewBudgetStore: reviewStore,
+					});
+				}
 			} catch {
 				// tryBuildReviewBudgetState emits the canonical corruption warning below.
 			}
@@ -2243,6 +2422,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			max_steps: budget.max,
 			steps_remaining: budget.remaining,
 			...(reviewBudget ? { review_budget: reviewBudget } : {}),
+			...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
 			...progressFields,
 			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},

@@ -62,6 +62,9 @@ export function registerReview(parent: Command) {
 		.description("Inspect the current review gate");
 	gate
 		.command("show")
+		.description(
+			"Show causes, allowed choices, required fields, and eligible finding identities",
+		)
 		.option("--run <id>", "Run id (otherwise ambient run resolution is used)")
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);
@@ -70,6 +73,9 @@ export function registerReview(parent: Command) {
 
 	review
 		.command("decide")
+		.description(
+			"Resolve a gate through the durable decision CAS (not generic prompt answer)",
+		)
 		.requiredOption("--gate <id>", "Gate id")
 		.option("--run <id>", "Run id (otherwise ambient run resolution is used)")
 		.option("--choice <choice>", "Decision choice", collect, [])
@@ -99,9 +105,13 @@ export function registerReview(parent: Command) {
 		)
 		.option(
 			"--input-json <json|->",
-			"Machine decision payload or - for stdin",
+			"Machine decision payload (including ID/fingerprint pairs) or - for stdin",
 			collect,
 			[],
+		)
+		.addHelpText(
+			"after",
+			'\nInspect requiredFieldsByChoice first with "5x review gate show". Flag input accepts finding IDs only; the CLI resolves fingerprints. --input-json is mutually exclusive with all decision flags.\n',
 		)
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);

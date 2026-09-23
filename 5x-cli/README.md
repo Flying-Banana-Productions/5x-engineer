@@ -26,6 +26,15 @@ Layer 1: Sub-Agents (Workers)
 
 The CLI does not decide what to do next -- it provides building blocks. Orchestration logic lives in **skills**: markdown documents loaded into your agent session that describe the workflow (which commands to run, when to retry, when to ask the human).
 
+Plan review is the exception where policy must be deterministic: with
+`[reviewBudget] mode = "enforced"`, the CLI validates closure evidence, derives
+the route, and opens durable budget/scope/risk gates. Inspect and resolve them
+with `5x review gate show` and `5x review decide`; do not answer their prompt
+notifications through generic prompt commands. Mode is pinned at baseline
+capture, advisory remains the default, and older baselines decode as advisory.
+Dashboard views/actions are intentionally deferred; handler-safe read/action
+exports are available for that follow-up.
+
 ### Native-First Subagent Execution
 
 When running inside a supported harness (OpenCode or Cursor), author and reviewer work is

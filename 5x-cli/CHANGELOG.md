@@ -7,6 +7,19 @@ source of truth for the corresponding GitHub Release.
 
 ## Unreleased
 
+### Features
+
+- **Plan-review governance** — exhaustive initial reviews now converge through
+  evidence-checked closure reviews. Enforced, baseline-pinned runs derive
+  deterministic complete/revision/final-correction/human-gate routes and expose
+  `review gate show` / `review decide` for append-only budget, baseline, scope,
+  architecture, risk, re-estimate, and abort decisions. Run state includes the
+  governing baseline/scope, active gate, stable decision IDs, and diagnostics;
+  record-index rebuild restores budget and governance projections.
+- **Governance adapter seams** — exported redacted prompt/read and decision
+  action contracts are ready for a later authenticated dashboard. No dashboard
+  HTTP, WebSocket, or browser implementation is included.
+
 ### Fixes
 
 - **Run artifact checkpoints** — `5x commit --no-record` can commit only the
