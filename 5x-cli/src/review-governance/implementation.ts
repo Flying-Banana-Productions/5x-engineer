@@ -14,6 +14,12 @@ import {
 	type VerdictItem,
 } from "../protocol.js";
 import type { ImplementationTextAmendmentPayload } from "../review-budget/record-lines.js";
+import {
+	type CodeClosureDecision,
+	type CodeClosureFinding,
+	type CodeDiffContext,
+	validateCodeReviewClosure,
+} from "./code-diff.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { detectPlanDrift } from "./implementation-state.js";
 import type {
@@ -63,6 +69,13 @@ export interface ImplementationValidationInput {
 	priorReviewCount?: number;
 	/** Ignored. A fresh session does not reset the phase review round. */
 	sessionId?: string;
+	/**
+	 * Prepared code range. Null means a continued review was asked to use one
+	 * and none was supplied. Omit to skip code-evidence certification.
+	 */
+	codeContext?: CodeDiffContext | null;
+	priorCodeFindings?: readonly CodeClosureFinding[];
+	priorCodeDecisions?: readonly CodeClosureDecision[];
 }
 
 export interface ImplementationValidationResult {
@@ -920,23 +933,54 @@ export function validateImplementationReview(
 			}
 		}
 	}
-	const governance = classify({
+	const reviewRound = implementationReviewRound(
+		input.priorReviewCount ?? 0,
+		input.sessionId,
+	);
+	let governance = classify({
 		verdict: input.verdict,
 		phase: phaseId,
 		mode: input.mode,
-		reviewRound: implementationReviewRound(
-			input.priorReviewCount ?? 0,
-			input.sessionId,
-		),
+		reviewRound,
 		spansAuthorized,
 		diagnostics,
 	});
+	const certifyCode =
+		input.codeContext !== undefined || input.priorCodeFindings !== undefined;
+	let closureErrors: ImplementationDiagnostic[] = [];
+	if (certifyCode) {
+		const closure = validateCodeReviewClosure({
+			verdict: input.verdict,
+			reviewRound,
+			priorFindings: input.priorCodeFindings,
+			decisions: input.priorCodeDecisions,
+			codeContext: input.codeContext,
+		});
+		diagnostics.push(...closure.diagnostics);
+		closureErrors = closure.diagnostics.filter(
+			(item) => item.severity === "error",
+		);
+		if (closure.forcesHuman || closureErrors.length > 0) {
+			governance = {
+				...governance,
+				route: closure.forcesHuman ? "human_gate" : governance.route,
+				nextAction: closure.forcesHuman ? "human_gate" : governance.nextAction,
+				shortcutCandidate: false,
+				diagnostics,
+			};
+		}
+	}
 	const blocking = diagnostics.some(
 		(item) => item.code === "PRE_EXISTING_NOT_ACTIONABLE",
 	);
+	const evidenceError = closureErrors[0];
+	const enforcedEvidenceReject =
+		input.mode === "enforced" && evidenceError !== undefined;
+	const rejected = blocking || enforcedEvidenceReject;
 	return {
-		valid: !blocking,
-		accepted: !blocking,
+		valid: !rejected,
+		accepted:
+			!blocking && (input.mode === "advisory" || !enforcedEvidenceReject),
 		domain: "implementation",
 		...(blocking
 			? {
@@ -944,7 +988,12 @@ export function validateImplementationReview(
 					fatalMessage:
 						"Ordinary pre-existing observations must be retained in nonblocking Markdown, not actionable items.",
 				}
-			: {}),
+			: enforcedEvidenceReject && evidenceError
+				? {
+						fatalCode: evidenceError.code,
+						fatalMessage: evidenceError.message,
+					}
+				: {}),
 		diagnostics,
 		spans,
 		exemptionAuthorized: spansAuthorized,

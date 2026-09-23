@@ -504,3 +504,93 @@ export function decodeImplementationTextAmendmentPayload(
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
+
+/** One file-qualified hunk. `text` includes the `diff --git` header and the `@@` hunk. */
+export interface ImplementationReviewHunk {
+	oldPath: string;
+	newPath: string;
+	header: string;
+	text: string;
+	hash: string;
+}
+
+/**
+ * Exact code range prepared before reviewer delegation. Immutable.
+ * A later review-document commit does not rewrite these endpoints.
+ */
+export interface ImplementationReviewContextPayload {
+	kind: "implementation-review-context";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	executionRunId: string;
+	bindingId: string;
+	phase: string;
+	previousReviewId?: string;
+	baseCommit: string;
+	reviewedCommit: string;
+	patchHash: string;
+	excludedPaths: string[];
+	hunks: ImplementationReviewHunk[];
+	binaryPaths: string[];
+	createdAt: string;
+}
+
+export function implementationReviewContextKey(contextId: string): string {
+	return `budget:implementation-review-context:${contextId}`;
+}
+
+export function encodeImplementationReviewContextPayload(
+	payload: ImplementationReviewContextPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationReviewContextPayload(
+	raw: unknown,
+): ImplementationReviewContextPayload {
+	const value = object(raw, "implementation review context payload");
+	if (value.kind !== "implementation-review-context") {
+		throw new TypeError("invalid implementation review context kind");
+	}
+	versionField(value.version);
+	if (!Array.isArray(value.excludedPaths) || !Array.isArray(value.hunks)) {
+		throw new TypeError("excludedPaths and hunks must be arrays");
+	}
+	if (!Array.isArray(value.binaryPaths)) {
+		throw new TypeError("binaryPaths must be an array");
+	}
+	const hunks = value.hunks.map((entry, index) => {
+		const hunk = object(entry, `hunks[${index}]`);
+		return {
+			oldPath: stringField(hunk.oldPath, `hunks[${index}].oldPath`, true),
+			newPath: stringField(hunk.newPath, `hunks[${index}].newPath`, true),
+			header: stringField(hunk.header, `hunks[${index}].header`),
+			text: stringField(hunk.text, `hunks[${index}].text`),
+			hash: stringField(hunk.hash, `hunks[${index}].hash`),
+		};
+	});
+	const previous =
+		value.previousReviewId === undefined
+			? undefined
+			: stringField(value.previousReviewId, "previousReviewId");
+	return {
+		kind: "implementation-review-context",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		executionRunId: stringField(value.executionRunId, "executionRunId"),
+		bindingId: stringField(value.bindingId, "bindingId"),
+		phase: stringField(value.phase, "phase"),
+		...(previous === undefined ? {} : { previousReviewId: previous }),
+		baseCommit: stringField(value.baseCommit, "baseCommit"),
+		reviewedCommit: stringField(value.reviewedCommit, "reviewedCommit"),
+		patchHash: stringField(value.patchHash, "patchHash"),
+		excludedPaths: value.excludedPaths.map((entry, index) =>
+			stringField(entry, `excludedPaths[${index}]`, true),
+		),
+		hunks,
+		binaryPaths: value.binaryPaths.map((entry, index) =>
+			stringField(entry, `binaryPaths[${index}]`),
+		),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}

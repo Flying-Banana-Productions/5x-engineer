@@ -19,6 +19,11 @@ import {
 import { getLatestCommit } from "../git.js";
 import { outputError } from "../output.js";
 import {
+	formatCodeReviewDiff,
+	formatCodeReviewDiffFailure,
+} from "../review-governance/code-diff.js";
+import { planRepoPath } from "../review-governance/implementation-state.js";
+import {
 	buildPlanReviewDiffContext,
 	formatPlanReviewDiffContext,
 	formatPlanReviewDiffFailure,
@@ -161,6 +166,36 @@ export function needsReviewDelta(templateName: string): boolean {
 		isPlanReviewTemplate(templateName) || isCommitReviewTemplate(templateName)
 	);
 }
+
+/**
+ * Paths that are workflow evidence, not implementation changes: run records,
+ * registered review artifacts, and the exact plan file.
+ */
+export function implementationExcludedPaths(input: {
+	repoRoot: string;
+	planPath: string | null;
+	paths: Pick<
+		FiveXConfig["paths"],
+		"records" | "reviews" | "planReviews" | "runReviews"
+	>;
+}): string[] {
+	const candidates = [
+		input.paths.records,
+		input.paths.reviews,
+		input.paths.planReviews,
+		input.paths.runReviews,
+		input.planPath,
+	].filter((value): value is string => Boolean(value));
+	return [
+		...new Set(
+			candidates
+				.map((path) => planRepoPath(path, input.repoRoot))
+				.filter((path): path is string => Boolean(path)),
+		),
+	].sort();
+}
+
+export { formatCodeReviewDiff, formatCodeReviewDiffFailure };
 
 /**
  * Check whether an explicit `review_path` resolves outside the configured

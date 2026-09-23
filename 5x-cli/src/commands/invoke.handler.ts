@@ -59,15 +59,29 @@ import type {
 } from "../providers/types.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
 import {
+	CodeDiffError,
+	readHeadCommit,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
+import {
 	appendPlanReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
-import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
+	canonicalPhaseId,
+	validateImplementationReview,
+	verdictUsesImplementationContract,
+} from "../review-governance/implementation.js";
+import {
+	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
 	isImplementationAuthorTemplate,
+	PRE_AUTHOR_STEP_NAME,
+	prepareImplementationReviewContext,
+	readImplementationBinding,
+	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
@@ -96,7 +110,10 @@ import {
 } from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
+	formatCodeReviewDiff,
 	hasStdinVarFlag,
+	implementationExcludedPaths,
+	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
 	type PriorReviewIdentity,
@@ -162,6 +179,8 @@ interface InvokeResult {
 	worktree_path?: string;
 	/** Effective plan path in the worktree (if resolved). */
 	worktree_plan_path?: string;
+	/** Prepared code-review context. Invoke keeps this and does not ask the agent to echo it. */
+	review_context_id?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +431,7 @@ export async function invokeAgent(
 	const warn =
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	let reviewDiffAppend: string | null = null;
+	let implementationReviewContextId: string | undefined;
 	if (
 		wantContinued &&
 		runDb &&
@@ -523,6 +543,58 @@ export async function invokeAgent(
 			) {
 				outputError(admission.code, admission.message, admission.detail);
 			}
+			if (admission.status === "bound") {
+				const phase = canonicalPhaseId(
+					params.phase ?? mergedVars.phase_number ?? "",
+				);
+				if (!phase || phase === "plan") {
+					outputError(
+						"UNKNOWN_PHASE",
+						"Implementation author admission requires numeric phase_number before delegation.",
+					);
+				}
+				const git = workdirCodeDiffGit(
+					budgetContext.executionContext.effectiveWorkingDirectory,
+				);
+				let head: string;
+				try {
+					head = await readHeadCommit(git);
+				} catch (error) {
+					outputError(
+						error instanceof CodeDiffError ? error.code : "CODE_DIFF_GIT_ERROR",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+				const captured = capturePhaseAuthorAdmission({
+					recordStore: budgetContext.recordStore,
+					origin: budgetContext.originFor({ kind: "system", role: "cli" }),
+					executionRunId: params.run,
+					bindingId: admission.binding.id,
+					phase,
+					preAuthorCommit: head,
+				});
+				if (captured.status === "error") {
+					outputError(captured.code, captured.message);
+				}
+				try {
+					await recordStepInternal(
+						{
+							run: params.run,
+							stepName: PRE_AUTHOR_STEP_NAME,
+							phase,
+							iteration: 0,
+							result: JSON.stringify(captured.admission),
+							performer: { kind: "system", role: "cli" },
+						},
+						budgetContext,
+					);
+				} catch (error) {
+					if (error instanceof RecordError) {
+						outputError(error.code, error.message, error.detail);
+					}
+					throw error;
+				}
+			}
 		}
 	}
 	const roleConfig = config[role] as Record<string, unknown>;
@@ -614,8 +686,55 @@ export async function invokeAgent(
 			if (!(err instanceof RecordContextError)) throw err;
 		}
 	}
+	let codeDiffAppend = "";
+	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: invocationWorkdir }, warn);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+		const binding = budgetContext
+			? readImplementationBinding(budgetContext.store, params.run)
+			: null;
+		if (binding && budgetContext) {
+			const git = workdirCodeDiffGit(
+				budgetContext.executionContext.effectiveWorkingDirectory,
+			);
+			const rootResult = await git.exec(["rev-parse", "--show-toplevel"]);
+			if (rootResult.exitCode !== 0) {
+				outputError(
+					"CODE_DIFF_GIT_ERROR",
+					rootResult.stderr || "Could not resolve the git repository root.",
+				);
+			}
+			const prepared = await prepareImplementationReviewContext({
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+				origin: budgetContext.originFor({ kind: "system", role: "cli" }),
+				executionRunId: params.run,
+				bindingId: binding.id,
+				phase: params.phase ?? mergedVars.phase_number ?? "",
+				excludedPaths: implementationExcludedPaths({
+					repoRoot: rootResult.stdout.trim(),
+					planPath: resolvedPlanPath,
+					paths: config.paths,
+				}),
+				git,
+			});
+			if (prepared.status === "error") {
+				outputError(prepared.code, prepared.message);
+			}
+			implementationReviewContextId = prepared.context.id;
+			codeDiffAppend = formatCodeReviewDiff({
+				contextId: prepared.context.id,
+				diff: prepared.diff,
+			});
+		}
+	}
 	const renderedPrompt = appendPlanReviewPromptContext({
-		prompt: resolved.prompt,
+		prompt: resolved.prompt + codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});
@@ -837,6 +956,71 @@ export async function invokeAgent(
 				}
 
 				structured = validation.value;
+				if (
+					role === "reviewer" &&
+					implementationReviewContextId &&
+					budgetContext &&
+					verdictUsesImplementationContract(structured as ReviewerVerdict)
+				) {
+					const phase = canonicalPhaseId(recordPhase ?? "");
+					const binding = budgetContext.store.getImplementationBinding(runId);
+					if (binding && phase && phase !== "plan") {
+						const verified = await verifyImplementationReviewContext({
+							store: budgetContext.store,
+							executionRunId: runId,
+							bindingId: binding.id,
+							phase,
+							reviewContextId: implementationReviewContextId,
+							workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+						});
+						if (verified.status === "error") {
+							outputError(verified.code, verified.message);
+						}
+						const priorReviewCount = budgetContext.recordStore
+							.listLines(runId, "steps")
+							.filter((line) => {
+								const payload = line.payload as {
+									step_name?: unknown;
+									phase?: unknown;
+								};
+								return (
+									typeof payload.step_name === "string" &&
+									payload.step_name.startsWith("reviewer:") &&
+									typeof payload.phase === "string" &&
+									canonicalPhaseId(payload.phase) === phase
+								);
+							}).length;
+						const reviewed = validateImplementationReview({
+							verdict: structured as ReviewerVerdict,
+							phase,
+							mode: binding.mode,
+							phaseIds: binding.phaseMap.map((entry) => entry.id),
+							workItemIds: binding.ledger.workItems.map((item) => item.id),
+							creditClaimIds: binding.ledger.workItems.flatMap((item) =>
+								item.debtClaim ? [item.debtClaim.debtClaimId] : [],
+							),
+							approvedPlanBytes: binding.approvedPlanBytes,
+							approvedPlanHash: binding.approvedPlanHash,
+							amendments: budgetContext.store.listImplementationTextAmendments(
+								runId,
+								binding.id,
+							),
+							hasRun: true,
+							priorReviewCount,
+							codeContext: verified.diff,
+						});
+						if (!reviewed.valid) {
+							outputError(
+								reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
+								reviewed.fatalMessage ??
+									"Implementation review contract was rejected.",
+							);
+						}
+						for (const item of reviewed.diagnostics) {
+							warn(`${item.code}: ${item.message}`);
+						}
+					}
+				}
 			},
 		});
 	} finally {
@@ -990,6 +1174,9 @@ export async function invokeAgent(
 		...(resolvedWorktreePath ? { worktree_path: resolvedWorktreePath } : {}),
 		...(resolvedPlanPath && resolvedWorktreePath && planPathInWorktreeExists
 			? { worktree_plan_path: resolvedPlanPath }
+			: {}),
+		...(implementationReviewContextId
+			? { review_context_id: implementationReviewContextId }
 			: {}),
 	};
 

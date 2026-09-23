@@ -13,7 +13,9 @@ import type { RecordStore } from "../control-plane/record-store.js";
 import {
 	type RecordOrigin,
 	RecordStoreError,
+	recordedEnvelope,
 	type StepRecordPayload,
+	stepIdempotencyKey,
 } from "../control-plane/record-types.js";
 import type {
 	ReviewBudgetSnapshotRecord,
@@ -32,6 +34,7 @@ import {
 	type ImplementationCompatibilityReason,
 	type ImplementationDebtTarget,
 	type ImplementationPhaseMapping,
+	type ImplementationReviewContextPayload,
 	type ImplementationTextAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import type {
@@ -40,6 +43,20 @@ import type {
 	ReviewBudgetMode,
 	ReviewBudgetThresholds,
 } from "../review-budget/types.js";
+import {
+	assertCleanCodeWorktree,
+	assertNoInterveningCode,
+	buildCodeDiff,
+	type CodeDiffContext,
+	CodeDiffError,
+	type CodeDiffGit,
+	changedCodePaths,
+	commitParents,
+	isCodeAncestor,
+	readHeadCommit,
+	resolveCodeCommit,
+	workdirCodeDiffGit,
+} from "./code-diff.js";
 import {
 	foldGoverningReviewState,
 	type GoverningReviewState,
@@ -302,6 +319,19 @@ function readBinding(
 
 function isMissingRun(error: unknown): boolean {
 	return error instanceof RecordStoreError && error.code === "RUN_NOT_FOUND";
+}
+
+/** Null when the run has no binding, including legacy runs absent from the record store. */
+export function readImplementationBinding(
+	store: ReviewBudgetStore,
+	runId: string,
+): ImplementationBindingPayload | null {
+	try {
+		return store.getImplementationBinding(runId);
+	} catch (error) {
+		if (isMissingRun(error)) return null;
+		throw error;
+	}
 }
 
 function bindingHashesMatch(binding: ImplementationBindingPayload): boolean {
@@ -1203,4 +1233,617 @@ export function recordVerifiedTextAmendment(input: {
 		input.origin,
 	);
 	return { status: "ok", amendment: saved.payload };
+}
+
+/** Durable step that freezes pre-delegation HEAD for one binding and phase. */
+export const PRE_AUTHOR_STEP_NAME = "implementation:pre-author";
+
+export interface PhaseAuthorAdmission {
+	kind: "phase-author-admission";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	bindingId: string;
+	phase: string;
+	preAuthorCommit: string;
+	createdAt: string;
+}
+
+export type ImplementationContextResult<T> =
+	| ({ status: "ok" } & T)
+	| { status: "error"; code: string; message: string };
+
+function numericPhaseId(phase: string): string | null {
+	const trimmed = phase.trim();
+	if (/^\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
+	const prefixed = trimmed.match(/^phase[\s-]+(\d+(?:\.\d+)?)$/i);
+	return prefixed?.[1] ?? null;
+}
+
+function samePhase(
+	phase: string | null | undefined,
+	expected: string,
+): boolean {
+	if (!phase) return false;
+	const left = numericPhaseId(phase);
+	const right = numericPhaseId(expected);
+	return left !== null && left === right;
+}
+
+function gitFailure(error: unknown): {
+	status: "error";
+	code: string;
+	message: string;
+} {
+	if (error instanceof CodeDiffError) {
+		return { status: "error", code: error.code, message: error.message };
+	}
+	return {
+		status: "error",
+		code: "CODE_DIFF_GIT_ERROR",
+		message: error instanceof Error ? error.message : String(error),
+	};
+}
+
+function listRunSteps(
+	recordStore: RecordStore,
+	runId: string,
+): StepRecordPayload[] {
+	const steps: StepRecordPayload[] = [];
+	for (const line of recordStore.listLines(runId, "steps")) {
+		const payload = line.payload;
+		if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+			continue;
+		}
+		const step = payload as Partial<StepRecordPayload>;
+		if (
+			typeof step.step_name !== "string" ||
+			typeof step.iteration !== "number"
+		) {
+			continue;
+		}
+		steps.push(step as StepRecordPayload);
+	}
+	return steps;
+}
+
+function decodeAdmission(
+	payload: StepRecordPayload,
+): PhaseAuthorAdmission | null {
+	const raw = payload.result_json;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	const value = raw as Partial<PhaseAuthorAdmission>;
+	if (
+		value.kind !== "phase-author-admission" ||
+		value.version !== IMPLEMENTATION_STATE_VERSION ||
+		typeof value.bindingId !== "string" ||
+		typeof value.phase !== "string" ||
+		typeof value.preAuthorCommit !== "string"
+	) {
+		return null;
+	}
+	return {
+		kind: "phase-author-admission",
+		version: IMPLEMENTATION_STATE_VERSION,
+		bindingId: value.bindingId,
+		phase: value.phase,
+		preAuthorCommit: value.preAuthorCommit,
+		createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+	};
+}
+
+export function readPhaseAuthorAdmission(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+):
+	| { status: "missing" }
+	| { status: "found"; admission: PhaseAuthorAdmission }
+	| { status: "error"; code: string; message: string } {
+	const phaseId = numericPhaseId(phase);
+	if (!phaseId) {
+		return {
+			status: "error",
+			code: "UNKNOWN_PHASE",
+			message: `Phase '${phase}' is not a numeric implementation phase.`,
+		};
+	}
+	const matches = listRunSteps(recordStore, runId).filter(
+		(step) =>
+			step.step_name === PRE_AUTHOR_STEP_NAME && samePhase(step.phase, phaseId),
+	);
+	const step = matches[0];
+	if (!step) return { status: "missing" };
+	const admission = decodeAdmission(step);
+	if (!admission || admission.preAuthorCommit !== step.head_commit) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_PRE_AUTHOR_UNREADABLE",
+			message: `Phase ${phaseId} has an unreadable pre-author admission.`,
+		};
+	}
+	return { status: "found", admission };
+}
+
+/**
+ * Record pre-delegation HEAD once per binding and phase. Later renders,
+ * sessions, and quality retries reuse the stored commit.
+ */
+export function capturePhaseAuthorAdmission(input: {
+	recordStore: RecordStore;
+	origin: RecordOrigin;
+	executionRunId: string;
+	bindingId: string;
+	phase: string;
+	preAuthorCommit: string;
+}):
+	| { status: "captured" | "reused"; admission: PhaseAuthorAdmission }
+	| { status: "error"; code: string; message: string } {
+	const phase = numericPhaseId(input.phase);
+	if (!phase) {
+		return {
+			status: "error",
+			code: "UNKNOWN_PHASE",
+			message: `Phase '${input.phase}' is not a numeric implementation phase.`,
+		};
+	}
+	if (!/^[0-9a-f]{40}$/u.test(input.preAuthorCommit)) {
+		return {
+			status: "error",
+			code: "CODE_DIFF_BAD_REF",
+			message: "Pre-author HEAD must be a full commit SHA.",
+		};
+	}
+	const existing = readPhaseAuthorAdmission(
+		input.recordStore,
+		input.executionRunId,
+		phase,
+	);
+	if (existing.status === "error") return existing;
+	if (existing.status === "found") {
+		if (existing.admission.bindingId !== input.bindingId) {
+			return {
+				status: "error",
+				code: "IMPLEMENTATION_PRE_AUTHOR_CONFLICT",
+				message: `Phase ${phase} already captured pre-author commit ${existing.admission.preAuthorCommit} for binding ${existing.admission.bindingId}.`,
+			};
+		}
+		return { status: "reused", admission: existing.admission };
+	}
+	const admission: PhaseAuthorAdmission = {
+		kind: "phase-author-admission",
+		version: IMPLEMENTATION_STATE_VERSION,
+		bindingId: input.bindingId,
+		phase,
+		preAuthorCommit: input.preAuthorCommit,
+		createdAt: now(),
+	};
+	const payload: StepRecordPayload = {
+		step_name: PRE_AUTHOR_STEP_NAME,
+		phase,
+		iteration: 0,
+		result_json: admission,
+		head_commit: input.preAuthorCommit,
+		patch_id: null,
+		diff_summary: null,
+		duration_ms: null,
+		tokens_in: null,
+		tokens_out: null,
+		cost_usd: null,
+		model: null,
+	};
+	input.recordStore.append({
+		runId: input.executionRunId,
+		stream: "steps",
+		idempotencyKey: stepIdempotencyKey({
+			runId: input.executionRunId,
+			stepName: PRE_AUTHOR_STEP_NAME,
+			phase,
+			iteration: 0,
+		}),
+		payload,
+		createdAt: admission.createdAt,
+		...recordedEnvelope(input.origin),
+	});
+	return { status: "captured", admission };
+}
+
+function admittedCommitRef(step: StepRecordPayload): string | null {
+	if (step.step_name === "git:commit") return step.head_commit;
+	if (!step.step_name.startsWith("author:")) return null;
+	const result = step.result_json;
+	if (!result || typeof result !== "object" || Array.isArray(result))
+		return null;
+	const commit = (result as { commit?: unknown }).commit;
+	return typeof commit === "string" && commit.length > 0 ? commit : null;
+}
+
+export async function resolveLegacyPreAuthorBase(input: {
+	steps: readonly StepRecordPayload[];
+	phase: string;
+	git: CodeDiffGit;
+	reviewedCommit: string;
+}): Promise<
+	| { status: "ok"; baseCommit: string }
+	| { status: "error"; code: string; message: string }
+> {
+	const commits = input.steps.filter(
+		(step) =>
+			step.step_name === "git:commit" &&
+			samePhase(step.phase, input.phase) &&
+			Boolean(step.head_commit),
+	);
+	const earliest = commits[0];
+	if (!earliest?.head_commit) {
+		return {
+			status: "error",
+			code: "CODE_DIFF_MISSING_BASE",
+			message:
+				"No pre-author HEAD was captured, and this phase has no git:commit to recover one from. Current HEAD was not stamped as a pre-author base.",
+		};
+	}
+	let commit: string;
+	try {
+		commit = await resolveCodeCommit(input.git, earliest.head_commit);
+	} catch (error) {
+		return gitFailure(error);
+	}
+	let parents: string[];
+	try {
+		parents = await commitParents(input.git, commit);
+	} catch (error) {
+		return gitFailure(error);
+	}
+	if (parents.length !== 1) {
+		return {
+			status: "error",
+			code: "CODE_DIFF_AMBIGUOUS_BASE",
+			message:
+				parents.length === 0
+					? `Earliest git:commit ${commit} is a root commit and has no parent to use as the review base.`
+					: `Earliest git:commit ${commit} is a merge and has no single parent to use as the review base.`,
+		};
+	}
+	const baseCommit = parents[0] as string;
+	try {
+		if (!(await isCodeAncestor(input.git, baseCommit, input.reviewedCommit))) {
+			return {
+				status: "error",
+				code: "CODE_DIFF_NOT_ANCESTOR",
+				message: `Legacy base ${baseCommit} is not an ancestor of reviewed commit ${input.reviewedCommit}.`,
+			};
+		}
+	} catch (error) {
+		return gitFailure(error);
+	}
+	return { status: "ok", baseCommit };
+}
+
+async function admittedCommits(input: {
+	steps: readonly StepRecordPayload[];
+	phase: string;
+	git: CodeDiffGit;
+}): Promise<
+	| { status: "ok"; commits: string[] }
+	| { status: "error"; code: string; message: string }
+> {
+	const refs = input.steps
+		.filter((step) => samePhase(step.phase, input.phase))
+		.map(admittedCommitRef)
+		.filter((commit): commit is string => Boolean(commit));
+	try {
+		const commits: string[] = [];
+		for (const ref of refs) {
+			commits.push(await resolveCodeCommit(input.git, ref));
+		}
+		return { status: "ok", commits };
+	} catch (error) {
+		return gitFailure(error);
+	}
+}
+
+/**
+ * The reviewed end is the latest admitted commit that changes a non-excluded
+ * path. Review-document commits stay in history but do not move the range.
+ */
+async function advanceReviewedCommit(input: {
+	git: CodeDiffGit;
+	commits: readonly string[];
+	start: string;
+	excludedPaths: readonly string[];
+}): Promise<
+	| { status: "ok"; reviewedCommit: string }
+	| { status: "error"; code: string; message: string }
+> {
+	let reviewed = input.start;
+	try {
+		for (const commit of input.commits) {
+			if (commit === reviewed) continue;
+			if (!(await isCodeAncestor(input.git, reviewed, commit))) {
+				return {
+					status: "error",
+					code: "CODE_DIFF_NOT_ANCESTOR",
+					message: `Recorded commit ${commit} is not a descendant of review base ${reviewed}.`,
+				};
+			}
+			const paths = await changedCodePaths(
+				input.git,
+				reviewed,
+				commit,
+				input.excludedPaths,
+			);
+			if (paths.length > 0) reviewed = commit;
+		}
+		return { status: "ok", reviewedCommit: reviewed };
+	} catch (error) {
+		return gitFailure(error);
+	}
+}
+
+function contextGit(input: {
+	git?: CodeDiffGit;
+	workdir?: string;
+}): CodeDiffGit | { status: "error"; code: string; message: string } {
+	if (input.git) return input.git;
+	if (input.workdir) return workdirCodeDiffGit(input.workdir);
+	return {
+		status: "error",
+		code: "CODE_DIFF_GIT_ERROR",
+		message: "Code review context requires a workdir or git adapter.",
+	};
+}
+
+export async function prepareImplementationReviewContext(input: {
+	store: ReviewBudgetStore;
+	recordStore: RecordStore;
+	origin: RecordOrigin;
+	executionRunId: string;
+	bindingId: string;
+	phase: string;
+	excludedPaths: readonly string[];
+	git?: CodeDiffGit;
+	workdir?: string;
+}): Promise<
+	| {
+			status: "ready";
+			context: ImplementationReviewContextPayload;
+			diff: CodeDiffContext;
+			created: boolean;
+	  }
+	| { status: "error"; code: string; message: string }
+> {
+	const phase = numericPhaseId(input.phase);
+	if (!phase) {
+		return {
+			status: "error",
+			code: "UNKNOWN_PHASE",
+			message: `Phase '${input.phase}' is not a numeric implementation phase.`,
+		};
+	}
+	const git = contextGit(input);
+	if ("status" in git) return git;
+	const excludedPaths = [
+		...new Set(input.excludedPaths.filter(Boolean)),
+	].sort();
+	let head = "";
+	try {
+		await assertCleanCodeWorktree(git, excludedPaths);
+		head = await readHeadCommit(git);
+	} catch (error) {
+		return gitFailure(error);
+	}
+	const steps = listRunSteps(input.recordStore, input.executionRunId);
+	const admission = readPhaseAuthorAdmission(
+		input.recordStore,
+		input.executionRunId,
+		phase,
+	);
+	if (admission.status === "error") return admission;
+	const admitted = await admittedCommits({ steps, phase, git });
+	if (admitted.status === "error") return admitted;
+	let initialBase: string;
+	if (admission.status === "found") {
+		initialBase = admission.admission.preAuthorCommit;
+	} else if (
+		!steps.some(
+			(step) =>
+				step.step_name === "git:commit" &&
+				samePhase(step.phase, phase) &&
+				Boolean(step.head_commit),
+		)
+	) {
+		return {
+			status: "error",
+			code: "CODE_DIFF_MISSING_BASE",
+			message:
+				"No pre-author HEAD was captured, and this phase has no git:commit to recover one from. Current HEAD was not stamped as a pre-author base.",
+		};
+	} else {
+		const legacy = await resolveLegacyPreAuthorBase({
+			steps,
+			phase,
+			git,
+			reviewedCommit: admitted.commits.at(-1) ?? head,
+		});
+		if (legacy.status === "error") return legacy;
+		initialBase = legacy.baseCommit;
+	}
+	const advanced = await advanceReviewedCommit({
+		git,
+		commits: admitted.commits,
+		start: initialBase,
+		excludedPaths,
+	});
+	if (advanced.status === "error") return advanced;
+	const reviewedCommit = advanced.reviewedCommit;
+	try {
+		if (!(await isCodeAncestor(git, reviewedCommit, head))) {
+			return {
+				status: "error",
+				code: "CODE_DIFF_STALE",
+				message: `Recorded commit ${reviewedCommit} is not an ancestor of HEAD. Prepare a new review after the recorded history is reachable.`,
+			};
+		}
+		const between = await changedCodePaths(
+			git,
+			reviewedCommit,
+			head,
+			excludedPaths,
+		);
+		if (between.length > 0) {
+			return {
+				status: "error",
+				code: "CODE_DIFF_INTERVENING",
+				message: `Code changed after the admitted commit (${between.join(", ")}). Record the correction, then prepare a new review context.`,
+			};
+		}
+		if (!(await isCodeAncestor(git, initialBase, reviewedCommit))) {
+			return {
+				status: "error",
+				code: "CODE_DIFF_NOT_ANCESTOR",
+				message: `Review base ${initialBase} is not an ancestor of ${reviewedCommit}.`,
+			};
+		}
+	} catch (error) {
+		return gitFailure(error);
+	}
+	const prior = input.store
+		.listImplementationReviewContexts(input.executionRunId, input.bindingId)
+		.filter((context) => context.phase === phase);
+	const latest = prior.at(-1);
+	let baseCommit = initialBase;
+	let previousReviewId: string | undefined;
+	if (latest && latest.reviewedCommit === reviewedCommit) {
+		baseCommit = latest.baseCommit;
+		previousReviewId = latest.previousReviewId;
+	} else if (latest) {
+		baseCommit = latest.reviewedCommit;
+		previousReviewId = latest.id;
+	}
+	let diff: CodeDiffContext;
+	try {
+		diff = await buildCodeDiff({
+			git,
+			baseCommit,
+			reviewedCommit,
+			excludedPaths,
+		});
+	} catch (error) {
+		return gitFailure(error);
+	}
+	const sameRange = prior.find(
+		(context) =>
+			context.baseCommit === diff.baseCommit &&
+			context.reviewedCommit === diff.reviewedCommit,
+	);
+	if (sameRange) {
+		if (sameRange.patchHash !== diff.patchHash) {
+			return {
+				status: "error",
+				code: "CODE_DIFF_STALE",
+				message: `Review context ${sameRange.id} no longer matches ${diff.baseCommit}..${diff.reviewedCommit}. Rebase or rewritten objects require a newly prepared review.`,
+			};
+		}
+		return { status: "ready", context: sameRange, diff, created: false };
+	}
+	const context: ImplementationReviewContextPayload = {
+		kind: "implementation-review-context",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: createReviewBudgetId(),
+		executionRunId: input.executionRunId,
+		bindingId: input.bindingId,
+		phase,
+		...(previousReviewId ? { previousReviewId } : {}),
+		baseCommit: diff.baseCommit,
+		reviewedCommit: diff.reviewedCommit,
+		patchHash: diff.patchHash,
+		excludedPaths: diff.excludedPaths,
+		hunks: diff.hunks,
+		binaryPaths: diff.binaryPaths,
+		createdAt: now(),
+	};
+	const saved = input.store.saveImplementationReviewContext(
+		context,
+		input.origin,
+	);
+	return {
+		status: "ready",
+		context: saved.payload,
+		diff,
+		created: saved.created,
+	};
+}
+
+export async function verifyImplementationReviewContext(input: {
+	store: ReviewBudgetStore;
+	executionRunId: string;
+	bindingId: string;
+	phase: string;
+	reviewContextId: string;
+	git?: CodeDiffGit;
+	workdir?: string;
+}): Promise<
+	| {
+			status: "ok";
+			context: ImplementationReviewContextPayload;
+			diff: CodeDiffContext;
+	  }
+	| { status: "error"; code: string; message: string }
+> {
+	const phase = numericPhaseId(input.phase);
+	if (!phase) {
+		return {
+			status: "error",
+			code: "UNKNOWN_PHASE",
+			message: `Phase '${input.phase}' is not a numeric implementation phase.`,
+		};
+	}
+	const context = input.store.getImplementationReviewContext(
+		input.executionRunId,
+		input.reviewContextId,
+	);
+	if (!context) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_CONTEXT_NOT_FOUND",
+			message: `Review context ${input.reviewContextId} was not prepared for run ${input.executionRunId}. Render the reviewer template instead of manufacturing endpoints.`,
+		};
+	}
+	if (
+		context.executionRunId !== input.executionRunId ||
+		context.bindingId !== input.bindingId ||
+		context.phase !== phase
+	) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_CONTEXT_REUSE",
+			message: `Review context ${context.id} belongs to binding ${context.bindingId} phase ${context.phase} and cannot be reused here.`,
+		};
+	}
+	const git = contextGit(input);
+	if ("status" in git) return git;
+	try {
+		await assertCleanCodeWorktree(git, context.excludedPaths);
+		const head = await readHeadCommit(git);
+		await assertNoInterveningCode({
+			git,
+			reviewedCommit: context.reviewedCommit,
+			headCommit: head,
+			excludedPaths: context.excludedPaths,
+		});
+		const diff = await buildCodeDiff({
+			git,
+			baseCommit: context.baseCommit,
+			reviewedCommit: context.reviewedCommit,
+			excludedPaths: context.excludedPaths,
+		});
+		if (diff.patchHash !== context.patchHash) {
+			return {
+				status: "error",
+				code: "CODE_DIFF_STALE",
+				message: `Review context ${context.id} does not match the recomputed patch. Prepare a new context instead of accepting an equivalent end.`,
+			};
+		}
+		return { status: "ok", context, diff };
+	} catch (error) {
+		return gitFailure(error);
+	}
 }

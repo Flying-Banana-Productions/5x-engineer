@@ -126,6 +126,10 @@ export function registerProtocol(parent: Command) {
 			"--invocation-log <path>",
 			"Retain session/model/token/cost metadata from a 5x invoke log when recording a corrected verdict (used with --record)",
 		)
+		.option(
+			"--review-context <id>",
+			"Prepared implementation review context id from template render or invoke",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -143,6 +147,7 @@ export function registerProtocol(parent: Command) {
 				iteration: opts.iteration,
 				optInBudgetBaseline: opts.optInBudgetBaseline,
 				invocationLog: opts.invocationLog,
+				reviewContext: opts.reviewContext,
 			});
 		});
 

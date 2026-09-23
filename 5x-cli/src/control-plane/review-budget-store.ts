@@ -6,17 +6,21 @@ import {
 	decodeBudgetSnapshotPayload,
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
+	decodeImplementationReviewContextPayload,
 	decodeImplementationTextAmendmentPayload,
 	encodeBudgetBaselinePayload,
 	encodeBudgetSnapshotPayload,
 	encodeImplementationBindingPayload,
 	encodeImplementationCompatibilityPayload,
+	encodeImplementationReviewContextPayload,
 	encodeImplementationTextAmendmentPayload,
 	type ImplementationBindingPayload,
 	type ImplementationCompatibilityPayload,
+	type ImplementationReviewContextPayload,
 	type ImplementationTextAmendmentPayload,
 	implementationBindingKey,
 	implementationCompatibilityKey,
+	implementationReviewContextKey,
 	implementationTextAmendmentKey,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
@@ -140,6 +144,18 @@ export interface ReviewBudgetStore {
 		payload: ImplementationTextAmendmentPayload,
 		origin: RecordOrigin,
 	): { created: boolean; payload: ImplementationTextAmendmentPayload };
+	getImplementationReviewContext(
+		runId: string,
+		contextId: string,
+	): ImplementationReviewContextPayload | null;
+	listImplementationReviewContexts(
+		runId: string,
+		bindingId?: string,
+	): ImplementationReviewContextPayload[];
+	saveImplementationReviewContext(
+		payload: ImplementationReviewContextPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationReviewContextPayload };
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -470,6 +486,51 @@ export function createReviewBudgetStore(
 			return {
 				created: result.created,
 				payload: decodeImplementationTextAmendmentPayload(result.line.payload),
+			};
+		},
+
+		getImplementationReviewContext(runId, contextId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationReviewContextKey(contextId),
+			);
+			return line
+				? decodeImplementationReviewContextPayload(line.payload)
+				: null;
+		},
+
+		listImplementationReviewContexts(runId, bindingId) {
+			const contexts: ImplementationReviewContextPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-review-context"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationReviewContextPayload(line.payload);
+				if (bindingId === undefined || decoded.bindingId === bindingId) {
+					contexts.push(decoded);
+				}
+			}
+			return contexts;
+		},
+
+		saveImplementationReviewContext(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: implementationReviewContextKey(payload.id),
+				payload: encodeImplementationReviewContextPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationReviewContextPayload(result.line.payload),
 			};
 		},
 	};

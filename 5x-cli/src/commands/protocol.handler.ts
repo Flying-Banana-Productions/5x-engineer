@@ -20,12 +20,14 @@ import {
 	readInvocationLogSummary,
 } from "../providers/log-writer.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
 	canonicalPhaseId,
 	validateImplementationReview,
 	verdictUsesImplementationContract,
 	verdictUsesPlanContract,
 } from "../review-governance/implementation.js";
+import { verifyImplementationReviewContext } from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
@@ -71,6 +73,8 @@ export interface ProtocolValidateParams {
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
 	optInBudgetBaseline?: boolean;
+	/** Prepared implementation review context. Does not manufacture endpoints. */
+	reviewContext?: string;
 	/**
 	 * Invoke NDJSON log whose session/model/token/cost metadata the recorded
 	 * step retains — recovery for a verdict `5x invoke` rejected after the
@@ -572,6 +576,7 @@ export async function protocolValidate(
 			let mode: "off" | "advisory" | "enforced" = "advisory";
 			let compatibility = false;
 			let priorReviewCount = 0;
+			let codeContext: CodeDiffContext | null | undefined;
 			if (params.run && phaseId && phaseId !== "plan") {
 				const contextFactory =
 					params.createReviewBudgetContext ?? createReviewBudgetContext;
@@ -615,6 +620,24 @@ export async function protocolValidate(
 									canonicalPhaseId(payload.phase) === phaseId
 								);
 							}).length;
+						if (params.reviewContext) {
+							const verified = await verifyImplementationReviewContext({
+								store: implementationContext.store,
+								executionRunId: params.run,
+								bindingId: binding.id,
+								phase: phaseId,
+								reviewContextId: params.reviewContext,
+								workdir:
+									implementationContext.executionContext
+										.effectiveWorkingDirectory,
+							});
+							if (verified.status === "error") {
+								outputError(verified.code, verified.message);
+							}
+							codeContext = verified.diff;
+						} else if (mode === "enforced" && priorReviewCount > 0) {
+							codeContext = null;
+						}
 					} else if (compat) {
 						compatibility = true;
 						mode = "off";
@@ -630,6 +653,12 @@ export async function protocolValidate(
 						throw err;
 					}
 				}
+			}
+			if (params.reviewContext && codeContext === undefined) {
+				outputError(
+					"IMPLEMENTATION_REVIEW_CONTEXT_NOT_FOUND",
+					`Review context ${params.reviewContext} was not prepared for this run. Render the reviewer template instead of manufacturing endpoints.`,
+				);
 			}
 			const reviewed = validateImplementationReview({
 				verdict,
@@ -647,6 +676,7 @@ export async function protocolValidate(
 				hasRun: Boolean(params.run),
 				priorReviewCount,
 				sessionId: invocation?.sessionId,
+				...(codeContext !== undefined ? { codeContext } : {}),
 			});
 			if (!reviewed.valid) {
 				outputError(
