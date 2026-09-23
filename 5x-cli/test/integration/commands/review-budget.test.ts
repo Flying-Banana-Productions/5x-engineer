@@ -191,6 +191,77 @@ function lines(dir: string, runId: string, stream: "budget" | "steps") {
 }
 
 describe("review-budget CLI integration", () => {
+	for (const withBaseline of [false, true]) {
+		test(
+			`archived run state uses plan-local policy from either CWD ${withBaseline ? "with a pinned baseline" : "without a baseline"}`,
+			async () => {
+				const ctx = await setup(VALID_BUDGET, "off", "app");
+				try {
+					const app = join(ctx.dir, "app");
+					const local = join(app, "5x.toml.local");
+					writeFileSync(
+						local,
+						'[reviewBudget]\nmode = "enforced"\nminimumGrowthPoints = 7\n',
+					);
+					if (withBaseline) {
+						const render = await run5x(ctx.dir, [
+							"template",
+							"render",
+							"reviewer-plan",
+							"--run",
+							ctx.runId,
+						]);
+						expect(render.exitCode).toBe(0);
+					}
+					git(ctx.dir, "add", "-A");
+					git(ctx.dir, "commit", "-m", "archive run records");
+					const db = new Database(join(ctx.dir, ".5x", "5x.db"));
+					try {
+						db.query("DELETE FROM runs WHERE id = ?").run(ctx.runId);
+					} finally {
+						db.close();
+					}
+					for (const mode of ["advisory", "off"]) {
+						writeFileSync(
+							local,
+							`[reviewBudget]\nmode = "${mode}"\nminimumGrowthPoints = 9\n`,
+						);
+						for (const cwd of [ctx.dir, app]) {
+							const state = await run5x(cwd, [
+								"run",
+								"state",
+								"--plan",
+								ctx.planPath,
+							]);
+							expect(state.exitCode).toBe(0);
+							const data = JSON.parse(state.stdout).data;
+							expect(data.source).toBe("HEAD");
+							expect(data.run.id).toBe(ctx.runId);
+							if (withBaseline) {
+								expect(data.review_budget).toMatchObject({
+									status: "active",
+									mode: "enforced",
+									B0: 2,
+									S: 9,
+								});
+							} else if (mode === "off") {
+								expect(data.review_budget).toBeUndefined();
+							} else {
+								expect(data.review_budget).toMatchObject({
+									status: "uninitialized",
+									mode: "advisory",
+								});
+							}
+						}
+					}
+				} finally {
+					rmSync(ctx.dir, { recursive: true, force: true });
+				}
+			},
+			{ timeout: 30000 },
+		);
+	}
+
 	test(
 		"mapped subproject captures mapped policy, not main subproject or worktree root policy",
 		async () => {

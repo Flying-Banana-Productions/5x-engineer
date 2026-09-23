@@ -2197,8 +2197,14 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
 			let reviewGovernance: ReviewGovernanceState | undefined;
+			// No live run context exists here; anchor current policy to the known
+			// plan, while durable baselines below continue to pin their own policy.
+			const { config: planConfig } = await resolveLayeredConfig(
+				projectRoot,
+				dirname(planPath),
+			);
 			if (
-				config.reviewBudget.mode !== "off" ||
+				planConfig.reviewBudget.mode !== "off" ||
 				gitRecord.budgetLines.length > 0
 			) {
 				const warn =
@@ -2266,7 +2272,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					reviewBudget = tryBuildReviewBudgetState(
 						{
 							runId: gitRecord.summary.id,
-							mode: config.reviewBudget.mode,
+							mode: planConfig.reviewBudget.mode,
 							store: archivedBudgetStore,
 							hasPriorPlanReviewerStep: priorReviewer,
 							...(governingBaseline !== undefined ? { governingBaseline } : {}),
