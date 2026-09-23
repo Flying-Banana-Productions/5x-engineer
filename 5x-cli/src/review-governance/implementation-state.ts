@@ -1376,6 +1376,7 @@ export function capturePhaseAuthorAdmission(input: {
 	preAuthorCommit: string;
 }):
 	| { status: "captured" | "reused"; admission: PhaseAuthorAdmission }
+	| { status: "skipped" }
 	| { status: "error"; code: string; message: string } {
 	const phase = numericPhaseId(input.phase);
 	if (!phase) {
@@ -1408,6 +1409,17 @@ export function capturePhaseAuthorAdmission(input: {
 		}
 		return { status: "reused", admission: existing.admission };
 	}
+	// A phase that already admitted work has no durable pre-author base.
+	// Stamping current HEAD would hide those commits or reject them as
+	// non-ancestors. Leave capture absent so the legacy earliest-commit
+	// parent is used instead.
+	const alreadyAdmitted = listRunSteps(
+		input.recordStore,
+		input.executionRunId,
+	).some(
+		(step) => samePhase(step.phase, phase) && admittedCommitRef(step) !== null,
+	);
+	if (alreadyAdmitted) return { status: "skipped" };
 	const admission: PhaseAuthorAdmission = {
 		kind: "phase-author-admission",
 		version: IMPLEMENTATION_STATE_VERSION,

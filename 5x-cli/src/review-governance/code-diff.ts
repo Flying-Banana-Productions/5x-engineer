@@ -1,10 +1,11 @@
 /**
  * Exact implementation-review diffs.
  *
- * Whitespace is significant. Hunk citations must include the `diff --git`
- * file header and the complete `@@` hunk. This module does not reuse the
- * plan validator's trailing-whitespace stripping, and it does not accept a
- * later commit with an equivalent patch as the reviewed end.
+ * Whitespace is significant. A hunk citation is the `diff --git` file header
+ * plus the complete `@@` hunk. Extended headers between those lines may be
+ * present, as in a block copied from the rendered diff, and one missing
+ * final newline is ignored. Other whitespace is not normalized. This module
+ * does not accept a later commit with an equivalent patch as the reviewed end.
  */
 
 import { createHash } from "node:crypto";
@@ -34,6 +35,10 @@ export const CODE_DIFF_OPTIONS = [
 	"--unified=3",
 	"--src-prefix=a/",
 	"--dst-prefix=b/",
+	"--diff-algorithm=myers",
+	"--indent-heuristic",
+	"--inter-hunk-context=0",
+	"--no-relative",
 ] as const;
 
 export type CodeDiffGitResult = {
@@ -263,9 +268,12 @@ export function codeDiffRetrievalCommand(input: {
 	baseCommit: string;
 	reviewedCommit: string;
 	excludedPaths: readonly string[];
+	/** Repository root. `-C` keeps `.` anchored when the shell cwd differs. */
+	workdir?: string;
 }): string {
 	const args = [
 		"git",
+		...(input.workdir ? ["-C", input.workdir] : []),
 		...CODE_DIFF_OPTIONS,
 		`${input.baseCommit}..${input.reviewedCommit}`,
 		"--",
@@ -515,6 +523,34 @@ function loosenWhitespace(value: string): string {
 		.join("\n");
 }
 
+function stripFinalTerminator(value: string): string {
+	if (value.endsWith("\r\n")) return value.slice(0, -2);
+	if (value.endsWith("\n") || value.endsWith("\r")) return value.slice(0, -1);
+	return value;
+}
+
+/**
+ * Match a cited hunk to the stored form. Drop extended-header lines between
+ * `diff --git` and the first `@@`, and ignore one missing final newline.
+ * Line whitespace and every other terminator stay significant.
+ */
+function canonicalizeCitedHunk(cited: string): string {
+	const lines = splitLinesKeepEol(cited);
+	const headerAt = lines.findIndex((line) =>
+		line.text.startsWith("diff --git "),
+	);
+	let kept = lines;
+	if (headerAt >= 0) {
+		const hunkAt = lines.findIndex(
+			(line, index) => index > headerAt && line.text.startsWith("@@"),
+		);
+		if (hunkAt > headerAt + 1) {
+			kept = [...lines.slice(0, headerAt + 1), ...lines.slice(hunkAt)];
+		}
+	}
+	return stripFinalTerminator(joinLines(kept));
+}
+
 export function validateCodeHunkEvidence(
 	evidence: IntroducedByPlanHunk,
 	context: CodeDiffContext,
@@ -548,6 +584,7 @@ export function validateCodeHunkEvidence(
 		};
 	}
 	const cited = evidence.diffHunk;
+	const citedCanonical = canonicalizeCitedHunk(cited);
 	if (
 		cited.includes("\nBinary files ") ||
 		cited.startsWith("Binary files ") ||
@@ -574,11 +611,13 @@ export function validateCodeHunkEvidence(
 			message: "The cited hunk has no added or removed lines.",
 		};
 	}
-	const match = context.hunks.find((hunk) => hunk.text === cited);
+	const match = context.hunks.find(
+		(hunk) => canonicalizeCitedHunk(hunk.text) === citedCanonical,
+	);
 	if (match) return { valid: true, hunkHash: match.hash };
-	const citedBody = hunkBody(cited);
+	const citedBody = hunkBody(citedCanonical);
 	const sameBody = context.hunks.filter(
-		(hunk) => hunkBody(hunk.text) === citedBody,
+		(hunk) => hunkBody(canonicalizeCitedHunk(hunk.text)) === citedBody,
 	);
 	if (sameBody.length > 0) {
 		return {
@@ -587,8 +626,12 @@ export function validateCodeHunkEvidence(
 			message: `The cited hunk body matches ${sameBody.map((hunk) => hunk.newPath).join(", ")} but the diff --git file header does not.`,
 		};
 	}
-	const loosened = loosenWhitespace(cited);
-	if (context.hunks.some((hunk) => loosenWhitespace(hunk.text) === loosened)) {
+	const loosened = loosenWhitespace(citedCanonical);
+	if (
+		context.hunks.some(
+			(hunk) => loosenWhitespace(canonicalizeCitedHunk(hunk.text)) === loosened,
+		)
+	) {
 		return {
 			valid: false,
 			code: "CODE_HUNK_WHITESPACE",
@@ -604,23 +647,59 @@ export function validateCodeHunkEvidence(
 	};
 }
 
+/**
+ * Locate each stored hunk's `@@` header inside its own file section.
+ * Identical headers in later files must not resolve to the first file.
+ */
+function hunkHeaderPositions(
+	lines: readonly KeptLine[],
+	hunks: readonly ImplementationReviewHunk[],
+): number[] {
+	const positions: number[] = [];
+	let cursor = 0;
+	for (const hunk of hunks) {
+		const fileLine = splitLinesKeepEol(hunk.text)[0]?.text ?? "";
+		let fileAt = -1;
+		for (let index = cursor; index < lines.length; index += 1) {
+			if (lines[index]?.text === fileLine) {
+				fileAt = index;
+				break;
+			}
+		}
+		const searchFrom = fileAt >= 0 ? fileAt + 1 : cursor;
+		let headerAt = -1;
+		for (let index = searchFrom; index < lines.length; index += 1) {
+			const text = lines[index]?.text ?? "";
+			if (fileAt < 0 && text.startsWith("diff --git ")) break;
+			if (text === hunk.header) {
+				headerAt = index;
+				break;
+			}
+		}
+		positions.push(headerAt);
+		if (headerAt >= 0) cursor = headerAt + 1;
+	}
+	return positions;
+}
+
 export function formatCodeReviewDiff(
 	input: {
 		contextId: string;
 		diff: CodeDiffContext;
+		workdir?: string;
 	},
 	maxLines = 200,
 ): string {
 	const lines = input.diff.patch ? splitLinesKeepEol(input.diff.patch) : [];
 	const shown = lines.slice(0, maxLines);
 	const truncated = lines.length > maxLines;
-	const omitted = input.diff.hunks.flatMap((hunk) => {
-		const header = hunk.header;
-		const position = lines.findIndex((line) => line.text === header);
+	const positions = hunkHeaderPositions(lines, input.diff.hunks);
+	const omitted = input.diff.hunks.flatMap((hunk, index) => {
+		const position = positions[index] ?? -1;
 		if (position < 0) return [];
 		const hunkLength = splitLinesKeepEol(hunk.text).length;
 		return position >= maxLines || position + hunkLength > maxLines
-			? [`${hunk.oldPath} -> ${hunk.newPath}: ${header}`]
+			? [`${hunk.oldPath} -> ${hunk.newPath}: ${hunk.header}`]
 			: [];
 	});
 	const range = `${input.diff.baseCommit}..${input.diff.reviewedCommit}`;
@@ -639,9 +718,17 @@ export function formatCodeReviewDiff(
 			? `\n... (truncated, ${lines.length - maxLines} more lines)\n\nOmitted hunk headers:\n${omitted.map((header) => `- \`${header}\``).join("\n") || "- (none)"}\n`
 			: "") +
 		binary +
-		`\nRetrieve the complete diff with:\n\n\`${codeDiffRetrievalCommand(input.diff)}\`\n\n` +
+		`\nRetrieve the complete diff with:\n\n\`${codeDiffRetrievalCommand({
+			baseCommit: input.diff.baseCommit,
+			reviewedCommit: input.diff.reviewedCommit,
+			excludedPaths: input.diff.excludedPaths,
+			...(input.workdir ? { workdir: input.workdir } : {}),
+		})}\`\n\n` +
 		"Pass this review context id back as `--review-context` when recording the verdict. " +
-		"Ordinary continued blockers need one exact file-qualified hunk from this range.\n"
+		"Ordinary continued blockers need one exact file-qualified hunk from this range: " +
+		"the `diff --git` line plus the complete `@@` hunk, including every added and removed line. " +
+		"Extended headers between them (`index`, `---`, `+++`, mode, similarity, and rename lines) may be copied from this diff or omitted. " +
+		"A missing final newline is accepted. Every other character, including spaces and line endings, must match.\n"
 	);
 }
 

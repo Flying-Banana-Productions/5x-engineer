@@ -10,7 +10,11 @@ import {
 	validateCodeHunkEvidence,
 	validateCodeReviewClosure,
 } from "../../../src/review-governance/code-diff.js";
-import { validateImplementationReview } from "../../../src/review-governance/implementation.js";
+import { createReviewDecision } from "../../../src/review-governance/decisions.js";
+import {
+	readImplementationCodeClosure,
+	validateImplementationReview,
+} from "../../../src/review-governance/implementation.js";
 import {
 	capturePhaseAuthorAdmission,
 	PRE_AUTHOR_STEP_NAME,
@@ -339,6 +343,7 @@ describe("code diff hunks", () => {
 		const text = formatCodeReviewDiff(
 			{
 				contextId: "ctx-1",
+				workdir: "/repo/root",
 				diff: {
 					baseCommit: BASE,
 					reviewedCommit: END,
@@ -357,8 +362,141 @@ describe("code diff hunks", () => {
 		expect(text).toContain("assets/logo.png");
 		expect(text).toContain("--no-ext-diff");
 		expect(text).toContain("--no-textconv");
+		expect(text).toContain("--diff-algorithm=myers");
+		expect(text).toContain("--indent-heuristic");
+		expect(text).toContain("--inter-hunk-context=0");
+		expect(text).toContain("--no-relative");
+		expect(text).toContain("-C /repo/root");
 		expect(text).toContain(":(exclude,literal,top)docs/development/runs");
 		expect(text).toContain(`${BASE}..${END}`);
+		expect(text).toContain("Extended headers");
+		expect(text).toContain("missing final newline");
+	});
+
+	test("accepts a verbatim rendered block and a missing trailing newline", () => {
+		const raw = patch([{ path: "src/a.ts", from: "old", to: "new" }]);
+		const parsed = parseCodePatch(raw);
+		const context = {
+			baseCommit: BASE,
+			reviewedCommit: END,
+			patch: raw,
+			patchHash: "sha256:00",
+			excludedPaths: [],
+			hunks: parsed.hunks,
+			binaryPaths: [],
+		};
+		const evidence = {
+			commitRange: `${BASE}..${END}`,
+			explanation: "The assignment changed.",
+		};
+		expect(
+			validateCodeHunkEvidence({ ...evidence, diffHunk: raw }, context).valid,
+		).toBe(true);
+		const stored = parsed.hunks[0]?.text ?? "";
+		expect(stored.endsWith("\n")).toBe(true);
+		expect(
+			validateCodeHunkEvidence(
+				{ ...evidence, diffHunk: stored.slice(0, -1) },
+				context,
+			).valid,
+		).toBe(true);
+		expect(
+			validateCodeHunkEvidence(
+				{
+					...evidence,
+					diffHunk: raw.replace(
+						"diff --git a/src/a.ts b/src/a.ts",
+						"diff --git a/src/other.ts b/src/other.ts",
+					),
+				},
+				context,
+			),
+		).toMatchObject({ valid: false, code: "CODE_HUNK_WRONG_FILE" });
+	});
+
+	test("lists a truncated later hunk when two files share an @@ header", () => {
+		const body = patch([
+			{ path: "src/a.ts", from: "old", to: "new" },
+			{ path: "src/b.ts", from: "old", to: "new" },
+		]);
+		const parsed = parseCodePatch(body);
+		const text = formatCodeReviewDiff(
+			{
+				contextId: "ctx-1",
+				diff: {
+					baseCommit: BASE,
+					reviewedCommit: END,
+					patch: body,
+					patchHash: "sha256:00",
+					excludedPaths: [],
+					hunks: parsed.hunks,
+					binaryPaths: [],
+				},
+			},
+			8,
+		);
+		expect(text).toContain("src/b.ts -> src/b.ts: @@ -1 +1 @@");
+		expect(text).not.toContain("src/a.ts -> src/a.ts: @@ -1 +1 @@");
+	});
+});
+
+describe("code review closure inputs", () => {
+	test("reads open findings from the latest reviewer step and carries decisions", () => {
+		const { recordStore } = setup();
+		step(recordStore, "reviewer:review", 1, END, {
+			readiness: "not_ready",
+			items: [
+				{ id: "F1", title: "First", action: "auto_fix", reason: "Open." },
+				{ id: "F2", title: "Second", action: "auto_fix", reason: "Open." },
+			],
+		});
+		step(recordStore, "reviewer:review", 2, END, {
+			readiness: "not_ready",
+			priorFindings: [
+				{ id: "F1", status: "addressed" },
+				{ id: "F2", status: "still_open" },
+			],
+			items: [
+				{
+					id: "F2",
+					title: "Second",
+					action: "auto_fix",
+					reason: "Still open.",
+				},
+			],
+		});
+		const decision = createReviewDecision({
+			gateId: "gate-1",
+			snapshotId: "snap-1",
+			choice: "defer_accept_risk",
+			findingRefs: [{ findingId: "F2", fingerprint: "fp-2" }],
+			rationale: "Defer the remaining defect.",
+			evidence: ["The old stack trace."],
+			approvedScope: { retained: [], removed: [] },
+			decisionId: "11111111-1111-4111-8111-111111111111",
+			createdAt: "2026-09-23 00:00:01",
+		});
+		recordStore.append({
+			runId: "run1",
+			stream: "decisions",
+			idempotencyKey: "decision:gate-1",
+			payload: decision,
+			createdAt: "2026-09-23 00:00:01",
+			schemaVersion: 1,
+			provenance: "recorded",
+			origin: ORIGIN,
+		});
+		expect(readImplementationCodeClosure(recordStore, "run1", "1")).toEqual({
+			priorReviewCount: 2,
+			priorCodeFindings: [{ id: "F2" }],
+			priorCodeDecisions: [
+				{
+					decisionId: decision.decisionId,
+					findingIds: ["F2"],
+					evidence: ["The old stack trace."],
+				},
+			],
+		});
 	});
 });
 
@@ -656,6 +794,42 @@ describe("pre-author capture and prepared context", () => {
 				diff: prepared.diff,
 			}),
 		).toContain("no code changes");
+	});
+
+	test("does not stamp post-work HEAD when the phase already has commits", async () => {
+		const { recordStore, store } = setup();
+		step(recordStore, "git:commit", 1, MID);
+		step(recordStore, "git:commit", 2, END);
+		step(recordStore, "author:implement", 1, END, {
+			result: "complete",
+			commit: END,
+		});
+		const captured = capturePhaseAuthorAdmission({
+			recordStore,
+			origin: ORIGIN,
+			executionRunId: "run1",
+			bindingId: "bind-1",
+			phase: "1",
+			preAuthorCommit: END,
+		});
+		expect(captured.status).toBe("skipped");
+		expect(readPhaseAuthorAdmission(recordStore, "run1", "1").status).toBe(
+			"missing",
+		);
+		const prepared = await prepareImplementationReviewContext({
+			store,
+			recordStore,
+			origin: ORIGIN,
+			executionRunId: "run1",
+			bindingId: "bind-1",
+			phase: "1",
+			excludedPaths: [],
+			git: fakeGit(),
+		});
+		expect(prepared.status).toBe("ready");
+		if (prepared.status !== "ready") return;
+		expect(prepared.diff.baseCommit).toBe(BASE);
+		expect(prepared.diff.reviewedCommit).toBe(END);
 	});
 
 	test("uses the earliest git:commit parent and fails when that base is missing", async () => {

@@ -146,6 +146,7 @@ async function capturePreAuthorHead(input: {
 	if (captured.status === "error") {
 		outputError(captured.code, captured.message);
 	}
+	if (captured.status === "skipped") return;
 	try {
 		await recordStepInternal(
 			{
@@ -550,6 +551,7 @@ export async function templateRender(
 			prompt += formatCodeReviewDiff({
 				contextId: prepared.context.id,
 				diff: prepared.diff,
+				workdir,
 			});
 		}
 	}

@@ -71,6 +71,7 @@ import {
 } from "../review-governance/context.js";
 import {
 	canonicalPhaseId,
+	readImplementationCodeClosure,
 	validateImplementationReview,
 	verdictUsesImplementationContract,
 } from "../review-governance/implementation.js";
@@ -576,23 +577,25 @@ export async function invokeAgent(
 				if (captured.status === "error") {
 					outputError(captured.code, captured.message);
 				}
-				try {
-					await recordStepInternal(
-						{
-							run: params.run,
-							stepName: PRE_AUTHOR_STEP_NAME,
-							phase,
-							iteration: 0,
-							result: JSON.stringify(captured.admission),
-							performer: { kind: "system", role: "cli" },
-						},
-						budgetContext,
-					);
-				} catch (error) {
-					if (error instanceof RecordError) {
-						outputError(error.code, error.message, error.detail);
+				if (captured.status !== "skipped") {
+					try {
+						await recordStepInternal(
+							{
+								run: params.run,
+								stepName: PRE_AUTHOR_STEP_NAME,
+								phase,
+								iteration: 0,
+								result: JSON.stringify(captured.admission),
+								performer: { kind: "system", role: "cli" },
+							},
+							budgetContext,
+						);
+					} catch (error) {
+						if (error instanceof RecordError) {
+							outputError(error.code, error.message, error.detail);
+						}
+						throw error;
 					}
-					throw error;
 				}
 			}
 		}
@@ -730,6 +733,7 @@ export async function invokeAgent(
 			codeDiffAppend = formatCodeReviewDiff({
 				contextId: prepared.context.id,
 				diff: prepared.diff,
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
 			});
 		}
 	}
@@ -976,20 +980,11 @@ export async function invokeAgent(
 						if (verified.status === "error") {
 							outputError(verified.code, verified.message);
 						}
-						const priorReviewCount = budgetContext.recordStore
-							.listLines(runId, "steps")
-							.filter((line) => {
-								const payload = line.payload as {
-									step_name?: unknown;
-									phase?: unknown;
-								};
-								return (
-									typeof payload.step_name === "string" &&
-									payload.step_name.startsWith("reviewer:") &&
-									typeof payload.phase === "string" &&
-									canonicalPhaseId(payload.phase) === phase
-								);
-							}).length;
+						const closure = readImplementationCodeClosure(
+							budgetContext.recordStore,
+							runId,
+							phase,
+						);
 						const reviewed = validateImplementationReview({
 							verdict: structured as ReviewerVerdict,
 							phase,
@@ -1006,8 +1001,10 @@ export async function invokeAgent(
 								binding.id,
 							),
 							hasRun: true,
-							priorReviewCount,
+							priorReviewCount: closure.priorReviewCount,
 							codeContext: verified.diff,
+							priorCodeFindings: closure.priorCodeFindings,
+							priorCodeDecisions: closure.priorCodeDecisions,
 						});
 						if (!reviewed.valid) {
 							outputError(

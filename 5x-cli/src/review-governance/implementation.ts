@@ -7,6 +7,7 @@
  * the approved text anchor cannot authorize text-only spans.
  */
 
+import type { RecordStore } from "../control-plane/record-store.js";
 import {
 	isImplementationScopeClass,
 	isPlanScopeClass,
@@ -20,6 +21,10 @@ import {
 	type CodeDiffContext,
 	validateCodeReviewClosure,
 } from "./code-diff.js";
+import {
+	listGovernanceDecisions,
+	type ReviewDecisionPayload,
+} from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { detectPlanDrift } from "./implementation-state.js";
 import type {
@@ -694,6 +699,103 @@ function classify(input: {
 			excludedPreExisting,
 		),
 		diagnostics: input.diagnostics,
+	};
+}
+
+function reviewerVerdictFrom(value: unknown): ReviewerVerdict | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const verdict = value as Partial<ReviewerVerdict>;
+	if (typeof verdict.readiness !== "string" || !Array.isArray(verdict.items)) {
+		return null;
+	}
+	return verdict as ReviewerVerdict;
+}
+
+function openCodeFindings(verdict: ReviewerVerdict): CodeClosureFinding[] {
+	const outcomes = new Map<string, string>();
+	for (const outcome of verdict.priorFindings ?? []) {
+		if (typeof outcome?.id === "string")
+			outcomes.set(outcome.id, outcome.status);
+	}
+	const ids: string[] = [];
+	const seen = new Set<string>();
+	const add = (id: string) => {
+		if (!id || seen.has(id) || outcomes.get(id) === "addressed") return;
+		seen.add(id);
+		ids.push(id);
+	};
+	for (const item of verdict.items) {
+		if (typeof item?.id === "string") add(item.id);
+	}
+	for (const [id, status] of outcomes) {
+		if (status === "still_open" || status === "partially_addressed") add(id);
+	}
+	return ids.map((id) => ({ id }));
+}
+
+function codeClosureDecisions(
+	decisions: readonly ReviewDecisionPayload[],
+): CodeClosureDecision[] {
+	return decisions.map((decision) => ({
+		decisionId: decision.decisionId,
+		findingIds: decision.findingRefs.map((ref) => ref.findingId),
+		...(decision.evidence.length > 0
+			? { evidence: [...decision.evidence] }
+			: {}),
+	}));
+}
+
+/**
+ * Prior findings are the open items on the latest same-phase reviewer
+ * verdict. Decisions are whatever governance decisions this run recorded.
+ */
+export function readImplementationCodeClosure(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+): {
+	priorReviewCount: number;
+	priorCodeFindings: CodeClosureFinding[];
+	priorCodeDecisions: CodeClosureDecision[];
+} {
+	const phaseId = canonicalPhaseId(phase);
+	const verdicts: ReviewerVerdict[] = [];
+	let priorReviewCount = 0;
+	if (phaseId && phaseId !== "plan") {
+		for (const line of recordStore.listLines(runId, "steps")) {
+			const payload = line.payload;
+			if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+				continue;
+			}
+			const step = payload as {
+				step_name?: unknown;
+				phase?: unknown;
+				result_json?: unknown;
+			};
+			if (
+				typeof step.step_name !== "string" ||
+				!step.step_name.startsWith("reviewer:")
+			) {
+				continue;
+			}
+			if (
+				typeof step.phase !== "string" ||
+				canonicalPhaseId(step.phase) !== phaseId
+			) {
+				continue;
+			}
+			priorReviewCount += 1;
+			const verdict = reviewerVerdictFrom(step.result_json);
+			if (verdict) verdicts.push(verdict);
+		}
+	}
+	const latest = verdicts.at(-1);
+	return {
+		priorReviewCount,
+		priorCodeFindings: latest ? openCodeFindings(latest) : [],
+		priorCodeDecisions: codeClosureDecisions(
+			listGovernanceDecisions(recordStore, runId).decisions,
+		),
 	};
 }
 

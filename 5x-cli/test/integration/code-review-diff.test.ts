@@ -554,4 +554,242 @@ describe("implementation code-review context", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"a correction render after commits keeps the earliest commit parent as the review base",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await approveAndClose(dir, planPath);
+				const executionId = await startRun(dir, planPath);
+				const bound = await cli(dir, [
+					"review",
+					"implementation",
+					"bind",
+					"--run",
+					executionId,
+					"--source-run",
+					sourceId,
+				]);
+				if (bound.exitCode !== 0) {
+					throw new Error(`${bound.stdout}\n${bound.stderr}`);
+				}
+				const base = git(dir, "rev-parse", "HEAD");
+				mkdirSync(join(dir, "src"), { recursive: true });
+				writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
+				const first = await cli(dir, [
+					"commit",
+					"--run",
+					executionId,
+					"--phase",
+					"1",
+					"--message",
+					"first",
+					"--all-files",
+				]);
+				if (first.exitCode !== 0) {
+					throw new Error(`${first.stdout}\n${first.stderr}`);
+				}
+				const end = git(dir, "rev-parse", "HEAD");
+				const reviewPath = join(
+					dir,
+					"docs",
+					"development",
+					"reviews",
+					"note.md",
+				);
+				const correction = await cli(dir, [
+					"template",
+					"render",
+					"author-process-impl-review",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					`review_path=${reviewPath}`,
+				]);
+				if (correction.exitCode !== 0) {
+					throw new Error(`${correction.stdout}\n${correction.stderr}`);
+				}
+				expect(preAuthorCommit(dir, executionId)).toBeUndefined();
+				const review = await cli(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`commit_hash=${end}`,
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+				if (review.exitCode !== 0) {
+					throw new Error(`${review.stdout}\n${review.stderr}`);
+				}
+				const rendered = JSON.parse(review.stdout).data as { prompt: string };
+				expect(rendered.prompt).toContain(`${base}..${end}`);
+				expect(rendered.prompt).toContain(`-C ${dir}`);
+				expect(rendered.prompt).toContain("--diff-algorithm=myers");
+				expect(preAuthorCommit(dir, executionId)).toBeUndefined();
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"accepts a round-2 enforced verdict with addressed and still-open findings",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await approveAndClose(dir, planPath);
+				const executionId = await startRun(dir, planPath);
+				const bound = await cli(dir, [
+					"review",
+					"implementation",
+					"bind",
+					"--run",
+					executionId,
+					"--source-run",
+					sourceId,
+				]);
+				if (bound.exitCode !== 0) {
+					throw new Error(`${bound.stdout}\n${bound.stderr}`);
+				}
+				mkdirSync(join(dir, "src"), { recursive: true });
+				writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
+				const committed = await cli(dir, [
+					"commit",
+					"--run",
+					executionId,
+					"--phase",
+					"1",
+					"--message",
+					"implement",
+					"--all-files",
+				]);
+				if (committed.exitCode !== 0) {
+					throw new Error(`${committed.stdout}\n${committed.stderr}`);
+				}
+				const end = git(dir, "rev-parse", "HEAD");
+				const author = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--run",
+						executionId,
+						"--record",
+						"--step",
+						"author:implement",
+						"--phase",
+						"1",
+						"--iteration",
+						"1",
+						"--no-phase-checklist-validate",
+					],
+					{ result: "complete", commit: end },
+				);
+				if (author.exitCode !== 0) {
+					throw new Error(`${author.stdout}\n${author.stderr}`);
+				}
+				const review = await cli(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`commit_hash=${end}`,
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+				if (review.exitCode !== 0) {
+					throw new Error(`${review.stdout}\n${review.stderr}`);
+				}
+				const contextId = JSON.parse(review.stdout).data
+					.review_context_id as string;
+				const defect = (id: string) => ({
+					id,
+					title: `Finding ${id}`,
+					action: "auto_fix",
+					reason: "The write path drops the status.",
+					priority: "P1",
+					scopeClass: "implementation_defect",
+					effortDelta: 1,
+					architectureDelta: 0,
+					planWorkItemIds: ["W1"],
+				});
+				const firstVerdict = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						executionId,
+						"--record",
+						"--step",
+						"reviewer:review",
+						"--phase",
+						"1",
+						"--iteration",
+						"1",
+						"--review-context",
+						contextId,
+					],
+					{
+						readiness: "not_ready",
+						items: [defect("F1"), defect("F2")],
+					},
+				);
+				if (firstVerdict.exitCode !== 0) {
+					throw new Error(`${firstVerdict.stdout}\n${firstVerdict.stderr}`);
+				}
+				const secondVerdict = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						executionId,
+						"--record",
+						"--step",
+						"reviewer:review",
+						"--phase",
+						"1",
+						"--iteration",
+						"2",
+						"--review-context",
+						contextId,
+					],
+					{
+						readiness: "not_ready",
+						priorFindings: [
+							{ id: "F1", status: "addressed" },
+							{ id: "F2", status: "still_open" },
+						],
+						items: [defect("F2")],
+					},
+				);
+				if (secondVerdict.exitCode !== 0) {
+					throw new Error(`${secondVerdict.stdout}\n${secondVerdict.stderr}`);
+				}
+				expect(secondVerdict.stdout).not.toContain("PRIOR_FINDING_UNKNOWN");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
 });

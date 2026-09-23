@@ -23,6 +23,7 @@ import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
 	canonicalPhaseId,
+	readImplementationCodeClosure,
 	validateImplementationReview,
 	verdictUsesImplementationContract,
 	verdictUsesPlanContract,
@@ -576,6 +577,9 @@ export async function protocolValidate(
 			let mode: "off" | "advisory" | "enforced" = "advisory";
 			let compatibility = false;
 			let priorReviewCount = 0;
+			let codeClosure:
+				| ReturnType<typeof readImplementationCodeClosure>
+				| undefined;
 			let codeContext: CodeDiffContext | null | undefined;
 			if (params.run && phaseId && phaseId !== "plan") {
 				const contextFactory =
@@ -606,20 +610,12 @@ export async function protocolValidate(
 								params.run,
 								binding.id,
 							);
-						priorReviewCount = implementationContext.recordStore
-							.listLines(params.run, "steps")
-							.filter((line) => {
-								const payload = line.payload as {
-									step_name?: unknown;
-									phase?: unknown;
-								};
-								return (
-									typeof payload.step_name === "string" &&
-									payload.step_name.startsWith("reviewer:") &&
-									typeof payload.phase === "string" &&
-									canonicalPhaseId(payload.phase) === phaseId
-								);
-							}).length;
+						codeClosure = readImplementationCodeClosure(
+							implementationContext.recordStore,
+							params.run,
+							phaseId,
+						);
+						priorReviewCount = codeClosure.priorReviewCount;
 						if (params.reviewContext) {
 							const verified = await verifyImplementationReviewContext({
 								store: implementationContext.store,
@@ -676,7 +672,13 @@ export async function protocolValidate(
 				hasRun: Boolean(params.run),
 				priorReviewCount,
 				sessionId: invocation?.sessionId,
-				...(codeContext !== undefined ? { codeContext } : {}),
+				...(codeContext !== undefined
+					? {
+							codeContext,
+							priorCodeFindings: codeClosure?.priorCodeFindings,
+							priorCodeDecisions: codeClosure?.priorCodeDecisions,
+						}
+					: {}),
 			});
 			if (!reviewed.valid) {
 				outputError(
