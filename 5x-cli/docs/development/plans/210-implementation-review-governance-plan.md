@@ -224,9 +224,11 @@ Use `PlanReviewRoute`'s existing four route names for review results; post-decis
 
 **Completion gate:** The implementation checkout contains completed plan 209 and its exact shipped contracts/tests, or a documented equivalent integration; no dependency worktree is modified by verification.
 
-- [ ] Verify `git merge-base --is-ancestor afb132046701a9b3ba6e7190283c0516dbc4391d HEAD`. If integration used squash/cherry-pick, compare the concrete source/test/doc paths in Overview against that SHA and record equivalence before proceeding. Stop for missing functionality; do not implement against main's advisory-only state.
-- [ ] Confirm shipped v9 governance and v10 closure-context migrations (`src/db/schema.ts:589–596`), `composePlanReviewerRecord`, paired snapshot writer/finalizer, `coupled-key-exists`, source mode pinning, gate actions, typed notifications, and steps-order acceptance are present. Reserve v11 only if still free after integration; otherwise use the next migration number without renumbering shipped migrations.
-- [ ] Run the focused plan-209 protocol/composition, gate-decision, plan-diff, record-rebuild and pinned-mode regressions from Overview in the implementation checkout. Record any integration drift in this plan; no speculative replacement APIs or dashboard prerequisites.
+- [x] Verify `git merge-base --is-ancestor afb132046701a9b3ba6e7190283c0516dbc4391d HEAD`. If integration used squash/cherry-pick, compare the concrete source/test/doc paths in Overview against that SHA and record equivalence before proceeding. Stop for missing functionality; do not implement against main's advisory-only state.
+- [x] Confirm shipped v9 governance and v10 closure-context migrations (`src/db/schema.ts:589–596`), `composePlanReviewerRecord`, paired snapshot writer/finalizer, `coupled-key-exists`, source mode pinning, gate actions, typed notifications, and steps-order acceptance are present. Reserve v11 only if still free after integration; otherwise use the next migration number without renumbering shipped migrations.
+- [x] Run the focused plan-209 protocol/composition, gate-decision, plan-diff, record-rebuild and pinned-mode regressions from Overview in the implementation checkout. Record any integration drift in this plan; no speculative replacement APIs or dashboard prerequisites.
+
+Phase 0 verification (September 23, 2026): the dependency commit is an ancestor of the implementation checkout at `2a57b6d7afbcdb6b9e4a1941938378d5167d1ddf`. Shipped v9/v10 and the listed governance/recording seams are present; v11 remains available. Focused protocol, composition, decision, diff, rebuild and pinned-mode regressions passed (53 tests across 7 files) after installing the checkout's locked dependencies. No integration drift found.
 
 ## Phase 1: Approved execution binding and compatibility (W1)
 
