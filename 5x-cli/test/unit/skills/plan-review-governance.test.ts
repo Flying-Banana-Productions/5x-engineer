@@ -38,6 +38,10 @@ describe("plan-review governance skill", () => {
 			expect(content).toContain("--input-json -");
 			expect(content).toContain("return `needs_human`");
 			expect(content).toContain("Never resume from stale reviewer readiness");
+			expect(content).toContain("$GATE_ID` from `.data.gateId`");
+			expect(content).toContain("re-submit the **identical**");
+			expect(content).toContain("Gate decisions are idempotent");
+			expect(content).toContain("winning decision's `.data.route`");
 		}
 	});
 

@@ -85,6 +85,7 @@ export interface TemplateRenderDeps {
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
 	readPlan?: (path: string) => string;
 	warn?: (message: string) => void;
+	onRenderedPrompt?: (prompt: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +343,7 @@ export async function templateRender(
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;
 	}
+	deps?.onRenderedPrompt?.(prompt);
 
 	// -----------------------------------------------------------------------
 	// Surface warnings (stderr for human visibility)

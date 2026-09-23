@@ -371,7 +371,9 @@ describe("reviewer-plan template", () => {
 		expect(result.prompt).toContain("`failure`");
 		expect(result.prompt).toContain("`lowestCostCorrection`");
 		expect(result.prompt).toContain("Nonblocking follow-ups");
-		expect(result.prompt).toContain("combined remaining effort is at most");
+		expect(result.prompt).toContain("In pinned `enforced` mode");
+		expect(result.prompt).toContain("effort at most one point");
+		expect(result.prompt).toContain("ordinary v1 author/re-review cycle");
 		expect(result.prompt).toContain("`enforced` mode");
 		expect(result.prompt).toContain("`advisory` mode");
 	});
@@ -400,6 +402,7 @@ describe("reviewer-plan-continued template", () => {
 		const result = renderContinued();
 		expect(result.prompt).toContain("closure review");
 		expect(result.prompt).toContain("top-level `priorFindings[]`");
+		expect(result.prompt).toContain("`Required prior-finding outcome IDs`");
 		expect(result.prompt).toContain("partially_addressed");
 		expect(result.prompt).toContain("`introducedBy`");
 		expect(result.prompt).toContain("omitted hunk headers");
@@ -408,7 +411,19 @@ describe("reviewer-plan-continued template", () => {
 		expect(result.prompt).toContain("material `newEvidence`");
 		expect(result.prompt).toContain("Nonblocking follow-ups");
 		expect(result.prompt).toContain("In `enforced` mode");
-		expect(result.prompt).toContain("In `advisory` mode");
+		expect(result.prompt).toContain("`advisory` mode");
+	});
+
+	test("defines the broad v1 fallback when governance context is absent", () => {
+		const result = renderContinued();
+		expect(result.prompt).toContain("No context present");
+		expect(result.prompt).toContain("broad v1 fallback");
+		expect(result.prompt).toContain(
+			"surface both prior and newly discovered blocking issues",
+		);
+		expect(result.prompt).toContain(
+			"omit `priorFindings[]`, `--prior-finding`, and `introducedBy`",
+		);
 	});
 });
 

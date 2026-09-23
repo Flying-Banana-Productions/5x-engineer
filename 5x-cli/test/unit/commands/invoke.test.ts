@@ -21,13 +21,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { templateRender } from "../../../src/commands/template.handler.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { createProvider } from "../../../src/providers/factory.js";
+import type { AgentProvider } from "../../../src/providers/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
+	seedPromptGovernanceContext,
 } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -47,6 +50,28 @@ function cleanupDir(dir: string): void {
 	try {
 		rmSync(dir, { recursive: true });
 	} catch {}
+}
+
+function structuredProvider(structured: unknown): AgentProvider {
+	const result = {
+		text: "structured response",
+		structured,
+		sessionId: "session-governance",
+		tokens: { in: 0, out: 0 },
+		durationMs: 0,
+	};
+	const session = {
+		id: result.sessionId,
+		run: async () => result,
+		async *runStreamed() {
+			yield { type: "done" as const, result };
+		},
+	};
+	return {
+		startSession: async () => session,
+		resumeSession: async () => session,
+		close: async () => {},
+	};
 }
 
 // ===========================================================================
@@ -353,6 +378,97 @@ ${structured}
 			expect(ctx.db.query("SELECT count(*) AS n FROM prompts").get()).toEqual({
 				n: 1,
 			});
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("invoke and template handlers append byte-identical reviewer governance context", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			seedPromptGovernanceContext(ctx);
+			let nativePrompt = "";
+			let invokePrompt = "";
+			let authorInvokePrompt = "";
+			await templateRender(
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					workdir: dir,
+					newSession: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					onRenderedPrompt: (prompt) => {
+						nativePrompt = prompt;
+					},
+				},
+			);
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					workdir: dir,
+					newSession: true,
+					quiet: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					createProvider: async () =>
+						structuredProvider({
+							readiness: "ready",
+							items: [],
+							priorFindings: [{ id: "P1.open", status: "addressed" }],
+							creditAssessments: [],
+						}),
+					onRenderedPrompt: (prompt) => {
+						invokePrompt = prompt;
+					},
+				},
+			);
+			await invokeAgent(
+				"author",
+				{
+					template: "author-process-plan-review",
+					run: "run1",
+					workdir: dir,
+					quiet: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					createProvider: async () =>
+						structuredProvider({
+							result: "needs_human",
+							reason: "Prompt capture fixture.",
+						}),
+					onRenderedPrompt: (prompt) => {
+						authorInvokePrompt = prompt;
+					},
+				},
+			);
+			const contextBlock = (prompt: string) => {
+				const start = prompt.indexOf("## Plan-review governance context");
+				expect(start).toBeGreaterThanOrEqual(0);
+				const contextStart = prompt.indexOf("\n\n## Context\n", start);
+				return prompt.slice(start, contextStart < 0 ? undefined : contextStart);
+			};
+			expect(contextBlock(invokePrompt)).toBe(contextBlock(nativePrompt));
+			expect(contextBlock(invokePrompt)).toContain(
+				"Required prior-finding outcome IDs: P1.open",
+			);
+			expect(authorInvokePrompt).toContain("## Governing decisions");
+			expect(authorInvokePrompt).toContain("P1.deferred (sha256:deferred)");
+			expect(authorInvokePrompt).not.toContain(
+				"## Plan-review governance context",
+			);
 		} finally {
 			ctx.db.close();
 			closeDb();

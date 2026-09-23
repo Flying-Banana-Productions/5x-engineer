@@ -106,6 +106,7 @@ describe("plan review prompt projection", () => {
 		const governance = formatReviewerGovernanceContext({
 			reviewKind: "closure",
 			mode: "enforced",
+			requiredOutcomeIds: ["P1.1"],
 			priorFindings: [
 				{
 					findingId: "P1.1",

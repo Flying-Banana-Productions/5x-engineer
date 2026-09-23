@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 6
+version: 7
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:review"
 variable_defaults:
@@ -20,7 +20,26 @@ closure review of the prior findings; do not repeat the initial broad review.
 
 A `## Plan Diff Since Last Review` section is appended to this prompt with the actual diff of the plan file across that commit range. Read it first.
 
-Treat line numbers from your prior findings as potentially stale — re-anchor them against the current plan. Before considering any new issue, emit exactly one top-level `priorFindings[]` outcome for every required prior finding: **addressed**, **partially_addressed**, or **still_open**. Only partially addressed or still-open findings may be repeated in `items[]`, exactly once and under the same stable ID; addressed findings must be absent from `items[]`.
+First check whether this prompt includes an appended
+`## Plan-review governance context` block:
+
+- **Context present:** use the closure-only governance rules below. Emit
+  outcomes for exactly the IDs on its `Required prior-finding outcome IDs`
+  line—no addressed, deferred, accepted-risk, unknown, or other IDs.
+- **No context present:** this is the broad v1 fallback for mode off,
+  `v1_compat`, or a plan without an active Delivery Budget. Re-review the plan
+  broadly, surface both prior and newly discovered blocking issues in
+  `items[]`, and omit `priorFindings[]`, `--prior-finding`, and `introducedBy`.
+  The closure-only new-blocker and nonblocking-follow-up restrictions below do
+  not apply on this fallback path.
+
+When governance context is present, treat line numbers from prior findings as
+potentially stale and re-anchor them against the current plan. Before
+considering any new issue, emit exactly one top-level `priorFindings[]` outcome
+for every listed required ID: **addressed**, **partially_addressed**, or
+**still_open**. Only partially addressed or still-open required findings may be
+repeated in `items[]`, exactly once and under the same stable ID; addressed
+findings must be absent from `items[]`.
 
 ## Instructions
 
@@ -60,10 +79,11 @@ scope/effort/architecture/confidence, concrete `failure`, and
 - Put adjacent hardening, polish, speculative risk, unrelated debt, and other
   ordinary missed issues in **Nonblocking follow-ups**, never `items[]`.
 
-The appended context states the pinned mode. In `enforced` mode every closure
-rule above is a strict must and validation fails closed. In `advisory` mode
-provide the same evidence for calibration, but violations are diagnostics and
-v1 routing is preserved. Mode off and `v1_compat` retain the v1 contract.
+When present, the appended context states the pinned mode. In `enforced` mode
+every closure rule above is a strict must and validation fails closed. In
+`advisory` mode provide the same evidence for calibration, but violations are
+diagnostics and v1 routing is preserved. Without the block, use the broad v1
+fallback defined above.
 
 ### Continued Delivery Budget Assessment
 
@@ -86,4 +106,4 @@ Write your updated review to `{{review_path}}` and commit the file:
 
     5x commit --run {{run_id}} --phase plan --files {{review_path}} -m "docs: update plan review for <plan name>"
 
-Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready`, one repeatable `--prior-finding '{"id":"P1.1","status":"addressed"}'` for each required prior finding, complete `--item` flags only for partial/open or valid new blockers, and `--credit-assessment` only for new/changed claims. Never pass `--baseline-assessment` on a continued review. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.
+Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready`, complete `--item` flags, and `--credit-assessment` only for new/changed claims. When governance context is present, add one repeatable `--prior-finding '{"id":"P1.1","status":"addressed"}'` for each ID in `Required prior-finding outcome IDs`, and limit `--item` flags to partial/open or valid new blockers. Without governance context, omit every `--prior-finding` and use the broad v1 item contract. Never pass `--baseline-assessment` on a continued review. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.

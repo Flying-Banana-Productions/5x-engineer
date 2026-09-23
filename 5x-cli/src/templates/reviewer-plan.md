@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 6
+version: 7
 variables: [plan_path, review_path, review_template_path, run_id]
 step_name: "reviewer:review"
 variable_defaults:
@@ -108,12 +108,14 @@ Common mechanical fixes that are `auto_fix`, NOT `human_required`:
 Provide an overall readiness assessment:
 
 - **ready**: Plan is ready for implementation as-is.
-- **ready_with_corrections**: Plan needs one final bounded mechanical pass. Use
-  this only when every item is `auto_fix`, combined remaining effort is at most
-  one point, every architecture delta is zero, no item requires reviewer
-  verification, and no critical-safety or prior-decision exception is involved.
-  The CLI also checks the effective ceiling. This route skips another review;
-  otherwise use `not_ready`.
+- **ready_with_corrections**: Plan needs corrections but all are mechanical
+  `auto_fix` items and require no human judgment. In pinned `enforced` mode,
+  the final-correction shortcut additionally requires combined remaining
+  effort at most one point, zero architecture delta for every item, no reviewer
+  verification, no critical-safety or prior-decision exception, and a forecast
+  within the effective ceiling; that enforced route skips another review. In
+  advisory, off, and `v1_compat` runs, the ordinary v1 author/re-review cycle
+  remains in effect.
 - **not_ready**: Plan has fundamental issues requiring human decisions or significant rework. Reserve this for blockers or items that require `human_required` action.
 
 ## Non-Interactive Execution

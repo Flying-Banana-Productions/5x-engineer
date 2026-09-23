@@ -8,11 +8,14 @@ import {
 	type RecordOrigin,
 	type RecordPerformer,
 	RUN_RECORD_FORMAT_VERSION,
+	recordedEnvelope,
 } from "../../../src/control-plane/index.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import type { PendingBudgetSnapshot } from "../../../src/review-budget/apply.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { createReviewDecision } from "../../../src/review-governance/decisions.js";
+import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
 
 export const TEST_ORIGIN: RecordOrigin = {
 	recorder: {
@@ -142,4 +145,93 @@ export function pendingSnapshot(iteration = 1): PendingBudgetSnapshot {
 			thresholds: DEFAULT_REVIEW_BUDGET_CONFIG,
 		},
 	};
+}
+
+export function seedPromptGovernanceContext(
+	ctx: ReturnType<typeof makeBudgetContext>,
+): void {
+	const pending = pendingSnapshot();
+	ctx.store.captureBaseline({
+		runId: "run1",
+		captureKind: "initial",
+		mode: "enforced",
+		parsed: pending.currentLedger,
+		configSnapshot: pending.derived.thresholds,
+		origin: TEST_ORIGIN,
+	});
+	ctx.recordStore.append({
+		runId: "run1",
+		stream: "steps",
+		idempotencyKey: "step:reviewer:prompt:1",
+		payload: {
+			step_name: "reviewer:review",
+			phase: "plan",
+			iteration: 1,
+			result_json: {},
+			head_commit: null,
+			patch_id: null,
+			diff_summary: null,
+			duration_ms: null,
+			tokens_in: null,
+			tokens_out: null,
+			cost_usd: null,
+			model: null,
+		},
+		...recordedEnvelope(TEST_ORIGIN),
+	});
+	const finding = (id: string, fingerprint: string) => ({
+		id,
+		title: `Finding ${id}`,
+		effortDelta: 1,
+		architectureDelta: 0,
+		scopeClass: "acceptance_required" as const,
+		coupling: undefined,
+		failure: `Failure for ${id}`,
+		lowestCostCorrection: `Correction for ${id}`,
+		fingerprint,
+	});
+	const snapshot = ctx.store.appendSnapshot({
+		...pending,
+		findings: [
+			finding("P1.open", "sha256:open"),
+			finding("P1.deferred", "sha256:deferred"),
+		],
+		origin: TEST_ORIGIN,
+	});
+	const decision = createReviewDecision({
+		gateId: "gate-prompt",
+		snapshotId: snapshot.id,
+		choice: "defer_accept_risk",
+		findingRefs: [{ findingId: "P1.deferred", fingerprint: "sha256:deferred" }],
+		rationale: "Accept the bounded risk for prompt projection.",
+		evidence: ["Operator accepted the bounded failure."],
+		approvedScope: { retained: ["W1"], removed: [] },
+		decisionId: "44444444-4444-4444-8444-444444444444",
+		createdAt: "2026-01-01 00:00:02",
+	});
+	createReviewGovernanceStore(ctx.recordStore).resolveGate({
+		runId: "run1",
+		decision,
+		humanStep: {
+			step_name: "human:review-governance",
+			phase: "plan",
+			iteration: 2,
+			result_json: {
+				decisionId: decision.decisionId,
+				gateId: decision.gateId,
+			},
+			head_commit: null,
+			patch_id: null,
+			diff_summary: null,
+			duration_ms: null,
+			tokens_in: null,
+			tokens_out: null,
+			cost_usd: null,
+			model: null,
+		},
+		origin: {
+			...TEST_ORIGIN,
+			performer: { kind: "human", role: "operator" },
+		},
+	});
 }

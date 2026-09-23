@@ -404,7 +404,7 @@ Loop back to Step 1.
 
 ### Step 4A: Enforced human gate
 
-Run `5x review gate show` and present its notification, stable gate ID, causes,
+Run `5x review gate show`, set `$GATE_ID` from `.data.gateId`, and present its notification, stable gate ID, causes,
 `allowedChoices`, eligible finding IDs/fingerprints, and
 `requiredFieldsByChoice` to the human. Do not answer the notification with
 `5x prompt`, `prompt answer`, or a generic `human:gate` record: the gate-scoped
@@ -443,8 +443,15 @@ Read the decision command's `.data.route`, which is the durable
 - `aborted` → stop; terminal handling is already recorded.
 
 Never resume from stale reviewer readiness or prose after a decision. On
-restart, use `5x review gate show` to recover any current successor gate and
-the recorded run state; do not replay a generic prompt answer.
+restart, first use `5x review gate show`. If it returns an open gate, take the
+new `$GATE_ID` from `.data.gateId` and continue Step 4A. If it returns
+`{"open":false}` after your decision was durably recorded but before you saved
+its route, re-submit the **identical** `5x review decide` command/payload for
+that original gate ID. Gate decisions are idempotent: the retry returns the
+winning decision's `.data.route`, which is the only recovery routing signal.
+Therefore retain the submitted gate ID and exact decision payload until its
+route has been acted on. Do not replay a generic prompt answer or reconstruct a
+route from reviewer readiness.
 
 ### Step 4: Legacy v1 escalation
 

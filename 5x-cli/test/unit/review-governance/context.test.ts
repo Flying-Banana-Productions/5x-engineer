@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { recordedEnvelope } from "../../../src/control-plane/index.js";
 import {
+	requiredClosureOutcomeFindings,
+	validateClosureReview,
+} from "../../../src/review-governance/closure.js";
+import {
 	appendPlanReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
@@ -169,6 +173,7 @@ describe("governance prompt rendering", () => {
 	const context: PlanReviewPromptContext = {
 		reviewKind: "closure",
 		mode: "enforced",
+		requiredOutcomeIds: [],
 		priorFindings: [],
 		deferredOrAcceptedRisks: [
 			{
@@ -228,5 +233,70 @@ describe("governance prompt rendering", () => {
 		expect(rendered.indexOf("## Governing decisions")).toBeGreaterThan(
 			rendered.indexOf("ignore-this-free-text"),
 		);
+	});
+
+	test("rendered required outcome IDs are exactly accepted by closure validation", () => {
+		const finding = (
+			findingId: string,
+			fingerprint: string,
+			status?: "addressed",
+		) => ({
+			findingId,
+			fingerprint,
+			title: findingId,
+			scopeClass: "acceptance_required" as const,
+			failure: `Failure ${findingId}`,
+			lowestCostCorrection: `Correction ${findingId}`,
+			...(status ? { status } : {}),
+		});
+		const priorFindings = [
+			finding("P1.open", "sha256:open"),
+			finding("P1.addressed", "sha256:addressed", "addressed"),
+			finding("P1.deferred", "sha256:deferred"),
+		];
+		const decision = createReviewDecision({
+			gateId: "gate-render",
+			snapshotId: "snapshot-render",
+			choice: "defer_accept_risk",
+			findingRefs: [
+				{ findingId: "P1.deferred", fingerprint: "sha256:deferred" },
+			],
+			rationale: "Accept deferred finding for this scope.",
+			evidence: ["Operator approval."],
+			approvedScope: { retained: ["W1"], removed: [] },
+			decisionId: "55555555-5555-4555-8555-555555555555",
+			createdAt: "2026-01-01 00:00:02",
+		});
+		const requiredOutcomeIds = requiredClosureOutcomeFindings({
+			priorFindings,
+			priorDecisions: [decision],
+		}).map((entry) => entry.findingId);
+		const rendered = formatReviewerGovernanceContext({
+			...context,
+			priorFindings,
+			requiredOutcomeIds,
+		});
+		expect(rendered).toContain("Required prior-finding outcome IDs: P1.open");
+		expect(rendered).not.toContain(
+			"Required prior-finding outcome IDs: P1.open; P1.addressed",
+		);
+		const renderedIds =
+			rendered
+				.match(/Required prior-finding outcome IDs: (.+)/)?.[1]
+				?.split("; ") ?? [];
+		const validation = validateClosureReview({
+			reviewKind: "closure",
+			mode: "enforced",
+			verdict: {
+				readiness: "ready",
+				items: [],
+				priorFindings: renderedIds.map((id) => ({ id, status: "addressed" })),
+			},
+			priorFindings,
+			priorDecisions: [decision],
+		});
+		expect(renderedIds).toEqual(["P1.open"]);
+		expect(validation.accepted).toBe(true);
+		expect(validation.requiredOutcomeIds).toEqual(renderedIds);
 	});
 });

@@ -109,6 +109,7 @@ export interface InvokeAgentDeps {
 	createProvider?: typeof defaultCreateProvider;
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
 	warn?: (message: string) => void;
+	onRenderedPrompt?: (prompt: string) => void;
 }
 
 export interface InvokeParams {
@@ -549,6 +550,7 @@ export async function invokeAgent(
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});
+	deps?.onRenderedPrompt?.(renderedPrompt);
 
 	// Surface warnings (stderr for human visibility)
 	if (resolved.warnings.length > 0) {

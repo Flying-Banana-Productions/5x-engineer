@@ -364,17 +364,10 @@ function validateReraise(
 	return diagnostics;
 }
 
-export function validateClosureReview(input: {
-	reviewKind: "initial" | "closure";
-	mode: "advisory" | "enforced";
-	verdict: ReviewerVerdict;
+export function requiredClosureOutcomeFindings(input: {
 	priorFindings: readonly PersistedFinding[];
 	priorDecisions: readonly ReviewDecision[];
-	diffContext?: PlanDiffContext;
-	diffContextFailure?: PlanDiffFailure;
-}): ClosureValidationResult {
-	const verdict = input.verdict as GovernanceReviewerVerdict;
-	const diagnostics: ClosureDiagnostic[] = [];
+}): PersistedFinding[] {
 	const latestFindings = new Map<string, PersistedFinding>();
 	for (const finding of input.priorFindings)
 		latestFindings.set(finding.findingId, finding);
@@ -394,11 +387,29 @@ export function validateClosureReview(input: {
 			)
 			.map((finding) => finding.findingId),
 	);
-	const requiredFindings = [...latestFindings.values()].filter(
+	return [...latestFindings.values()].filter(
 		(finding) =>
 			finding.status !== "addressed" &&
 			!coveredFindingIds.has(finding.findingId),
 	);
+}
+
+export function validateClosureReview(input: {
+	reviewKind: "initial" | "closure";
+	mode: "advisory" | "enforced";
+	verdict: ReviewerVerdict;
+	priorFindings: readonly PersistedFinding[];
+	priorDecisions: readonly ReviewDecision[];
+	diffContext?: PlanDiffContext;
+	diffContextFailure?: PlanDiffFailure;
+}): ClosureValidationResult {
+	const verdict = input.verdict as GovernanceReviewerVerdict;
+	const diagnostics: ClosureDiagnostic[] = [];
+	const latestFindings = new Map<string, PersistedFinding>();
+	for (const finding of input.priorFindings)
+		latestFindings.set(finding.findingId, finding);
+	const decisions = activeDecisions(input.priorDecisions);
+	const requiredFindings = requiredClosureOutcomeFindings(input);
 	const requiredIds = new Set(
 		requiredFindings.map((finding) => finding.findingId),
 	);

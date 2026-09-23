@@ -2,6 +2,7 @@ import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import type { ReviewBudgetMode } from "../review-budget/types.js";
 import { persistedFindingsFromSnapshots } from "./apply.js";
+import { requiredClosureOutcomeFindings } from "./closure.js";
 import type { ApprovedScope } from "./decisions.js";
 import { createReviewGovernanceStore } from "./store.js";
 import type {
@@ -14,6 +15,7 @@ export interface PlanReviewPromptContext {
 	reviewKind: "initial" | "closure";
 	mode: "advisory" | "enforced";
 	priorFindings: PersistedFinding[];
+	requiredOutcomeIds: string[];
 	deferredOrAcceptedRisks: Array<{
 		decisionId: string;
 		finding: FindingIdentity;
@@ -44,6 +46,8 @@ export function buildPlanReviewPromptContext(input: {
 	const snapshots = input.store.listSnapshots(input.runId);
 	const governance = createReviewGovernanceStore(input.recordStore);
 	const state = governance.deriveGoverningState(input.runId, baseline.b0);
+	const priorFindings = persistedFindingsFromSnapshots(snapshots);
+	const decisions = governance.listDecisions(input.runId);
 	const deferredOrAcceptedRisks = state.history.flatMap((decision) =>
 		decision.choice === "defer_accept_risk"
 			? decision.findingRefs.map((finding) => ({
@@ -59,7 +63,11 @@ export function buildPlanReviewPromptContext(input: {
 	return {
 		reviewKind: snapshots.length === 0 ? "initial" : "closure",
 		mode,
-		priorFindings: persistedFindingsFromSnapshots(snapshots),
+		priorFindings,
+		requiredOutcomeIds: requiredClosureOutcomeFindings({
+			priorFindings,
+			priorDecisions: decisions,
+		}).map((finding) => finding.findingId),
 		deferredOrAcceptedRisks,
 		approvedScope: structuredClone(state.approvedScope),
 		governingBaseline: state.governingBaseline,
@@ -90,7 +98,7 @@ export function formatReviewerGovernanceContext(
 				)
 				.join("\n")
 		: "- (none)";
-	return `## Plan-review governance context\n\n- Review kind: ${context.reviewKind}\n- Pinned mode: ${context.mode}\n- Governing baseline (B): ${context.governingBaseline}\n- Retained scope: ${list(context.approvedScope.retained)}\n- Removed scope: ${list(context.approvedScope.removed)}\n- Author re-estimate requested: ${context.requestAuthorReestimate ? "yes" : "no"}\n\n### Prior findings\n\n${findings}\n\n### Deferred or accepted-risk findings\n\n${risks}`;
+	return `## Plan-review governance context\n\n- Review kind: ${context.reviewKind}\n- Pinned mode: ${context.mode}\n- Required prior-finding outcome IDs: ${list(context.requiredOutcomeIds)}\n- Governing baseline (B): ${context.governingBaseline}\n- Retained scope: ${list(context.approvedScope.retained)}\n- Removed scope: ${list(context.approvedScope.removed)}\n- Author re-estimate requested: ${context.requestAuthorReestimate ? "yes" : "no"}\n\n### Prior findings\n\n${findings}\n\n### Deferred or accepted-risk findings\n\n${risks}`;
 }
 
 /** Keep render and invoke prompt projection byte-for-byte aligned. */
