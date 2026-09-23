@@ -383,17 +383,15 @@ function validateAndCreate(input: {
 		);
 	if (
 		payload.choice === "approve_architecture_burden" &&
-		(!Number.isInteger(payload.approvedP) ||
-			(payload.approvedP ?? -1) < 0 ||
-			(payload.approvedItemIds?.length ?? 0) +
-				(payload.approvedWorkItemIds?.length ?? 0) ===
-				0)
+		(!Number.isInteger(payload.approvedP) || (payload.approvedP ?? -1) < 0)
 	)
 		fail(
 			"REVIEW_DECISION_INVALID",
-			"architecture approval requires approvedP and item/work-item IDs",
+			"architecture approval requires a non-negative integer approvedP",
 		);
 	if (payload.choice === "approve_architecture_burden") {
+		// Aggregate burden can cross its limit without any individual item
+		// crossing the single-item threshold. Exact ID coverage may be empty.
 		const architectureCauses = input.gateCauses.flatMap((cause) =>
 			cause.kind === "budget_alert" &&
 			cause.alert === "positive_architecture_exceeded"

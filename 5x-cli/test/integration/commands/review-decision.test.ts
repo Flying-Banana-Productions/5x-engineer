@@ -8,8 +8,13 @@ import {
 	recordedEnvelope,
 } from "../../../src/index.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
-import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import {
+	DEFAULT_REVIEW_BUDGET_CONFIG,
+	type ParsedDeliveryBudget,
+} from "../../../src/review-budget/types.js";
+import { foldGoverningReviewState } from "../../../src/review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../../../src/review-governance/fingerprint.js";
+import { derivePlanReviewGovernance } from "../../../src/review-governance/routing.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -81,7 +86,9 @@ async function run5x(
 	return collect(spawn5x(cwd, args, stdin));
 }
 
-async function fixture(kind: "baseline" | "finding" = "baseline") {
+async function fixture(
+	kind: "baseline" | "finding" | "architecture" = "baseline",
+) {
 	const dir = tempDir();
 	git(dir, "init");
 	git(dir, "config", "user.email", "test@test.com");
@@ -103,7 +110,7 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 		recordsRoot: join(dir, "docs", "development", "runs"),
 	});
 	const budgets = createReviewBudgetStore(records);
-	const ledger = {
+	const ledger: ParsedDeliveryBudget = {
 		estimateConfidence: "high" as const,
 		workItems: [
 			{
@@ -123,6 +130,31 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 			persistentOrExternalBoundaries: 0,
 		},
 	};
+	if (kind === "architecture") {
+		// Plan 214's aggregate-only alert: B=22, P=6, no item reaches 5.
+		const work = ledger.workItems[0];
+		if (!work) throw new Error("expected work item");
+		ledger.workItems = (
+			[
+				[3, 1],
+				[5, 1],
+				[5, 2],
+				[3, 1],
+				[3, 0],
+				[3, 1],
+			] as const
+		).map(([effort, architectureDelta], index) => ({
+			...work,
+			id: `W${index + 1}`,
+			effort,
+			architectureDelta,
+		}));
+	}
+	const baseline = ledger.workItems.reduce(
+		(sum, entry) => sum + entry.effort,
+		0,
+	);
+	const estimate = kind === "baseline" ? 5 : baseline;
 	budgets.captureBaseline({
 		runId,
 		captureKind: "initial",
@@ -146,9 +178,9 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 	};
 	const findings = kind === "finding" ? [item] : [];
 	const budget = deriveBudget({
-		B0: 2,
-		B: 2,
-		I: kind === "baseline" ? 5 : 2,
+		B0: baseline,
+		B: baseline,
+		I: estimate,
 		workItems: ledger.workItems,
 		findings,
 		assessments: [],
@@ -156,11 +188,31 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 		semanticHumanRequired: kind === "finding",
 	});
 	const resultJson = {
-		readiness: kind === "finding" ? "not_ready" : "ready",
+		readiness: kind === "finding" ? ("not_ready" as const) : ("ready" as const),
 		summary: "reviewed",
 		items: findings,
 		budget,
 	};
+	const governance = derivePlanReviewGovernance({
+		mode: "enforced",
+		reviewKind: "initial",
+		verdict: resultJson,
+		budget,
+		budgetContext: { workItems: ledger.workItems, findings, assessments: [] },
+		governingState: foldGoverningReviewState({
+			b0: baseline,
+			decisions: [],
+			steps: [],
+			budget: [],
+		}),
+		closure: {
+			valid: true,
+			accepted: true,
+			diagnostics: [],
+			requiredOutcomeIds: [],
+			findingOutcomes: [],
+		},
+	});
 	records.append({
 		runId,
 		stream: "steps",
@@ -194,15 +246,17 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 		findings,
 		assessments: [],
 		baselineAssessment: {
-			independentEffortEstimate: kind === "baseline" ? 5 : 2,
+			independentEffortEstimate: estimate,
 			confidence: "high",
 			reason: "Independent estimate",
 		},
 		derived: budget,
 		effectiveGateCauses:
-			kind === "baseline"
-				? [{ kind: "budget_alert", alert: "baseline_disputed" }]
-				: [{ kind: "semantic_human", finding }],
+			kind === "architecture"
+				? governance.gateCauses
+				: kind === "baseline"
+					? [{ kind: "budget_alert", alert: "baseline_disputed" }]
+					: [{ kind: "semantic_human", finding }],
 		origin: ORIGIN,
 	});
 	const shown = await run5x(dir, ["review", "gate", "show", "--run", runId]);
@@ -211,6 +265,7 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 		gateId: string;
 		snapshotId: string;
 		eligibleFindings: Array<{ findingId: string; fingerprint: string }>;
+		requiredFieldsByChoice: Record<string, string[]>;
 	};
 	return { dir, runId, records, gate };
 }
@@ -228,6 +283,77 @@ function decisionData(result: CommandResult) {
 }
 
 describe("review decision CLI", () => {
+	test(
+		"aggregate-only architecture gate accepts flags without IDs and retries through JSON",
+		async () => {
+			const ctx = await fixture("architecture");
+			try {
+				expect(
+					ctx.gate.requiredFieldsByChoice.approve_architecture_burden,
+				).toEqual(["rationale", "approvedP"]);
+				const base = [
+					"review",
+					"decide",
+					"--run",
+					ctx.runId,
+					"--gate",
+					ctx.gate.gateId,
+				];
+				const rationale = "Approve the six-point aggregate architecture burden";
+				const result = await run5x(ctx.dir, [
+					...base,
+					"--choice",
+					"approve_architecture_burden",
+					"--approved-p",
+					"6",
+					"--rationale",
+					rationale,
+				]);
+				expect(result.exitCode).toBe(0);
+				const accepted = decisionData(result);
+				expect(accepted).toMatchObject({ created: true, route: "complete" });
+				expect(accepted.decision.architectureApproval).toEqual({
+					approvedP: 6,
+					approvedItemIds: [],
+					approvedWorkItemIds: [],
+				});
+				const retry = await run5x(ctx.dir, [
+					...base,
+					"--input-json",
+					JSON.stringify({
+						choice: "approve_architecture_burden",
+						rationale,
+						approvedP: 6,
+						approvedItemIds: [],
+						approvedWorkItemIds: [],
+					}),
+				]);
+				expect(retry.exitCode).toBe(0);
+				expect(decisionData(retry)).toMatchObject({
+					created: false,
+					route: "complete",
+					decision: { decisionId: accepted.decision.decisionId },
+				});
+				expect(ctx.records.listLines(ctx.runId, "decisions")).toHaveLength(1);
+				const shown = await run5x(ctx.dir, [
+					"review",
+					"gate",
+					"show",
+					"--run",
+					ctx.runId,
+				]);
+				expect(shown.exitCode).toBe(0);
+				expect(JSON.parse(shown.stdout)).toMatchObject({
+					ok: true,
+					data: { open: false },
+				});
+			} finally {
+				rmSync(ctx.dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30_000 },
+	);
+
 	test(
 		"two independent processes converge on one gate decision and human step",
 		async () => {

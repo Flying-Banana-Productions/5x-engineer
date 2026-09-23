@@ -206,12 +206,14 @@ export function validateReviewDecision(
 			!approval ||
 			!Number.isInteger(approval.approvedP) ||
 			approval.approvedP < 0 ||
-			approval.approvedItemIds.length + approval.approvedWorkItemIds.length ===
-				0
+			!Array.isArray(approval.approvedItemIds) ||
+			!Array.isArray(approval.approvedWorkItemIds)
 		)
 			throw new TypeError(
 				"approve_architecture_burden requires an approval envelope",
 			);
+		// Empty ID lists represent aggregate-only approval. The gate-aware
+		// submission validator checks exact threshold-crossing ID coverage.
 	}
 	const expected = computeDecisionIntentHash({
 		kind: input.kind,

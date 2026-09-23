@@ -525,6 +525,13 @@ finding ID; the CLI resolves its fingerprint:
 
 Other repeatable fields are `--retain`, `--remove`, `--approved-item`, and
 `--approved-work-item`; scalar fields are `--baseline` and `--approved-p`.
+Architecture approval requires `--approved-p` to cover the current positive
+burden. Pass exactly the threshold-crossing item/work-item IDs listed in the
+gate's architecture causes; each nonempty ID category is required. For an
+aggregate-only alert with both ID lists empty, omit both ID flags (JSON may
+omit the arrays or supply empty arrays). `requiredFieldsByChoice` reflects
+these gate-specific requirements; contributing below-threshold IDs are not
+eligible approval IDs.
 Machine callers use `--input-json '<json>'` or `--input-json -` on stdin. Only
 that form accepts full `findingRefs`; every ID/fingerprint pair is checked
 against the gate snapshot. JSON input is mutually exclusive with decision

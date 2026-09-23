@@ -508,6 +508,45 @@ describe("derivePlanReviewGovernance", () => {
 		expect(result).toMatchObject({ reviewKind: "initial", route: "complete" });
 	});
 
+	test("aggregate-only approval re-gates on growth or an individual crossing", () => {
+		const governed = state({
+			architectureApprovals: [
+				{
+					decisionId: "aggregate-approval",
+					approvedP: 6,
+					approvedItemIds: [],
+					approvedWorkItemIds: [],
+				},
+			],
+		});
+		for (const [deltas, expectedRoute] of [
+			[[3, 3], "complete"],
+			[[3, 3, 1], "human_gate"],
+			[[5, 1], "human_gate"],
+		] as const) {
+			const base = ledger.workItems[0];
+			if (!base) throw new Error("expected work item");
+			const result = route({
+				readiness: "ready",
+				items: [],
+				state: governed,
+				ledger: {
+					...ledger,
+					workItems: deltas.map((architectureDelta, index) => ({
+						...base,
+						id: `W${index + 1}`,
+						effort: 1,
+						architectureDelta,
+					})),
+				},
+			});
+			expect(result.route).toBe(expectedRoute);
+			expect(result.gateCauses[0]?.resolvedBy).toBe(
+				expectedRoute === "complete" ? "aggregate-approval" : undefined,
+			);
+		}
+	});
+
 	test("approved architecture burden re-gates on growth or a new crossing ID", () => {
 		const governed = state({
 			architectureApprovals: [

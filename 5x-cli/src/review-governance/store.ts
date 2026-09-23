@@ -46,11 +46,8 @@ export const REVIEW_DECISION_REQUIRED_FIELDS: Record<
 	request_author_reestimate: ["rationale"],
 	trade_scope: ["rationale", "retained or removed scope"],
 	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
-	approve_architecture_burden: [
-		"rationale",
-		"approvedP",
-		"approvedItemIds or approvedWorkItemIds",
-	],
+	// Threshold-crossing ID fields are added from the current gate below.
+	approve_architecture_burden: ["rationale", "approvedP"],
 	abort: ["rationale"],
 };
 
@@ -113,6 +110,21 @@ export function reviewGatePromptContext(input: {
 			]),
 		).values(),
 	];
+	const requiredFieldsByChoice = structuredClone(
+		REVIEW_DECISION_REQUIRED_FIELDS,
+	);
+	const architectureCauses = input.gate.causes.flatMap((cause) =>
+		cause.kind === "budget_alert" &&
+		cause.alert === "positive_architecture_exceeded"
+			? [cause]
+			: [],
+	);
+	if (architectureCauses.some((cause) => (cause.itemIds?.length ?? 0) > 0))
+		requiredFieldsByChoice.approve_architecture_burden.push("approvedItemIds");
+	if (architectureCauses.some((cause) => (cause.workItemIds?.length ?? 0) > 0))
+		requiredFieldsByChoice.approve_architecture_burden.push(
+			"approvedWorkItemIds",
+		);
 	return {
 		type: "plan_review_gate",
 		gateId: input.gate.gateId,
@@ -123,7 +135,7 @@ export function reviewGatePromptContext(input: {
 			causes: input.gate.causes,
 			baselineReestimatePending: input.baselineReestimatePending,
 		}),
-		requiredFieldsByChoice: structuredClone(REVIEW_DECISION_REQUIRED_FIELDS),
+		requiredFieldsByChoice,
 	};
 }
 
