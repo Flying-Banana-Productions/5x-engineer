@@ -131,3 +131,32 @@ The Overview also cites only v9. Phase 0's "next available" hedge prevents actua
 
 **P2**
 - [ ] P2.1: Renumber the migration to v11
+
+---
+
+## Addendum (September 23, 2026) — v1.1 closure review
+
+**Reviewed:** plan commit `f142c778437b23059784e6f8e9728507568b3fe0` (diff since `22d2259b8da3a28a41f3923616e46a45e824a6e8`)
+
+This is a documentation-only revision (per the plan's own Revision History note: "no source/config/test files or dependency worktree were changed, and no tests or quality gates were run"). All six required prior findings are re-anchored and re-verified against the new text; no new blocking issue was introduced by this diff.
+
+### What's addressed (✅)
+
+- **P1.1** (execution-run binding trigger): The new Design Decision and Phase 1 make binding mandatory "at the first implementation-phase author admission" whenever the plan has a `## Delivery Budget` and resolved mode is not `off`, auto-resolving a unique approved source run or returning `IMPLEMENTATION_APPROVAL_REQUIRED` on zero/multiple candidates. Phase 9 now sequences this check ahead of author delegation in both template and invoke, and extends it to direct `run record` admission so a raw `phase:complete`/sealing call can't dodge it by skipping author render. Files/Tests/Addresses columns for W1/W9/W10/W11 were updated consistently. Closes the gap cleanly.
+- **P1.2** (initial diff base across multi-commit sessions): A new `PhaseAuthorAdmission.preAuthorCommit` field captures pre-delegation HEAD once per binding/phase, durably, before the first author admission — reused (not re-advanced) across retries, multiple renders, and new sessions. The legacy fallback is now explicit (parent of the earliest same-phase `git:commit` record, ancestry-verified) and the plan explicitly forbids stamping current HEAD as a fictional pre-author base for direct-recorded results. Phase 3's tests now cover the multi-commit-session and legacy-fallback cases directly.
+- **P1.3** (drift detection vs. guarded text-only amendments): The new "Text authorization has explicit spans and durable lineage" decision defines an authorized-text anchor chain: initially the approved plan commit, extended only by successful Phase 5 guard verifications. Phase 1's drift check now measures against "approved bytes plus the ordered chain of Phase 5 guard-verified text amendments," and Phase 9's boundary explicitly measures committed scope "against approved bytes plus verified Phase 5 text lineage." Phase 5 adds the append-only lineage record (parent hash, before/after commit/blob hashes) without mutating `approvedPlanHash`. A text-only pass can now reach `phase:complete` without re-binding, which is what the finding required, and Phase 5/11 both add an explicit lifecycle test for it.
+- **P1.4** (final-correction shortcut vs. claim invalidation): The new "verified correction may carry assessments forward" decision states the carry-forward rule precisely: only through a CLI-recorded passing, still-eligible correction attempt with zero architecture delta, empty boundary changes, and a clean changed-path inventory confined to the fix. Phase 6 persists that proof explicitly; Phase 7 states the carry-forward as the sole exception to "changed target-phase code after assessment invalidates its completion authority," and requires validating the proof's source/destination identities rather than accepting a generic quality pass. Phase 11 adds the missing lifecycle case (a P2 shortcut in a phase with an already-realized due claim).
+- **P1.5** (`planImpact` schema): A concrete `PlanImpact { kind, locations: [{ heading, staleText }] }` interface is added, with `locations` required nonempty and unique for `text_only`, resolved to unique nonoverlapping byte spans at the authorized text anchor CLI-side, with missing/ambiguous matches routed to a human rather than guessed. Phase 5's guard now explicitly handles length-changing replacements ("unchanged surrounding byte segments must match in order even when replacements change length"), closing a sub-issue the original finding didn't even name. Phase 10 updates the template/example guidance to the concrete object shape instead of a bare `planImpact` mention.
+- **P2.1** (migration renumbering): Every reference (Architecture diagram, Phase 0, Phase 8, Files Touched, Tests, Revision History) now consistently cites shipped v10 (`src/db/schema.ts:589–596`, "Persist plan-review closure context in the budget index") and schedules the new projection migration as v11.
+
+### Remaining concerns
+
+None blocking. Two observations for awareness, not action:
+
+- The `Addresses` column now links each of W1/W2/W3/W5/W6/W7/W8/W9/W10/W11 to one or more `P1.x`/`P2.1` IDs while leaving each row's `Effort`/`Architecture delta` unchanged, with an explicit note that these are "already-scored" seams being specified rather than new scope. This matches the shipped `addresses: string[]` field's actual semantics (it excludes named finding IDs from pending `R`, per `computePendingR` in `review-budget/arithmetic.ts`), so the mechanism is used correctly. Whether zero effort growth is realistic given how much concrete mechanism (span resolution, lineage chain replay, correction-proof carry-forward) got added is a judgment call for the author/CLI budget math at execution time, not a plan defect — noted here only for calibration.
+- The new sentence "Historical unbudgeted compatibility runs need explicit approved opt-in, not baseline inference" (Phase 1) is a terse paraphrase of the removed v1.0 sentence about opting off/v1-compatible runs into governance through the existing human-owned approval workflow. It reads ambiguously in isolation but maps onto the already-shipped `CaptureKind: "initial" | "opt_in"` concept (`review-budget/record-lines.ts`), so it is not a new gap — just worth a clarifying cross-reference if the author revises again.
+
+### Updated readiness
+
+- **Plan v1.1 completion:** ✅ — all six required prior findings addressed; no revision-causal blocker found in the diff.
+- **Ready for implementation:** ✅ — no outstanding P0/P1 items.
