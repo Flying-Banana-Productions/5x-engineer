@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { dirname } from "node:path";
+import { resolveLayeredConfig } from "../config.js";
 import type { RecordLine, StepRecordPayload } from "../control-plane/index.js";
 import { stepIdempotencyKey } from "../control-plane/index.js";
 import type {
@@ -120,8 +122,15 @@ export async function createReviewBudgetContext(
 	onDiagnostic?: (message: string) => void,
 ): Promise<ReviewBudgetCommandContext> {
 	const record = await createRecordContext(input);
+	// Infrastructure belongs to the control plane; governance belongs to the
+	// run's plan (including its mapped subproject), never the caller's CWD.
+	const { config } = await resolveLayeredConfig(
+		record.executionContext.controlPlaneRoot,
+		dirname(record.executionContext.effectivePlanPath),
+	);
 	return {
 		...record,
+		config: { ...record.config, reviewBudget: config.reviewBudget },
 		store: createReviewBudgetStore(
 			record.recordStore,
 			createReviewBudgetIndex(record.db),

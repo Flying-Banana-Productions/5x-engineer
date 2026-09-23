@@ -49,7 +49,6 @@ import type {
 	PreparedRecordStep,
 	PrepareRecordStepOutcome,
 } from "../control-plane/record-writer-types.js";
-import { createReviewBudgetIndex } from "../control-plane/review-budget-index.js";
 import {
 	createReviewBudgetStore,
 	type ReviewBudgetStore,
@@ -170,6 +169,7 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { createRecordContext, RecordContextError } from "./record-context.js";
+import { createReviewBudgetContext } from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import {
 	type AmbientRunResult,
@@ -2380,16 +2380,12 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		const warn =
 			params.warn ??
 			((message: string) => process.stderr.write(`Warning: ${message}\n`));
-		const recordContext = await createRecordContext({
-			runId: run.id,
-			startDir: params.startDir,
-			dbContext,
-		});
-		const reviewStore = createReviewBudgetStore(
-			recordContext.recordStore,
-			createReviewBudgetIndex(db),
+		const recordContext = await createReviewBudgetContext(
+			{ runId: run.id, startDir: params.startDir, dbContext },
 			warn,
 		);
+		const reviewStore = recordContext.store;
+		const configuredMode = recordContext.config.reviewBudget.mode;
 		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
 		let governingBaseline: number | undefined;
 		if (hasRecordRun) {
@@ -2444,7 +2440,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			? tryBuildReviewBudgetState(
 					{
 						runId: run.id,
-						mode: config.reviewBudget.mode,
+						mode: configuredMode,
 						store: reviewStore,
 						governingBaseline,
 						hasPriorPlanReviewerStep: priorInDb || priorInRecords,
@@ -2476,11 +2472,11 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					},
 					warn,
 				)
-			: config.reviewBudget.mode === "off"
+			: configuredMode === "off"
 				? undefined
 				: {
 						status: priorInDb ? "v1_compat" : "uninitialized",
-						mode: config.reviewBudget.mode,
+						mode: configuredMode,
 						enforcement_implemented: false,
 					};
 	}

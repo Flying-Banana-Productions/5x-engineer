@@ -128,7 +128,14 @@ function git(cwd: string, ...args: string[]): void {
 async function setup(
 	plan = VALID_BUDGET,
 	mode: "off" | "advisory" | "enforced" = "advisory",
-): Promise<{ dir: string; planPath: string; runId: string }> {
+	subproject = "",
+	mapped = false,
+): Promise<{
+	dir: string;
+	planPath: string;
+	runId: string;
+	worktree?: string;
+}> {
 	const dir = tempDir();
 	git(dir, "init");
 	git(dir, "config", "user.email", "test@test.com");
@@ -139,17 +146,34 @@ async function setup(
 		join(dir, "5x.toml"),
 		`[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "${mode}"\n`,
 	);
-	const planPath = join(dir, "docs", "development", "test-plan.md");
-	mkdirSync(join(dir, "docs", "development"), { recursive: true });
+	const planPath = join(dir, subproject, "docs", "development", "test-plan.md");
+	mkdirSync(join(dir, subproject, "docs", "development"), { recursive: true });
+	if (subproject) {
+		writeFileSync(
+			join(dir, subproject, "5x.toml"),
+			'[paths]\nplans = "docs/development"\n',
+		);
+	}
 	writeFileSync(planPath, plan);
 	git(dir, "add", "-A");
 	git(dir, "commit", "-m", "fixture");
-	const initializedRun = await run5x(dir, ["run", "init", "--plan", planPath]);
+	const initializedRun = await run5x(dir, [
+		"run",
+		"init",
+		"--plan",
+		planPath,
+		...(mapped ? ["--worktree"] : []),
+	]);
 	if (initializedRun.exitCode !== 0) throw new Error(initializedRun.stdout);
 	const runId = (
 		JSON.parse(initializedRun.stdout) as { data: { run_id: string } }
 	).data.run_id;
-	return { dir, planPath, runId };
+	return {
+		dir,
+		planPath,
+		runId,
+		worktree: JSON.parse(initializedRun.stdout).data.worktree?.worktree_path,
+	};
 }
 
 function budgetStore(dir: string) {
@@ -167,6 +191,144 @@ function lines(dir: string, runId: string, stream: "budget" | "steps") {
 }
 
 describe("review-budget CLI integration", () => {
+	test(
+		"mapped subproject captures mapped policy, not main subproject or worktree root policy",
+		async () => {
+			const ctx = await setup(VALID_BUDGET, "advisory", "app", true);
+			try {
+				if (!ctx.worktree) throw new Error("Missing fixture worktree");
+				writeFileSync(
+					join(ctx.dir, "app", "5x.toml.local"),
+					'[reviewBudget]\nmode = "off"\n',
+				);
+				writeFileSync(
+					join(ctx.worktree, "app", "5x.toml.local"),
+					'[reviewBudget]\nmode = "enforced"\nminimumGrowthPoints = 6\n',
+				);
+				for (const cwd of [
+					ctx.dir,
+					join(ctx.dir, "app"),
+					join(ctx.worktree, "app"),
+				]) {
+					const rendered = await run5x(cwd, [
+						"template",
+						"render",
+						"reviewer-plan",
+						"--run",
+						ctx.runId,
+					]);
+					expect(rendered.exitCode).toBe(0);
+					expect(
+						budgetStore(ctx.worktree).getBaseline(ctx.runId),
+					).toMatchObject({
+						mode: "enforced",
+						configSnapshot: { minimumGrowthPoints: 6 },
+					});
+				}
+				expect(
+					createWorkingTreeRecordStore({
+						recordsRoot: join(ctx.dir, "docs", "development", "runs"),
+					}).getRun(ctx.runId),
+				).toBeNull();
+			} finally {
+				rmSync(ctx.dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	for (const fromSubproject of [false, true]) {
+		test(
+			`initial render pins plan-local policy from ${fromSubproject ? "subproject" : "root"} CWD through record and gate`,
+			async () => {
+				const ctx = await setup(VALID_BUDGET, "advisory", "app");
+				try {
+					const app = join(ctx.dir, "app");
+					writeFileSync(join(app, "5x.toml"), "# Subproject defaults\n");
+					const local = join(app, "5x.toml.local");
+					writeFileSync(
+						local,
+						'[reviewBudget]\nmode = "enforced"\nminimumGrowthPoints = 7\n',
+					);
+					const cwd = fromSubproject ? app : ctx.dir;
+					const stateBefore = await run5x(cwd, [
+						"run",
+						"state",
+						"--run",
+						ctx.runId,
+					]);
+					expect(stateBefore.exitCode).toBe(0);
+					expect(JSON.parse(stateBefore.stdout).data.review_budget.mode).toBe(
+						"enforced",
+					);
+					const rendered = await run5x(cwd, [
+						"template",
+						"render",
+						"reviewer-plan",
+						"--run",
+						ctx.runId,
+					]);
+					expect(rendered.exitCode).toBe(0);
+					const baseline = budgetStore(ctx.dir).getBaseline(ctx.runId);
+					expect(baseline).toMatchObject({
+						mode: "enforced",
+						configSnapshot: { minimumGrowthPoints: 7 },
+					});
+					// Even off in current plan-local config cannot demote an active run.
+					writeFileSync(
+						local,
+						'[reviewBudget]\nmode = "off"\nminimumGrowthPoints = 9\n',
+					);
+					const recorded = await run5x(
+						cwd,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							ctx.runId,
+							"--record",
+							"--step",
+							"reviewer:plan",
+							"--phase",
+							"plan",
+						],
+						HUMAN_VERDICT,
+					);
+					expect(recorded.exitCode).toBe(0);
+					const result = JSON.parse(recorded.stdout).data.result;
+					expect(result.governance.route).toBe("human_gate");
+					expect(result.budget.thresholds.minimumGrowthPoints).toBe(7);
+					const gate = await run5x(cwd, [
+						"review",
+						"gate",
+						"show",
+						"--run",
+						ctx.runId,
+					]);
+					expect(gate.exitCode).toBe(0);
+					expect(JSON.parse(gate.stdout).data.gate).toBeTruthy();
+					for (const dir of [ctx.dir, app]) {
+						const state = await run5x(dir, [
+							"run",
+							"state",
+							"--run",
+							ctx.runId,
+						]);
+						expect(state.exitCode).toBe(0);
+						expect(JSON.parse(state.stdout).data.review_budget.mode).toBe(
+							"enforced",
+						);
+					}
+					expect(budgetStore(ctx.dir).getBaseline(ctx.runId)).toEqual(baseline);
+				} finally {
+					rmSync(ctx.dir, { recursive: true, force: true });
+				}
+			},
+			{ timeout: 30000 },
+		);
+	}
+
 	test(
 		"preserves the v1 emit/validate contract and rejects reviewer aggregates",
 		async () => {
