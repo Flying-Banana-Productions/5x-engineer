@@ -44,12 +44,8 @@ export function buildPlanReviewPromptContext(input: {
 	const snapshots = input.store.listSnapshots(input.runId);
 	const governance = createReviewGovernanceStore(input.recordStore);
 	const state = governance.deriveGoverningState(input.runId, baseline.b0);
-	const activeDecisionIds = new Set(
-		state.history.map((item) => item.decisionId),
-	);
 	const deferredOrAcceptedRisks = state.history.flatMap((decision) =>
-		decision.choice === "defer_accept_risk" &&
-		activeDecisionIds.has(decision.decisionId)
+		decision.choice === "defer_accept_risk"
 			? decision.findingRefs.map((finding) => ({
 					decisionId: decision.decisionId,
 					finding: structuredClone(finding),

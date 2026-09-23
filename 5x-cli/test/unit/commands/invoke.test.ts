@@ -25,7 +25,10 @@ import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { createProvider } from "../../../src/providers/factory.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
-import { makeBudgetContext } from "./review-budget-test-helpers.js";
+import {
+	makeBudgetContext,
+	pendingSnapshot,
+} from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,7 +117,7 @@ describe("invoke reviewer — plan read state", () => {
 - Production files: 1
 - Persistent/external boundaries: 0`;
 
-	async function setupBudgetInvoke(dir: string) {
+	async function setupBudgetInvoke(dir: string, humanGate = false) {
 		for (const args of [
 			["init"],
 			["config", "user.email", "test@test.com"],
@@ -135,6 +138,38 @@ describe("invoke reviewer — plan read state", () => {
 		createRunV1(db, { id: "run1", planPath });
 		closeDb();
 		_resetForTest();
+		const structured = humanGate
+			? `[sample.structured]
+readiness = "not_ready"
+creditAssessments = []
+
+[[sample.structured.items]]
+id = "H1"
+title = "Operator decision required"
+action = "human_required"
+reason = "The residual failure requires explicit acceptance."
+scopeClass = "acceptance_required"
+effortDelta = 0
+architectureDelta = 0
+estimateConfidence = "high"
+failure = "A retry can duplicate the durable write."
+lowestCostCorrection = "Require an operator decision."
+
+[sample.structured.baselineAssessment]
+independentEffortEstimate = 2
+confidence = "high"
+reason = "The original estimate remains sound."
+`
+			: `[sample.structured]
+readiness = "ready"
+items = []
+creditAssessments = []
+
+[sample.structured.baselineAssessment]
+independentEffortEstimate = 2
+confidence = "high"
+reason = "estimate"
+`;
 		writeFileSync(
 			join(dir, "5x.toml"),
 			`[author]
@@ -148,15 +183,7 @@ model = "sample/test"
 [sample]
 echo = false
 
-[sample.structured]
-readiness = "ready"
-items = []
-creditAssessments = []
-
-[sample.structured.baselineAssessment]
-independentEffortEstimate = 2
-confidence = "high"
-reason = "estimate"
+${structured}
 `,
 		);
 		return planPath;
@@ -274,6 +301,58 @@ reason = "estimate"
 			).toHaveLength(1);
 			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
 			expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			const planPath = await setupBudgetInvoke(dir, true);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			const seed = pendingSnapshot();
+			ctx.store.captureBaseline({
+				runId: "run1",
+				captureKind: "initial",
+				mode: "enforced",
+				parsed: seed.currentLedger,
+				configSnapshot: seed.derived.thresholds,
+				origin: ctx.originFor({ kind: "system", role: "cli" }),
+			});
+			ctx.config.reviewBudget.mode = "advisory";
+
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					vars: [`plan_path=${planPath}`],
+					phase: "plan",
+					record: true,
+					quiet: true,
+					workdir: dir,
+				},
+				{ createReviewBudgetContext: async () => ctx },
+			);
+
+			const line = ctx.recordStore.listLines("run1", "steps")[0];
+			expect(line).toBeDefined();
+			const result = (
+				line?.payload as {
+					result_json?: { governance?: { route?: string } };
+				}
+			)?.result_json;
+			expect(ctx.store.getBaseline("run1")?.mode).toBe("enforced");
+			expect(result?.governance?.route).toBe("human_gate");
+			expect(ctx.db.query("SELECT count(*) AS n FROM prompts").get()).toEqual({
+				n: 1,
+			});
 		} finally {
 			ctx.db.close();
 			closeDb();

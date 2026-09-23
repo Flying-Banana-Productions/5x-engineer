@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { dirname } from "node:path";
 import { recordPlanReviewerStepWithSnapshot } from "../../../src/commands/review-budget-context.js";
 import { recordStepInternal } from "../../../src/commands/run-v1.handler.js";
+import { createSqlitePromptStore } from "../../../src/control-plane/index.js";
 import { snapshotIdempotencyKey } from "../../../src/review-budget/record-lines.js";
 import {
 	makeBudgetContext,
@@ -23,6 +24,31 @@ const params = {
 };
 
 describe("recordPlanReviewerStepWithSnapshot", () => {
+	function gateSnapshot(mode: "advisory" | "enforced") {
+		return {
+			...pendingSnapshot(),
+			mode,
+			effectiveGateCauses: [
+				{ kind: "budget_band" as const, band: "over_effective" as const },
+			],
+		};
+	}
+
+	function captureBaseline(
+		ctx: ReturnType<typeof makeBudgetContext>,
+		mode: "advisory" | "enforced",
+	): void {
+		const pending = pendingSnapshot();
+		ctx.store.captureBaseline({
+			runId: "run1",
+			captureKind: "initial",
+			mode,
+			parsed: pending.currentLedger,
+			configSnapshot: pending.derived.thresholds,
+			origin: TEST_ORIGIN,
+		});
+	}
+
 	test("writes exactly one coupled pair with the same origin", async () => {
 		const performers: unknown[] = [];
 		const ctx = makeBudgetContext({
@@ -156,6 +182,42 @@ describe("recordPlanReviewerStepWithSnapshot", () => {
 			ctx.db.query("SELECT count(*) AS n FROM review_budget_snapshots").get(),
 		).toEqual({ n: 1 });
 		expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(1);
+		ctx.db.close();
+	});
+
+	test("enforced record opens a gate prompt and duplicate repairs it without duplicate records", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		captureBaseline(ctx, "enforced");
+		const pending = gateSnapshot("enforced");
+		const promptStore = createSqlitePromptStore(ctx.db);
+		await recordPlanReviewerStepWithSnapshot(params, pending, ctx);
+		expect(promptStore.listOpenPrompts("run1")).toHaveLength(1);
+		expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
+		expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+
+		ctx.db.run("DELETE FROM prompts");
+		expect(promptStore.listOpenPrompts("run1")).toHaveLength(0);
+		const retry = await recordPlanReviewerStepWithSnapshot(
+			params,
+			pending,
+			ctx,
+		);
+		expect(retry.recorded).toBe(false);
+		expect(promptStore.listOpenPrompts("run1")).toHaveLength(1);
+		expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
+		expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+		ctx.db.close();
+	});
+
+	test("advisory record with the same gate causes opens no prompt", async () => {
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		captureBaseline(ctx, "advisory");
+		await recordPlanReviewerStepWithSnapshot(
+			params,
+			gateSnapshot("advisory"),
+			ctx,
+		);
+		expect(createSqlitePromptStore(ctx.db).listOpenPrompts("run1")).toEqual([]);
 		ctx.db.close();
 	});
 

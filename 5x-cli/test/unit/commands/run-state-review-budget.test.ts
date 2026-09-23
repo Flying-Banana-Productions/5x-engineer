@@ -4,7 +4,6 @@ import {
 	buildReviewBudgetState,
 	formatStateText,
 	tryBuildReviewBudgetState,
-	warnForReviewBudgetRunState,
 } from "../../../src/commands/run-v1.handler.js";
 import {
 	createMemoryRecordStore,
@@ -438,16 +437,5 @@ describe("run state review budget", () => {
 		expect(state).toBeUndefined();
 		expect(warnings[0]).toContain("run broken");
 		expect(warnings[0]).toContain("omitting review_budget");
-	});
-
-	test("warns for reserved enforced mode only", () => {
-		const warnings: string[] = [];
-		warnForReviewBudgetRunState("advisory", (warning) =>
-			warnings.push(warning),
-		);
-		warnForReviewBudgetRunState("enforced", (warning) =>
-			warnings.push(warning),
-		);
-		expect(warnings).toEqual([]);
 	});
 });

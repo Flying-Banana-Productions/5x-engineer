@@ -113,18 +113,23 @@ export function applyPlanReviewGovernance(input: {
 			assessments: pending.assessments,
 		},
 	});
-	pending.mode = input.mode;
-	pending.priorFindings = input.verdict.priorFindings ?? [];
-	pending.effectiveGateCauses = governance.gateCauses.filter(
-		(cause) => cause.resolvedBy === undefined,
-	);
-	pending.suppressedGateCauses = governance.gateCauses.filter(
-		(cause) => cause.resolvedBy !== undefined,
-	);
-	pending.diagnostics = governance.diagnostics;
+	const decoratedPending: PendingBudgetSnapshot = {
+		...pending,
+		mode: input.mode,
+		priorFindings: structuredClone(input.verdict.priorFindings ?? []),
+		effectiveGateCauses: governance.gateCauses
+			.filter((cause) => cause.resolvedBy === undefined)
+			.map((cause) => structuredClone(cause)),
+		suppressedGateCauses: governance.gateCauses
+			.filter((cause) => cause.resolvedBy !== undefined)
+			.map((cause) => structuredClone(cause)),
+		diagnostics: governance.diagnostics.map((diagnostic) =>
+			structuredClone(diagnostic),
+		),
+	};
 	return {
 		status: "applied",
 		verdict: { ...input.budgetResult.verdict, governance },
-		pendingSnapshot: pending,
+		pendingSnapshot: decoratedPending,
 	};
 }

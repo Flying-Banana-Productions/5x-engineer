@@ -77,7 +77,10 @@ afterEach(() => {
 	}
 });
 
-function setup(mode: "off" | "advisory" = "advisory") {
+function setup(
+	mode: "off" | "advisory" | "enforced" = "advisory",
+	capturedMode: "advisory" | "enforced" = "advisory",
+) {
 	const root = mkdtempSync(join(tmpdir(), "5x-run-budget-state-"));
 	tempDirs.push(root);
 	const planPath = join(root, "plans", "plan.md");
@@ -103,7 +106,7 @@ function setup(mode: "off" | "advisory" = "advisory") {
 	createReviewBudgetStore(records).captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
-		mode: "advisory",
+		mode: capturedMode,
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin,
@@ -224,6 +227,28 @@ describe("run state review-budget wiring", () => {
 			});
 		} finally {
 			off.db.close();
+		}
+	});
+
+	test("run state reports the captured mode after live config flips in either direction", async () => {
+		for (const fixture of [
+			{
+				ctx: setup("off", "enforced"),
+				expected: { mode: "enforced", enforcement_implemented: true },
+			},
+			{
+				ctx: setup("enforced", "advisory"),
+				expected: { mode: "advisory", enforcement_implemented: false },
+			},
+		] as const) {
+			try {
+				const envelope = (await captureState(fixture.ctx)) as {
+					data?: { review_budget?: Record<string, unknown> };
+				};
+				expect(envelope.data?.review_budget).toMatchObject(fixture.expected);
+			} finally {
+				fixture.ctx.db.close();
+			}
 		}
 	});
 

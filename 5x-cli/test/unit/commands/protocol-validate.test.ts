@@ -331,6 +331,76 @@ describe("protocol validate reviewer — active review budget", () => {
 		}
 	});
 
+	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const seed = pendingSnapshot();
+		ctx.store.captureBaseline({
+			runId: "run1",
+			captureKind: "initial",
+			mode: "enforced",
+			parsed: seed.currentLedger,
+			configSnapshot: seed.derived.thresholds,
+			origin: ctx.originFor({ kind: "system", role: "cli" }),
+		});
+		ctx.config.reviewBudget.mode = "advisory";
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [
+					{
+						id: "H1",
+						title: "Operator decision required",
+						action: "human_required",
+						reason: "The residual failure requires explicit acceptance.",
+						scopeClass: "acceptance_required",
+						effortDelta: 0,
+						architectureDelta: 0,
+						estimateConfidence: "high",
+						failure: "A retry can duplicate the durable write.",
+						lowestCostCorrection: "Require an operator decision.",
+					},
+				],
+				baselineAssessment: {
+					independentEffortEstimate: 2,
+					confidence: "high",
+					reason: "The original estimate remains sound.",
+				},
+				creditAssessments: [],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			const line = ctx.recordStore.listLines("run1", "steps")[0];
+			expect(line).toBeDefined();
+			const result = (
+				line?.payload as {
+					result_json?: { governance?: { route?: string } };
+				}
+			)?.result_json;
+			expect(ctx.store.getBaseline("run1")?.mode).toBe("enforced");
+			expect(result?.governance?.route).toBe("human_gate");
+			expect(ctx.db.query("SELECT count(*) AS n FROM prompts").get()).toEqual({
+				n: 1,
+			});
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
 	test("terminal admission failure captures no baseline or snapshot", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ status: "completed" });

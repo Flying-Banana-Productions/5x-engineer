@@ -970,13 +970,6 @@ export interface ReviewBudgetState {
 	enforcement_implemented: boolean;
 }
 
-export function warnForReviewBudgetRunState(
-	_mode: ReviewBudgetMode,
-	_warn: (message: string) => void,
-): void {
-	// Enforcement is implemented. Kept as a compatibility no-op for callers.
-}
-
 /**
  * Build the delivery-budget header from authoritative record lines. The
  * facade deliberately reads through (and repairs) an empty SQLite index.
@@ -1999,7 +1992,6 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				const warn =
 					params.warn ??
 					((message: string) => process.stderr.write(`Warning: ${message}\n`));
-				warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
 				if (gitRecord.budgetDecodeError) {
 					warn(
 						`Unable to read review budget records for run ${gitRecord.summary.id}; omitting review_budget: ${gitRecord.budgetDecodeError}`,
@@ -2148,7 +2140,6 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		const warn =
 			params.warn ??
 			((message: string) => process.stderr.write(`Warning: ${message}\n`));
-		warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
 		const recordContext = await createRecordContext({
 			runId: run.id,
 			startDir: params.startDir,
