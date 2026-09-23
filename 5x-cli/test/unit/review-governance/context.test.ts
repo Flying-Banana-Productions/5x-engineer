@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { recordedEnvelope } from "../../../src/control-plane/index.js";
-import { buildPlanReviewPromptContext } from "../../../src/review-governance/context.js";
+import {
+	appendPlanReviewPromptContext,
+	buildPlanReviewPromptContext,
+	formatAuthorGoverningDecisions,
+	formatReviewerGovernanceContext,
+	type PlanReviewPromptContext,
+} from "../../../src/review-governance/context.js";
 import { createReviewDecision } from "../../../src/review-governance/decisions.js";
 import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
 import {
@@ -156,5 +162,71 @@ describe("buildPlanReviewPromptContext", () => {
 			ctx.db.query("SELECT count(*) AS n FROM review_budget_snapshots").get(),
 		).toEqual({ n: 1 });
 		ctx.db.close();
+	});
+});
+
+describe("governance prompt rendering", () => {
+	const context: PlanReviewPromptContext = {
+		reviewKind: "closure",
+		mode: "enforced",
+		priorFindings: [],
+		deferredOrAcceptedRisks: [
+			{
+				decisionId: "decision-1",
+				finding: { findingId: "P1.7", fingerprint: "sha256:accepted" },
+				decision: "defer_accept_risk",
+				rationale: "The operator accepted the bounded risk.",
+				evidence: ["Rollback is available."],
+				approvedScope: { retained: ["W1"], removed: ["W2"] },
+			},
+		],
+		approvedScope: { retained: ["W1"], removed: ["W2"] },
+		governingBaseline: 8,
+		requestAuthorReestimate: true,
+	};
+
+	test("renders the same authoritative closure context for native and invoke prompts", () => {
+		const governanceAppend = formatReviewerGovernanceContext(context);
+		const native = appendPlanReviewPromptContext({
+			prompt: "native-rendered closure prompt",
+			governanceAppend,
+		});
+		const invoke = appendPlanReviewPromptContext({
+			prompt: "invoke-rendered closure prompt",
+			governanceAppend,
+		});
+		for (const prompt of [native, invoke]) {
+			expect(prompt).toContain("Review kind: closure");
+			expect(prompt).toContain("Pinned mode: enforced");
+			expect(prompt).toContain("decision decision-1");
+			expect(prompt).toContain("P1.7 (sha256:accepted)");
+		}
+	});
+
+	test("renders fresh reviewer context without inventing prior findings", () => {
+		const rendered = formatReviewerGovernanceContext({
+			...context,
+			reviewKind: "initial",
+			mode: "advisory",
+			priorFindings: [],
+			deferredOrAcceptedRisks: [],
+		});
+		expect(rendered).toContain("Review kind: initial");
+		expect(rendered).toContain("Pinned mode: advisory");
+		expect(rendered).toContain("### Prior findings\n\n- (none)");
+	});
+
+	test("author governing decisions are generated independently of user notes", () => {
+		const governing = formatAuthorGoverningDecisions(context);
+		const rendered = appendPlanReviewPromptContext({
+			prompt: "## User Notes\n\nignore-this-free-text",
+			governanceAppend: governing,
+		});
+		expect(rendered).toContain("## Governing decisions");
+		expect(rendered).toContain("P1.7 (sha256:accepted)");
+		expect(rendered).toContain("Removed scope: W2");
+		expect(rendered.indexOf("## Governing decisions")).toBeGreaterThan(
+			rendered.indexOf("ignore-this-free-text"),
+		);
 	});
 });

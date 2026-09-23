@@ -696,37 +696,37 @@ export interface PlanReviewPromptContext {
 
 ### 7.1 Initial prompt — `src/templates/reviewer-plan.md:19–126`
 
-- [ ] Require one exhaustive pass across material requirements and known failure paths; prohibit intentionally deferred findings.
-- [ ] Require independent baseline assessment, item-level scope/effort/architecture/confidence, concrete prevented failure, and lowest-cost adequate correction.
-- [ ] Require debt assessment against coupling and minimal-compliant comparison, while reminding the reviewer that the CLI derives totals/routes.
-- [ ] Define nonblocking follow-up placement and strict final-correction meaning.
+- [x] Require one exhaustive pass across material requirements and known failure paths; prohibit intentionally deferred findings.
+- [x] Require independent baseline assessment, item-level scope/effort/architecture/confidence, concrete prevented failure, and lowest-cost adequate correction.
+- [x] Require debt assessment against coupling and minimal-compliant comparison, while reminding the reviewer that the CLI derives totals/routes.
+- [x] Define nonblocking follow-up placement and strict final-correction meaning.
 
 ### 7.2 Closure prompt — `src/templates/reviewer-plan-continued.md:13–56`
 
-- [ ] Replace broad re-review language with top-level `priorFindings[]` closure outcomes first; tell the reviewer that only partial/open findings are repeated in `items[]` under the same ID.
-- [ ] Permit a new ordinary blocker only with exact `introducedBy` range/hunk/explanation from the appended plan diff.
-- [ ] If the rendered patch is truncated, include omitted hunk headers and the exact command to inspect the full plan-only diff used by validation.
-- [ ] Permit pre-existing critical safety only with structured late-discovery evidence and direct human route.
-- [ ] Include active deferred/accepted-risk decisions; require `priorDecisionId` and material `newEvidence` to re-raise.
-- [ ] Direct adjacent hardening, polish, speculative risk, unrelated debt, and ordinary missed issues to a nonblocking follow-up section, excluded from `items[]`.
-- [ ] Render strict “must”/fail-closed prose only for pinned enforced runs. Advisory asks for the same evidence for calibration but states violations become diagnostics and preserve v1 routing.
+- [x] Replace broad re-review language with top-level `priorFindings[]` closure outcomes first; tell the reviewer that only partial/open findings are repeated in `items[]` under the same ID.
+- [x] Permit a new ordinary blocker only with exact `introducedBy` range/hunk/explanation from the appended plan diff.
+- [x] If the rendered patch is truncated, include omitted hunk headers and the exact command to inspect the full plan-only diff used by validation.
+- [x] Permit pre-existing critical safety only with structured late-discovery evidence and direct human route.
+- [x] Include active deferred/accepted-risk decisions; require `priorDecisionId` and material `newEvidence` to re-raise.
+- [x] Direct adjacent hardening, polish, speculative risk, unrelated debt, and ordinary missed issues to a nonblocking follow-up section, excluded from `items[]`.
+- [x] Render strict “must”/fail-closed prose only for pinned enforced runs. Advisory asks for the same evidence for calibration but states violations become diagnostics and preserve v1 routing.
 
 ### 7.3 Author correction prompt — `src/templates/author-process-plan-review.md`
 
-- [ ] Add the generated “Governing decisions” block from Phase 6: deferred IDs not to implement, retained/removed scope, re-estimate request, and governing baseline.
-- [ ] Instruct the author to update `Addresses` only for incorporated findings and never silently reintroduce removed/deferred scope.
-- [ ] Add render tests for fresh/continued native and invoke paths; free-text `user_notes` is not the source of governing decisions.
+- [x] Add the generated “Governing decisions” block from Phase 6: deferred IDs not to implement, retained/removed scope, re-estimate request, and governing baseline.
+- [x] Instruct the author to update `Addresses` only for incorporated findings and never silently reintroduce removed/deferred scope.
+- [x] Add render tests for fresh/continued native and invoke paths; free-text `user_notes` is not the source of governing decisions.
 
 ### 7.4 Skills — `src/skills/base/5x-plan-review/SKILL.tmpl.md`, `5x-plan/SKILL.tmpl.md`
 
-- [ ] Read `data.result.governance.route` after validation/recording in enforced active runs; never infer gates from reviewer prose or recompute thresholds.
-- [ ] Branch `complete`, `author_revision`, `final_corrections`, and `human_gate`. Final corrections invoke one author pass, verify commit/plan parse, record completion, and skip reviewer re-entry.
-- [ ] For `human_gate`, present the notification plus `5x review decide` choices; never answer it through generic `5x prompt`. Resume from `routeAfterDecision` returned by `review gate show/decide`, not from stale reviewer readiness or prose.
-- [ ] Render commands using the Phase 5 contract: simple decisions use `--gate`, `--choice`, `--rationale`, and choice-required repeatable flags, passing only the displayed finding ID to `--finding`; the CLI resolves its fingerprint. Complex/adapted payloads use `--gate ... --input-json -` with the ID/fingerprint pair returned by `review gate show`. Derive required fields from `requiredFieldsByChoice`, not a duplicated skill-side matrix.
-- [ ] Branch post-decision `complete`, `author_revision`, `final_corrections`, successor `human_gate`, and `aborted` explicitly. In delegated noninteractive contexts return `needs_human` instead of opening an interactive prompt.
-- [ ] Keep `maxReviewIterations` as backstop for unresolved closure cycles and read it from resolved config.
-- [ ] Preserve advisory/off behavior and mid-review v1 compatibility.
-- [ ] Update skill/template snapshots and harness freshness content hashes through the existing generator; do not hand-edit installed user assets.
+- [x] Read `data.result.governance.route` after validation/recording in enforced active runs; never infer gates from reviewer prose or recompute thresholds.
+- [x] Branch `complete`, `author_revision`, `final_corrections`, and `human_gate`. Final corrections invoke one author pass, verify commit/plan parse, record completion, and skip reviewer re-entry.
+- [x] For `human_gate`, present the notification plus `5x review decide` choices; never answer it through generic `5x prompt`. Resume from `routeAfterDecision` returned by `review gate show/decide`, not from stale reviewer readiness or prose.
+- [x] Render commands using the Phase 5 contract: simple decisions use `--gate`, `--choice`, `--rationale`, and choice-required repeatable flags, passing only the displayed finding ID to `--finding`; the CLI resolves its fingerprint. Complex/adapted payloads use `--gate ... --input-json -` with the ID/fingerprint pair returned by `review gate show`. Derive required fields from `requiredFieldsByChoice`, not a duplicated skill-side matrix.
+- [x] Branch post-decision `complete`, `author_revision`, `final_corrections`, successor `human_gate`, and `aborted` explicitly. In delegated noninteractive contexts return `needs_human` instead of opening an interactive prompt.
+- [x] Keep `maxReviewIterations` as backstop for unresolved closure cycles and read it from resolved config.
+- [x] Preserve advisory/off behavior and mid-review v1 compatibility.
+- [x] Update skill/template snapshots and harness freshness content hashes through the existing generator; do not hand-edit installed user assets.
 
 ---
 

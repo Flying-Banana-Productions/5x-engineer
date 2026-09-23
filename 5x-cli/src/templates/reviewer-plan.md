@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 5
+version: 6
 variables: [plan_path, review_path, review_template_path, run_id]
 step_name: "reviewer:review"
 variable_defaults:
@@ -20,7 +20,9 @@ You are a Staff Engineer reviewing the implementation plan at `{{plan_path}}`.
 
 1. Read the implementation plan at `{{plan_path}}` thoroughly.
 2. Read all related design documentation and existing implementation referenced in the plan.
-3. Review the plan from a Staff Engineer perspective.
+3. Perform one exhaustive pass across every material requirement and known
+   failure path. Report every blocking finding now; do not intentionally defer
+   a known finding to a later review round.
 4. Write your review to `{{review_path}}`.
 
 ### Review Perspective
@@ -34,21 +36,33 @@ Evaluate the plan across these dimensions:
 - **Testability**: Is the test strategy sufficient? Are the right types of tests planned?
 - **Risks**: What could go wrong? Are there unaddressed failure modes?
 - **Scope**: Is the scope appropriate? Should anything be added or removed?
-- **Delivery budget (active runs only)**: When the plan has `## Delivery Budget` and the workflow context indicates budgeting is active, independently estimate the initial accepted scope's effort; do not copy or sum a plan total. Check stable `Wn` / `DCn` IDs, `Addresses`, scores, and complete debt evidence. Every negative author row needs coupling, target phase, minimal-compliant effort/architecture deltas, and concrete non-empty before/after states. Skip this dimension in mode off or `v1_compat`.
+- **Delivery budget (active runs only)**: When the plan has `## Delivery Budget` and the workflow context indicates budgeting is active, independently estimate the initial accepted scope's effort; do not copy or sum a plan total. Check stable `Wn` / `DCn` IDs, `Addresses`, scores, and complete debt evidence. Every negative author row needs coupling, target phase, minimal-compliant effort/architecture deltas, and concrete non-empty before/after states. Assess whether each claimed simplification is intrinsically coupled and whether its `After` state is genuinely simpler than the minimal compliant alternative. Skip this dimension in mode off or `v1_compat`.
 
 ### Delivery Budget Verdict Fields
 
 When the plan has a `## Delivery Budget` and the workflow context indicates budgeting is active, this is the initial budget review: emit exactly one `--baseline-assessment` with your independent effort estimate `I`, confidence, and reason. Assess every author-ledger `DCn` on this first active review with a repeatable `--credit-assessment`; the assessment names the persisted claim and does not repeat or invent its evidence. When review-budget mode is off or the run is `v1_compat` / has no Delivery Budget, omit all budget-specific verdict fields and use the v1 review contract.
 
-Every review item must keep a stable ID across later reviews and include `scopeClass` (`acceptance_required`, `risk_reduction`, or `polish`), non-negative integer `effortDelta`, allowed `architectureDelta`, and `estimateConfidence`. Include `coupling` when architecture delta is negative. An optional item `creditClaim` is only for a debt claim introduced by that finding and must contain `creditClaimId`, `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty `before` / `after`; never use it to copy an author-ledger `DCn`.
+Every review item must keep a stable ID across later reviews and include `scopeClass` (`acceptance_required`, `risk_reduction`, or `polish`), non-negative integer `effortDelta`, allowed `architectureDelta`, and `estimateConfidence`. It must also name the concrete correctness, security, data-loss, acceptance, or delivery failure that the correction prevents in `failure`, and the lowest-cost adequate correction in `lowestCostCorrection`. Include `coupling` when architecture delta is negative. An optional item `creditClaim` is only for a debt claim introduced by that finding and must contain `creditClaimId`, `targetPhase`, minimal-compliant effort/architecture deltas, and non-empty `before` / `after`; never use it to copy an author-ledger `DCn`.
 
-Do not author budget totals or CLI-owned fields, including `budget`, `budgetBand`, `budgetAlerts`, `requiresHuman`, `B0`, `B`, `W`, `R`, `S`, `N`, `D`, `E`, `A`, `P`, `projectedEffort`, or `baselineDirection`. Budget telemetry is advisory only: retain the existing `auto_fix` / `human_required` meaning and readiness rules below; do not change readiness because a forecast may require human attention.
+Do not author budget totals, routes, or CLI-owned fields, including `governance`, `reviewRoute`, `normalizedReadiness`, `gateCauses`, `budget`, `budgetBand`, `budgetAlerts`, `requiresHuman`, `B0`, `B`, `W`, `R`, `S`, `N`, `D`, `E`, `A`, `P`, `projectedEffort`, or `baselineDirection`. The CLI derives totals, normalized readiness, and routing.
+
+Read the appended `Plan-review governance context` when present. In pinned
+`enforced` mode the structured evidence requirements in this prompt are strict
+and validation fails closed. In pinned `advisory` mode provide the same
+evidence for calibration, but violations become diagnostics and the existing
+v1 readiness/action route is preserved. Mode off and `v1_compat` use the v1
+contract.
 
 ### Review Format
 
 If `{{review_path}}` already exists (prior review), append your assessment as a new **Addendum** section following the existing review template conventions. Do not modify the existing review content.
 
 If `{{review_path}}` does not exist, create a new review document. Look for a review template at `{{review_template_path}}` and follow its structure. If no template exists, use a clear structured format with Summary, Strengths, and prioritized issues (P0/P1/P2).
+
+Put adjacent hardening, polish, speculative risks, and unrelated debt that do
+not block the accepted plan in a clearly labeled **Nonblocking follow-ups**
+section of the review Markdown. Do not include those observations in structured
+`items[]`; they do not affect readiness or routing.
 
 ### Issue Classification
 
@@ -94,7 +108,12 @@ Common mechanical fixes that are `auto_fix`, NOT `human_required`:
 Provide an overall readiness assessment:
 
 - **ready**: Plan is ready for implementation as-is.
-- **ready_with_corrections**: Plan needs corrections but they are all mechanical (auto_fix). No human judgment needed. Use this when only low-priority cosmetic `auto_fix` items remain.
+- **ready_with_corrections**: Plan needs one final bounded mechanical pass. Use
+  this only when every item is `auto_fix`, combined remaining effort is at most
+  one point, every architecture delta is zero, no item requires reviewer
+  verification, and no critical-safety or prior-decision exception is involved.
+  The CLI also checks the effective ceiling. This route skips another review;
+  otherwise use `not_ready`.
 - **not_ready**: Plan has fundamental issues requiring human decisions or significant rework. Reserve this for blockers or items that require `human_required` action.
 
 ## Non-Interactive Execution
@@ -116,7 +135,7 @@ When your review is complete, produce your structured verdict by running:
     5x protocol emit reviewer --no-ready \
       --baseline-assessment '{"independentEffortEstimate":8,"confidence":"medium","reason":"Independent estimate from the accepted implementation scope"}' \
       --credit-assessment '{"creditClaimId":"DC0","eligibility":"eligible","coupling":"intrinsic","reason":"The persisted simplification is intrinsic to W2"}' \
-      --item '{"id":"P1.1","title":"...","action":"auto_fix","reason":"...","scopeClass":"acceptance_required","effortDelta":2,"architectureDelta":0,"estimateConfidence":"high"}' \
+      --item '{"id":"P1.1","title":"...","action":"auto_fix","reason":"...","scopeClass":"acceptance_required","effortDelta":2,"architectureDelta":0,"estimateConfidence":"high","failure":"Concrete failure prevented","lowestCostCorrection":"Lowest-cost adequate correction"}' \
       --summary "..."
 
 Use `--ready` or `--no-ready`. Items imply corrections (`--ready` + items → `ready_with_corrections`).

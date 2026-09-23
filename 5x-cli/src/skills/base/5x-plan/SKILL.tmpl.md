@@ -45,6 +45,10 @@ timeout handling.
   invariant violation; re-invoke without `--session`
 {{/if}}
 - Read `maxReviewIterations` from `5x config show` for the review loop limit
+- Once review budgeting is active, its mode is pinned to the run baseline.
+  Enforced review routing comes only from the recorded
+  `.data.result.governance.route`; never recompute thresholds or infer a route
+  from reviewer prose. Advisory/off and `v1_compat` preserve v1 routing.
 - `run init --worktree` automatically skips the dirty-worktree check
   (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
   if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`
@@ -172,7 +176,12 @@ Check the result:
 
 This is the same pattern as the 5x-plan-review skill.
 Execute the review loop from that skill starting at Step 1 (Review),
-using the same $RUN (do not create a new run).
+using the same $RUN (do not create a new run). Preserve every governance
+branch from that skill: `complete`, `author_revision`, one-pass
+`final_corrections` without reviewer re-entry, and typed `human_gate` handling
+through `5x review gate show` / `5x review decide`. Resume from the CLI-returned
+post-decision route, including successor `human_gate` and `aborted`; never use
+generic `5x prompt` to answer an enforced review gate.
 
 ### Step 4: Complete
 
