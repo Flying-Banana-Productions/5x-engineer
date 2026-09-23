@@ -67,3 +67,30 @@ None.
 
 **P2**
 - [ ] Anchor archived-run `run state` review-budget mode to the plan directory config
+
+---
+
+## Addendum (September 23, 2026) — R1 fix verified
+
+**Reviewed:** `aa66753b9674f0c10d0fdf4e11b8c14ef6375452` (one commit since `5745956`: `fix: address R1 archived review budget policy context`)
+
+### What's addressed (✅)
+
+- **P2 — Archived-run `run state` path still uses CWD policy**: **Addressed.** In the `run state --plan` git-record fallback (`src/commands/run-v1.handler.ts:2199-2205`), the handler now resolves `const { config: planConfig } = await resolveLayeredConfig(projectRoot, dirname(planPath))` before the review-budget block, exactly the fix suggested in the prior review. Both call sites that previously read the CWD-anchored `config.reviewBudget.mode` — the gating condition (`run-v1.handler.ts:2206`) and the `mode` passed into `tryBuildReviewBudgetState` (`run-v1.handler.ts:2277`) — now use `planConfig.reviewBudget.mode`. `dirname` and `resolveLayeredConfig` were already imported in this file, so no import changes were needed. The inline comment ("No live run context exists here; anchor current policy to the known plan, while durable baselines below continue to pin their own policy") correctly documents the intent and keeps the pinned-baseline path untouched — `tryBuildReviewBudgetState`/`tryDeriveGoverningReviewState` still derive from the archived baseline snapshot when one exists, so this change only affects the no-baseline / mode-selection path, matching the scope of the original finding.
+- **Test coverage**: The new parameterized test (`test/integration/commands/review-budget.test.ts`, `archived run state uses plan-local policy from either CWD ... with a pinned baseline` / `without a baseline`) reproduces the exact scenario described in the finding: a subproject plan (`app/`) with a plan-local `5x.toml.local` override, a run archived out of the DB (`DELETE FROM runs WHERE id = ?` + `git commit`), and `run state --plan` invoked from both the root and the subproject CWD. It asserts identical, plan-anchored results from both CWDs across `mode = "advisory"` (expects `status: "uninitialized"`, `mode: "advisory"`) and `mode = "off"` (expects `review_budget` to be `undefined`), and separately confirms a pinned baseline (`mode: "enforced"`) survives later config changes to `advisory`/`off`. This is a faithful regression test for the reported bug — before the fix, the root-CWD invocation would have resolved the root's `5x.toml` (`mode = "off"` per `setup(..., "off", "app")`) instead of the subproject's override, producing a different result than the `app` CWD invocation.
+
+### Remaining concerns
+
+- None blocking. The cosmetic observation from the prior review (potential duplicate `console.error` config-deprecation warnings when `createReviewBudgetContext` re-resolves layered config that render/invoke already resolved once) was not addressed and was not expected to be — it was explicitly flagged as "no action required" and is unrelated to this fix.
+
+### Verification
+
+- `bun test test/integration/commands/review-budget.test.ts` — 12 pass / 0 fail (up from 10; the two new parameterized cases pass).
+- `bun test` (full suite) — 3606 pass / 0 fail across 230 files (up from 3604, consistent with the two new tests; no regressions).
+- `tsc --noEmit` — clean.
+
+### Updated readiness
+
+- **R1 (archived-run review-budget policy consistency):** ✅ Resolved, with a matching regression test.
+- **Phase 9 completion:** ✅ — no open P0/P1/P2 items remain from this review chain.
+- **Ready for next phase:** ✅
