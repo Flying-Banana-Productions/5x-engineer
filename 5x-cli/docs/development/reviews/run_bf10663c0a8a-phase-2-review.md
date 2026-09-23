@@ -79,6 +79,36 @@ Probe: `5x protocol validate reviewer --input v.json` with a well-formed `implem
 - [x] None
 
 **P1 recommended**
-- [ ] P1.1 Invalid amendment chain disables text-only span authorization
-- [ ] P1.2 Plan-contract fields rejected in bound implementation phases
-- [ ] P1.3 Standalone validate accepts structurally valid implementation verdicts without a phase
+- [x] P1.1 Invalid amendment chain disables text-only span authorization
+- [x] P1.2 Plan-contract fields rejected in bound implementation phases
+- [x] P1.3 Standalone validate accepts structurally valid implementation verdicts without a phase
+
+---
+
+## Addendum (2026-09-23) — Fail-open fixes verified
+
+**Reviewed:** `3e9c08d1212779e6b9f4407b8c244bb9f23cbea3` (one commit since `dd592d5b`)
+
+**Local verification:** `bun test` in `5x-cli/`: 3664 pass, 0 fail (up from 3650). `bun run typecheck`: clean. `bun run lint`: clean. I re-ran my original three probes directly against `validateImplementationReview` and, for P1.3, against the CLI binary; all three now behave as required (see below).
+
+### What's addressed (✅)
+
+- **P1.1 — Malformed amendment chain no longer authorizes text-only spans**: `implementation.ts` now checks `amendments.length > 0 && !drift.chainValid` *before* calling `resolvePlanImpactSpans`, and skips span resolution entirely in that case, pushing an `error`-severity `PLAN_IMPACT_NOT_AUTHORIZED` diagnostic instead of the prior `info`. Re-probe with a malformed chain (bad `parentLineageId`) against a real `plan_defect`/`text_only` item: `exemptionAuthorized: false`, `spans: []`, route `human_gate`, diagnostic `PLAN_IMPACT_NOT_AUTHORIZED:error`. New unit tests cover both the malformed-chain rejection and a valid chain moving the authorized anchor so `staleText` resolves only in the amended bytes. Fully addressed.
+
+- **P1.2 — Plan-contract fields rejected in bound implementation phases**: the `certifying && planContract` check moved ahead of the `!implementationContract` early-return, so it is now reachable. `protocol.handler.ts` also now runs contextual validation whenever `verdictUsesPlanContract(verdict)` is true and the phase is a known non-plan phase, not only when an implementation contract is present — closing the path where the handler never called the validator at all. Re-probe with an enforced binding and a pure `polish`-scoped item at phase 1: `valid: false`, `fatalCode: "PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE"`. New unit tests exercise `polish` scopeClass, `baselineAssessment`, `creditAssessments`, and a plan `creditClaim`, each correctly rejected when a binding exists (`certifying`), and correctly left permissive for `off`, `compatibility`, and no-binding (`standalone`) cases — matching the exact remediation this review requested ("reject before the early return when a binding exists ... keep v1/off acceptance"). Fully addressed. I also traced the one remaining permissive edge (plan-contract verdict at a known numeric phase with config mode `enforced` but no binding yet resolvable, i.e. `certifying === false`): the code still accepts it via the `!implementationContract` standalone branch. This is intentional per the fix's own doc comment and matches what I asked for — it is not a new gap, since certifying is exactly the signal that a binding truly ties this phase to implementation governance.
+
+- **P1.3 — Standalone validate no longer rejects a phase-less implementation verdict**: a new `hasRun` input flag lets `validateImplementationReview` distinguish "genuinely standalone" (`hasRun === false`) from "run-aware but the phase resolution failed" (`hasRun` true/omitted, still fatal `UNKNOWN_PHASE` — correctly fail-closed by default). `protocol.handler.ts` passes `hasRun: Boolean(params.run)`. Direct CLI re-probe: `5x protocol validate reviewer --input v.json` (no `--run`, no `--phase`) now returns `{"ok":true,...}` with an `IMPLEMENTATION_CONTEXT_MISSING` info warning, instead of the prior `UNKNOWN_PHASE` fatal. Fully addressed.
+
+### Bonus fixes beyond the three P1 items
+
+- **P2.1 (handler test coverage)**: the revision adds CLI/handler-level tests for the binding-pinned-mode-overrides-config case, an advisory binding overriding enforced config, the compatibility→v1 path, advisory/enforced with no binding, `PHASE_MISMATCH`, and `RecordContextError` with and without `--record` — the exact gaps this review flagged as P2.1. Addressed.
+- **P2.2 (duplicated phase-conflict check)**: the handler's standalone `params.phase`/`envelopePhase` mismatch check was removed; `PHASE_MISMATCH` is now raised solely inside `validateImplementationReview` (confirmed by the retained "a phase flag that conflicts with the envelope phase is rejected once" test). Addressed.
+
+### Remaining concerns
+
+None from the prior review. No new issues were introduced by this revision — the diff is scoped to the three validator paths and their tests, and the full suite (3664 tests, up from 3650) is green with no regressions in plan-phase or v1-compatibility behavior.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — all three P1 blockers are verified fixed by direct re-probe, not just by trusting the new tests.
+- **Ready for next phase:** ✅ — no outstanding P0/P1 items. Only the pre-existing P2 polish items from the original review (fingerprint `linkage.phase` threading, deferred to Phase 4; provider schema no longer constraining plan `architectureDelta` magnitudes client-side) remain, and both are unchanged by this revision.
