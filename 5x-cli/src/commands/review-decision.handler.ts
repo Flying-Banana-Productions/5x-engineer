@@ -82,6 +82,12 @@ export interface ReviewDecisionDeps {
 		rationale: string;
 		context: ReviewBudgetCommandContext;
 	}) => Promise<void>;
+	/**
+	 * Runs after the requested gate is not the open gate and before the
+	 * decision stream is re-read. Concurrent same-intent writers commit in
+	 * this window; production callers omit it.
+	 */
+	onOpenGateMiss?: () => void | Promise<void>;
 }
 
 export async function showPlanReviewGate(
@@ -593,7 +599,9 @@ export async function submitPlanReviewDecision(
 	const gate = governance.deriveOpenGate(input.runId);
 	if (!gate || gate.gateId !== input.gateId) {
 		// The other process can commit between the first read and this
-		// derivation. Same-intent losers must observe that winner.
+		// derivation, or between this miss and the re-read below.
+		// Same-intent losers must observe that winner.
+		if (deps.onOpenGateMiss) await deps.onOpenGateMiss();
 		const raced = readDecision();
 		if (raced) return acceptStoredWinner(raced);
 		fail(
