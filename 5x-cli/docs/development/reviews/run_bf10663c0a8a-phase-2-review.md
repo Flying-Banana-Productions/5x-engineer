@@ -112,3 +112,26 @@ None from the prior review. No new issues were introduced by this revision — t
 
 - **Phase 2 completion:** ✅ — all three P1 blockers are verified fixed by direct re-probe, not just by trusting the new tests.
 - **Ready for next phase:** ✅ — no outstanding P0/P1 items. Only the pre-existing P2 polish items from the original review (fingerprint `linkage.phase` threading, deferred to Phase 4; provider schema no longer constraining plan `architectureDelta` magnitudes client-side) remain, and both are unchanged by this revision.
+
+---
+
+## Addendum (2026-09-23, later same day) — Remaining P2 items verified
+
+**Reviewed:** `4e59d55c2d36ca649e7d24ad8eff6e89d35fc95a` (one commit since `63ccbe96`)
+
+**Local verification:** `bun test` in `5x-cli/`: 3667 pass, 0 fail (up from 3664). `bun run typecheck`: clean. `bun run lint`: clean. I re-ran independent probes against `reviewerProviderSchema`, `canonicalFindingFingerprint`, and `validateImplementationReview` rather than relying solely on the new tests; both P2 items behave as required (see below).
+
+### What's addressed (✅)
+
+- **P2.1 — Fingerprint `linkage.phase` threading**: a new `fingerprintImplementationVerdictItem(item, admittedPhase, fallback?)` helper wraps `fingerprintVerdictItem` and requires a numeric admitted phase (matching `canonicalPhaseId`'s own numeric/`phase-N` grammar), throwing `TypeError` otherwise. `canonicalFindingFingerprint` now throws the same way for any implementation-scoped item with no admitted phase, closing the silent-empty-phase gap. `classify()` in `review-governance/implementation.ts` now populates `governance.findingIdentities` — one `{ findingId, phase, planWorkItemIds, fingerprint }` entry per implementation-scoped item, computed with the admitted phase that already flows through `validateImplementationReview`. Re-probe: `validateImplementationReview({ verdict, phase: "2", mode: "advisory" })` returns `governance.findingIdentities` with `phase: "2"` and a real SHA-256 fingerprint; calling `canonicalFindingFingerprint` directly with an implementation scope class and no phase throws `"Implementation fingerprints require an admitted numeric phase."` New unit tests confirm phase 2 vs. phase 3 fingerprints differ for an otherwise-identical item, and that the two throwing paths are covered. `review-budget/apply.ts` also gained a defensive `BUDGET_ITEM_FIELDS_REQUIRED` rejection of implementation-scoped items before they could ever reach the plan-only `fingerprintVerdictItem` call sites (`routing.ts`, `closure.ts`, `review-decision.handler.ts`), so none of the pre-existing plan-fingerprint call sites can be reached with an implementation item today. This is a reasonable, minimal Phase-2-scoped fix; Phase 4's observation writer still needs to consume `governance.findingIdentities` (or call the new helper directly) when it starts persisting implementation findings — that wiring is out of Phase 2's scope and not a gap in this revision. Fully addressed.
+
+- **P2.2 — Provider schema no longer constraining plan `architectureDelta`**: `reviewerVerdictSchemaFor` now takes an explicit `domain: "plan" | "implementation"` (defaulting to `"plan"` for backward compatibility) and re-adds the `ARCHITECTURE_DELTAS` enum for plan schemas while leaving implementation schemas as an unrestricted signed integer. A new `reviewerProviderSchema({ phaseId, baselineAssessment, planReviewTemplate })` selects the domain from the admitted phase (falling back to the union `ReviewerVerdictSchema` when the phase is unresolved), and `invoke.handler.ts` now calls it with `admittedPhase = canonicalPhaseId(recordPhase)` instead of unconditionally using `reviewerVerdictSchemaFor(baselineContract)` (which previously always got the union schema regardless of domain). Re-probe: `reviewerProviderSchema({ phaseId: "plan", baselineAssessment: "required" })` restores the `enum: [-5,-3,-2,-1,0,1,2,3,5]` constraint; `reviewerProviderSchema({ phaseId: "2" })` stays an unconstrained integer. The implementation-domain branch of `reviewerVerdictSchemaFor` also correctly ignores the `baselineAssessment: "required"` contract (no `baselineAssessment` added to `required`), matching the rule that implementation reviews prohibit that field. Fully addressed.
+
+### Remaining concerns
+
+None new. No regressions were introduced — the diff is scoped to the two flagged P2 items plus their tests and one defensive guard in `apply.ts`; the full suite (3667 tests, up from 3664) is green.
+
+### Updated readiness
+
+- **Phase 2 completion:** ✅ — both prior-addendum P2 items are verified fixed by direct re-probe. No open P0/P1/P2 items remain from either the original review or its first addendum.
+- **Ready for next phase:** ✅ — Phase 2 is complete. The one forward-looking note (Phase 4 must consume `governance.findingIdentities` or `fingerprintImplementationVerdictItem` when it persists implementation observations, rather than reintroducing a bare `fingerprintVerdictItem` call) is scope for Phase 4, not a Phase 2 defect.
