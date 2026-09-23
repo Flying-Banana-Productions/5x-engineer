@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createMemoryRecordStore } from "../../../src/control-plane/record-memory.js";
 import type { RecordOrigin } from "../../../src/control-plane/record-types.js";
 import {
@@ -20,7 +23,9 @@ import {
 import {
 	detectPlanDrift,
 	ensureImplementationAdmission,
+	isImplementationAuthorTemplate,
 	mapDebtTargetToPhaseId,
+	planRepoPath,
 	recordVerifiedTextAmendment,
 } from "../../../src/review-governance/implementation-state.js";
 
@@ -151,6 +156,11 @@ function approveSource(
 		head?: string;
 		authorAfter?: { head: string };
 		decision?: boolean;
+		/** Sealed plan commit. Defaults to the approval-evidence commit. */
+		finalHead?: string;
+		/** `run:complete` head. Defaults to `finalHead`. */
+		completeHead?: string;
+		unsealed?: boolean;
 	},
 ) {
 	const parsed = parseDeliveryBudget(markdown);
@@ -232,6 +242,31 @@ function approveSource(
 			...recordedEnvelope(ORIGIN),
 		});
 	}
+	if (!options?.unsealed) {
+		const reviewerHead =
+			options?.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const finalized =
+			options?.finalHead ?? options?.authorAfter?.head ?? reviewerHead;
+		const completeHead = options?.completeHead ?? finalized;
+		appendStep(
+			ctx.recordStore,
+			runId,
+			"run:complete",
+			"plan",
+			1,
+			{ status: "completed", reason: null },
+			completeHead,
+		);
+		const summary = ctx.recordStore.getRun(runId);
+		if (!summary) throw new Error(`source run ${runId} missing`);
+		ctx.recordStore.putRun({
+			...summary,
+			status: "completed",
+			sealed_at: "2026-09-23T00:00:02.000Z",
+			final_head_commit: finalized,
+			sealer: ORIGIN.recorder,
+		});
+	}
 	return { baseline: baseline.baseline, snapshot };
 }
 
@@ -259,6 +294,65 @@ function admit(
 }
 
 describe("implementation execution binding", () => {
+	test("checkbox normalization is limited to task-list markers", () => {
+		const approved = "# Plan\n\n- [ ] Bind\n\nUse arr[x] in code.\n";
+		const checked = approved.replace("- [ ] Bind", "- [x] Bind");
+		expect(
+			detectPlanDrift({
+				approvedPlanBytes: approved,
+				approvedPlanHash: "unused",
+				amendments: [],
+				currentPlanBytes: checked,
+			}).drifted,
+		).toBe(false);
+		expect(
+			detectPlanDrift({
+				approvedPlanBytes: "* [X] Bind\n",
+				approvedPlanHash: "unused",
+				amendments: [],
+				currentPlanBytes: "* [ ] Bind\n",
+			}).drifted,
+		).toBe(false);
+		expect(
+			detectPlanDrift({
+				approvedPlanBytes: approved,
+				approvedPlanHash: "unused",
+				amendments: [],
+				currentPlanBytes: approved.replace("arr[x]", "arr[ ]"),
+			}).drifted,
+		).toBe(true);
+	});
+
+	test("plan repo paths stay inside the control-plane root", () => {
+		const root = mkdtempSync(join(tmpdir(), "5x-plan-repo-path-"));
+		const outside = mkdtempSync(join(tmpdir(), "5x-plan-outside-"));
+		try {
+			const planDir = join(root, "docs", "plans");
+			mkdirSync(planDir, { recursive: true });
+			const planPath = join(planDir, "gov.md");
+			writeFileSync(planPath, "# Plan\n");
+			writeFileSync(join(outside, "gov.md"), "# Plan\n");
+			expect(planRepoPath(planPath, root)).toBe("docs/plans/gov.md");
+			expect(planRepoPath(join(outside, "gov.md"), root)).toBeNull();
+			expect(planRepoPath("../gov.md", root)).toBeNull();
+			expect(planRepoPath("docs/plans/gov.md", root)).toBe("docs/plans/gov.md");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	test("implementation author templates include continued variants", () => {
+		expect(isImplementationAuthorTemplate("author-next-phase")).toBe(true);
+		expect(isImplementationAuthorTemplate("author-next-phase-continued")).toBe(
+			true,
+		);
+		expect(
+			isImplementationAuthorTemplate("author-process-impl-review-continued"),
+		).toBe(true);
+		expect(isImplementationAuthorTemplate("author-generate-plan")).toBe(false);
+	});
+
 	test("maps phase-N and exact numeric targets and rejects arbitrary labels", () => {
 		expect(mapDebtTargetToPhaseId("phase-2", ["1", "2", "2.1"])).toEqual({
 			ok: true,
@@ -400,21 +494,101 @@ describe("implementation execution binding", () => {
 		expect(ctx.captureCalls()).toBe(1);
 	});
 
+	test("anchors approved bytes to the finalized plan commit, not a later HEAD", async () => {
+		const draft = plan();
+		const reviewed = draft.replace(
+			"# Plan\n",
+			"# Plan\n\n**Status:** Reviewed\n",
+		);
+		const noted = `${reviewed}\nPhase 0 verification note.\n`;
+		const reviewerHead = "a".repeat(40);
+		const finalizedHead = "b".repeat(40);
+		const laterHead = "c".repeat(40);
+		const ctx = setup();
+		approveSource(ctx, "source", draft, {
+			head: reviewerHead,
+			finalHead: finalizedHead,
+		});
+		putRun(ctx.recordStore, "exec");
+		const seen: string[] = [];
+		const bound = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: reviewed,
+			read: async (commit) => {
+				seen.push(commit);
+				if (commit === finalizedHead) return reviewed;
+				if (commit === laterHead) return noted;
+				return draft;
+			},
+		});
+		expect(seen).toEqual([finalizedHead]);
+		expect(bound).toMatchObject({
+			status: "bound",
+			binding: {
+				approvedPlanCommit: finalizedHead,
+				approvedPlanBytes: reviewed,
+			},
+		});
+		expect(
+			await admit(ctx, { executionRunId: "exec", markdown: noted }),
+		).toMatchObject({ status: "error", code: "IMPLEMENTATION_PLAN_DRIFT" });
+
+		const unsealed = setup();
+		approveSource(unsealed, "source", draft, { unsealed: true });
+		putRun(unsealed.recordStore, "exec");
+		const open = await admit(unsealed, {
+			executionRunId: "exec",
+			markdown: draft,
+			sourceRunId: "source",
+		});
+		expect(open).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+		if (open.status === "error") {
+			expect(open.message).toContain("finalized plan commit");
+		}
+
+		const mismatched = setup();
+		approveSource(mismatched, "source", draft, {
+			head: reviewerHead,
+			finalHead: laterHead,
+			completeHead: finalizedHead,
+		});
+		putRun(mismatched.recordStore, "exec");
+		const refused = await admit(mismatched, {
+			executionRunId: "exec",
+			markdown: noted,
+			sourceRunId: "source",
+			read: async () => noted,
+		});
+		expect(refused).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+		if (refused.status === "error") {
+			expect(refused.message).toContain("Later HEAD is not approval");
+		}
+		expect(mismatched.store.getImplementationBinding("exec")).toBeNull();
+	});
+
 	test("final corrections require the author commit and then bind that commit", async () => {
 		const markdown = plan();
 		const open = setup();
 		approveSource(open, "source", markdown, { route: "final_corrections" });
 		putRun(open.recordStore, "exec");
-		expect(
-			await admit(open, {
-				executionRunId: "exec",
-				markdown,
-				sourceRunId: "source",
-			}),
-		).toMatchObject({
+		const missingAuthor = await admit(open, {
+			executionRunId: "exec",
+			markdown,
+			sourceRunId: "source",
+		});
+		expect(missingAuthor).toMatchObject({
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
 		});
+		if (missingAuthor.status === "error") {
+			expect(missingAuthor.message).toContain("final author commit");
+		}
 
 		const closed = setup();
 		const authorHead = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -436,6 +610,36 @@ describe("implementation execution binding", () => {
 		expect(bound).toMatchObject({
 			status: "bound",
 			binding: { approvedPlanCommit: authorHead, sourceRunId: "source" },
+		});
+
+		const reviewed = markdown.replace(
+			"# Plan\n",
+			"# Plan\n\n**Status:** Reviewed\n",
+		);
+		const statusHead = "c".repeat(40);
+		const sealed = setup();
+		approveSource(sealed, "source", markdown, {
+			route: "final_corrections",
+			authorAfter: { head: authorHead },
+			finalHead: statusHead,
+		});
+		putRun(sealed.recordStore, "exec");
+		const statusSeen: string[] = [];
+		const statusBound = await admit(sealed, {
+			executionRunId: "exec",
+			markdown: reviewed,
+			read: async (commit) => {
+				statusSeen.push(commit);
+				return commit === statusHead ? reviewed : markdown;
+			},
+		});
+		expect(statusSeen).toEqual([statusHead]);
+		expect(statusBound).toMatchObject({
+			status: "bound",
+			binding: {
+				approvedPlanCommit: statusHead,
+				approvedPlanBytes: reviewed,
+			},
 		});
 	});
 

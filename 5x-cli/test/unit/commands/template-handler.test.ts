@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RecordContextError } from "../../../src/commands/record-context.js";
 import { templateRender } from "../../../src/commands/template.handler.js";
 import { _resetForTest, closeDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
@@ -125,6 +126,86 @@ describe("templateRender review-budget dependencies", () => {
 			expect(author).not.toContain("## Plan-review governance context");
 		} finally {
 			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("sqlite-only budgeted render requires approval and mode-off does not", async () => {
+		_resetForTest();
+		const dir = join(
+			tmpdir(),
+			`5x-template-admission-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		mkdirSync(dir, { recursive: true });
+		Bun.spawnSync(["git", "init"], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		mkdirSync(join(dir, ".5x"), { recursive: true });
+		const planPath = join(dir, "plan.md");
+		writeFileSync(
+			planPath,
+			`# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+- [ ] Bind
+`,
+		);
+		writeFileSync(join(dir, "5x.toml"), '[reviewBudget]\nmode = "advisory"\n');
+		const db = new Database(join(dir, ".5x", "5x.db"));
+		runMigrations(db);
+		createRunV1(db, { id: "run1", planPath });
+		db.close();
+		const missingRecords = async () => {
+			throw new RecordContextError(
+				"RECORDS_UNAVAILABLE",
+				"sqlite-only run has no record home",
+			);
+		};
+		try {
+			await expect(
+				templateRender(
+					{
+						template: "author-next-phase",
+						run: "run1",
+						workdir: dir,
+						vars: [`plan_path=${planPath}`, "phase_number=1"],
+					},
+					{ createReviewBudgetContext: missingRecords },
+				),
+			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
+
+			writeFileSync(join(dir, "5x.toml"), '[reviewBudget]\nmode = "off"\n');
+			await templateRender(
+				{
+					template: "author-next-phase",
+					run: "run1",
+					workdir: dir,
+					vars: [`plan_path=${planPath}`, "phase_number=1"],
+				},
+				{ createReviewBudgetContext: missingRecords },
+			);
+		} finally {
 			closeDb();
 			_resetForTest();
 			rmSync(dir, { recursive: true, force: true });

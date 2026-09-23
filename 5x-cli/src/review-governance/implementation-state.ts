@@ -7,7 +7,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { createReviewBudgetId } from "../control-plane/ids.js";
 import type { RecordStore } from "../control-plane/record-store.js";
 import {
@@ -22,7 +22,7 @@ import type {
 import { gitShowFile } from "../git.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
-import { planSlugFromPath } from "../paths.js";
+import { planSlugFromPath, relativePathUnder } from "../paths.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import {
@@ -90,8 +90,36 @@ function hashJson(value: unknown): string {
 	return hashPlanBytes(stableStringify(value));
 }
 
+/** Ignore checkbox toggles on Markdown task-list items only. */
 export function normalizeCheckboxState(markdown: string): string {
-	return markdown.replace(/\[[ xX]\]/g, "[ ]");
+	return markdown.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]");
+}
+
+/**
+ * Repo-relative plan path for `git show`. Canonical plan paths are relativized
+ * against the control-plane root. A path that escapes that root is unavailable;
+ * worktree-absolute paths are not rewritten into `../` git specs.
+ */
+export function planRepoPath(
+	planPath: string,
+	repoRoot: string,
+): string | null {
+	if (isAbsolute(planPath)) {
+		const rel = relativePathUnder(planPath, repoRoot);
+		if (!rel) return null;
+		const normalized = rel.replace(/\\/g, "/");
+		if (normalized === "" || normalized.split("/").includes("..")) return null;
+		return normalized;
+	}
+	const normalized = planPath.replace(/\\/g, "/").replace(/^\.\//, "");
+	if (
+		normalized === "" ||
+		normalized.startsWith("../") ||
+		normalized.split("/").includes("..")
+	) {
+		return null;
+	}
+	return normalized;
 }
 
 export function planPathsIdentifySamePlan(
@@ -222,12 +250,10 @@ export async function showPlanAtCommit(
 	workdir: string,
 	commit: string,
 	planPath: string,
+	options?: { repoRoot?: string },
 ): Promise<string | null> {
-	const absolute = isAbsolute(planPath) ? planPath : resolve(workdir, planPath);
-	let repoPath = relative(workdir, absolute).replace(/\\/g, "/");
-	if (repoPath.startsWith("../") || repoPath === "") {
-		repoPath = planPath.replace(/\\/g, "/").replace(/^\.\//, "");
-	}
+	const repoPath = planRepoPath(planPath, options?.repoRoot ?? workdir);
+	if (!repoPath) return null;
 	try {
 		return await gitShowFile(workdir, commit, repoPath, {
 			strict: true,
@@ -329,6 +355,8 @@ export async function ensureImplementationAdmission(input: {
 	origin: RecordOrigin;
 	explicitSourceRunId?: string;
 	workdir?: string;
+	/** Control-plane root used to relativize the canonical plan path. */
+	controlPlaneRoot?: string;
 	readPlanAtCommit?: (commit: string) => Promise<string | null>;
 }): Promise<ImplementationAdmissionResult> {
 	const existing = readBinding(input.store, input.executionRunId);
@@ -391,7 +419,11 @@ export async function ensureImplementationAdmission(input: {
 		input.readPlanAtCommit ??
 		(input.workdir
 			? (commit: string) =>
-					showPlanAtCommit(input.workdir as string, commit, input.planPath)
+					showPlanAtCommit(input.workdir as string, commit, input.planPath, {
+						...(input.controlPlaneRoot
+							? { repoRoot: input.controlPlaneRoot }
+							: {}),
+					})
 			: undefined);
 	if (!readAtCommit) {
 		return {
@@ -614,6 +646,10 @@ function assessApprovedSource(input: {
 		};
 	}
 	const steps = input.recordStore.listLines(input.sourceRunId, "steps");
+	const parsedSteps = steps.flatMap((line) => {
+		const payload = stepPayload(line.payload);
+		return payload ? [payload] : [];
+	});
 	const budget = input.recordStore.listLines(input.sourceRunId, "budget");
 	const governing = foldGoverningReviewState({
 		b0: baseline.b0,
@@ -639,7 +675,7 @@ function assessApprovedSource(input: {
 		};
 	}
 	const route = terminalRoute({
-		steps,
+		steps: parsedSteps,
 		snapshot,
 		baselineB0: baseline.b0,
 		thresholds: baseline.configSnapshot,
@@ -647,6 +683,10 @@ function assessApprovedSource(input: {
 	});
 	if (!route.approvedCommit) {
 		return { status: "ok", approval: null, refusal: route.refusal };
+	}
+	const finalized = resolveFinalizedPlanCommit(summary, parsedSteps);
+	if (!finalized.commit) {
+		return { status: "ok", approval: null, refusal: finalized.refusal };
 	}
 	return {
 		status: "ok",
@@ -660,22 +700,49 @@ function assessApprovedSource(input: {
 			thresholds: structuredClone(baseline.configSnapshot),
 			ledger: structuredClone(snapshot.currentLedger),
 			decisions: structuredClone(governing.history),
-			approvedCommit: route.approvedCommit,
+			approvedCommit: finalized.commit,
 		},
 	};
 }
 
+/**
+ * Approved plan bytes are the source run's sealed plan commit, which includes
+ * the workflow status update recorded before `run:complete`. Terminal approval
+ * is validated separately. A later git HEAD is not an approval anchor.
+ */
+function resolveFinalizedPlanCommit(
+	summary: { status: string; final_head_commit: string | null },
+	steps: readonly StepRecordPayload[],
+): { commit: string | null; refusal: string } {
+	if (summary.status !== "completed" || !summary.final_head_commit) {
+		return {
+			commit: null,
+			refusal:
+				"Source plan review has no finalized plan commit. Terminal approval alone is not an approved plan byte anchor.",
+		};
+	}
+	const complete = [...steps]
+		.reverse()
+		.find((payload) => payload.step_name === "run:complete");
+	const recorded = complete ? commitOf(complete) : null;
+	if (!recorded || recorded !== summary.final_head_commit) {
+		return {
+			commit: null,
+			refusal:
+				"Source plan review final_head_commit does not match the recorded run:complete commit. Later HEAD is not approval.",
+		};
+	}
+	return { commit: summary.final_head_commit, refusal: "" };
+}
+
 function terminalRoute(input: {
-	steps: readonly { payload: unknown }[];
+	steps: readonly StepRecordPayload[];
 	snapshot: ReviewBudgetSnapshotRecord;
 	baselineB0: number;
 	thresholds: ReviewBudgetThresholds;
 	governing: GoverningReviewState;
 }): { approvedCommit: string | null; refusal: string } {
-	const steps = input.steps.flatMap((line) => {
-		const payload = stepPayload(line.payload);
-		return payload ? [payload] : [];
-	});
+	const steps = input.steps;
 	const reviewers = steps.flatMap((payload, index) => {
 		if (
 			payload.phase !== "plan" ||

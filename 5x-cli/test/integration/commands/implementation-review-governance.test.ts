@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -100,7 +101,9 @@ async function initRepo(): Promise<{ dir: string; planPath: string }> {
 
 async function startRun(dir: string, planPath: string): Promise<string> {
 	const runInit = await cli(dir, ["run", "init", "--plan", planPath]);
-	if (runInit.exitCode !== 0) throw new Error(runInit.stderr);
+	if (runInit.exitCode !== 0) {
+		throw new Error(`${runInit.stdout}\n${runInit.stderr}`);
+	}
 	return JSON.parse(runInit.stdout).data.run_id as string;
 }
 
@@ -188,6 +191,7 @@ function bindingPayload(
 		runId,
 		"budget.jsonl",
 	);
+	if (!existsSync(path)) return null;
 	const text = readFileSync(path, "utf8");
 	for (const line of text.split("\n").filter(Boolean)) {
 		const parsed = JSON.parse(line) as { payload?: { kind?: string } };
@@ -227,6 +231,10 @@ describe("implementation execution binding", () => {
 					join(dir, "docs", "development", "runs", "governance", sourceId),
 					{ recursive: true, force: true },
 				);
+				const rebuilt = await cli(dir, ["records", "index"]);
+				if (rebuilt.exitCode !== 0) {
+					throw new Error(`${rebuilt.stdout}\n${rebuilt.stderr}`);
+				}
 				writeFileSync(planPath, planMarkdown(true));
 				const retry = await recordAuthor(dir, executionId, "2");
 				if (retry.exitCode !== 0) {
@@ -323,6 +331,313 @@ describe("implementation execution binding", () => {
 				expect(text).toContain("IMPLEMENTATION_APPROVAL_REQUIRED");
 				expect(text).toContain(first);
 				expect(text).toContain(second);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"keeps the status update inside the finalized plan commit and drifts later notes",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await startRun(dir, planPath);
+				await approvePlan(dir, sourceId);
+				const reviewed = planMarkdown().replace(
+					"# Governance plan\n",
+					"# Governance plan\n\n**Status:** Reviewed\n",
+				);
+				writeFileSync(planPath, reviewed);
+				git(dir, "add", planPath);
+				git(dir, "commit", "-m", "mark reviewed");
+				const finalized = git(dir, "rev-parse", "HEAD");
+				await completeRun(dir, sourceId);
+				const executionId = await startRun(dir, planPath);
+				const bound = await recordAuthor(dir, executionId);
+				if (bound.exitCode !== 0) {
+					throw new Error(`${bound.stdout}\n${bound.stderr}`);
+				}
+				const binding = bindingPayload(dir, executionId);
+				expect(binding?.approvedPlanCommit).toBe(finalized);
+				expect(binding?.approvedPlanBytes).toContain("**Status:** Reviewed");
+
+				writeFileSync(
+					planPath,
+					`${reviewed}\nPhase 0 verification note belongs in the run record.\n`,
+				);
+				const noted = await recordAuthor(dir, executionId, "2");
+				expect(noted.exitCode).not.toBe(0);
+				expect(`${noted.stdout}\n${noted.stderr}`).toContain(
+					"IMPLEMENTATION_PLAN_DRIFT",
+				);
+
+				git(dir, "add", planPath);
+				git(dir, "commit", "-m", "phase 0 note");
+				const later = git(dir, "rev-parse", "HEAD");
+				expect(later).not.toBe(finalized);
+				writeFileSync(planPath, reviewed.replace("- [ ]", "- [x]"));
+				const restored = await recordAuthor(dir, executionId, "3");
+				if (restored.exitCode !== 0) {
+					throw new Error(`${restored.stdout}\n${restored.stderr}`);
+				}
+				expect(bindingPayload(dir, executionId)?.approvedPlanCommit).toBe(
+					finalized,
+				);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"binds a worktree-mapped plan from canonical identity and worktree bytes",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await startRun(dir, planPath);
+				await approvePlan(dir, sourceId);
+				const reviewed = planMarkdown().replace(
+					"# Governance plan\n",
+					"# Governance plan\n\n**Status:** Reviewed\n",
+				);
+				writeFileSync(planPath, reviewed);
+				git(dir, "add", planPath);
+				git(dir, "commit", "-m", "mark reviewed");
+				await completeRun(dir, sourceId);
+				const created = await cli(dir, ["worktree", "create", "-p", planPath]);
+				if (created.exitCode !== 0) {
+					throw new Error(`${created.stdout}\n${created.stderr}`);
+				}
+				const worktree = JSON.parse(created.stdout).data
+					.worktree_path as string;
+				const worktreePlan = join(
+					worktree,
+					"docs",
+					"development",
+					"plans",
+					"governance.md",
+				);
+				expect(readFileSync(worktreePlan, "utf8")).toContain(
+					"**Status:** Reviewed",
+				);
+
+				const executionId = await startRun(dir, planPath);
+				const recorded = await recordAuthor(dir, executionId);
+				if (recorded.exitCode !== 0) {
+					throw new Error(`${recorded.stdout}\n${recorded.stderr}`);
+				}
+				const binding =
+					bindingPayload(worktree, executionId) ??
+					bindingPayload(dir, executionId);
+				expect(binding?.approvedPlanBytes).toContain("**Status:** Reviewed");
+
+				writeFileSync(
+					planPath,
+					reviewed.replace(
+						"| W1 | Required behavior | 2 | 0 | - | - | Implements the requested behavior. |",
+						"| W1 | Required behavior | 9 | 0 | - | - | Implements the requested behavior. |",
+					),
+				);
+				const mainOnly = await recordAuthor(dir, executionId, "2");
+				if (mainOnly.exitCode !== 0) {
+					throw new Error(`${mainOnly.stdout}\n${mainOnly.stderr}`);
+				}
+				writeFileSync(planPath, reviewed);
+
+				writeFileSync(worktreePlan, reviewed.replace("- [ ]", "- [x]"));
+				const checked = await recordAuthor(dir, executionId, "3");
+				if (checked.exitCode !== 0) {
+					throw new Error(`${checked.stdout}\n${checked.stderr}`);
+				}
+
+				writeFileSync(
+					worktreePlan,
+					reviewed.replace(
+						"| W1 | Required behavior | 2 | 0 | - | - | Implements the requested behavior. |",
+						"| W1 | Required behavior | 8 | 0 | - | - | Implements the requested behavior. |",
+					),
+				);
+				const drifted = await recordAuthor(dir, executionId, "4");
+				expect(drifted.exitCode).not.toBe(0);
+				expect(`${drifted.stdout}\n${drifted.stderr}`).toContain(
+					"IMPLEMENTATION_PLAN_DRIFT",
+				);
+				writeFileSync(worktreePlan, reviewed);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					'[reviewBudget]\nmode = "advisory"\n\n[author]\nprovider = "not-a-real-provider"\n',
+				);
+				git(dir, "add", "5x.toml");
+				git(dir, "commit", "-m", "test provider");
+				await completeRun(dir, executionId);
+
+				const renderRun = await startRun(dir, planPath);
+				const rendered = await cli(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					renderRun,
+					"--var",
+					`plan_path=${worktreePlan}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=bind",
+				]);
+				if (rendered.exitCode !== 0) {
+					throw new Error(`${rendered.stdout}\n${rendered.stderr}`);
+				}
+				expect(JSON.parse(rendered.stdout).data.template).toBe(
+					"author-next-phase",
+				);
+				expect(
+					(
+						bindingPayload(worktree, renderRun) ??
+						bindingPayload(dir, renderRun)
+					)?.sourceRunId,
+				).toBe(sourceId);
+				await completeRun(dir, renderRun);
+
+				const invokeRun = await startRun(dir, planPath);
+				const invoked = await cli(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--run",
+					invokeRun,
+					"--var",
+					`plan_path=${worktreePlan}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=bind",
+				]);
+				expect(invoked.exitCode).not.toBe(0);
+				expect(`${invoked.stdout}\n${invoked.stderr}`).toContain(
+					"PROVIDER_NOT_FOUND",
+				);
+				expect(
+					(
+						bindingPayload(worktree, invokeRun) ??
+						bindingPayload(dir, invokeRun)
+					)?.sourceRunId,
+				).toBe(sourceId);
+				await completeRun(dir, invokeRun);
+
+				const explicitRun = await startRun(dir, planPath);
+				const bound = await cli(dir, [
+					"review",
+					"implementation",
+					"bind",
+					"--run",
+					explicitRun,
+					"--source-run",
+					sourceId,
+				]);
+				if (bound.exitCode !== 0) {
+					throw new Error(`${bound.stdout}\n${bound.stderr}`);
+				}
+				expect(JSON.parse(bound.stdout).data).toMatchObject({
+					created: true,
+					sourceRunId: sourceId,
+					executionRunId: explicitRun,
+				});
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60000 },
+	);
+
+	test(
+		"render and invoke gate implementation author templates before delegation",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const executionId = await startRun(dir, planPath);
+				const rendered = await cli(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					executionId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+				]);
+				expect(rendered.exitCode).not.toBe(0);
+				expect(`${rendered.stdout}\n${rendered.stderr}`).toContain(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+				);
+				const continued = await cli(dir, [
+					"template",
+					"render",
+					"author-next-phase-continued",
+					"--run",
+					executionId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+				]);
+				expect(`${continued.stdout}\n${continued.stderr}`).toContain(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+				);
+				const implReview = await cli(dir, [
+					"template",
+					"render",
+					"author-process-impl-review",
+					"--run",
+					executionId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"review_path=/tmp/review.md",
+				]);
+				expect(`${implReview.stdout}\n${implReview.stderr}`).toContain(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+				);
+				const planAuthor = await cli(dir, [
+					"template",
+					"render",
+					"author-generate-plan",
+					"--run",
+					executionId,
+					"--var",
+					"prd_path=/tmp/prd.md",
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+				expect(`${planAuthor.stdout}\n${planAuthor.stderr}`).not.toContain(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+				);
+				expect(bindingPayload(dir, executionId)).toBeNull();
+
+				const invoked = await cli(dir, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--run",
+					executionId,
+					"--var",
+					`plan_path=${planPath}`,
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=gate",
+				]);
+				expect(invoked.exitCode).not.toBe(0);
+				expect(`${invoked.stdout}\n${invoked.stderr}`).toContain(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+				);
+				expect(`${invoked.stdout}\n${invoked.stderr}`).not.toContain(
+					"PROVIDER_NOT_FOUND",
+				);
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}

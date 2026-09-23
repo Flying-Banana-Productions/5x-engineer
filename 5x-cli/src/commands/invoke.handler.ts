@@ -510,11 +510,12 @@ export async function invokeAgent(
 				store: budgetContext.store,
 				recordStore: budgetContext.recordStore,
 				executionRunId: params.run,
-				planPath: budgetContext.executionContext.effectivePlanPath,
+				planPath: budgetContext.executionContext.run.plan_path,
 				planMarkdown: markdown,
 				configuredMode: config.reviewBudget.mode,
 				origin: budgetContext.originFor({ kind: "system", role: "cli" }),
 				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+				controlPlaneRoot: budgetContext.executionContext.controlPlaneRoot,
 			});
 			if (
 				admission.status === "approval_required" ||

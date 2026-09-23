@@ -299,11 +299,12 @@ export async function templateRender(
 				store: renderBudgetContext.store,
 				recordStore: renderBudgetContext.recordStore,
 				executionRunId: params.run,
-				planPath: renderBudgetContext.executionContext.effectivePlanPath,
+				planPath: renderBudgetContext.executionContext.run.plan_path,
 				planMarkdown: markdown,
 				configuredMode: config.reviewBudget.mode,
 				origin: renderBudgetContext.originFor({ kind: "system", role: "cli" }),
 				workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
+				controlPlaneRoot: renderBudgetContext.executionContext.controlPlaneRoot,
 			});
 			if (
 				admission.status === "approval_required" ||

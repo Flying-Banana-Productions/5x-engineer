@@ -228,8 +228,6 @@ Use `PlanReviewRoute`'s existing four route names for review results; post-decis
 - [x] Confirm shipped v9 governance and v10 closure-context migrations (`src/db/schema.ts:589–596`), `composePlanReviewerRecord`, paired snapshot writer/finalizer, `coupled-key-exists`, source mode pinning, gate actions, typed notifications, and steps-order acceptance are present. Reserve v11 only if still free after integration; otherwise use the next migration number without renumbering shipped migrations.
 - [x] Run the focused plan-209 protocol/composition, gate-decision, plan-diff, record-rebuild and pinned-mode regressions from Overview in the implementation checkout. Record any integration drift in this plan; no speculative replacement APIs or dashboard prerequisites.
 
-Phase 0 verification (September 23, 2026): the dependency commit is an ancestor of the implementation checkout at `2a57b6d7afbcdb6b9e4a1941938378d5167d1ddf`. Shipped v9/v10 and the listed governance/recording seams are present; v11 remains available. Focused protocol, composition, decision, diff, rebuild and pinned-mode regressions passed (53 tests across 7 files) after installing the checkout's locked dependencies. No integration drift found.
-
 ## Phase 1: Approved execution binding and compatibility (W1)
 
 **Completion gate:** First implementation admission for a budgeted plan in non-off config requires a valid binding, auto-selects only a unique approved source, and otherwise fails explicitly. Same-run, separate-run and rebuilt-clone resolution inherit the same ledger/decisions; an edited/unapproved plan cannot silently establish an execution budget.

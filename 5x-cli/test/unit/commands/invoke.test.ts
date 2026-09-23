@@ -9,6 +9,7 @@
  * remain in test/integration/commands/invoke.test.ts.
  */
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
 	existsSync,
@@ -21,9 +22,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { RecordContextError } from "../../../src/commands/record-context.js";
 import { templateRender } from "../../../src/commands/template.handler.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
+import { runMigrations } from "../../../src/db/schema.js";
 import { createProvider } from "../../../src/providers/factory.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -1273,6 +1276,84 @@ describe("invoke — worktree envelope fields (unit)", () => {
 			expect(envelope.data.worktree_path).toBeUndefined();
 			expect(envelope.data.worktree_plan_path).toBeUndefined();
 		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+describe("invoke implementation admission", () => {
+	test("sqlite-only budgeted author invoke requires approval before a provider", async () => {
+		_resetForTest();
+		const dir = makeTmpDir();
+		try {
+			Bun.spawnSync(["git", "init"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			mkdirSync(join(dir, ".5x"), { recursive: true });
+			const planPath = join(dir, "plan.md");
+			writeFileSync(
+				planPath,
+				`# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+- [ ] Bind
+`,
+			);
+			writeFileSync(
+				join(dir, "5x.toml"),
+				'[reviewBudget]\nmode = "advisory"\n',
+			);
+			const db = new Database(join(dir, ".5x", "5x.db"));
+			runMigrations(db);
+			createRunV1(db, { id: "run_admission01", planPath });
+			db.close();
+			let providerCalls = 0;
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run_admission01",
+						workdir: dir,
+						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
+					},
+					{
+						createReviewBudgetContext: async () => {
+							throw new RecordContextError(
+								"RECORDS_UNAVAILABLE",
+								"sqlite-only run has no record home",
+							);
+						},
+						createProvider: async () => {
+							providerCalls += 1;
+							throw new Error("provider should not be created");
+						},
+					},
+				),
+			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
+			expect(providerCalls).toBe(0);
+		} finally {
+			closeDb();
+			_resetForTest();
 			cleanupDir(dir);
 		}
 	});

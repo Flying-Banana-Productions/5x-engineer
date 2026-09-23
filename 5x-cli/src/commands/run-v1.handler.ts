@@ -2907,20 +2907,41 @@ async function enforceFirstImplementationAdmission(input: {
 	const run = getRunV1(input.db, input.params.run);
 	if (!run) return;
 	let planMarkdown: string | null = null;
-	if (existsSync(run.plan_path)) {
+	let workdir: string | undefined;
+	let controlPlaneRoot: string | undefined;
+	if (input.controlPlane) {
+		controlPlaneRoot = input.controlPlane.controlPlaneRoot;
+		const ctxResult = resolveRunExecutionContext(input.db, input.params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			throw new RecordError(
+				ctxResult.error.code,
+				ctxResult.error.message,
+				ctxResult.error.detail,
+			);
+		}
+		const ctx = ctxResult.context;
+		workdir = ctx.effectiveWorkingDirectory;
+		const readPath = ctx.effectivePlanPath;
+		if (ctx.mappedWorktreePath && !existsSync(readPath)) {
+			throw new RecordError(
+				"PLAN_NOT_FOUND",
+				`Execution plan is not present in the mapped worktree: ${readPath}`,
+			);
+		}
+		if (existsSync(readPath)) {
+			try {
+				planMarkdown = readFileSync(readPath, "utf8");
+			} catch {
+				planMarkdown = null;
+			}
+		}
+	} else if (existsSync(run.plan_path)) {
 		try {
 			planMarkdown = readFileSync(run.plan_path, "utf8");
 		} catch {
 			planMarkdown = null;
-		}
-	}
-	let workdir: string | undefined;
-	if (input.controlPlane) {
-		const ctxResult = resolveRunExecutionContext(input.db, input.params.run, {
-			controlPlaneRoot: input.controlPlane.controlPlaneRoot,
-		});
-		if (ctxResult.ok) {
-			workdir = ctxResult.context.effectiveWorkingDirectory;
 		}
 	}
 	const store = createReviewBudgetStore(input.recordStore);
@@ -2933,6 +2954,7 @@ async function enforceFirstImplementationAdmission(input: {
 		configuredMode: input.config.reviewBudget?.mode ?? "advisory",
 		origin: input.originFor({ kind: "system", role: "cli" }),
 		...(workdir ? { workdir } : {}),
+		...(controlPlaneRoot ? { controlPlaneRoot } : {}),
 	});
 	if (
 		admission.status === "approval_required" ||

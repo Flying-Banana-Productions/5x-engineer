@@ -827,10 +827,10 @@ export async function bindApprovedImplementation(
 	governingB: number;
 }> {
 	const ctx = deps.context;
-	const planPath = ctx.executionContext.effectivePlanPath;
+	const planPath = ctx.executionContext.run.plan_path;
 	let planMarkdown: string;
 	try {
-		planMarkdown = readFileSync(planPath, "utf8");
+		planMarkdown = readFileSync(ctx.executionContext.effectivePlanPath, "utf8");
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new CliError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
@@ -845,6 +845,7 @@ export async function bindApprovedImplementation(
 		origin: ctx.originFor({ kind: "human", role: "operator" }),
 		explicitSourceRunId: input.sourceRunId,
 		workdir: ctx.executionContext.effectiveWorkingDirectory,
+		controlPlaneRoot: ctx.executionContext.controlPlaneRoot,
 	});
 	if (result.status === "bound") {
 		return {
