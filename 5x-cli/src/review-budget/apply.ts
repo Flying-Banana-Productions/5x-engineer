@@ -1,10 +1,15 @@
+import { createReviewBudgetId } from "../control-plane/ids.js";
 import type { RecordOrigin } from "../control-plane/record-types.js";
-import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import type {
+	ReviewBudgetSnapshotRecord,
+	ReviewBudgetStore,
+} from "../control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	type ReviewerVerdict,
 	rejectCliOwnedBudgetFields,
 } from "../protocol.js";
+import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
 import { deriveBudget } from "./arithmetic.js";
 import { ensurePlanReviewBaseline } from "./ensure-baseline.js";
 import {
@@ -21,6 +26,7 @@ import {
 } from "./types.js";
 
 export interface PendingBudgetSnapshot {
+	id: string;
 	runId: string;
 	stepName: string;
 	phase: string | undefined;
@@ -30,6 +36,11 @@ export interface PendingBudgetSnapshot {
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
 	derived: DerivedBudgetResult;
+	priorFindings: NonNullable<ReviewerVerdict["priorFindings"]>;
+	effectiveGateCauses: import("../review-governance/types.js").ReviewGateCause[];
+	suppressedGateCauses: import("../review-governance/types.js").ReviewGateCause[];
+	diagnostics: import("../review-governance/types.js").ClosureDiagnostic[];
+	mode?: "advisory" | "enforced";
 }
 
 export interface ApplyPlanReviewBudgetInput {
@@ -45,6 +56,7 @@ export interface ApplyPlanReviewBudgetInput {
 	optInBaseline: boolean;
 	origin: RecordOrigin;
 	warn: (message: string) => void;
+	governingBaseline?: number;
 }
 
 export type ApplyPlanReviewBudgetResult =
@@ -92,6 +104,38 @@ export function findIncompleteDebtClaimItem(
 	);
 }
 
+/**
+ * Whether a plan-reviewer verdict for this step identity must, may, or must
+ * not carry `baselineAssessment`. The first active review supplies the
+ * independent estimate; a retry of that same step may repeat it; every later
+ * review is a closure review and must omit it.
+ *
+ * Shared by the budget validator and the provider-facing output schema so
+ * the generation contract never admits what validation will reject.
+ */
+export type BaselineAssessmentContract = "required" | "optional" | "prohibited";
+
+export function baselineAssessmentContract(
+	snapshots: readonly ReviewBudgetSnapshotRecord[],
+	step: {
+		stepName: string;
+		phase: string | undefined;
+		iteration: number | undefined;
+	},
+): BaselineAssessmentContract {
+	const first = snapshots[0];
+	if (!first) return "required";
+	const matching = snapshots.find(
+		(snapshot) =>
+			snapshot.stepName === step.stepName &&
+			(snapshot.phase ?? undefined) === step.phase &&
+			(snapshot.iteration ?? undefined) === step.iteration,
+	);
+	return matching === first && first.baselineAssessment !== undefined
+		? "optional"
+		: "prohibited";
+}
+
 export function applyPlanReviewBudget(
 	input: ApplyPlanReviewBudgetInput,
 ): ApplyPlanReviewBudgetResult {
@@ -103,9 +147,9 @@ export function applyPlanReviewBudget(
 			cause instanceof Error ? cause.message : String(cause),
 		);
 	}
-	if (input.config.mode === "off") return { status: "skipped", reason: "off" };
-
 	let baseline = input.store.getBaseline(input.runId);
+	if (!baseline && input.config.mode === "off")
+		return { status: "skipped", reason: "off" };
 	if (!baseline || input.optInBaseline) {
 		const ensured = ensurePlanReviewBaseline({
 			runId: input.runId,
@@ -152,17 +196,15 @@ export function applyPlanReviewBudget(
 			(snapshot.phase ?? undefined) === input.phase &&
 			(snapshot.iteration ?? undefined) === input.iteration,
 	);
-	const isInitialRetry =
-		matchingSnapshot !== undefined &&
-		matchingSnapshot === firstSnapshot &&
-		firstSnapshot.baselineAssessment !== undefined;
-	if (!latest && !input.verdict.baselineAssessment) {
+	const contract = baselineAssessmentContract(snapshots, input);
+	const isInitialRetry = contract === "optional";
+	if (contract === "required" && !input.verdict.baselineAssessment) {
 		return error(
 			"BASELINE_ASSESSMENT_REQUIRED",
 			"baselineAssessment is required on the first active plan review",
 		);
 	}
-	if (latest && input.verdict.baselineAssessment && !isInitialRetry) {
+	if (contract === "prohibited" && input.verdict.baselineAssessment) {
 		return error(
 			"BASELINE_ASSESSMENT_UNEXPECTED",
 			"baselineAssessment is initial-review only",
@@ -221,10 +263,16 @@ export function applyPlanReviewBudget(
 		}
 		findings.push({
 			id: item.id,
+			title: item.title,
 			effortDelta: item.effortDelta as number,
 			architectureDelta: item.architectureDelta as number,
 			scopeClass: item.scopeClass,
 			coupling: item.coupling,
+			...(item.failure ? { failure: item.failure } : {}),
+			...(item.lowestCostCorrection
+				? { lowestCostCorrection: item.lowestCostCorrection }
+				: {}),
+			fingerprint: fingerprintVerdictItem(item),
 			...(creditClaim ? { creditClaim } : {}),
 		});
 	}
@@ -287,24 +335,24 @@ export function applyPlanReviewBudget(
 	const firstAssessment =
 		firstSnapshot?.baselineAssessment ?? input.verdict.baselineAssessment;
 	const snapshotBaselineAssessment = isInitialRetry
-		? firstSnapshot.baselineAssessment
+		? firstSnapshot?.baselineAssessment
 		: latest
 			? undefined
 			: input.verdict.baselineAssessment;
-	const { mode: _mode, ...thresholds } = input.config;
 	const derived = deriveBudget({
 		B0: baseline.b0,
-		B: baseline.b,
+		B: input.governingBaseline ?? baseline.b,
 		I: firstAssessment?.independentEffortEstimate ?? null,
 		workItems: parsed.value.workItems,
 		findings,
 		assessments: effectiveAssessments,
-		config: thresholds,
+		config: baseline.configSnapshot,
 		semanticHumanRequired: input.verdict.items.some(
 			(item) => item.action === "human_required",
 		),
 	});
 	const pendingSnapshot: PendingBudgetSnapshot = {
+		id: matchingSnapshot?.id ?? createReviewBudgetId(),
 		runId: input.runId,
 		stepName: input.stepName,
 		phase: input.phase,
@@ -316,6 +364,10 @@ export function applyPlanReviewBudget(
 			? { baselineAssessment: snapshotBaselineAssessment }
 			: {}),
 		derived,
+		priorFindings: input.verdict.priorFindings ?? [],
+		effectiveGateCauses: [],
+		suppressedGateCauses: [],
+		diagnostics: [],
 	};
 	return {
 		status: "applied",

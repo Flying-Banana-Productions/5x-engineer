@@ -206,7 +206,7 @@ Invoke the reviewer to review the plan:
 
 Capture $REVIEWER_SESSION from the response for reuse in subsequent reviews.
 
-Record: `5x run record "reviewer:review" --run $RUN --phase plan --result '<result>'`
+Record: `5x run record "reviewer:plan" --run $RUN --phase plan --result '<result>'`
 
 ### Step 2: Route the verdict
 
@@ -432,7 +432,7 @@ Invoke the reviewer:
 
 Capture $REVIEWER_SESSION from the response.
 
-Record: `5x run record "reviewer:review" --run $RUN --phase $PHASE --result '<result>'`
+Record: `5x run record "reviewer:commit" --run $RUN --phase $PHASE --result '<result>'`
 
 #### Step 4: Route the verdict
 

@@ -5,6 +5,15 @@ export {
 	controlPlaneDbPath,
 	controlPlaneStatePath,
 } from "./commands/control-plane.js";
+export type {
+	ReviewDecisionDeps,
+	SubmitPlanReviewDecisionInput,
+	SubmitPlanReviewDecisionPayload,
+} from "./commands/review-decision.handler.js";
+export {
+	showPlanReviewGate,
+	submitPlanReviewDecision,
+} from "./commands/review-decision.handler.js";
 // Run identity
 export type {
 	AmbientRunErrorCode,
@@ -76,10 +85,12 @@ export type {
 	RecordRecorder,
 	RecordStore,
 	RecordStream,
+	RedactedPromptView,
 	RegisterInvocationInput,
 	ReviewBudgetBaseline,
 	ReviewBudgetSnapshotRecord,
 	ReviewBudgetStore,
+	ReviewGatePromptContext,
 	RunRecordSummary,
 	StepIdempotencyKey,
 	StepRecordPayload,
@@ -109,6 +120,7 @@ export {
 	PromptStoreError,
 	parseOpaqueCancellationHandle,
 	RECORD_LINE_SCHEMA_VERSION,
+	REVIEW_GATE_PROMPT_CONTEXT_VERSION,
 	RecordStoreError,
 	RUN_RECORD_FORMAT_VERSION,
 	recordedEnvelope,
@@ -119,6 +131,8 @@ export {
 	toClientInvocationState,
 	toClientInvocationView,
 	toInvocationStatusEnvelope,
+	toRedactedPromptView,
+	waitForReviewGateDecision,
 	withInvocationLifecycle,
 } from "./control-plane/index.js";
 // DB — connection
@@ -322,7 +336,117 @@ export {
 	isArchitectureDelta,
 	isCompleteDebtClaimEvidence,
 	isEffortPoints,
+	isValidDebtTargetPhase,
 } from "./review-budget/types.js";
+// Plan-review governance policy. These exports are pure structural contracts
+// and policy helpers; persistence and command adapters remain internal.
+export type { AppliedPlanReviewGovernance } from "./review-governance/apply.js";
+export {
+	applyPlanReviewGovernance,
+	persistedFindingsFromSnapshots,
+} from "./review-governance/apply.js";
+export {
+	assessDebtEligibility,
+	validateClosureReview,
+	validateDebtPolicy,
+} from "./review-governance/closure.js";
+export {
+	decodeReviewDecisionPayload,
+	encodeReviewDecisionPayload,
+} from "./review-governance/codec.js";
+export type { PlanReviewPromptContext } from "./review-governance/context.js";
+export {
+	buildPlanReviewPromptContext,
+	formatAuthorGoverningDecisions,
+	formatReviewerGovernanceContext,
+} from "./review-governance/context.js";
+export type {
+	AcceptedRisk,
+	ApprovedScope,
+	ArchitectureApproval,
+	DecisionAcceptance,
+	GoverningReviewState,
+	ReviewDecisionPayload,
+} from "./review-governance/decisions.js";
+export {
+	applyDecisionCauseCoverage,
+	classifyDecisionAcceptance,
+	computeDecisionIntentHash,
+	createReviewDecision,
+	deriveGateId,
+	foldGoverningReviewState,
+	governanceCorrectionKey,
+	governanceDecisionKey,
+	REVIEW_DECISION_VERSION,
+} from "./review-governance/decisions.js";
+export {
+	canonicalFindingFingerprint,
+	fingerprintVerdictItem,
+} from "./review-governance/fingerprint.js";
+export type { PlanDiffFailure } from "./review-governance/plan-diff.js";
+export {
+	buildPlanReviewDiffContext,
+	formatPlanReviewDiffContext,
+	formatPlanReviewDiffFailure,
+	PlanDiffError,
+	validateIntroducedBy,
+} from "./review-governance/plan-diff.js";
+export type {
+	ArchitectureRoutingContext,
+	DerivePlanReviewGovernanceInput,
+	ReviewBudgetRoutingContext,
+} from "./review-governance/routing.js";
+export {
+	derivePlanReviewGovernance,
+	routeAfterDecision,
+	validateFinalCorrections,
+} from "./review-governance/routing.js";
+export {
+	projectReviewGovernance,
+	reindexReviewGovernance,
+} from "./review-governance/sqlite-index.js";
+export type {
+	DerivedReviewGate,
+	ResolveReviewGateInput,
+	ResolveReviewGateResult,
+	ReviewGovernanceStore,
+} from "./review-governance/store.js";
+export {
+	allowedChoicesForGate,
+	createReviewGovernanceStore,
+	ensureReviewGatePrompt,
+	REVIEW_DECISION_REQUIRED_FIELDS,
+	ReviewGovernanceStoreError,
+	repairReviewGatePrompts,
+	resolveGatePromptProjection,
+	reviewGatePromptContext,
+} from "./review-governance/store.js";
+export type {
+	BlockingFindingEvidence,
+	ClosureDiagnostic,
+	ClosureDiagnosticCode,
+	ClosureValidationResult,
+	CriticalSafetyEvidence,
+	DebtEligibility,
+	DecisionReraiseEvidence,
+	FinalCorrectionFailure,
+	FindingIdentity,
+	GovernanceReviewerVerdict,
+	GovernanceVerdictItem,
+	IntroducedByPlanHunk,
+	IntroducedHunkEvidence,
+	PersistedFinding,
+	PlanDiffContext,
+	PlanReviewGovernanceResult,
+	PlanReviewRoute,
+	PriorDecisionEvidence,
+	PriorFindingOutcome,
+	PriorFindingStatus,
+	ReviewDecision,
+	ReviewDecisionChoice,
+	ReviewDecisionRoute,
+	ReviewGateCause,
+} from "./review-governance/types.js";
 // Templates
 export type {
 	RenderedTemplate,

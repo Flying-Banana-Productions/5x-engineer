@@ -10,10 +10,11 @@
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runMigrations } from "../../../src/db/schema.js";
+import { buildPlanReviewDiffContext } from "../../../src/review-governance/plan-diff.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -140,6 +141,211 @@ function insertRun(dir: string, runId: string, planPath: string): void {
 // ---------------------------------------------------------------------------
 
 describe("5x protocol validate --record (E2E)", () => {
+	test(
+		"enforced closure validation uses the exact plan diff and records nothing on failure",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planPath = join(dir, "docs", "development", "test-plan.md");
+				writeFileSync(
+					planPath,
+					`# Test Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Existing work | 2 | 0 | - | P0.1 | Required work. |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+`,
+				);
+				writeFileSync(
+					join(dir, "5x.toml.local"),
+					'[reviewBudget]\nmode = "enforced"\n',
+				);
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "add budget plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				});
+				const previous = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				})
+					.stdout.toString()
+					.trim();
+				const initialized = Bun.spawnSync(
+					["bun", "run", BIN, "run", "init", "--plan", planPath],
+					{
+						cwd: dir,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+					},
+				);
+				if (initialized.exitCode !== 0)
+					throw new Error(initialized.stderr.toString());
+				const runId = (
+					JSON.parse(initialized.stdout.toString()) as {
+						data: { run_id: string };
+					}
+				).data.run_id;
+				const initial = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"reviewer:review",
+						"--phase",
+						"plan",
+						"--iteration",
+						"0",
+					],
+					JSON.stringify({
+						readiness: "ready",
+						items: [],
+						baselineAssessment: {
+							independentEffortEstimate: 2,
+							confidence: "high",
+							reason: "The ledger matches the required work.",
+						},
+					}),
+				);
+				if (initial.exitCode !== 0)
+					throw new Error(
+						`initial failed: ${initial.stdout}\n${initial.stderr}`,
+					);
+				expect(initial.exitCode).toBe(0);
+
+				writeFileSync(
+					planPath,
+					`${readFileSync(planPath, "utf8")}\nNew unsafe behavior.\n`,
+				);
+				Bun.spawnSync(["git", "add", "-A"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				});
+				Bun.spawnSync(["git", "commit", "-m", "revise plan"], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				});
+				const context = await buildPlanReviewDiffContext({
+					workdir: dir,
+					planPath,
+					previousReviewCommit: previous,
+				});
+				const baseItem = {
+					id: "P1.2",
+					title: "Unsafe behavior",
+					action: "auto_fix",
+					reason: "The new behavior can lose writes.",
+					scopeClass: "acceptance_required",
+					effortDelta: 1,
+					architectureDelta: 0,
+					estimateConfidence: "high",
+					failure: "A write can be lost.",
+					lowestCostCorrection: "Remove the unsafe behavior.",
+				};
+				const invalid = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"reviewer:review",
+						"--phase",
+						"plan",
+						"--iteration",
+						"1",
+					],
+					JSON.stringify({
+						readiness: "not_ready",
+						items: [
+							{
+								...baseItem,
+								introducedBy: {
+									commitRange: `${previous}..${context.currentPlanCommit}`,
+									diffHunk: `${context.hunks[0]?.header}\n+fabricated`,
+									explanation: "The revision introduced it.",
+								},
+							},
+						],
+					}),
+				);
+				expect(invalid.exitCode).not.toBe(0);
+				expect(JSON.parse(invalid.stdout)).toMatchObject({
+					ok: false,
+					error: { code: "INTRODUCED_HUNK_NOT_FOUND" },
+				});
+
+				const valid = await run5xWithStdin(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"reviewer:review",
+						"--phase",
+						"plan",
+						"--iteration",
+						"1",
+					],
+					JSON.stringify({
+						readiness: "not_ready",
+						items: [
+							{
+								...baseItem,
+								introducedBy: {
+									commitRange: `${previous}..${context.currentPlanCommit}`,
+									diffHunk: context.hunks.at(-1)?.text,
+									explanation: "The revision introduced it.",
+								},
+							},
+						],
+					}),
+				);
+				expect(valid.exitCode).toBe(0);
+				const db = new Database(join(dir, ".5x", "5x.db"));
+				const count = db
+					.query("SELECT count(*) AS n FROM steps WHERE run_id = ?1")
+					.get(runId) as { n: number };
+				db.close();
+				expect(count.n).toBe(2);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
 	test(
 		"validates stdin, records step to DB, returns JSON envelope",
 		async () => {

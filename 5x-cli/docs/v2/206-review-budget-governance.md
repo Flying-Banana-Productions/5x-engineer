@@ -1,10 +1,19 @@
 # 5x CLI v2 — Review Budget Governance
 
-**Status:** Draft — Not Implemented
+**Status:** Partially implemented — plan-review governance shipped; implementation-review reconciliation remains slice 08
 **Date:** July 31, 2026
 **Part of:** v2 (`200-overview.md`, area #6)
 **Shared core used:** Run-state surface (`200-overview.md` §3.2) and human decisions through the control plane (`202-control-plane.md`)
 **Extends:** Plan templates, plan-review skills, reviewer prompts, and `ReviewerVerdict`
+
+The shipped plan-review contract pins `off | advisory | enforced` when the
+baseline is captured. Advisory records closure diagnostics and the hypothetical
+enforced route without rejecting or rerouting; enforced validates evidence,
+derives the route, and resolves human gates through immutable governance
+decisions. Baselines written before the mode field existed decode as advisory
+and cannot be promoted in place: start a new run/baseline to enable enforcement.
+Implementation-review classification, realized debt credit, and post-correction
+quality enforcement described later in this design remain assigned to slice 08.
 
 ---
 

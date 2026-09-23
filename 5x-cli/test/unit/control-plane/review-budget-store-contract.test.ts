@@ -82,6 +82,7 @@ function runContract(withIndex: boolean): void {
 			const first = store.captureBaseline({
 				runId: "run1",
 				captureKind: "initial",
+				mode: "advisory",
 				parsed: ledger(3),
 				originalSection: "| W1 |",
 				configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
@@ -101,6 +102,7 @@ function runContract(withIndex: boolean): void {
 			const second = store.captureBaseline({
 				runId: "run1",
 				captureKind: "opt_in",
+				mode: "advisory",
 				parsed: ledger(5),
 				configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 				origin,
@@ -176,6 +178,7 @@ describe("ReviewBudgetStore contract", () => {
 			store.captureBaseline({
 				runId: "run1",
 				captureKind: "initial",
+				mode: "advisory",
 				parsed: { ...ledger(), workItems: [] },
 				configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 				origin,

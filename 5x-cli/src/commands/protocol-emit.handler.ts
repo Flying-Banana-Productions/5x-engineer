@@ -25,6 +25,7 @@ import {
 	normalizeAuthorStatus,
 	normalizeReviewerVerdict,
 } from "../protocol-normalize.js";
+import type { PriorFindingOutcome } from "../review-governance/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +37,7 @@ export interface ProtocolEmitReviewerParams {
 	summary?: string;
 	baselineAssessment?: string;
 	creditAssessment?: string[];
+	priorFinding?: string[];
 	stdinData?: string;
 }
 
@@ -93,6 +95,7 @@ export async function protocolEmitReviewer(
 		summary,
 		baselineAssessment: baselineAssessmentJson,
 		creditAssessment: creditAssessmentJsonStrings,
+		priorFinding: priorFindingJsonStrings,
 		stdinData,
 	} = params;
 
@@ -189,6 +192,33 @@ export async function protocolEmitReviewer(
 				...(rec.creditClaim !== undefined
 					? { creditClaim: rec.creditClaim as VerdictItem["creditClaim"] }
 					: {}),
+				...(rec.failure !== undefined
+					? { failure: rec.failure as string }
+					: {}),
+				...(rec.lowestCostCorrection !== undefined
+					? { lowestCostCorrection: rec.lowestCostCorrection as string }
+					: {}),
+				...(rec.introducedBy !== undefined
+					? { introducedBy: rec.introducedBy as VerdictItem["introducedBy"] }
+					: {}),
+				...(rec.lateDiscovery !== undefined
+					? { lateDiscovery: rec.lateDiscovery as VerdictItem["lateDiscovery"] }
+					: {}),
+				...(rec.lateDiscoveryEvidence !== undefined
+					? { lateDiscoveryEvidence: rec.lateDiscoveryEvidence as string }
+					: {}),
+				...(rec.priorDecisionId !== undefined
+					? { priorDecisionId: rec.priorDecisionId as string }
+					: {}),
+				...(rec.newEvidence !== undefined
+					? { newEvidence: rec.newEvidence as string }
+					: {}),
+				...(rec.requiresReviewerVerification !== undefined
+					? {
+							requiresReviewerVerification:
+								rec.requiresReviewerVerification as boolean,
+						}
+					: {}),
 			};
 			items.push(item);
 		}
@@ -248,6 +278,34 @@ export async function protocolEmitReviewer(
 		creditAssessments.push(assessment);
 	}
 
+	const priorFindings: PriorFindingOutcome[] = [];
+	for (const [index, raw] of (priorFindingJsonStrings ?? []).entries()) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			outputError(
+				"INVALID_JSON",
+				`--prior-finding at index ${index} is not valid JSON.`,
+			);
+		}
+		if (!isObjectShape(parsed)) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				`--prior-finding at index ${index} must be a JSON object.`,
+			);
+		}
+		try {
+			rejectCliOwnedBudgetFields(parsed);
+		} catch (err) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+		priorFindings.push(parsed as unknown as PriorFindingOutcome);
+	}
+
 	// Derive readiness from flags + item presence
 	let readiness: ReviewerVerdict["readiness"];
 	if (ready) {
@@ -262,6 +320,7 @@ export async function protocolEmitReviewer(
 		...(summary ? { summary } : {}),
 		...(baselineAssessment ? { baselineAssessment } : {}),
 		...(creditAssessments.length > 0 ? { creditAssessments } : {}),
+		...(priorFindings.length > 0 ? { priorFindings } : {}),
 	};
 
 	// Run through normalization (handles defaults, id generation for items)

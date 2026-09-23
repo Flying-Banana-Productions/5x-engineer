@@ -77,7 +77,7 @@ describe("ensurePlanReviewBaseline", () => {
 		expect(records.listLines("run1", "budget")).toHaveLength(1);
 	});
 
-	test("agent safety-net origin and enforced warning are preserved", () => {
+	test("agent safety-net origin and enforced mode are preserved", () => {
 		const origin: RecordOrigin = {
 			recorder: { installation_id: "22222222-2222-4222-8222-222222222222" },
 			performer: { kind: "agent", role: "reviewer", provider: "cursor" },
@@ -94,7 +94,8 @@ describe("ensurePlanReviewBaseline", () => {
 			origin,
 			warn: (message) => warnings.push(message),
 		});
-		expect(warnings).toHaveLength(1);
+		expect(warnings).toHaveLength(0);
+		expect(store.getBaseline("run1")?.mode).toBe("enforced");
 		expect(records.listLines("run1", "budget")[0]?.origin).toEqual(origin);
 	});
 
@@ -264,7 +265,7 @@ describe("ensurePlanReviewBaseline", () => {
 		});
 	});
 
-	test("enforced mode warns only when this call wins capture", () => {
+	test("enforced mode no longer emits the legacy warning", () => {
 		const origin: RecordOrigin = {
 			recorder: { installation_id: "88888888-8888-4888-8888-888888888888" },
 			performer: { kind: "system", role: "cli" },
@@ -283,8 +284,6 @@ describe("ensurePlanReviewBaseline", () => {
 		};
 		ensurePlanReviewBaseline(input);
 		ensurePlanReviewBaseline(input);
-		expect(warnings).toEqual([
-			"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
-		]);
+		expect(warnings).toEqual([]);
 	});
 });

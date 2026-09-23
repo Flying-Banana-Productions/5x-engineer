@@ -22,5 +22,7 @@ export interface PromptStore {
 	listAnsweredPrompts?(runId: string): PromptRecord[];
 	/** CAS: succeed iff still open. Loser returns stored row, does not overwrite. */
 	answerPrompt(id: string, answer: string, answeredBy: AnsweredBy): CasResult;
+	/** Internal projection only: closes a review-gate notification after its durable decision wins. */
+	resolveReviewGatePrompt?(id: string, decisionId: string): CasResult;
 	abandonPrompt(id: string, reason: AbandonReason): CasResult;
 }

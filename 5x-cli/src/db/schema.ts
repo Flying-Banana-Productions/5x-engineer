@@ -542,6 +542,59 @@ const migrations: Migration[] = [
 			`);
 		},
 	},
+	{
+		version: 9,
+		description: "Rebuildable plan-review governance decision and gate indexes",
+		up(db) {
+			db.exec(`
+				ALTER TABLE review_budget_baselines ADD COLUMN mode TEXT NOT NULL DEFAULT 'advisory'
+					CHECK (mode IN ('advisory', 'enforced'));
+				ALTER TABLE review_budget_snapshots ADD COLUMN effective_gate_causes_json TEXT;
+				ALTER TABLE review_budget_snapshots ADD COLUMN suppressed_gate_causes_json TEXT;
+				ALTER TABLE prompts ADD COLUMN context_version INTEGER;
+				ALTER TABLE prompts ADD COLUMN context_json TEXT;
+
+				CREATE TABLE review_decision_index (
+					decision_id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					record_seq INTEGER NOT NULL,
+					gate_id TEXT NOT NULL,
+					snapshot_id TEXT NOT NULL,
+					choice TEXT NOT NULL,
+					intent_hash TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					acceptance TEXT NOT NULL CHECK (acceptance IN ('accepted', 'stale', 'malformed')),
+					diagnostic TEXT,
+					created_at TEXT NOT NULL
+				);
+				CREATE INDEX idx_review_decisions_run ON review_decision_index(run_id, record_seq);
+				CREATE INDEX idx_review_decisions_gate ON review_decision_index(run_id, gate_id);
+
+				CREATE TABLE review_gate_index (
+					gate_id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					snapshot_id TEXT NOT NULL,
+					predecessor_gate_id TEXT,
+					causes_json TEXT NOT NULL,
+					resolved_decision_id TEXT,
+					route TEXT,
+					record_seq INTEGER NOT NULL
+				);
+				CREATE INDEX idx_review_gates_run_snapshot ON review_gate_index(run_id, snapshot_id, record_seq);
+			`);
+		},
+	},
+	{
+		version: 10,
+		description: "Persist plan-review closure context in the budget index",
+		up(db) {
+			db.exec(`
+				ALTER TABLE review_budget_snapshots ADD COLUMN prior_findings_json TEXT;
+				ALTER TABLE review_budget_snapshots ADD COLUMN diagnostics_json TEXT;
+			`);
+		},
+	},
 ];
 
 /**

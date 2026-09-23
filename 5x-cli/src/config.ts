@@ -165,7 +165,7 @@ const ReviewBudgetConfigSchema = z.object({
 		.enum(["off", "advisory", "enforced"])
 		.default("advisory")
 		.describe(
-			"off: v1 iteration-only. advisory: record forecasts, do not change routing. enforced: reserved; treated as advisory until plan-review governance ships.",
+			"off: v1 iteration-only. advisory: record diagnostics without changing v1 routing. enforced: validate closure evidence and apply deterministic governance routing. Mode is pinned when the run baseline is captured.",
 		),
 	growthPercent: z
 		.number()

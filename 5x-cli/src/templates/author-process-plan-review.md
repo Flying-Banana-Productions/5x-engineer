@@ -1,7 +1,7 @@
 ---
 name: author-process-plan-review
 description: Revise a plan based on review feedback
-version: 4
+version: 5
 variables: [review_path, plan_path, user_notes, run_id]
 step_name: "author:fix-review"
 variable_defaults:
@@ -25,6 +25,8 @@ You are revising the implementation plan at `{{plan_path}}` based on review feed
    - **P0 blockers**: Must be resolved.
    - **P1 items**: Should be resolved.
    - **P2 items**: Address if straightforward; note any deferred items.
+5. Read the generated **Governing decisions** block appended to this prompt.
+   It is authoritative and is not supplied through free-text user notes.
 
 ### Working Directory
 
@@ -41,6 +43,11 @@ This is a **document-only** task. You are revising the implementation plan, not 
 - Add a revision history entry documenting what changed.
 - Preserve each Delivery Budget work-item `Wn` and debt-claim `DCn` ID across revisions; never renumber or reuse an ID for different work.
 - Put each incorporated review-item ID in the affected or new row's `Addresses` cell. Keep an ID listed there even when the row is rescored, and explain every score change in the row rationale.
+- Update `Addresses` only for findings actually incorporated into the plan. Do
+  not claim deferred findings as addressed.
+- Do not implement finding IDs listed as deferred, reintroduce removed scope,
+  or silently discard retained scope. Honor an author re-estimate request and
+  the displayed governing baseline when revising the Delivery Budget.
 - Keep each negative row's matching `#### DCn` evidence synchronized. Its Debt claim cell must retain the literal parser-accepted form ``DC0 (`intrinsic`)`` (or ``DC0 (`adjacent`)`` / ``DC0 (`unrelated`)``): never backtick the claim ID, and always backtick the coupling. Coupling, architecture delta, target phase, minimal-compliant effort/architecture deltas, and non-empty concrete `Before` / `After` are all part of the claim; changing any of them makes the claim changed for reviewer re-assessment.
 - Keep `## Delivery Budget` and `### Surface Snapshot` in the plan. Do not add or edit prose totals, ceilings, baseline values, or budget status; those values are CLI-owned.
 - Do **not** create, modify, or delete any source code, test files, or configuration files.

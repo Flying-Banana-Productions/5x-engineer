@@ -58,19 +58,22 @@ function derivePhase(
 }
 
 /**
- * Count prior steps matching (run_id, step_name, phase) in the DB.
+ * Count prior steps for the continuity group in the DB. Reviewer steps group
+ * by role within the phase (`reviewer:*`), so a review recorded under an
+ * older or explicit `--record-step` name still requires continuation.
+ * Author steps group by exact step name.
  */
 function countPriorSteps(
 	db: Database,
 	runId: string,
-	stepName: string,
+	stepPattern: string,
 	phase: string,
 ): number {
 	const row = db
 		.query(
-			`SELECT COUNT(*) AS cnt FROM steps WHERE run_id = ?1 AND step_name = ?2 AND phase IS ?3`,
+			`SELECT COUNT(*) AS cnt FROM steps WHERE run_id = ?1 AND step_name LIKE ?2 ESCAPE '\\' AND phase IS ?3`,
 		)
-		.get(runId, stepName, phase) as { cnt: number } | null;
+		.get(runId, stepPattern, phase) as { cnt: number } | null;
 	return row?.cnt ?? 0;
 }
 
@@ -147,7 +150,12 @@ export function validateSessionContinuity(opts: SessionCheckOptions): void {
 	if (!phase) return; // Can't scope the check
 
 	// 6. Query prior steps
-	const priorCount = countPriorSteps(db, runId, stepName as string, phase);
+	const priorLabel = role === "reviewer" ? "reviewer:*" : (stepName as string);
+	const stepPattern =
+		role === "reviewer"
+			? "reviewer:%"
+			: (stepName as string).replace(/[\\%_]/g, "\\$&");
+	const priorCount = countPriorSteps(db, runId, stepPattern, phase);
 	if (priorCount === 0) return; // First step — no enforcement
 
 	// 7. Prior steps exist — enforce
@@ -162,7 +170,7 @@ export function validateSessionContinuity(opts: SessionCheckOptions): void {
 		if (!continuedTemplateExists(templateName)) {
 			outputError(
 				"TEMPLATE_NOT_FOUND",
-				`${role}.continuePhaseSessions is enabled and prior "${stepName}" steps exist for phase "${phase}", but no "${templateName}-continued" template was found.`,
+				`${role}.continuePhaseSessions is enabled and prior "${priorLabel}" steps exist for phase "${phase}", but no "${templateName}-continued" template was found.`,
 			);
 		}
 		// Valid resumption
@@ -173,13 +181,13 @@ export function validateSessionContinuity(opts: SessionCheckOptions): void {
 	if (!continuedTemplateExists(templateName)) {
 		outputError(
 			"TEMPLATE_NOT_FOUND",
-			`${role}.continuePhaseSessions is enabled and prior "${stepName}" steps exist for phase "${phase}", but no "${templateName}-continued" template was found.`,
+			`${role}.continuePhaseSessions is enabled and prior "${priorLabel}" steps exist for phase "${phase}", but no "${templateName}-continued" template was found.`,
 		);
 	}
 
 	outputError(
 		"SESSION_REQUIRED",
-		`Template "${templateName}" has session continuity enabled and prior "${stepName}" steps exist for run "${runId}" phase "${phase}". ` +
+		`Template "${templateName}" has session continuity enabled and prior "${priorLabel}" steps exist for run "${runId}" phase "${phase}". ` +
 			`Pass one of: --session <id> (provider session id from \`5x invoke\`'s session_id — not a native subtask id), ` +
 			`--continue-native (when continuing a native subagent via Task tool continuity), ` +
 			`or --new-session (start fresh).`,

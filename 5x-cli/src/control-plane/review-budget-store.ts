@@ -14,9 +14,15 @@ import type {
 	DerivedBudgetResult,
 	FindingDelta,
 	ParsedDeliveryBudget,
+	ReviewBudgetMode,
 	ReviewBudgetThresholds,
 	SurfaceSnapshot,
 } from "../review-budget/types.js";
+import type {
+	ClosureDiagnostic,
+	PriorFindingOutcome,
+	ReviewGateCause,
+} from "../review-governance/types.js";
 import { createReviewBudgetId } from "./ids.js";
 import type { RecordStore } from "./record-store.js";
 import { type RecordOrigin, recordedEnvelope } from "./record-types.js";
@@ -32,6 +38,7 @@ export interface ReviewBudgetBaseline {
 	surface: SurfaceSnapshot;
 	originalSection: string | null;
 	configSnapshot: ReviewBudgetThresholds;
+	mode: Exclude<ReviewBudgetMode, "off">;
 	createdAt: string;
 }
 
@@ -45,7 +52,11 @@ export interface ReviewBudgetSnapshotRecord {
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
+	priorFindings: PriorFindingOutcome[];
 	derived: DerivedBudgetResult | null;
+	effectiveGateCauses: ReviewGateCause[];
+	suppressedGateCauses: ReviewGateCause[];
+	diagnostics: ClosureDiagnostic[];
 	createdAt: string;
 }
 
@@ -55,6 +66,7 @@ export interface CaptureBaselineInput {
 	parsed: ParsedDeliveryBudget;
 	originalSection?: string;
 	configSnapshot: ReviewBudgetThresholds;
+	mode: Exclude<ReviewBudgetMode, "off">;
 	origin: RecordOrigin;
 }
 
@@ -71,7 +83,11 @@ export interface AppendSnapshotInput {
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
+	priorFindings?: PriorFindingOutcome[];
 	derived?: DerivedBudgetResult;
+	effectiveGateCauses?: ReviewGateCause[];
+	suppressedGateCauses?: ReviewGateCause[];
+	diagnostics?: ClosureDiagnostic[];
 	/** Optional for the Phase 4 utility; otherwise the baseline line origin is reused. */
 	origin?: RecordOrigin;
 }
@@ -102,6 +118,7 @@ function baselineRecord(raw: unknown): ReviewBudgetBaseline {
 		surface: payload.surface,
 		originalSection: payload.originalSection,
 		configSnapshot: payload.configSnapshot,
+		mode: payload.mode,
 		createdAt: payload.createdAt,
 	};
 }
@@ -124,6 +141,10 @@ function snapshotRecord(
 			? {}
 			: { baselineAssessment: payload.baselineAssessment }),
 		derived,
+		effectiveGateCauses: payload.effectiveGateCauses ?? [],
+		suppressedGateCauses: payload.suppressedGateCauses ?? [],
+		priorFindings: payload.priorFindings ?? [],
+		diagnostics: payload.diagnostics ?? [],
 		createdAt: payload.createdAt,
 	};
 }
@@ -135,9 +156,24 @@ function now(): string {
 export function createReviewBudgetStore(
 	recordStore: RecordStore,
 	index?: ReviewBudgetIndex,
+	onDiagnostic?: (message: string) => void,
 ): ReviewBudgetStore {
+	const reportedCorruptSnapshots = new Set<string>();
+
 	function budgetLines(runId: string) {
 		return recordStore.listLines(runId, "budget");
+	}
+
+	function reportCorruptSnapshot(
+		runId: string,
+		idempotencyKey: string,
+		error: unknown,
+	): void {
+		if (!onDiagnostic || reportedCorruptSnapshots.has(idempotencyKey)) return;
+		reportedCorruptSnapshots.add(idempotencyKey);
+		onDiagnostic(
+			`Skipping malformed review budget snapshot record ${idempotencyKey} for run ${runId}; repair or remove this record. Earlier valid snapshots remain in use. Cause: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	function projectSnapshotToIndex(
@@ -192,6 +228,7 @@ export function createReviewBudgetStore(
 					surface: input.parsed.surface,
 					originalSection: input.originalSection ?? null,
 					configSnapshot: input.configSnapshot,
+					mode: input.mode,
 					createdAt,
 				}),
 				createdAt,
@@ -240,6 +277,10 @@ export function createReviewBudgetStore(
 					...(input.baselineAssessment === undefined
 						? {}
 						: { baselineAssessment: input.baselineAssessment }),
+					priorFindings: input.priorFindings ?? [],
+					effectiveGateCauses: input.effectiveGateCauses ?? [],
+					suppressedGateCauses: input.suppressedGateCauses ?? [],
+					diagnostics: input.diagnostics ?? [],
 					createdAt,
 				}),
 				createdAt,
@@ -257,24 +298,37 @@ export function createReviewBudgetStore(
 
 		listSnapshots(runId) {
 			const allLines = budgetLines(runId);
-			const snapshots = allLines.flatMap((line, recordSeq) =>
-				typeof line.payload === "object" &&
-				line.payload !== null &&
-				(line.payload as { kind?: unknown }).kind === "snapshot"
-					? [{ line, recordSeq }]
-					: [],
-			);
+			const snapshots: Array<{
+				line: (typeof allLines)[number];
+				recordSeq: number;
+				record: ReviewBudgetSnapshotRecord;
+			}> = [];
+			for (const [recordSeq, line] of allLines.entries()) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !== "snapshot"
+				)
+					continue;
+				try {
+					snapshots.push({
+						line,
+						recordSeq,
+						record: snapshotRecord(line.payload),
+					});
+				} catch (error) {
+					reportCorruptSnapshot(runId, line.idempotencyKey, error);
+				}
+			}
 			const cached = index?.listSnapshots(runId);
 			if (
 				cached !== undefined &&
 				cached.length === snapshots.length &&
 				cached.every((record, position) => {
-					const payload = decodeBudgetSnapshotPayload(
-						snapshots[position]?.line.payload,
-					);
+					const decoded = snapshots[position]?.record;
 					return (
-						record.id === payload.id &&
-						(payload.baselineAssessment === undefined ||
+						record.id === decoded?.id &&
+						(decoded.baselineAssessment === undefined ||
 							record.baselineAssessment !== undefined)
 					);
 				})
@@ -282,8 +336,7 @@ export function createReviewBudgetStore(
 				return cached;
 			}
 			const records: ReviewBudgetSnapshotRecord[] = [];
-			for (const { line, recordSeq } of snapshots) {
-				const record = snapshotRecord(line.payload);
+			for (const { line, recordSeq, record } of snapshots) {
 				records.push(record);
 				index?.upsertSnapshot(record, line.idempotencyKey, recordSeq);
 			}

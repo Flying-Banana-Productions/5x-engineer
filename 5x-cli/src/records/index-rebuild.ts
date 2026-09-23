@@ -13,6 +13,7 @@ import {
 	decodeJsonlFile,
 	parseRunJson,
 } from "../control-plane/record-layout.js";
+import { createMemoryRecordStore } from "../control-plane/record-memory.js";
 import type { RecordStore } from "../control-plane/record-store.js";
 import type {
 	RecordLine,
@@ -20,6 +21,10 @@ import type {
 	StepRecordPayload,
 } from "../control-plane/record-types.js";
 import { stepIdempotencyKey } from "../control-plane/record-types.js";
+import {
+	createReviewBudgetIndex,
+	reindexReviewBudget,
+} from "../control-plane/review-budget-index.js";
 import type { PlanRow } from "../db/operations.js";
 import {
 	completeRun,
@@ -32,6 +37,7 @@ import {
 import { parseRunTimestamp } from "../db/timestamps.js";
 import { gitLsTreePaths, gitShowFile } from "../git.js";
 import { isPathUnder, planSlugFromPath, relativePathUnder } from "../paths.js";
+import { reindexReviewGovernance } from "../review-governance/sqlite-index.js";
 import { resolveRecordsRoot } from "./paths.js";
 import {
 	type ProgressSession,
@@ -64,6 +70,8 @@ export interface IndexRebuildResult {
 export interface RecordIndexRun {
 	summary: RunRecordSummary;
 	steps: RecordLine[];
+	budget?: RecordLine[];
+	decisions?: RecordLine[];
 	planSlug: string;
 	planPath: string;
 	commit: string | null;
@@ -302,30 +310,33 @@ async function loadRunsAtCommit(opts: {
 		} catch {
 			continue;
 		}
-		const stepsRel = posixJoin(
-			opts.recordsRelPath,
-			opts.planSlug,
-			runId,
-			"steps.jsonl",
-		);
-		const stepsText = await opts.git.gitShowFile(
-			opts.workdir,
-			opts.commit,
-			stepsRel,
-		);
-		let steps: RecordLine[] = [];
-		if (stepsText != null && stepsText.length > 0) {
+		const loadStream = async (stream: "steps" | "budget" | "decisions") => {
+			const rel = posixJoin(
+				opts.recordsRelPath,
+				opts.planSlug,
+				runId,
+				`${stream}.jsonl`,
+			);
+			const text = await opts.git.gitShowFile(opts.workdir, opts.commit, rel);
+			if (!text) return [];
 			try {
-				steps = decodeJsonlFile(stepsText, summary.id).filter(
-					(line) => line.stream === "steps",
+				return decodeJsonlFile(text, summary.id).filter(
+					(line) => line.stream === stream,
 				);
 			} catch {
-				steps = [];
+				return [];
 			}
-		}
+		};
+		const [steps, budget, decisions] = await Promise.all([
+			loadStream("steps"),
+			loadStream("budget"),
+			loadStream("decisions"),
+		]);
 		runs.push({
 			summary,
 			steps,
+			budget,
+			decisions,
 			planSlug: opts.planSlug,
 			planPath: opts.planPath,
 			commit: opts.commit,
@@ -481,7 +492,6 @@ export async function rebuildRecordsIndex(opts: {
 	git?: IndexRebuildGit;
 	session?: ProgressSession;
 }): Promise<IndexRebuildResult> {
-	void opts.recordStore;
 	const snapshot = await collectRecordIndexSnapshot({
 		db: opts.db,
 		workdir: opts.workdir,
@@ -529,6 +539,22 @@ export async function rebuildRecordsIndex(opts: {
 				steps_skipped_newer_local += 1;
 			}
 		}
+		// Never mutate a caller-supplied authoritative store during index repair.
+		const projectionStore = createMemoryRecordStore();
+		projectionStore.putRun(run.summary);
+		for (const line of [
+			...run.steps,
+			...(run.budget ?? []),
+			...(run.decisions ?? []),
+		]) {
+			projectionStore.append({ ...line });
+		}
+		reindexReviewBudget(
+			projectionStore,
+			createReviewBudgetIndex(opts.db),
+			run.summary.id,
+		);
+		reindexReviewGovernance(projectionStore, opts.db, run.summary.id);
 	}
 
 	return {

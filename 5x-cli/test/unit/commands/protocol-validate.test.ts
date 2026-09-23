@@ -302,7 +302,7 @@ describe("protocol validate reviewer — active review budget", () => {
 		}
 	});
 
-	test("direct enforced capture uses the injected warning sink", async () => {
+	test("direct enforced capture does not emit a legacy warning", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();
 		const warnings: string[] = [];
@@ -324,7 +324,108 @@ describe("protocol validate reviewer — active review budget", () => {
 				warn: (message) => warnings.push(message),
 				createReviewBudgetContext: async () => ctx,
 			});
-			expect(warnings).toHaveLength(1);
+			expect(warnings).toHaveLength(0);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("forwards corrupt snapshot diagnostics from the budget context factory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		const warnings: string[] = [];
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			await protocolValidate({
+				role: "reviewer",
+				input: reviewerInput(dir),
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async (_input, onDiagnostic) => {
+					onDiagnostic?.("corrupt snapshot requires repair");
+					return ctx;
+				},
+			});
+			expect(warnings).toContain("corrupt snapshot requires repair");
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const seed = pendingSnapshot();
+		ctx.store.captureBaseline({
+			runId: "run1",
+			captureKind: "initial",
+			mode: "enforced",
+			parsed: seed.currentLedger,
+			configSnapshot: seed.derived.thresholds,
+			origin: ctx.originFor({ kind: "system", role: "cli" }),
+		});
+		ctx.config.reviewBudget.mode = "advisory";
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			writeFileSync(join(dir, "plan.md"), budgetPlan);
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [
+					{
+						id: "H1",
+						title: "Operator decision required",
+						action: "human_required",
+						reason: "The residual failure requires explicit acceptance.",
+						scopeClass: "acceptance_required",
+						effortDelta: 0,
+						architectureDelta: 0,
+						estimateConfidence: "high",
+						failure: "A retry can duplicate the durable write.",
+						lowestCostCorrection: "Require an operator decision.",
+					},
+				],
+				baselineAssessment: {
+					independentEffortEstimate: 2,
+					confidence: "high",
+					reason: "The original estimate remains sound.",
+				},
+				creditAssessments: [],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				record: true,
+				step: "reviewer:review",
+				phase: "plan",
+				iteration: 1,
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			const line = ctx.recordStore.listLines("run1", "steps")[0];
+			expect(line).toBeDefined();
+			const result = (
+				line?.payload as {
+					result_json?: { governance?: { route?: string } };
+				}
+			)?.result_json;
+			expect(ctx.store.getBaseline("run1")?.mode).toBe("enforced");
+			expect(result?.governance?.route).toBe("human_gate");
+			expect(ctx.db.query("SELECT count(*) AS n FROM prompts").get()).toEqual({
+				n: 1,
+			});
 		} finally {
 			ctx.db.close();
 			cleanupDir(dir);
@@ -408,6 +509,7 @@ describe("protocol validate reviewer — active review budget", () => {
 			ctx.store.captureBaseline({
 				runId: "run1",
 				captureKind: "initial",
+				mode: "advisory",
 				parsed: pendingSnapshot().currentLedger,
 				configSnapshot: pendingSnapshot().derived.thresholds,
 				origin: ctx.originFor({ kind: "system", role: "cli" }),
@@ -427,8 +529,10 @@ describe("protocol validate reviewer — active review budget", () => {
 		}
 	});
 
-	test("mode off skips review-budget context creation", async () => {
+	test("mode off inspects context for a previously pinned baseline", async () => {
 		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		ctx.config.reviewBudget.mode = "off";
 		try {
 			setupProjectDir(dir);
 			insertRun(dir, "run1", join(dir, "plan.md"));
@@ -445,11 +549,12 @@ describe("protocol validate reviewer — active review budget", () => {
 				startDir: dir,
 				createReviewBudgetContext: async () => {
 					calls++;
-					throw new Error("must not be called");
+					return ctx;
 				},
 			});
-			expect(calls).toBe(0);
+			expect(calls).toBe(1);
 		} finally {
+			ctx.db.close();
 			cleanupDir(dir);
 		}
 	});

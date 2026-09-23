@@ -22,6 +22,7 @@ import {
 	encodeJsonlFile,
 	encodeRunJson,
 } from "../../../src/control-plane/record-layout.js";
+import { createMemoryRecordStore } from "../../../src/control-plane/record-memory.js";
 import {
 	RECORD_LINE_SCHEMA_VERSION,
 	type RecordLine,
@@ -44,6 +45,16 @@ import {
 	rebuildRecordsIndex,
 } from "../../../src/records/index-rebuild.js";
 import { resolvePlanProgress } from "../../../src/records/resolve.js";
+import {
+	encodeBudgetBaselinePayload,
+	encodeBudgetSnapshotPayload,
+} from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { encodeReviewDecisionPayload } from "../../../src/review-governance/codec.js";
+import {
+	createReviewDecision,
+	deriveGateId,
+} from "../../../src/review-governance/decisions.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const INSTALLATION_ID = "11111111-1111-4111-8111-111111111111";
@@ -155,12 +166,23 @@ function writeRecords(
 	dir: string,
 	summary: RunRecordSummary,
 	steps: RecordLine[],
+	streams: { budget?: RecordLine[]; decisions?: RecordLine[] } = {},
 ): void {
 	const slug = "alpha";
 	const runDir = join(dir, "docs", "development", "runs", slug, summary.id);
 	mkdirSync(runDir, { recursive: true });
 	writeFileSync(join(runDir, "run.json"), encodeRunJson(summary));
 	writeFileSync(join(runDir, "steps.jsonl"), encodeJsonlFile(steps));
+	if (streams.budget)
+		writeFileSync(
+			join(runDir, "budget.jsonl"),
+			encodeJsonlFile(streams.budget),
+		);
+	if (streams.decisions)
+		writeFileSync(
+			join(runDir, "decisions.jsonl"),
+			encodeJsonlFile(streams.decisions),
+		);
 	mkdirSync(join(dir, "docs", "development"), { recursive: true });
 	writeFileSync(
 		join(dir, "docs", "development", "alpha.md"),
@@ -260,6 +282,175 @@ describe("rebuildRecordsIndex", () => {
 			}
 		});
 	});
+
+	test("never mutates a caller-supplied authoritative record store", async () => {
+		await withTmp(async (dir) => {
+			initRepo(dir);
+			writeRecords(dir, v1Summary("run_alpha"), [
+				stepLine("run_alpha", "author:impl"),
+			]);
+			commitAll(dir, "records");
+			const db = openOwnedDb(dir);
+			try {
+				const authoritative = createMemoryRecordStore();
+				const sentinel = v1Summary("run_authoritative");
+				authoritative.putRun(sentinel);
+				authoritative.append(stepLine("run_authoritative", "sentinel"));
+				const before = {
+					runs: authoritative.listRuns(),
+					steps: authoritative.listLines("run_authoritative", "steps"),
+				};
+				const { config } = await loadConfig(dir, undefined, undefined, dir);
+				await rebuildRecordsIndex({
+					db,
+					recordStore: authoritative,
+					workdir: dir,
+					config,
+					resolve: resolvePlanProgress,
+				});
+				expect(authoritative.listRuns()).toEqual(before.runs);
+				expect(authoritative.listLines("run_authoritative", "steps")).toEqual(
+					before.steps,
+				);
+				expect(authoritative.getRun("run_alpha")).toBeNull();
+			} finally {
+				closeOwned(db);
+			}
+		});
+	});
+
+	test(
+		"dispatches authoritative budget and governance streams into rebuildable indexes",
+		async () => {
+			await withTmp(async (dir) => {
+				initRepo(dir);
+				const runId = "run_governance";
+				const ledger = {
+					estimateConfidence: "high" as const,
+					workItems: [],
+					surface: {
+						subsystems: 1,
+						productionFiles: 1,
+						persistentOrExternalBoundaries: 0,
+					},
+				};
+				const snapshotId = "11111111-1111-4111-8111-111111111111";
+				const cause = {
+					kind: "budget_alert" as const,
+					alert: "baseline_disputed" as const,
+				};
+				const gateId = deriveGateId({ runId, snapshotId, causes: [cause] });
+				const decision = createReviewDecision({
+					decisionId: "22222222-2222-4222-8222-222222222222",
+					createdAt: "2026-09-01T12:02:00.000Z",
+					gateId,
+					snapshotId,
+					choice: "retain_baseline",
+					findingRefs: [],
+					rationale: "retain",
+					evidence: [],
+					approvedScope: { retained: [], removed: [] },
+				});
+				const reviewer = stepLine(runId, "reviewer:plan", {
+					phase: "plan",
+					iteration: 1,
+					createdAt: "2026-09-01T12:01:00.000Z",
+				});
+				const human: RecordLine = {
+					...stepLine(runId, "human:review-governance", {
+						phase: "plan",
+						iteration: 1,
+						createdAt: "2026-09-01T12:02:00.000Z",
+					}),
+					payload: {
+						...(stepLine(runId, "human:review-governance", {
+							phase: "plan",
+							iteration: 1,
+						}).payload as object),
+						result_json: { decisionId: decision.decisionId, gateId },
+					},
+				};
+				const baselinePayload = {
+					kind: "baseline" as const,
+					id: "33333333-3333-4333-8333-333333333333",
+					runId,
+					captureKind: "initial" as const,
+					b0: 1,
+					b: 1,
+					originalLedger: ledger,
+					surface: ledger.surface,
+					originalSection: null,
+					configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
+					mode: "enforced" as const,
+					createdAt: "2026-09-01T12:00:00.000Z",
+				};
+				const lines = {
+					budget: [
+						{
+							...reviewer,
+							stream: "budget" as const,
+							idempotencyKey: `budget:baseline:${runId}`,
+							payload: encodeBudgetBaselinePayload(baselinePayload),
+						},
+						{
+							...reviewer,
+							stream: "budget" as const,
+							idempotencyKey: `budget:snapshot:${runId}:reviewer:plan:plan:1`,
+							payload: encodeBudgetSnapshotPayload({
+								kind: "snapshot",
+								id: snapshotId,
+								runId,
+								stepKey: {
+									stepName: "reviewer:plan",
+									phase: "plan",
+									iteration: 1,
+								},
+								currentLedger: ledger,
+								findings: [],
+								assessments: [],
+								effectiveGateCauses: [cause],
+								createdAt: "2026-09-01T12:01:00.000Z",
+							}),
+						},
+					],
+					decisions: [
+						{
+							...human,
+							stream: "decisions" as const,
+							idempotencyKey: `decision:review-gate:${gateId}`,
+							payload: encodeReviewDecisionPayload(decision),
+						},
+					],
+				};
+				writeRecords(dir, v1Summary(runId), [reviewer, human], lines);
+				commitAll(dir, "governance records");
+				const db = openOwnedDb(dir);
+				try {
+					const { config } = await loadConfig(dir, undefined, undefined, dir);
+					await rebuildRecordsIndex({
+						db,
+						workdir: dir,
+						config,
+						resolve: resolvePlanProgress,
+					});
+					expect(
+						db.query("SELECT count(*) AS n FROM review_budget_baselines").get(),
+					).toEqual({ n: 1 });
+					expect(
+						db.query("SELECT acceptance FROM review_decision_index").get(),
+					).toEqual({ acceptance: "accepted" });
+					expect(
+						db
+							.query("SELECT resolved_decision_id FROM review_gate_index")
+							.get(),
+					).toEqual({ resolved_decision_id: decision.decisionId });
+				} finally {
+					closeOwned(db);
+				}
+			});
+		},
+		{ timeout: 30_000 },
+	);
 
 	test("does not overwrite existing result_json; keeps newer local-only steps", async () => {
 		await withTmp(async (dir) => {

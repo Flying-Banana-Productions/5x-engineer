@@ -777,6 +777,14 @@ describe("5x harness uninstall — round-trip", () => {
 						existsSync(join(tmp, ".opencode", "skills", name, "SKILL.md")),
 					).toBe(true);
 				}
+				const installedPlanReview = readFileSync(
+					join(tmp, ".opencode", "skills", "5x-plan-review", "SKILL.md"),
+					"utf8",
+				);
+				expect(installedPlanReview).toContain(".data.result.governance.route");
+				expect(installedPlanReview).toContain("5x review gate show");
+				expect(installedPlanReview).toContain("final_corrections");
+				expect(installedPlanReview).toContain("requiredFieldsByChoice");
 				for (const name of agentNames) {
 					expect(
 						existsSync(join(tmp, ".opencode", "agents", `${name}.md`)),

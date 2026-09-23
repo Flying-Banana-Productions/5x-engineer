@@ -6,15 +6,30 @@ import { join } from "node:path";
 import {
 	createMemoryPromptStore,
 	createSqlitePromptStore,
+	createWorkingTreeRecordStore,
 	type PromptStore,
 	PromptStoreError,
+	type RecordOrigin,
+	recordedEnvelope,
+	type StepRecordPayload,
 } from "../../../src/control-plane/index.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
+import { encodeBudgetSnapshotPayload } from "../../../src/review-budget/record-lines.js";
+import {
+	createReviewDecision,
+	deriveGateId,
+} from "../../../src/review-governance/decisions.js";
+import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
 
 const UUID_RE =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const GOVERNANCE_ORIGIN: RecordOrigin = {
+	recorder: { installation_id: "11111111-1111-4111-8111-111111111111" },
+	performer: { kind: "human" },
+};
 
 interface StoreHarness {
 	store: PromptStore;
@@ -97,6 +112,55 @@ for (const backend of backends) {
 			const loaded = store.getPrompt(created.id);
 			expect(loaded).not.toBeNull();
 			expect(loaded).toEqual(created);
+		});
+
+		test("review-gate context round-trips, rejects generic answers, and resolves internally", () => {
+			ensureRun("run_aaa");
+			const created = store.createPrompt({
+				runId: "run_aaa",
+				kind: "choose",
+				message: "Governance decision required",
+				options: ["retain_baseline", "abort"],
+				contextVersion: 1,
+				context: {
+					type: "plan_review_gate",
+					gateId: "gate-1",
+					snapshotId: "snapshot-1",
+					causes: [{ kind: "budget_alert", alert: "baseline_disputed" }],
+					eligibleFindings: [],
+					allowedChoices: ["retain_baseline", "abort"],
+					requiredFieldsByChoice: {
+						increase_budget: ["baseline"],
+						adjust_baseline: ["baseline"],
+						retain_baseline: ["rationale"],
+						request_author_reestimate: ["rationale"],
+						trade_scope: ["retained or removed scope"],
+						defer_accept_risk: ["findingRefs", "evidence"],
+						approve_architecture_burden: ["approvedP"],
+						abort: ["rationale"],
+					},
+				},
+			});
+			expect(store.getPrompt(created.id)?.context?.gateId).toBe("gate-1");
+			try {
+				store.answerPrompt(created.id, "retain_baseline", "control-plane");
+				throw new Error("expected rejection");
+			} catch (error) {
+				expect((error as PromptStoreError).code).toBe(
+					"REVIEW_GATE_DECISION_REQUIRED",
+				);
+				expect(error).toHaveProperty(
+					"message",
+					expect.stringContaining("5x review decide --gate gate-1"),
+				);
+			}
+			expect(store.getPrompt(created.id)?.answer).toBeNull();
+			const resolved = store.resolveReviewGatePrompt?.(
+				created.id,
+				"decision-1",
+			);
+			expect(resolved?.ok).toBe(true);
+			expect(resolved?.prompt.answer).toBe("decision-1");
 		});
 
 		test("listOpenPrompts omits answered and abandoned; runId filters; null run_id only in unfiltered list", () => {
@@ -348,4 +412,147 @@ describe("SqlitePromptStore shared-file CAS", () => {
 			rmSync(tmp, { recursive: true });
 		}
 	});
+});
+
+describe("review-governance working-tree facade race", () => {
+	for (const conflicting of [false, true]) {
+		test(`independent facades keep one decision/human pair for ${
+			conflicting ? "conflicting" : "identical"
+		} payloads`, async () => {
+			const root = mkdtempSync(join(tmpdir(), "5x-gate-facade-race-"));
+			try {
+				const leftRecords = createWorkingTreeRecordStore({ recordsRoot: root });
+				leftRecords.putRun({
+					id: "run_gate",
+					plan_path: "/sample-plan.md",
+					config_json: null,
+					created_at: "2026-01-01",
+					sealed_at: null,
+					status: "active",
+					final_head_commit: null,
+					cli_version: "test",
+					format_version: 1,
+					creator: GOVERNANCE_ORIGIN.recorder,
+				});
+				const reviewerStep: StepRecordPayload = {
+					step_name: "reviewer:plan",
+					phase: "plan",
+					iteration: 1,
+					result_json: {},
+					head_commit: null,
+					patch_id: null,
+					diff_summary: null,
+					duration_ms: null,
+					tokens_in: null,
+					tokens_out: null,
+					cost_usd: null,
+					model: null,
+				};
+				leftRecords.append({
+					runId: "run_gate",
+					stream: "steps",
+					idempotencyKey: "reviewer",
+					payload: reviewerStep,
+					...recordedEnvelope(GOVERNANCE_ORIGIN),
+				});
+				const causes = [
+					{
+						kind: "budget_alert" as const,
+						alert: "baseline_disputed" as const,
+					},
+				];
+				leftRecords.append({
+					runId: "run_gate",
+					stream: "budget",
+					idempotencyKey: "snapshot",
+					payload: encodeBudgetSnapshotPayload({
+						kind: "snapshot",
+						id: "snapshot_gate",
+						runId: "run_gate",
+						stepKey: {
+							stepName: "reviewer:plan",
+							phase: "plan",
+							iteration: 1,
+						},
+						currentLedger: {
+							workItems: [],
+							surface: {},
+							estimateConfidence: "medium",
+						} as never,
+						findings: [],
+						assessments: [],
+						effectiveGateCauses: causes,
+						createdAt: "2026-01-01",
+					}),
+					...recordedEnvelope(GOVERNANCE_ORIGIN),
+				});
+				const rightRecords = createWorkingTreeRecordStore({
+					recordsRoot: root,
+				});
+				const gateId = deriveGateId({
+					runId: "run_gate",
+					snapshotId: "snapshot_gate",
+					causes,
+				});
+				const makeDecision = (right: boolean) =>
+					createReviewDecision({
+						gateId,
+						snapshotId: "snapshot_gate",
+						choice:
+							right && conflicting ? "adjust_baseline" : "retain_baseline",
+						findingRefs: [],
+						rationale: right && conflicting ? "adjust" : "retain",
+						evidence: [],
+						approvedScope: { retained: [], removed: [] },
+						...(right && conflicting
+							? { governingBaselineChange: { from: 2, to: 3 } }
+							: {}),
+					});
+				const submit = (
+					records: typeof leftRecords,
+					decision: ReturnType<typeof makeDecision>,
+				) =>
+					createReviewGovernanceStore(records).resolveGate({
+						runId: "run_gate",
+						decision,
+						humanStep: {
+							...reviewerStep,
+							step_name: "human:review-governance",
+							iteration: 2,
+							result_json: {
+								decisionId: decision.decisionId,
+								gateId,
+							},
+						},
+						origin: GOVERNANCE_ORIGIN,
+					});
+				const [left, right] = await Promise.all([
+					Promise.resolve().then(() =>
+						submit(leftRecords, makeDecision(false)),
+					),
+					Promise.resolve().then(() =>
+						submit(rightRecords, makeDecision(true)),
+					),
+				]);
+				expect([left.created, right.created].filter(Boolean)).toHaveLength(1);
+				expect(leftRecords.listLines("run_gate", "decisions")).toHaveLength(1);
+				expect(
+					leftRecords
+						.listLines("run_gate", "steps")
+						.filter(
+							(line) =>
+								(line.payload as { step_name?: string }).step_name ===
+								"human:review-governance",
+						),
+				).toHaveLength(1);
+				if (!conflicting) {
+					const loser = left.created ? right : left;
+					if (loser.created) throw new Error("expected a loser");
+					expect(loser.semanticRetry).toBe(true);
+				}
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	}
 });

@@ -103,10 +103,14 @@ export interface ParsedDeliveryBudget {
 
 export interface FindingDelta {
 	id: string;
+	title?: string;
 	effortDelta: number;
 	architectureDelta: number;
 	scopeClass: PlanScopeClass | undefined;
 	coupling: CouplingClass | undefined;
+	failure?: string;
+	lowestCostCorrection?: string;
+	fingerprint?: string;
 	creditClaim?: DebtClaimEvidence;
 	creditNContribution?: number;
 }
@@ -166,8 +170,7 @@ export function isCompleteDebtClaimEvidence(
 		(claim.coupling === "intrinsic" ||
 			claim.coupling === "adjacent" ||
 			claim.coupling === "unrelated") &&
-		typeof claim.targetPhase === "string" &&
-		claim.targetPhase.trim().length > 0 &&
+		isValidDebtTargetPhase(claim.targetPhase) &&
 		typeof claim.minimalAlternativeEffortDelta === "number" &&
 		Number.isInteger(claim.minimalAlternativeEffortDelta) &&
 		(claim.minimalAlternativeEffortDelta === 0 ||
@@ -178,4 +181,9 @@ export function isCompleteDebtClaimEvidence(
 		typeof claim.after === "string" &&
 		claim.after.trim().length > 0
 	);
+}
+
+/** Plan-208 target phases are stable plan labels, not a prescribed name format. */
+export function isValidDebtTargetPhase(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
 }

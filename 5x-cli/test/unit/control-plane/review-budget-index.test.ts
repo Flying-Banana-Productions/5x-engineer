@@ -76,6 +76,7 @@ describe("review budget index rebuild", () => {
 			const baseline = store.captureBaseline({
 				runId: "run1",
 				captureKind: "initial",
+				mode: "advisory",
 				parsed,
 				configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 				origin,

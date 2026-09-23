@@ -15,6 +15,12 @@ import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
+import {
+	appendPlanReviewPromptContext,
+	buildPlanReviewPromptContext,
+	formatAuthorGoverningDecisions,
+	formatReviewerGovernanceContext,
+} from "../review-governance/context.js";
 import { validateRunId } from "../run-id.js";
 import {
 	getTemplateSource,
@@ -30,6 +36,7 @@ import { RecordContextError } from "./record-context.js";
 import {
 	createReviewBudgetContext,
 	ensurePlanReviewBaselineForContext,
+	latestPlanReviewIdentity,
 	type ReviewBudgetCommandContext,
 } from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
@@ -38,6 +45,7 @@ import { validateSessionContinuity } from "./session-check.js";
 import {
 	isPlanReviewTemplate,
 	needsReviewDelta,
+	type PriorReviewIdentity,
 	parseVars,
 	resolveAndRenderTemplate,
 	resolveReviewDelta,
@@ -79,6 +87,7 @@ export interface TemplateRenderDeps {
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
 	readPlan?: (path: string) => string;
 	warn?: (message: string) => void;
+	onRenderedPrompt?: (prompt: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +217,9 @@ export async function templateRender(
 		(params.session || params.continueNative) && !params.newSession;
 	let mergedVars = explicitVars;
 	let reviewDiffAppend: string | null = null;
+	let renderBudgetContext: ReviewBudgetCommandContext | undefined;
+	const warn =
+		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	if (
 		wantContinued &&
 		runDb &&
@@ -215,6 +227,23 @@ export async function templateRender(
 		resolvedPlanPath &&
 		needsReviewDelta(params.template)
 	) {
+		// Plan reviews diff against the durable snapshot's step identity, so
+		// the delta follows whatever --record-step name recorded the prior
+		// review. Legacy runs without record files fall back to a step scan.
+		let priorReview: PriorReviewIdentity | undefined;
+		if (isPlanReviewTemplate(params.template)) {
+			try {
+				renderBudgetContext = await (
+					deps?.createReviewBudgetContext ?? createReviewBudgetContext
+				)(
+					{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
+					warn,
+				);
+				priorReview = latestPlanReviewIdentity(renderBudgetContext, params.run);
+			} catch (err) {
+				if (!(err instanceof RecordContextError)) throw err;
+			}
+		}
 		const delta = await resolveReviewDelta({
 			db: runDb,
 			runId: params.run,
@@ -223,7 +252,7 @@ export async function templateRender(
 				: (explicitVars.phase_number ?? "1"),
 			planPath: resolvedPlanPath,
 			workdir: resolvedWorktreeRoot ?? projectRoot,
-			stepName: "reviewer:review",
+			priorReview,
 		});
 		if (Object.keys(delta.vars).length > 0) {
 			mergedVars = { ...delta.vars, ...explicitVars };
@@ -264,14 +293,16 @@ export async function templateRender(
 		resolvedPlanPath &&
 		config.reviewBudget.mode !== "off"
 	) {
-		let budgetContext: ReviewBudgetCommandContext;
 		try {
-			budgetContext = await (
+			renderBudgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
-			)({
-				runId: params.run,
-				startDir: resolvedWorktreeRoot ?? projectRoot,
-			});
+			)(
+				{
+					runId: params.run,
+					startDir: resolvedWorktreeRoot ?? projectRoot,
+				},
+				warn,
+			);
 		} catch (err) {
 			if (err instanceof RecordContextError) {
 				outputError(err.code, err.message, err.detail);
@@ -282,35 +313,64 @@ export async function templateRender(
 		try {
 			planMarkdown = (
 				deps?.readPlan ?? ((path) => readFileSync(path, "utf-8"))
-			)(budgetContext.executionContext.effectivePlanPath);
+			)(renderBudgetContext.executionContext.effectivePlanPath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
 		}
 		const ensured = ensurePlanReviewBaselineForContext({
-			ctx: budgetContext,
+			ctx: renderBudgetContext,
 			runId: params.run,
 			planMarkdown,
 			optIn: false,
 			performer: { kind: "system", role: "cli" },
-			warn: deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+			warn,
 		});
 		if (ensured.status === "error") {
 			outputError(ensured.code, ensured.message);
 		}
 	}
 	let prompt = resolved.prompt;
+	let governanceAppend: string | null = null;
+	if (params.run && isPlanReviewTemplate(resolved.selectedTemplateName)) {
+		try {
+			renderBudgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)(
+				{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
+				warn,
+			);
+			const governanceContext = buildPlanReviewPromptContext({
+				runId: params.run,
+				configuredMode: config.reviewBudget.mode,
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+			});
+			if (governanceContext) {
+				governanceAppend =
+					resolved.selectedTemplateName.replace(/-continued$/, "") ===
+					"author-process-plan-review"
+						? formatAuthorGoverningDecisions(governanceContext)
+						: formatReviewerGovernanceContext(governanceContext);
+			}
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+	}
 
 	// -----------------------------------------------------------------------
 	// Post-render: append the review diff block (continued plan reviews only),
 	// then the ## Context block when --run resolves a worktree.
 	// -----------------------------------------------------------------------
-	if (reviewDiffAppend) {
-		prompt += `\n${reviewDiffAppend}`;
-	}
+	prompt = appendPlanReviewPromptContext({
+		prompt,
+		diffAppend: reviewDiffAppend,
+		governanceAppend,
+	});
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;
 	}
+	deps?.onRenderedPrompt?.(prompt);
 
 	// -----------------------------------------------------------------------
 	// Surface warnings (stderr for human visibility)

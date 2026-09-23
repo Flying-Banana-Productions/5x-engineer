@@ -124,8 +124,14 @@ export type {
 	CreatePromptInput,
 	PromptKind,
 	PromptRecord,
+	RedactedPromptView,
+	ReviewGatePromptContext,
 } from "./types.js";
-export { PromptStoreError } from "./types.js";
+export {
+	PromptStoreError,
+	REVIEW_GATE_PROMPT_CONTEXT_VERSION,
+	toRedactedPromptView,
+} from "./types.js";
 export type { WaitForPromptAnswerOptions } from "./wait.js";
 export {
 	PROMPT_POLL_INTERVAL_MS,
@@ -133,4 +139,5 @@ export {
 	PromptTimeoutError,
 	PromptWaitAbortedError,
 	waitForPromptAnswer,
+	waitForReviewGateDecision,
 } from "./wait.js";

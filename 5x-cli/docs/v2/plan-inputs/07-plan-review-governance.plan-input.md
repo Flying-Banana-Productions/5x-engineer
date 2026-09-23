@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | **Slice ID** | `v2-plan-review-governance` |
-| **Status** | `draft` |
+| **Status** | `implemented` |
 | **Owner** | |
-| **Generated plan** | `-` |
-| **Last updated** | 2026-08-13 |
+| **Generated plan** | `docs/development/plans/209-plan-review-governance-plan.md` |
+| **Last updated** | 2026-09-22 |
 
 ---
 
@@ -27,7 +27,9 @@ Plan-review cycles converge against prior findings and route budget, scope, arch
 - Add explicit human choices for budget increase, scope trade, risk deferral, and abort through the control-plane prompt/decision path.
 - Persist stable decision IDs, finding fingerprints, rationale, evidence, approved scope, governing baseline changes, and full audit history.
 - Inject prior deferred and accepted-risk decisions into every later plan review and require new evidence to re-raise them.
-- Add dashboard views/actions for forecast, ceilings, debt claims, alerts, and decision history.
+- Export dashboard-ready read/action seams for forecast, ceilings, debt claims,
+  alerts, and decision history. Dashboard transport and UI moved to
+  `10-plan-review-governance-dashboard.plan-input.md` after slice 04.
 
 ---
 
@@ -38,6 +40,8 @@ Plan-review cycles converge against prior findings and route budget, scope, arch
 - General-purpose technical-debt discovery or unrelated refactoring.
 - Automatic suppression of material correctness, security, data-loss, or acceptance findings.
 - Making enforced mode the global default before advisory calibration supports it.
+- Dashboard HTTP/WebSocket routes, authentication, browser views, and parity
+  tests; see `10-plan-review-governance-dashboard.plan-input.md`.
 
 ---
 
@@ -52,8 +56,8 @@ Plan-review cycles converge against prior findings and route budget, scope, arch
 
 ## Dependencies
 
-- [ ] `04-control-plane-dashboard.plan-input.md` is merged with authenticated human-action paths.
-- [ ] `06-review-budget-advisory.plan-input.md` is merged with calibrated parser, persistence, and deterministic derivation.
+- [ ] `04-control-plane-dashboard.plan-input.md` is merged before the dashboard follow-up; it was deliberately not a prerequisite for this CLI slice.
+- [x] `06-review-budget-advisory.plan-input.md` is merged with calibrated parser, persistence, and deterministic derivation.
 
 **Assumptions** (ok to be wrong, but then spike or revise docs):
 
@@ -90,8 +94,9 @@ Plan-review cycles converge against prior findings and route budget, scope, arch
 
 **Leave for the next plan** (questions, spikes, or follow-on slices - do not implement here):
 
-1. Reconcile provisional debt claims against implementation outcomes.
-2. Apply diff-causal convergence and scope classification to implementation review.
+1. Reconcile provisional debt claims against implementation outcomes (slice 08).
+2. Apply diff-causal convergence and scope classification to implementation review (slice 08).
+3. Add authenticated dashboard forecast/history views and decision actions after slice 04 (`10-plan-review-governance-dashboard.plan-input.md`).
 
 **Suggested next slice** (optional): `08-implementation-review-governance.plan-input.md`
 

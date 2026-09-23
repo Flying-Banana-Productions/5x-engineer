@@ -21,11 +21,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { templateRender } from "../../../src/commands/template.handler.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { createProvider } from "../../../src/providers/factory.js";
+import type { AgentProvider } from "../../../src/providers/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
-import { makeBudgetContext } from "./review-budget-test-helpers.js";
+import {
+	makeBudgetContext,
+	pendingSnapshot,
+	seedPromptGovernanceContext,
+} from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,6 +50,28 @@ function cleanupDir(dir: string): void {
 	try {
 		rmSync(dir, { recursive: true });
 	} catch {}
+}
+
+function structuredProvider(structured: unknown): AgentProvider {
+	const result = {
+		text: "structured response",
+		structured,
+		sessionId: "session-governance",
+		tokens: { in: 0, out: 0 },
+		durationMs: 0,
+	};
+	const session = {
+		id: result.sessionId,
+		run: async () => result,
+		async *runStreamed() {
+			yield { type: "done" as const, result };
+		},
+	};
+	return {
+		startSession: async () => session,
+		resumeSession: async () => session,
+		close: async () => {},
+	};
 }
 
 // ===========================================================================
@@ -114,7 +142,7 @@ describe("invoke reviewer — plan read state", () => {
 - Production files: 1
 - Persistent/external boundaries: 0`;
 
-	async function setupBudgetInvoke(dir: string) {
+	async function setupBudgetInvoke(dir: string, humanGate = false) {
 		for (const args of [
 			["init"],
 			["config", "user.email", "test@test.com"],
@@ -135,6 +163,38 @@ describe("invoke reviewer — plan read state", () => {
 		createRunV1(db, { id: "run1", planPath });
 		closeDb();
 		_resetForTest();
+		const structured = humanGate
+			? `[sample.structured]
+readiness = "not_ready"
+creditAssessments = []
+
+[[sample.structured.items]]
+id = "H1"
+title = "Operator decision required"
+action = "human_required"
+reason = "The residual failure requires explicit acceptance."
+scopeClass = "acceptance_required"
+effortDelta = 0
+architectureDelta = 0
+estimateConfidence = "high"
+failure = "A retry can duplicate the durable write."
+lowestCostCorrection = "Require an operator decision."
+
+[sample.structured.baselineAssessment]
+independentEffortEstimate = 2
+confidence = "high"
+reason = "The original estimate remains sound."
+`
+			: `[sample.structured]
+readiness = "ready"
+items = []
+creditAssessments = []
+
+[sample.structured.baselineAssessment]
+independentEffortEstimate = 2
+confidence = "high"
+reason = "estimate"
+`;
 		writeFileSync(
 			join(dir, "5x.toml"),
 			`[author]
@@ -148,15 +208,7 @@ model = "sample/test"
 [sample]
 echo = false
 
-[sample.structured]
-readiness = "ready"
-items = []
-creditAssessments = []
-
-[sample.structured.baselineAssessment]
-independentEffortEstimate = 2
-confidence = "high"
-reason = "estimate"
+${structured}
 `,
 		);
 		return planPath;
@@ -274,6 +326,237 @@ reason = "estimate"
 			).toHaveLength(1);
 			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
 			expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			const planPath = await setupBudgetInvoke(dir, true);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			const seed = pendingSnapshot();
+			ctx.store.captureBaseline({
+				runId: "run1",
+				captureKind: "initial",
+				mode: "enforced",
+				parsed: seed.currentLedger,
+				configSnapshot: seed.derived.thresholds,
+				origin: ctx.originFor({ kind: "system", role: "cli" }),
+			});
+			ctx.config.reviewBudget.mode = "advisory";
+
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					vars: [`plan_path=${planPath}`],
+					phase: "plan",
+					record: true,
+					quiet: true,
+					workdir: dir,
+				},
+				{ createReviewBudgetContext: async () => ctx },
+			);
+
+			const line = ctx.recordStore.listLines("run1", "steps")[0];
+			expect(line).toBeDefined();
+			const result = (
+				line?.payload as {
+					result_json?: { governance?: { route?: string } };
+				}
+			)?.result_json;
+			expect(ctx.store.getBaseline("run1")?.mode).toBe("enforced");
+			expect(result?.governance?.route).toBe("human_gate");
+			expect(ctx.db.query("SELECT count(*) AS n FROM prompts").get()).toEqual({
+				n: 1,
+			});
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("invoke and template handlers append byte-identical reviewer governance context", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			seedPromptGovernanceContext(ctx);
+			let nativePrompt = "";
+			let invokePrompt = "";
+			let authorInvokePrompt = "";
+			await templateRender(
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					workdir: dir,
+					newSession: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					onRenderedPrompt: (prompt) => {
+						nativePrompt = prompt;
+					},
+				},
+			);
+			await invokeAgent(
+				"reviewer",
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					workdir: dir,
+					newSession: true,
+					quiet: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					createProvider: async () =>
+						structuredProvider({
+							readiness: "ready",
+							items: [],
+							priorFindings: [{ id: "P1.open", status: "addressed" }],
+							creditAssessments: [],
+						}),
+					onRenderedPrompt: (prompt) => {
+						invokePrompt = prompt;
+					},
+				},
+			);
+			await invokeAgent(
+				"author",
+				{
+					template: "author-process-plan-review",
+					run: "run1",
+					workdir: dir,
+					quiet: true,
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					createProvider: async () =>
+						structuredProvider({
+							result: "needs_human",
+							reason: "Prompt capture fixture.",
+						}),
+					onRenderedPrompt: (prompt) => {
+						authorInvokePrompt = prompt;
+					},
+				},
+			);
+			const contextBlock = (prompt: string) => {
+				const start = prompt.indexOf("## Plan-review governance context");
+				expect(start).toBeGreaterThanOrEqual(0);
+				const contextStart = prompt.indexOf("\n\n## Context\n", start);
+				return prompt.slice(start, contextStart < 0 ? undefined : contextStart);
+			};
+			expect(contextBlock(invokePrompt)).toBe(contextBlock(nativePrompt));
+			expect(contextBlock(invokePrompt)).toContain(
+				"Required prior-finding outcome IDs: P1.open",
+			);
+			expect(authorInvokePrompt).toContain("## Governing decisions");
+			expect(authorInvokePrompt).toContain("P1.deferred (sha256:deferred)");
+			expect(authorInvokePrompt).not.toContain(
+				"## Plan-review governance context",
+			);
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+
+	test("provider schema follows the baselineAssessment contract the budget validator enforces", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			const planPath = await setupBudgetInvoke(dir);
+			writeFileSync(planPath, budgetPlan);
+			ctx.executionContext.effectivePlanPath = planPath;
+			const schemas: Record<string, unknown>[] = [];
+			const initialVerdict = {
+				readiness: "ready",
+				items: [],
+				creditAssessments: [],
+				baselineAssessment: {
+					independentEffortEstimate: 2,
+					confidence: "high",
+					reason: "estimate",
+				},
+			};
+			const invoke = (iteration: number) =>
+				invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-plan",
+						run: "run1",
+						vars: [`plan_path=${planPath}`],
+						phase: "plan",
+						record: true,
+						recordStep: "reviewer:plan",
+						iteration,
+						quiet: true,
+						workdir: dir,
+						newSession: true,
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => {
+							const provider = structuredProvider(initialVerdict);
+							const session = await provider.startSession({
+								model: "m",
+								workingDirectory: dir,
+							});
+							const streamed = session.runStreamed.bind(session);
+							session.runStreamed = (prompt, opts) => {
+								schemas.push(opts?.outputSchema as Record<string, unknown>);
+								return streamed(prompt, opts);
+							};
+							return provider;
+						},
+					},
+				);
+
+			// Initial active review: the independent estimate is required.
+			await invoke(1);
+			expect(schemas[0]?.required).toContain("baselineAssessment");
+			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+
+			// Closure review: the schema forbids what validation rejects, and
+			// validation stays the final authority when the model ignores it.
+			let rejection: unknown;
+			await invoke(2).catch((err) => {
+				rejection = err;
+			});
+			expect(schemas[1]?.properties).not.toHaveProperty("baselineAssessment");
+			expect(schemas[1]?.not).toEqual({ required: ["baselineAssessment"] });
+			expect(rejection).toMatchObject({
+				code: "BASELINE_ASSESSMENT_UNEXPECTED",
+				detail: {
+					session_id: "session-governance",
+					raw: { baselineAssessment: { independentEffortEstimate: 2 } },
+					recovery: { step_name: "reviewer:plan", phase: "plan", iteration: 2 },
+				},
+			});
+			expect(ctx.store.listSnapshots("run1")).toHaveLength(1);
+
+			// A retry of the initial step may repeat its estimate.
+			await invoke(1);
+			const { ReviewerVerdictSchema } = await import(
+				"../../../src/protocol.js"
+			);
+			expect(schemas[2]).toEqual(ReviewerVerdictSchema);
 		} finally {
 			ctx.db.close();
 			closeDb();
@@ -874,7 +1157,7 @@ describe("invoke — enriched output fields (unit)", () => {
 			plan_path: "p.md",
 			review_template_path: "t.md",
 		});
-		expect(r3.stepName).toBe("reviewer:review");
+		expect(r3.stepName).toBe("reviewer:commit");
 	});
 });
 

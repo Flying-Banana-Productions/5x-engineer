@@ -22,6 +22,8 @@ import { runMigrations } from "../../../src/db/schema.js";
 import { setOutputFormat } from "../../../src/output.js";
 import { planSlugFromPath } from "../../../src/paths.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { createReviewDecision } from "../../../src/review-governance/decisions.js";
+import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
 
 const origin: RecordOrigin = {
 	recorder: { installation_id: "33333333-3333-4333-8333-333333333333" },
@@ -75,7 +77,10 @@ afterEach(() => {
 	}
 });
 
-function setup(mode: "off" | "advisory" = "advisory") {
+function setup(
+	mode: "off" | "advisory" | "enforced" = "advisory",
+	capturedMode: "advisory" | "enforced" = "advisory",
+) {
 	const root = mkdtempSync(join(tmpdir(), "5x-run-budget-state-"));
 	tempDirs.push(root);
 	const planPath = join(root, "plans", "plan.md");
@@ -101,6 +106,7 @@ function setup(mode: "off" | "advisory" = "advisory") {
 	createReviewBudgetStore(records).captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
+		mode: capturedMode,
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin,
@@ -195,8 +201,85 @@ function appendHumanReview(ctx: ReturnType<typeof setup>): void {
 	});
 }
 
+function appendAdjustedBaselineDecision(ctx: ReturnType<typeof setup>): void {
+	appendHumanReview(ctx);
+	const snapshot = createReviewBudgetStore(ctx.records).latestSnapshot("run1");
+	if (!snapshot) throw new Error("missing snapshot fixture");
+	const decision = createReviewDecision({
+		gateId: "gate-baseline",
+		snapshotId: snapshot.id,
+		choice: "adjust_baseline",
+		findingRefs: [],
+		rationale: "The independent estimate establishes the larger baseline.",
+		evidence: [],
+		approvedScope: { retained: [], removed: [] },
+		governingBaselineChange: { from: 5, to: 8 },
+		decisionId: "44444444-4444-4444-8444-444444444444",
+		createdAt: "2026-09-17 00:00:02",
+	});
+	createReviewGovernanceStore(ctx.records).resolveGate({
+		runId: "run1",
+		decision,
+		humanStep: {
+			step_name: "human:review-governance",
+			phase: "plan",
+			iteration: 1,
+			result_json: {
+				decisionId: decision.decisionId,
+				gateId: decision.gateId,
+			},
+			head_commit: null,
+			patch_id: null,
+			diff_summary: null,
+			duration_ms: null,
+			tokens_in: null,
+			tokens_out: null,
+			cost_usd: null,
+			model: null,
+		},
+		origin: {
+			...origin,
+			performer: { kind: "human", role: "operator" },
+		},
+	});
+}
+
+function appendMalformedSnapshot(ctx: ReturnType<typeof setup>): void {
+	ctx.records.append({
+		runId: "run1",
+		stream: "budget",
+		idempotencyKey: "budget:snapshot:run1:malformed:plan:3",
+		payload: {
+			kind: "snapshot",
+			id: "malformed-snapshot",
+			runId: "run1",
+		},
+		...recordedEnvelope(origin),
+	});
+}
+
+function appendReviewFinding(ctx: ReturnType<typeof setup>): void {
+	createReviewBudgetStore(ctx.records).appendSnapshot({
+		runId: "run1",
+		stepName: "reviewer:plan",
+		phase: "plan",
+		iteration: 2,
+		currentLedger: ledger,
+		findings: [
+			{
+				id: "P1.ledger",
+				effortDelta: 2,
+				architectureDelta: 1,
+				scopeClass: "acceptance_required",
+				coupling: undefined,
+			},
+		],
+		assessments: [],
+	});
+}
+
 describe("run state review-budget wiring", () => {
-	test("runV1State includes active review_budget and omits it in off mode", async () => {
+	test("runV1State includes active review_budget even after config changes to off", async () => {
 		const advisory = setup();
 		try {
 			const envelope = (await captureState(advisory)) as {
@@ -215,9 +298,34 @@ describe("run state review-budget wiring", () => {
 			const envelope = (await captureState(off)) as {
 				data?: { review_budget?: unknown };
 			};
-			expect(envelope.data?.review_budget).toBeUndefined();
+			expect(envelope.data?.review_budget).toMatchObject({
+				status: "active",
+				mode: "advisory",
+			});
 		} finally {
 			off.db.close();
+		}
+	});
+
+	test("run state reports the captured mode after live config flips in either direction", async () => {
+		for (const fixture of [
+			{
+				ctx: setup("off", "enforced"),
+				expected: { mode: "enforced", enforcement_implemented: true },
+			},
+			{
+				ctx: setup("enforced", "advisory"),
+				expected: { mode: "advisory", enforcement_implemented: false },
+			},
+		] as const) {
+			try {
+				const envelope = (await captureState(fixture.ctx)) as {
+					data?: { review_budget?: Record<string, unknown> };
+				};
+				expect(envelope.data?.review_budget).toMatchObject(fixture.expected);
+			} finally {
+				fixture.ctx.db.close();
+			}
 		}
 	});
 
@@ -277,6 +385,44 @@ describe("run state review-budget wiring", () => {
 		}
 	});
 
+	test("archived run state folds decisions into governing B", async () => {
+		const ctx = setup();
+		try {
+			appendAdjustedBaselineDecision(ctx);
+			const liveEnvelope = (await captureState(ctx)) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: Record<string, unknown>;
+				};
+			};
+			expect(liveEnvelope.data?.review_budget?.B).toBe(8);
+			expect(liveEnvelope.data?.review_governance).toMatchObject({
+				governing_baseline: 8,
+			});
+			expect(liveEnvelope.data?.review_governance?.diagnostics).toContainEqual(
+				expect.stringContaining("legacy snapshot has no derived budget"),
+			);
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const envelope = (await captureState(ctx, {
+				plan: ctx.planPath,
+			})) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: Record<string, unknown>;
+				};
+			};
+			expect(envelope.data?.review_budget?.B).toBe(8);
+			expect(envelope.data?.review_budget).toEqual(
+				liveEnvelope.data?.review_budget,
+			);
+			expect(envelope.data?.review_governance).toEqual(
+				liveEnvelope.data?.review_governance,
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
 	test("git-record loader surfaces malformed budget JSONL", async () => {
 		const ctx = setup();
 		try {
@@ -324,6 +470,136 @@ describe("run state review-budget wiring", () => {
 			expect(gitEnvelope.data?.review_budget).toBeUndefined();
 			expect(warnings).toHaveLength(1);
 			expect(warnings[0]).toContain("omitting review_budget");
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("live and archived run state warn and preserve governance for a malformed snapshot payload", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			appendMalformedSnapshot(ctx);
+
+			const live = (await captureState(ctx, { run: "run1" }, (message) =>
+				warnings.push(message),
+			)) as { data?: { review_governance?: Record<string, unknown> } };
+			expect(live.data?.review_governance).toMatchObject({
+				governing_baseline: 5,
+			});
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"Skipping malformed review budget snapshot record budget:snapshot:run1:malformed:plan:3",
+				),
+			);
+
+			warnings.length = 0;
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const archived = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as { data?: { review_governance?: Record<string, unknown> } };
+			expect(archived.data?.review_governance).toMatchObject({
+				governing_baseline: 5,
+			});
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"Skipping malformed review budget snapshot record budget:snapshot:run1:malformed:plan:3",
+				),
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("malformed later snapshot preserves adjusted governing B in live and archived state", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			appendAdjustedBaselineDecision(ctx);
+			appendMalformedSnapshot(ctx);
+
+			const live = (await captureState(ctx, { run: "run1" }, (message) =>
+				warnings.push(message),
+			)) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: unknown;
+				};
+			};
+			expect(live.data?.review_budget?.B).toBe(8);
+			expect(live.data?.review_governance).toMatchObject({
+				governing_baseline: 8,
+			});
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"Skipping malformed review budget snapshot record",
+				),
+			);
+
+			warnings.length = 0;
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const archived = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					review_governance?: unknown;
+				};
+			};
+			expect(archived.data?.review_budget?.B).toBe(8);
+			expect(archived.data?.review_governance).toMatchObject({
+				governing_baseline: 8,
+			});
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"Skipping malformed review budget snapshot record",
+				),
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("malformed trailing snapshot preserves the last valid findings ledger", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			appendHumanReview(ctx);
+			appendReviewFinding(ctx);
+			const before = (await captureState(ctx)) as {
+				data?: { review_budget?: Record<string, unknown> };
+			};
+			expect(before.data?.review_budget?.R).toBe(2);
+			expect(before.data?.review_budget?.P).toBe(1);
+
+			appendMalformedSnapshot(ctx);
+			const live = (await captureState(ctx, { run: "run1" }, (message) =>
+				warnings.push(message),
+			)) as { data?: { review_budget?: Record<string, unknown> } };
+			expect(live.data?.review_budget).toEqual(before.data?.review_budget);
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"repair or remove this record. Earlier valid snapshots remain in use",
+				),
+			);
+
+			warnings.length = 0;
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const archived = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as { data?: { review_budget?: Record<string, unknown> } };
+			expect(archived.data?.review_budget).toEqual(before.data?.review_budget);
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"repair or remove this record. Earlier valid snapshots remain in use",
+				),
+			);
 		} finally {
 			ctx.db.close();
 		}

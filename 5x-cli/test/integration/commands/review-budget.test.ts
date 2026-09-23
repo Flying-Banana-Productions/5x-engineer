@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -59,6 +59,9 @@ const HUMAN_VERDICT = JSON.stringify({
 			architectureDelta: 5,
 			scopeClass: "acceptance_required",
 			coupling: "intrinsic",
+			estimateConfidence: "high",
+			failure: "The plan leaves the persistence architecture undecided.",
+			lowestCostCorrection: "Select one persistence architecture.",
 		},
 	],
 	baselineAssessment: {
@@ -125,7 +128,14 @@ function git(cwd: string, ...args: string[]): void {
 async function setup(
 	plan = VALID_BUDGET,
 	mode: "off" | "advisory" | "enforced" = "advisory",
-): Promise<{ dir: string; planPath: string; runId: string }> {
+	subproject = "",
+	mapped = false,
+): Promise<{
+	dir: string;
+	planPath: string;
+	runId: string;
+	worktree?: string;
+}> {
 	const dir = tempDir();
 	git(dir, "init");
 	git(dir, "config", "user.email", "test@test.com");
@@ -136,17 +146,34 @@ async function setup(
 		join(dir, "5x.toml"),
 		`[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "${mode}"\n`,
 	);
-	const planPath = join(dir, "docs", "development", "test-plan.md");
-	mkdirSync(join(dir, "docs", "development"), { recursive: true });
+	const planPath = join(dir, subproject, "docs", "development", "test-plan.md");
+	mkdirSync(join(dir, subproject, "docs", "development"), { recursive: true });
+	if (subproject) {
+		writeFileSync(
+			join(dir, subproject, "5x.toml"),
+			'[paths]\nplans = "docs/development"\n',
+		);
+	}
 	writeFileSync(planPath, plan);
 	git(dir, "add", "-A");
 	git(dir, "commit", "-m", "fixture");
-	const initializedRun = await run5x(dir, ["run", "init", "--plan", planPath]);
+	const initializedRun = await run5x(dir, [
+		"run",
+		"init",
+		"--plan",
+		planPath,
+		...(mapped ? ["--worktree"] : []),
+	]);
 	if (initializedRun.exitCode !== 0) throw new Error(initializedRun.stdout);
 	const runId = (
 		JSON.parse(initializedRun.stdout) as { data: { run_id: string } }
 	).data.run_id;
-	return { dir, planPath, runId };
+	return {
+		dir,
+		planPath,
+		runId,
+		worktree: JSON.parse(initializedRun.stdout).data.worktree?.worktree_path,
+	};
 }
 
 function budgetStore(dir: string) {
@@ -164,6 +191,215 @@ function lines(dir: string, runId: string, stream: "budget" | "steps") {
 }
 
 describe("review-budget CLI integration", () => {
+	for (const withBaseline of [false, true]) {
+		test(
+			`archived run state uses plan-local policy from either CWD ${withBaseline ? "with a pinned baseline" : "without a baseline"}`,
+			async () => {
+				const ctx = await setup(VALID_BUDGET, "off", "app");
+				try {
+					const app = join(ctx.dir, "app");
+					const local = join(app, "5x.toml.local");
+					writeFileSync(
+						local,
+						'[reviewBudget]\nmode = "enforced"\nminimumGrowthPoints = 7\n',
+					);
+					if (withBaseline) {
+						const render = await run5x(ctx.dir, [
+							"template",
+							"render",
+							"reviewer-plan",
+							"--run",
+							ctx.runId,
+						]);
+						expect(render.exitCode).toBe(0);
+					}
+					git(ctx.dir, "add", "-A");
+					git(ctx.dir, "commit", "-m", "archive run records");
+					const db = new Database(join(ctx.dir, ".5x", "5x.db"));
+					try {
+						db.query("DELETE FROM runs WHERE id = ?").run(ctx.runId);
+					} finally {
+						db.close();
+					}
+					for (const mode of ["advisory", "off"]) {
+						writeFileSync(
+							local,
+							`[reviewBudget]\nmode = "${mode}"\nminimumGrowthPoints = 9\n`,
+						);
+						for (const cwd of [ctx.dir, app]) {
+							const state = await run5x(cwd, [
+								"run",
+								"state",
+								"--plan",
+								ctx.planPath,
+							]);
+							expect(state.exitCode).toBe(0);
+							const data = JSON.parse(state.stdout).data;
+							expect(data.source).toBe("HEAD");
+							expect(data.run.id).toBe(ctx.runId);
+							if (withBaseline) {
+								expect(data.review_budget).toMatchObject({
+									status: "active",
+									mode: "enforced",
+									B0: 2,
+									S: 9,
+								});
+							} else if (mode === "off") {
+								expect(data.review_budget).toBeUndefined();
+							} else {
+								expect(data.review_budget).toMatchObject({
+									status: "uninitialized",
+									mode: "advisory",
+								});
+							}
+						}
+					}
+				} finally {
+					rmSync(ctx.dir, { recursive: true, force: true });
+				}
+			},
+			{ timeout: 30000 },
+		);
+	}
+
+	test(
+		"mapped subproject captures mapped policy, not main subproject or worktree root policy",
+		async () => {
+			const ctx = await setup(VALID_BUDGET, "advisory", "app", true);
+			try {
+				if (!ctx.worktree) throw new Error("Missing fixture worktree");
+				writeFileSync(
+					join(ctx.dir, "app", "5x.toml.local"),
+					'[reviewBudget]\nmode = "off"\n',
+				);
+				writeFileSync(
+					join(ctx.worktree, "app", "5x.toml.local"),
+					'[reviewBudget]\nmode = "enforced"\nminimumGrowthPoints = 6\n',
+				);
+				for (const cwd of [
+					ctx.dir,
+					join(ctx.dir, "app"),
+					join(ctx.worktree, "app"),
+				]) {
+					const rendered = await run5x(cwd, [
+						"template",
+						"render",
+						"reviewer-plan",
+						"--run",
+						ctx.runId,
+					]);
+					expect(rendered.exitCode).toBe(0);
+					expect(
+						budgetStore(ctx.worktree).getBaseline(ctx.runId),
+					).toMatchObject({
+						mode: "enforced",
+						configSnapshot: { minimumGrowthPoints: 6 },
+					});
+				}
+				expect(
+					createWorkingTreeRecordStore({
+						recordsRoot: join(ctx.dir, "docs", "development", "runs"),
+					}).getRun(ctx.runId),
+				).toBeNull();
+			} finally {
+				rmSync(ctx.dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	for (const fromSubproject of [false, true]) {
+		test(
+			`initial render pins plan-local policy from ${fromSubproject ? "subproject" : "root"} CWD through record and gate`,
+			async () => {
+				const ctx = await setup(VALID_BUDGET, "advisory", "app");
+				try {
+					const app = join(ctx.dir, "app");
+					writeFileSync(join(app, "5x.toml"), "# Subproject defaults\n");
+					const local = join(app, "5x.toml.local");
+					writeFileSync(
+						local,
+						'[reviewBudget]\nmode = "enforced"\nminimumGrowthPoints = 7\n',
+					);
+					const cwd = fromSubproject ? app : ctx.dir;
+					const stateBefore = await run5x(cwd, [
+						"run",
+						"state",
+						"--run",
+						ctx.runId,
+					]);
+					expect(stateBefore.exitCode).toBe(0);
+					expect(JSON.parse(stateBefore.stdout).data.review_budget.mode).toBe(
+						"enforced",
+					);
+					const rendered = await run5x(cwd, [
+						"template",
+						"render",
+						"reviewer-plan",
+						"--run",
+						ctx.runId,
+					]);
+					expect(rendered.exitCode).toBe(0);
+					const baseline = budgetStore(ctx.dir).getBaseline(ctx.runId);
+					expect(baseline).toMatchObject({
+						mode: "enforced",
+						configSnapshot: { minimumGrowthPoints: 7 },
+					});
+					// Even off in current plan-local config cannot demote an active run.
+					writeFileSync(
+						local,
+						'[reviewBudget]\nmode = "off"\nminimumGrowthPoints = 9\n',
+					);
+					const recorded = await run5x(
+						cwd,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							ctx.runId,
+							"--record",
+							"--step",
+							"reviewer:plan",
+							"--phase",
+							"plan",
+						],
+						HUMAN_VERDICT,
+					);
+					expect(recorded.exitCode).toBe(0);
+					const result = JSON.parse(recorded.stdout).data.result;
+					expect(result.governance.route).toBe("human_gate");
+					expect(result.budget.thresholds.minimumGrowthPoints).toBe(7);
+					const gate = await run5x(cwd, [
+						"review",
+						"gate",
+						"show",
+						"--run",
+						ctx.runId,
+					]);
+					expect(gate.exitCode).toBe(0);
+					expect(JSON.parse(gate.stdout).data.gate).toBeTruthy();
+					for (const dir of [ctx.dir, app]) {
+						const state = await run5x(dir, [
+							"run",
+							"state",
+							"--run",
+							ctx.runId,
+						]);
+						expect(state.exitCode).toBe(0);
+						expect(JSON.parse(state.stdout).data.review_budget.mode).toBe(
+							"enforced",
+						);
+					}
+					expect(budgetStore(ctx.dir).getBaseline(ctx.runId)).toEqual(baseline);
+				} finally {
+					rmSync(ctx.dir, { recursive: true, force: true });
+				}
+			},
+			{ timeout: 30000 },
+		);
+	}
+
 	test(
 		"preserves the v1 emit/validate contract and rejects reviewer aggregates",
 		async () => {
@@ -528,7 +764,7 @@ describe("review-budget CLI integration", () => {
 	);
 
 	test(
-		"reserved enforced mode warns on render and direct-record capture without changing routing",
+		"enforced mode is pinned and derives governance routing without a legacy warning",
 		async () => {
 			for (const capture of ["render", "record"] as const) {
 				const ctx = await setup(VALID_BUDGET, "enforced");
@@ -559,13 +795,16 @@ describe("review-budget CLI integration", () => {
 									HUMAN_VERDICT,
 								);
 					expect(result.exitCode).toBe(0);
-					expect(result.stderr).toContain("enforcement is not implemented");
-					expect(budgetStore(ctx.dir).getBaseline(ctx.runId)).not.toBeNull();
+					expect(result.stderr).not.toContain("enforcement is not implemented");
+					expect(budgetStore(ctx.dir).getBaseline(ctx.runId)?.mode).toBe(
+						"enforced",
+					);
 					if (capture === "record") {
 						const verdict = JSON.parse(result.stdout).data.result;
 						expect(verdict.readiness).toBe("not_ready");
 						expect(verdict.budget.requiresHuman).toBe(true);
 						expect(verdict.budget.budgetBand).toBe("over_absolute");
+						expect(verdict.governance.route).toBe("human_gate");
 					}
 				} finally {
 					rmSync(ctx.dir, { recursive: true, force: true });
@@ -573,5 +812,176 @@ describe("review-budget CLI integration", () => {
 			}
 		},
 		{ timeout: 30000 },
+	);
+
+	test(
+		"documented invoke sequence (--record-step reviewer:plan) diffs the continued review and recovers a rejected closure verdict",
+		async () => {
+			const ctx = await setup();
+			const sampleConfig = (verdict: string) =>
+				`[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewBudget]\nmode = "advisory"\n\n[sample]\necho = true\n\n[sample.structured]\n${verdict}`;
+			const tomlVerdict = (withBaseline: boolean) =>
+				`readiness = "ready"\nitems = []\ncreditAssessments = []\n${
+					withBaseline
+						? '\n[sample.structured.baselineAssessment]\nindependentEffortEstimate = 2\nconfidence = "high"\nreason = "Independent estimate"\n'
+						: ""
+				}`;
+			const invokeReview = (iteration: number, session?: string) =>
+				run5x(ctx.dir, [
+					"invoke",
+					"reviewer",
+					"reviewer-plan",
+					"--run",
+					ctx.runId,
+					...(session ? ["--session", session] : []),
+					"--record",
+					"--record-step",
+					"reviewer:plan",
+					"--phase",
+					"plan",
+					"--iteration",
+					String(iteration),
+					"--quiet",
+				]);
+			try {
+				writeFileSync(
+					join(ctx.dir, "5x.toml"),
+					sampleConfig(tomlVerdict(true)),
+				);
+				git(ctx.dir, "add", "-A");
+				git(ctx.dir, "commit", "-m", "configure sample reviewer");
+				const first = await invokeReview(1);
+				expect(first.exitCode).toBe(0);
+				const sessionId = JSON.parse(first.stdout).data.session_id as string;
+				const reviewedHead = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+					cwd: ctx.dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+				})
+					.stdout.toString()
+					.trim();
+
+				writeFileSync(
+					ctx.planPath,
+					VALID_BUDGET.replace(
+						"- [ ] Deliver behavior\n",
+						"- [ ] Deliver behavior\n- [ ] Address review finding\n",
+					),
+				);
+				git(ctx.dir, "commit", "-am", "plan: revise");
+
+				// Native render path resolves the same prior review.
+				const rendered = await run5x(ctx.dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--run",
+					ctx.runId,
+					"--session",
+					sessionId,
+				]);
+				expect(rendered.exitCode).toBe(0);
+				const renderedData = JSON.parse(rendered.stdout).data;
+				expect(renderedData.selected_template).toBe("reviewer-plan-continued");
+				expect(renderedData.variables.previous_review_commit).toBe(
+					reviewedHead,
+				);
+				expect(renderedData.prompt).toContain("## Plan Diff Since Last Review");
+				expect(renderedData.prompt).toContain("+- [ ] Address review finding");
+
+				// The closure reviewer wrongly re-emits baselineAssessment.
+				const rejected = await invokeReview(2, sessionId);
+				expect(rejected.exitCode).not.toBe(0);
+				const failure = JSON.parse(rejected.stdout).error;
+				expect(failure.code).toBe("BASELINE_ASSESSMENT_UNEXPECTED");
+				expect(failure.detail).toMatchObject({
+					session_id: sessionId,
+					provider: "sample",
+					model: "sample/test",
+					template: "reviewer-plan-continued",
+					raw: { baselineAssessment: { independentEffortEstimate: 2 } },
+					recovery: { step_name: "reviewer:plan", phase: "plan", iteration: 2 },
+				});
+				const logPath = failure.detail.log_path as string;
+				expect(failure.detail.recovery.command).toContain(
+					`--invocation-log ${logPath}`,
+				);
+				const donePrompt = (
+					readFileSync(logPath, "utf-8")
+						.split("\n")
+						.filter(Boolean)
+						.map((line) => JSON.parse(line))
+						.find((entry) => entry.type === "done") as {
+						result: { text: string };
+					}
+				).result.text;
+				expect(donePrompt).toContain(
+					`Previous review commit: \`${reviewedHead}\``,
+				);
+				expect(donePrompt).toContain("+- [ ] Address review finding");
+				// Rejected: nothing recorded for iteration 2.
+				expect(lines(ctx.dir, ctx.runId, "steps")).toHaveLength(1);
+
+				const recovered = await run5x(
+					ctx.dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						ctx.runId,
+						"--record",
+						"--step",
+						"reviewer:plan",
+						"--phase",
+						"plan",
+						"--iteration",
+						"2",
+						"--invocation-log",
+						logPath,
+					],
+					V1_VERDICT,
+				);
+				expect(recovered.exitCode).toBe(0);
+				expect(lines(ctx.dir, ctx.runId, "steps")).toHaveLength(2);
+				const db = new Database(join(ctx.dir, ".5x", "5x.db"));
+				expect(
+					db
+						.query(
+							"SELECT session_id, model, log_path FROM steps WHERE step_name = 'reviewer:plan' AND iteration = 2",
+						)
+						.get(),
+				).toEqual({
+					session_id: sessionId,
+					model: "sample/test",
+					log_path: logPath,
+				});
+				db.close();
+
+				// The recovery log must match the run and role it records.
+				const mismatched = await run5x(
+					ctx.dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--run",
+						ctx.runId,
+						"--record",
+						"--step",
+						"author:x",
+						"--phase",
+						"plan",
+						"--invocation-log",
+						logPath,
+					],
+					JSON.stringify({ result: "needs_human", reason: "x" }),
+				);
+				expect(mismatched.exitCode).not.toBe(0);
+			} finally {
+				rmSync(ctx.dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60000 },
 	);
 });

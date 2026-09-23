@@ -1,9 +1,9 @@
 ---
 name: reviewer-commit-continued
 description: Re-review revised implementation commits
-version: 1
+version: 2
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id, previous_review_commit, current_commit]
-step_name: "reviewer:review"
+step_name: "reviewer:commit"
 variable_defaults:
   run_id: ""
   previous_review_commit: ""

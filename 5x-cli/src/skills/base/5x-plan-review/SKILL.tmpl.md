@@ -61,10 +61,14 @@ Only use `--new-session` for recovery (context loss, empty output).
 - When using `--run`, do not pass `--var plan_path=...` unless you are
   intentionally overriding run-linked plan resolution. Let the CLI resolve
   the mapped worktree copy automatically.
-- Review-budget forecasts are advisory in this slice. Never route, stop, or
-  open a human gate because `result.budget.requiresHuman` is true, even when
-  `reviewBudget.mode = "enforced"`; use only readiness, review-item actions,
-  and `maxReviewIterations` for routing.
+- The baseline-pinned mode controls a run. Later config edits do not promote,
+  disable, or otherwise change an active run.
+- In an enforced active run, route only from
+  `.data.result.governance.route` after validation/recording. Never infer a
+  gate from reviewer prose/readiness and never recompute budget thresholds.
+- Advisory/off and mid-review `v1_compat` runs retain v1 readiness/action
+  routing. Advisory governance diagnostics and hypothetical routes are
+  telemetry only.
 - Initial active-budget reviews require `baselineAssessment` and assessments
   for every current author `DCn`. Continued reviews must omit the baseline
   assessment and assess only author claims that are new or changed; unchanged
@@ -89,6 +93,10 @@ worktree mapping, or `.5x/current-run` already identifies the run. Pass
 - `5x invoke <author|reviewer> <template> [--var key=val ...]` — invoke role workflow, validate structured output, and optionally record with `--record` (invoke roles)
 {{/if}}
 - `5x plan phases <path>` — verify plan still parses after revisions
+- `5x review gate show` — show the current durable gate, allowed choices,
+  eligible finding identities, and `requiredFieldsByChoice`
+- `5x review decide --gate <id> ...` — submit a complete gate decision and
+  return the CLI-derived post-decision route
 {{#if reviewer_native}}
 - `5x protocol validate reviewer --opt-in-budget-baseline ...` — after an
   explicit human confirmation, activate budgeting for a mid-review
@@ -100,18 +108,18 @@ worktree mapping, or `.5x/current-run` already identifies the run. Pass
   `v1_compat` run whose current plan has a valid Delivery Budget
 {{/if}}
 {{#if any_native}}
-- Human gates — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes below.
+- Human gates (legacy v1 escalations only) — use your **native UI** (see `5x` foundation skill). Record with `5x run record "human:gate"` using the JSON shapes below. Enforced review gates use `5x review decide`, never this generic path.
 - **`5x prompt` fallback** — only when no chat UI exists; use `--default` if stdin is not a TTY.
 {{/if}}
 {{#if all_invoke}}
-- `5x prompt choose <msg> --options <a,b,c>` — ask the human
+- `5x prompt choose <msg> --options <a,b,c>` — ask the human for legacy v1 escalations only; never answer a typed plan-review gate this way
 - `5x prompt input <msg>` — revise orchestrator-drafted guidance when the human modifies it
 {{/if}}
 
 {{#if reviewer_native}}
 ### Delegating sub-agent work (native reviewer)
 
-**Canonical delegation example (reviewer:review):**
+**Canonical delegation example (reviewer:plan):**
 
 ```bash
 # 1. Render the prompt (output follows standard outputSuccess envelope)
@@ -132,8 +140,10 @@ RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
         [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
 # 3. Validate + record
-echo "$RESULT" | 5x protocol validate reviewer \
-  --record --step $STEP --phase plan --iteration $ITERATION
+VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
+  --record --step $STEP --phase plan --iteration $ITERATION)
+GOVERNANCE_ROUTE=$(echo "$VALIDATED" | jq -r \
+  '.data.result.governance.route // empty')
 
 # 4. Capture agent id for reuse in subsequent reviews
 NATIVE_SUBTASK_ID=<agent id from Task tool result>
@@ -156,7 +166,7 @@ common source of stale re-reviews.
 {{#if reviewer_invoke}}
 ### Delegating review/author work with invoke (invoke reviewer)
 
-**Canonical delegation example (reviewer:review):**
+**Canonical delegation example (reviewer:plan):**
 
 ```bash
 RESULT=$(5x invoke reviewer reviewer-plan \
@@ -250,8 +260,10 @@ Before the first reviewer invocation, inspect `5x run state`:
   opt-in to the human; only after explicit confirmation and after the table is
   valid may the next recorded reviewer validation/invocation use
   `--opt-in-budget-baseline`. Record the confirmation as a `human:gate`.
-- `reviewBudget.mode = "off"` remains v1. Reserved mode `enforced` still
-  records advisory telemetry only.
+- `reviewBudget.mode = "off"` remains v1. An active baseline pinned to
+  `enforced` validates closure evidence and makes the CLI-derived governance
+  route authoritative. A baseline pinned to `advisory` records diagnostics
+  while preserving v1 routing.
 
 ### Step 1: Review
 
@@ -268,8 +280,10 @@ REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
         [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
-echo "$RESULT" | 5x protocol validate reviewer \
-  --record --step $STEP --phase plan --iteration $ITERATION
+VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
+  --record --step $STEP --phase plan --iteration $ITERATION)
+GOVERNANCE_ROUTE=$(echo "$VALIDATED" | jq -r \
+  '.data.result.governance.route // empty')
 ```
 
 `--continue-native` selects the `reviewer-plan-continued` template
@@ -293,6 +307,7 @@ RESULT=$(5x invoke reviewer reviewer-plan \
 
 READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
 ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
+GOVERNANCE_ROUTE=$(echo "$RESULT" | jq -r '.data.result.governance.route // empty')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
@@ -310,31 +325,34 @@ For an active budget, verify the reviewer follows the rendered prompt:
   aggregates. `creditClaim` is only for a reviewer-introduced claim, not a copy
   of persisted author `DCn` evidence.
 
-### Step 2: Route the verdict
+### Step 2: Route the recorded verdict
 
-Read the verdict from `READINESS` (`.data.result.readiness`):
+Read `5x run state`. If `review_budget.enforcement_implemented` is `true`, the
+recorded result must contain `.data.result.governance.route`; use that route
+and no other signal:
 
-Ignore `result.budget.requiresHuman` for routing. It is telemetry only; the
-following v1 readiness/action routing remains authoritative.
+- `complete` → Step 5.
+- `author_revision` → Step 3 with reviewer re-entry enabled.
+- `final_corrections` → Step 3 with final-correction mode enabled.
+- `human_gate` → Step 4A.
 
-**If `readiness: "ready"`:**
-  Plan is approved. Go to Step 5 (Complete).
+Do not use reviewer readiness, item action, prose, budget bands, or
+`budget.requiresHuman` to override an enforced route. A missing governance
+route on an enforced active run is an invariant failure and must be escalated.
 
-**If `readiness: "ready_with_corrections"`:**
-  Check the items. If ALL items have `action: "auto_fix"`:
-    Go to Step 3 (Author fix).
-  If ANY items have `action: "human_required"`:
-    Go to Step 4 (Escalate).
+For pinned advisory, mode off, and `v1_compat`, preserve v1 routing: `ready`
+completes; actionable `auto_fix` items go to Step 3 with reviewer re-entry;
+any `human_required` item or `not_ready` without actionable items goes to the
+legacy Step 4 escalation. `ready_with_corrections` remains an ordinary v1
+author/re-review cycle on these paths. Ignore advisory hypothetical routes.
+Ignore `result.budget.requiresHuman` for routing on these v1-compatible paths.
+The legacy structured outcomes remain `readiness: "ready"`,
+`readiness: "ready_with_corrections"`, and `readiness: "not_ready"`.
 
-**If `readiness: "not_ready"`:**
-  Check the items. If there are actionable items (`auto_fix` or `human_required`):
-    If any `human_required`: Go to Step 4 (Escalate).
-    If all `auto_fix`: Go to Step 3 (Author fix).
-  If there are no actionable items:
-    Go to Step 4 (Escalate) — the reviewer flagged issues but
-    didn't provide actionable items; human needs to interpret.
+### Step 3: Author revision or final corrections
 
-### Step 3: Author fix
+Before delegation, set `$FINAL_CORRECTIONS=true` only when the enforced route
+was `final_corrections`; otherwise set it to false.
 
 {{#if author_native}}
 Delegate to the plan author via the Task tool:
@@ -364,13 +382,18 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 {{/if}}
 
 Check the result:
-- `result: "complete"` — go to Step 1 (next review cycle).
+- `result: "complete"` — verify `AuthorStatus.commit` is present and run
+  `5x plan phases $PLAN_PATH`. If `$FINAL_CORRECTIONS=true`, record the author
+  step through the normal validation/invoke command and go directly to Step 5:
+  this is exactly one bounded author pass and must not re-enter the reviewer.
+  Otherwise continue to the next review cycle.
 - `result: "needs_human"` — go to Step 4 (Escalate).
 - `result: "failed"` — go to Step 4 (Escalate).
 
-Increment $ITERATION. If $ITERATION exceeds `maxReviewIterations` (from
-`5x config show`), go to Step 4 (Escalate) with the message "Maximum
-review iterations reached."
+For ordinary author revisions, increment $ITERATION. If $ITERATION exceeds
+`maxReviewIterations` (read from resolved `5x config show`), go to Step 4
+(Escalate) with the message "Maximum review iterations reached." Final
+corrections do not consume or restart a closure-review cycle.
 
 Only successful review-then-author cycles increment $ITERATION.
 Author retries due to timeout, empty output, or transient failures
@@ -379,7 +402,58 @@ review cycles, not total invocations.
 
 Loop back to Step 1.
 
-### Step 4: Escalate
+### Step 4A: Enforced human gate
+
+Run `5x review gate show`, set `$GATE_ID` from `.data.gateId`, and present its notification, stable gate ID, causes,
+`allowedChoices`, eligible finding IDs/fingerprints, and
+`requiredFieldsByChoice` to the human. Do not answer the notification with
+`5x prompt`, `prompt answer`, or a generic `human:gate` record: the gate-scoped
+decision record is the authority.
+
+If this workflow is itself running in a delegated noninteractive context,
+return `needs_human` with the gate ID and choices instead of trying to open an
+interactive prompt.
+
+After the human chooses, derive required fields from the displayed
+`requiredFieldsByChoice` (do not maintain a skill-side choice matrix):
+
+```bash
+5x review decide --gate "$GATE_ID" --choice "$CHOICE" \
+  --rationale "$RATIONALE" \
+  [--evidence "$EVIDENCE"] [--finding "$FINDING_ID"] \
+  [--retain "$SCOPE"] [--remove "$SCOPE"] [--baseline "$B"] \
+  [--approved-p "$P"] [--approved-item "$ITEM_ID"] \
+  [--approved-work-item "$WORK_ITEM_ID"]
+```
+
+Simple flag submissions pass only the finding ID shown by `review gate show`;
+the CLI resolves its fingerprint. Complex/adapted submissions use
+`5x review decide --gate "$GATE_ID" --input-json -` and a JSON payload whose
+`findingRefs` contains the exact ID/fingerprint pair returned by gate show.
+Never invent or copy a stale fingerprint.
+
+Read the decision command's `.data.route`, which is the durable
+`routeAfterDecision` result, and branch explicitly:
+
+- `complete` → Step 5.
+- `author_revision` → Step 3 with reviewer re-entry.
+- `final_corrections` → Step 3 with `$FINAL_CORRECTIONS=true`, then Step 5.
+- `human_gate` → run `5x review gate show` again for the one successor gate and
+  repeat Step 4A using its new ID/context.
+- `aborted` → stop; terminal handling is already recorded.
+
+Never resume from stale reviewer readiness or prose after a decision. On
+restart, first use `5x review gate show`. If it returns an open gate, take the
+new `$GATE_ID` from `.data.gateId` and continue Step 4A. If it returns
+`{"open":false}` after your decision was durably recorded but before you saved
+its route, re-submit the **identical** `5x review decide` command/payload for
+that original gate ID. Gate decisions are idempotent: the retry returns the
+winning decision's `.data.route`, which is the only recovery routing signal.
+Therefore retain the submitted gate ID and exact decision payload until its
+route has been acted on. Do not replay a generic prompt answer or reconstruct a
+route from reviewer readiness.
+
+### Step 4: Legacy v1 escalation
 
 For each `human_required` review item (and any ambiguous context in
 $REASON), draft a concrete recommendation for how the author should resolve
@@ -493,6 +567,18 @@ Report to the human: plan review is complete. Verdict: approved
   Native recovery also uses
   `5x protocol validate reviewer --record --run $FIVEX_RUN --step $STEP --phase plan --iteration $ITERATION` and
   `5x protocol validate author --record --run $FIVEX_RUN --step $STEP --phase plan --no-phase-checklist-validate`.
+{{/if}}
+{{#if reviewer_invoke}}
+- **Invoke reviewer verdict rejected by budget/governance validation**
+  (e.g. `BASELINE_ASSESSMENT_UNEXPECTED`): the provider finished but the
+  verdict was not recorded. The error envelope's `detail` carries
+  `session_id`, `log_path`, the rejected verdict (`raw`), and
+  `recovery.command`. Do not edit the rejected verdict. Either re-invoke,
+  or record the reviewer's own correct output (for example its
+  `5x protocol emit reviewer` result in the log) with `recovery.command`,
+  which passes `--invocation-log` so the step keeps the invocation's
+  session/model/token/cost metadata. The corrected verdict is fully
+  re-validated.
 {{/if}}
 - **SESSION_REQUIRED error**: `5x template render` requires a
   continuation signal because `continuePhaseSessions` is enabled and

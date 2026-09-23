@@ -252,7 +252,7 @@ Record a completed step. This is the primary persistence primitive.
 
 | Arg/Flag | Required | Description |
 |---|---|---|
-| `step-name` | Yes | Step identifier (e.g., `author:implement`, `quality:check`, `reviewer:review`) |
+| `step-name` | Yes | Step identifier (e.g., `author:implement`, `quality:check`, `reviewer:commit`) |
 | `--run` | No | Run ID. Ambient-resolved when omitted (see Ambient run identity). Required-run: missing identity is `RUN_CONTEXT_REQUIRED`. |
 | `--result` | Yes | Step result as JSON string. Use `-` to read from stdin, or `@path` to read from a file. |
 | `--phase` | No | Phase identifier |
@@ -265,7 +265,7 @@ Record a completed step. This is the primary persistence primitive.
   "ok": true,
   "data": {
     "step_id": 3,
-    "step_name": "reviewer:review",
+    "step_name": "reviewer:commit",
     "phase": "1",
     "iteration": 1,
     "recorded": true
@@ -449,7 +449,7 @@ Same interface as `invoke author`, but returns a ReviewerVerdict.
   "ok": true,
   "data": {
     "run_id": "run_abc123",
-    "step_name": "reviewer:review",
+    "step_name": "reviewer:commit",
     "phase": "1",
     "model": "anthropic/claude-sonnet-4-6",
     "result": {
@@ -496,13 +496,49 @@ Validation uses `assertReviewerVerdict()`. Same error behavior as `invoke author
 
 ```
 cat verdict.json | 5x protocol validate reviewer \
-  --record --step reviewer:review --phase plan --iteration 2 \
+  --record --step reviewer:plan --phase plan --iteration 2 \
   --opt-in-budget-baseline
 ```
 
 `--opt-in-budget-baseline` is valid only for a recorded plan-review verdict when prior plan-review steps exist and no baseline has been captured. The current plan must first contain a valid Delivery Budget, complete debt evidence, and Surface Snapshot. Skills must obtain and record human confirmation before passing this flag.
 
-Review-budget mode is advisory: validation and recording do not rewrite `readiness`, alter command exit codes, or route on derived `budget.requiresHuman`. Existing `auto_fix` / `human_required` action semantics remain authoritative. The same rules apply when `invoke reviewer ... --record` records a plan review; `invoke` also accepts `--opt-in-budget-baseline` for the explicitly confirmed compatibility transition.
+Review-budget mode is pinned when the baseline is captured. Advisory validation records diagnostics and a hypothetical enforced route without rejecting or rerouting. Enforced validation fails closed and records the CLI-derived `governance.normalizedReadiness` and `governance.route`. Editing config later does not change an active baseline; historical baselines without a mode decode as advisory and require a new run/baseline for enforcement. The same rules apply when `invoke reviewer ... --record` records a plan review; `invoke` also accepts `--opt-in-budget-baseline` for the explicitly confirmed compatibility transition.
+
+### `5x review gate show` and `5x review decide`
+
+Inspect the current derived gate before deciding:
+
+```bash
+5x review gate show --run <run_id>
+```
+
+The response contains stable `gateId`/`snapshotId`, causes,
+`eligibleFindings` (ID plus authoritative fingerprint), `allowedChoices`, and
+`requiredFieldsByChoice`. Simple terminal decisions pass only the displayed
+finding ID; the CLI resolves its fingerprint:
+
+```bash
+5x review decide --gate <gate_id> --choice defer_accept_risk \
+  --rationale "bounded accepted risk" --evidence "operator evidence" \
+  --finding P1.2
+```
+
+Other repeatable fields are `--retain`, `--remove`, `--approved-item`, and
+`--approved-work-item`; scalar fields are `--baseline` and `--approved-p`.
+Architecture approval requires `--approved-p` to cover the current positive
+burden. Pass exactly the threshold-crossing item/work-item IDs listed in the
+gate's architecture causes; each nonempty ID category is required. For an
+aggregate-only alert with both ID lists empty, omit both ID flags (JSON may
+omit the arrays or supply empty arrays). `requiredFieldsByChoice` reflects
+these gate-specific requirements; contributing below-threshold IDs are not
+eligible approval IDs.
+Machine callers use `--input-json '<json>'` or `--input-json -` on stdin. Only
+that form accepts full `findingRefs`; every ID/fingerprint pair is checked
+against the gate snapshot. JSON input is mutually exclusive with decision
+flags. Generic `prompt answer` is rejected for gate notifications with
+`REVIEW_GATE_DECISION_REQUIRED`. Unknown/stale findings, mismatched fingerprints,
+inapplicable fields, stale-at-acceptance decisions, and conflicting gate winners
+return structured errors and do not silently mutate governing state.
 
 ---
 
@@ -1286,7 +1322,8 @@ v0 uses **upsert** semantics for `agent_results` and `quality_results` — re-ru
 | `author:fix-quality` | `{ type: "status", status: AuthorStatus }` | After author fixes quality failures |
 | `author:revise-plan` | `{ type: "status", status: AuthorStatus }` | After author revises plan |
 | `author:generate-plan` | `{ type: "status", status: AuthorStatus }` | After author generates initial plan |
-| `reviewer:review` | `{ type: "verdict", verdict: ReviewerVerdict }` | After reviewer reviews code/plan |
+| `reviewer:plan` | `{ type: "verdict", verdict: ReviewerVerdict }` | After reviewer reviews the plan |
+| `reviewer:commit` | `{ type: "verdict", verdict: ReviewerVerdict }` | After reviewer reviews a phase commit |
 | `quality:check` | `{ type: "quality", passed: bool, results: [...] }` | After quality gates run |
 | `phase:complete` | `{ type: "phase", phase: "<id>" }` | When a phase is approved |
 | `human:gate` | `{ type: "human", choice: "<option>" }` | After human responds to a prompt |

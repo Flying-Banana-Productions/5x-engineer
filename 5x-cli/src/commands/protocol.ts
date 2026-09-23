@@ -122,6 +122,10 @@ export function registerProtocol(parent: Command) {
 			"--opt-in-budget-baseline",
 			"After human confirmation, capture a budget baseline for a mid-review v1-compatible run",
 		)
+		.option(
+			"--invocation-log <path>",
+			"Retain session/model/token/cost metadata from a 5x invoke log when recording a corrected verdict (used with --record)",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -138,6 +142,7 @@ export function registerProtocol(parent: Command) {
 				phase: opts.phase,
 				iteration: opts.iteration,
 				optInBudgetBaseline: opts.optInBudgetBaseline,
+				invocationLog: opts.invocationLog,
 			});
 		});
 
@@ -183,6 +188,12 @@ export function registerProtocol(parent: Command) {
 			collect,
 			[] as string[],
 		)
+		.option(
+			"--prior-finding <json>",
+			"Prior-finding closure outcome as JSON (repeatable); does not imply a correction item",
+			collect,
+			[] as string[],
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -197,6 +208,7 @@ export function registerProtocol(parent: Command) {
 				summary: opts.summary,
 				baselineAssessment: opts.baselineAssessment,
 				creditAssessment: opts.creditAssessment,
+				priorFinding: opts.priorFinding,
 			});
 		});
 

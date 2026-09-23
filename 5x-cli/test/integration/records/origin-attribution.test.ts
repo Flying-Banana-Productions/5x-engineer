@@ -421,7 +421,7 @@ describe("origin attribution", () => {
 					role: "author",
 					provider: "sample",
 				});
-				expect(performerOf(byName["reviewer:review"] ?? {})).toEqual({
+				expect(performerOf(byName["reviewer:plan"] ?? {})).toEqual({
 					kind: "agent",
 					role: "reviewer",
 					provider: "sample",

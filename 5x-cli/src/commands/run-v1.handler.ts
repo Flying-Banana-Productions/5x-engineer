@@ -49,7 +49,6 @@ import type {
 	PreparedRecordStep,
 	PrepareRecordStepOutcome,
 } from "../control-plane/record-writer-types.js";
-import { createReviewBudgetIndex } from "../control-plane/review-budget-index.js";
 import {
 	createReviewBudgetStore,
 	type ReviewBudgetStore,
@@ -123,6 +122,7 @@ import {
 	readUpstreamEnvelope,
 } from "../pipe.js";
 import { resolveProjectRoot } from "../project-root.js";
+import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
 	envelopeAttribution,
@@ -137,13 +137,26 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
-import { ENFORCED_REVIEW_BUDGET_WARNING } from "../review-budget/ensure-baseline.js";
 import type {
 	BaselineDirection,
 	BudgetAlert,
 	BudgetBand,
 	ReviewBudgetMode,
 } from "../review-budget/types.js";
+import {
+	type GoverningReviewState,
+	listGovernanceDecisions,
+	type ReviewDecisionPayload,
+} from "../review-governance/decisions.js";
+import { routeAfterDecision } from "../review-governance/routing.js";
+import {
+	allowedChoicesForGate,
+	createReviewGovernanceStore,
+} from "../review-governance/store.js";
+import type {
+	ReviewDecisionRoute,
+	ReviewGateCause,
+} from "../review-governance/types.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -156,6 +169,7 @@ import {
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { createRecordContext, RecordContextError } from "./record-context.js";
+import { createReviewBudgetContext } from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import {
 	type AmbientRunResult,
@@ -967,14 +981,189 @@ export interface ReviewBudgetState {
 	budget_alerts?: BudgetAlert[];
 	requires_human?: boolean;
 	stale_plan?: true;
-	enforcement_implemented: false;
+	enforcement_implemented: boolean;
 }
 
-export function warnForReviewBudgetRunState(
-	mode: ReviewBudgetMode,
+export interface ReviewGovernanceState {
+	normalized_route?: ReviewDecisionRoute;
+	normalized_readiness?: "ready" | "ready_with_corrections" | "not_ready";
+	active_gate?: {
+		gate_id: string;
+		snapshot_id: string;
+		causes: ReviewGateCause[];
+		allowed_choices: ReviewDecisionPayload["choice"][];
+	};
+	governing_baseline: number;
+	approved_scope: { retained: string[]; removed: string[] };
+	accepted_risks: Array<{
+		decision_id: string;
+		finding_id: string;
+		fingerprint: string;
+	}>;
+	decision_count: number;
+	latest_decisions: Array<{
+		decision_id: string;
+		gate_id: string;
+		choice: ReviewDecisionPayload["choice"];
+		snapshot_id: string;
+		created_at: string;
+	}>;
+	diagnostics: string[];
+}
+
+/** Build the dashboard/CLI read model strictly from authoritative records. */
+export function buildReviewGovernanceState(input: {
+	runId: string;
+	b0: number;
+	recordStore: RecordStore;
+	reviewBudgetStore: ReviewBudgetStore;
+	governingState?: GoverningReviewState;
+}): ReviewGovernanceState {
+	const listed = listGovernanceDecisions(input.recordStore, input.runId);
+	const governanceStore = createReviewGovernanceStore(input.recordStore);
+	const governing =
+		input.governingState ??
+		governanceStore.deriveGoverningState(input.runId, input.b0);
+	const latestSnapshot = input.reviewBudgetStore.latestSnapshot(input.runId);
+	const activeGate = governanceStore.deriveOpenGate(input.runId);
+	let normalizedRoute: ReviewDecisionRoute | undefined;
+	let normalizedReadiness: ReviewGovernanceState["normalized_readiness"];
+	let latestVerdict: ReviewerVerdict | undefined;
+	const readDiagnostics: string[] = [];
+	if (latestSnapshot?.stepName && latestSnapshot.iteration !== null) {
+		const key = stepIdempotencyKey({
+			runId: input.runId,
+			stepName: latestSnapshot.stepName,
+			phase: latestSnapshot.phase,
+			iteration: latestSnapshot.iteration,
+		});
+		const result = (
+			input.recordStore.getLine(input.runId, "steps", key)?.payload as
+				| Partial<StepRecordPayload>
+				| undefined
+		)?.result_json;
+		if (result && typeof result === "object") {
+			latestVerdict = result as ReviewerVerdict;
+			const governance = (result as { governance?: unknown }).governance;
+			if (governance && typeof governance === "object") {
+				const route = (governance as { route?: unknown }).route;
+				if (
+					route === "complete" ||
+					route === "author_revision" ||
+					route === "final_corrections" ||
+					route === "human_gate"
+				)
+					normalizedRoute = route;
+				const readiness = (governance as { normalizedReadiness?: unknown })
+					.normalizedReadiness;
+				if (
+					readiness === "ready" ||
+					readiness === "ready_with_corrections" ||
+					readiness === "not_ready"
+				)
+					normalizedReadiness = readiness;
+			}
+		}
+	}
+	const latestDecision = governing.history.at(-1);
+	if (
+		latestDecision &&
+		latestSnapshot &&
+		latestVerdict &&
+		latestDecision.snapshotId === latestSnapshot.id
+	) {
+		if (latestSnapshot.derived) {
+			normalizedRoute = routeAfterDecision({
+				latestVerdict,
+				latestBudgetSnapshot: latestSnapshot,
+				newGoverningState: governing,
+				decision: latestDecision,
+			});
+		} else {
+			// Snapshots written before derived budget projection was persisted are
+			// valid record history. Their governing fold remains readable, but there
+			// is not enough authoritative input to replay a post-decision route.
+			readDiagnostics.push(
+				`${latestDecision.decisionId}: post-decision route unavailable because the legacy snapshot has no derived budget`,
+			);
+		}
+	}
+	const diagnostics = [
+		...listed.diagnostics,
+		...governing.auditOnly.map(
+			(entry) => `${entry.decision.decisionId}: ${entry.diagnostic}`,
+		),
+		...readDiagnostics,
+	];
+	return {
+		...(normalizedRoute ? { normalized_route: normalizedRoute } : {}),
+		...(normalizedReadiness
+			? { normalized_readiness: normalizedReadiness }
+			: {}),
+		...(activeGate
+			? {
+					active_gate: {
+						gate_id: activeGate.gateId,
+						snapshot_id: activeGate.snapshotId,
+						causes: structuredClone(activeGate.causes),
+						allowed_choices: allowedChoicesForGate({
+							causes: activeGate.causes,
+							baselineReestimatePending:
+								governing.baselineReestimatePending !== undefined,
+						}),
+					},
+				}
+			: {}),
+		governing_baseline: governing.governingBaseline,
+		approved_scope: structuredClone(governing.approvedScope),
+		accepted_risks: governing.acceptedRisks.map((risk) => ({
+			decision_id: risk.decisionId,
+			finding_id: risk.findingId,
+			fingerprint: risk.fingerprint,
+		})),
+		decision_count: listed.decisions.length,
+		latest_decisions: [...listed.decisions].slice(-10).map((decision) => ({
+			decision_id: decision.decisionId,
+			gate_id: decision.gateId,
+			choice: decision.choice,
+			snapshot_id: decision.snapshotId,
+			created_at: decision.createdAt,
+		})),
+		diagnostics,
+	};
+}
+
+export function tryBuildReviewGovernanceState(
+	input: Parameters<typeof buildReviewGovernanceState>[0],
 	warn: (message: string) => void,
-): void {
-	if (mode === "enforced") warn(ENFORCED_REVIEW_BUDGET_WARNING);
+): ReviewGovernanceState | undefined {
+	try {
+		return buildReviewGovernanceState(input);
+	} catch (error) {
+		warn(
+			`Unable to read review governance records for run ${input.runId}; omitting review_governance: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
+
+function tryDeriveGoverningReviewState(
+	recordStore: RecordStore,
+	runId: string,
+	b0: number,
+	warn: (message: string) => void,
+): GoverningReviewState | undefined {
+	try {
+		return createReviewGovernanceStore(recordStore).deriveGoverningState(
+			runId,
+			b0,
+		);
+	} catch (error) {
+		warn(
+			`Unable to fold review governance records for run ${runId}; using the captured baseline: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
 }
 
 /**
@@ -987,20 +1176,21 @@ export function buildReviewBudgetState(input: {
 	store: ReviewBudgetStore;
 	hasPriorPlanReviewerStep: boolean;
 	currentPlanMarkdown?: string;
+	governingBaseline?: number;
 	semanticHumanRequiredFor?: (
 		snapshot: NonNullable<ReturnType<ReviewBudgetStore["latestSnapshot"]>>,
 	) => boolean;
 }): ReviewBudgetState | undefined {
-	if (input.mode === "off") return undefined;
-
 	const baseline = input.store.getBaseline(input.runId);
 	if (!baseline) {
+		if (input.mode === "off") return undefined;
 		return {
 			status: input.hasPriorPlanReviewerStep ? "v1_compat" : "uninitialized",
 			mode: input.mode,
 			enforcement_implemented: false,
 		};
 	}
+	const pinnedMode = baseline.mode;
 
 	const snapshots = input.store.listSnapshots(input.runId);
 	const latest = snapshots.at(-1);
@@ -1022,7 +1212,7 @@ export function buildReviewBudgetState(input: {
 	) {
 		derived = deriveBudget({
 			B0: baseline.b0,
-			B: baseline.b,
+			B: input.governingBaseline ?? baseline.b,
 			I: initialAssessment?.independentEffortEstimate ?? null,
 			workItems: latest.currentLedger.workItems,
 			findings: latest.findings,
@@ -1037,7 +1227,7 @@ export function buildReviewBudgetState(input: {
 			: baseline.originalLedger;
 		derived = deriveBudget({
 			B0: baseline.b0,
-			B: baseline.b,
+			B: input.governingBaseline ?? baseline.b,
 			I: null,
 			workItems: ledger.workItems,
 			findings: [],
@@ -1054,10 +1244,10 @@ export function buildReviewBudgetState(input: {
 		sumEffort(currentParse.value.workItems) !== derived.W;
 	return {
 		status: "active",
-		mode: input.mode,
+		mode: pinnedMode,
 		capture_kind: baseline.captureKind,
 		B0: baseline.b0,
-		B: baseline.b,
+		B: derived?.B ?? input.governingBaseline ?? baseline.b,
 		...(derived
 			? {
 					W: derived.W,
@@ -1077,7 +1267,7 @@ export function buildReviewBudgetState(input: {
 				}
 			: {}),
 		...(stalePlan ? { stale_plan: true as const } : {}),
-		enforcement_implemented: false,
+		enforcement_implemented: pinnedMode === "enforced",
 	};
 }
 
@@ -1203,6 +1393,7 @@ export function formatStateText(data: {
 	sealer?: RecordRecorder | null;
 	exported_by?: RecordOrigin;
 	review_budget?: ReviewBudgetState;
+	review_governance?: ReviewGovernanceState;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1246,7 +1437,7 @@ export function formatStateText(data: {
 		const budget = data.review_budget;
 		const modeLabel =
 			budget.mode === "enforced"
-				? "enforced: not implemented; advisory telemetry"
+				? "enforced: deterministic governance routing active"
 				: "advisory";
 		if (
 			budget.status === "active" &&
@@ -1262,6 +1453,20 @@ export function formatStateText(data: {
 		} else {
 			console.log(`Budget:  status=${budget.status}  (${modeLabel})`);
 		}
+	}
+	if (data.review_governance) {
+		const governance = data.review_governance;
+		const route = governance.normalized_route ?? "pending";
+		const gate = governance.active_gate
+			? ` gate=${governance.active_gate.gate_id}`
+			: "";
+		console.log(
+			`Governance: route=${route}  B=${governance.governing_baseline}  decisions=${governance.decision_count}${gate}`,
+		);
+		if (governance.diagnostics.length > 0)
+			console.log(
+				`Governance diagnostics: ${governance.diagnostics.join("; ")}`,
+			);
 	}
 
 	if (steps.length === 0) {
@@ -1764,7 +1969,9 @@ export async function loadGitRecordForPlan(opts: {
 }): Promise<{
 	summary: ReturnType<typeof parseRunJson>;
 	steps: ReturnType<typeof formatGitRecordStep>[];
+	stepLines: RecordLine[];
 	budgetLines: RecordLine[];
+	decisionLines: RecordLine[];
 	budgetDecodeError?: string;
 } | null> {
 	const prefix = `${opts.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "")}/${opts.slug}`;
@@ -1779,6 +1986,7 @@ export async function loadGitRecordForPlan(opts: {
 		summary: ReturnType<typeof parseRunJson>;
 		stepsText: string | null;
 		budgetText: string | null;
+		decisionsText: string | null;
 	};
 	const loaded: Loaded[] = [];
 
@@ -1796,7 +2004,13 @@ export async function loadGitRecordForPlan(opts: {
 				opts.commit,
 				budgetRel,
 			);
-			loaded.push({ summary, stepsText, budgetText });
+			const decisionsRel = rel.replace(/run\.json$/, "decisions.jsonl");
+			const decisionsText = await gitShowFile(
+				opts.workdir,
+				opts.commit,
+				decisionsRel,
+			);
+			loaded.push({ summary, stepsText, budgetText, decisionsText });
 		} catch {}
 	}
 
@@ -1822,7 +2036,11 @@ export async function loadGitRecordForPlan(opts: {
 						const budgetText = existsSync(budgetPath)
 							? readFileSync(budgetPath, "utf-8")
 							: null;
-						loaded.push({ summary, stepsText, budgetText });
+						const decisionsPath = join(root, ent.name, "decisions.jsonl");
+						const decisionsText = existsSync(decisionsPath)
+							? readFileSync(decisionsPath, "utf-8")
+							: null;
+						loaded.push({ summary, stepsText, budgetText, decisionsText });
 					} catch {}
 				}
 			} catch {}
@@ -1839,13 +2057,16 @@ export async function loadGitRecordForPlan(opts: {
 	const win = loaded[0];
 	if (!win) return null;
 	let steps: ReturnType<typeof formatGitRecordStep>[] = [];
+	let stepLines: RecordLine[] = [];
 	if (win.stepsText) {
 		try {
-			steps = decodeJsonlFile(win.stepsText, win.summary.id)
-				.filter((line) => line.stream === "steps")
-				.map(formatGitRecordStep);
+			stepLines = decodeJsonlFile(win.stepsText, win.summary.id).filter(
+				(line) => line.stream === "steps",
+			);
+			steps = stepLines.map(formatGitRecordStep);
 		} catch {
 			steps = [];
+			stepLines = [];
 		}
 	}
 	let budgetLines: RecordLine[] = [];
@@ -1861,10 +2082,22 @@ export async function loadGitRecordForPlan(opts: {
 				error instanceof Error ? error.message : String(error);
 		}
 	}
+	let decisionLines: RecordLine[] = [];
+	if (win.decisionsText) {
+		try {
+			decisionLines = decodeJsonlFile(win.decisionsText, win.summary.id).filter(
+				(line) => line.stream === "decisions",
+			);
+		} catch {
+			decisionLines = [];
+		}
+	}
 	return {
 		summary: win.summary,
 		steps,
+		stepLines,
 		budgetLines,
+		decisionLines,
 		...(budgetDecodeError ? { budgetDecodeError } : {}),
 	};
 }
@@ -1963,11 +2196,20 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			);
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
-			if (config.reviewBudget.mode !== "off") {
+			let reviewGovernance: ReviewGovernanceState | undefined;
+			// No live run context exists here; anchor current policy to the known
+			// plan, while durable baselines below continue to pin their own policy.
+			const { config: planConfig } = await resolveLayeredConfig(
+				projectRoot,
+				dirname(planPath),
+			);
+			if (
+				planConfig.reviewBudget.mode !== "off" ||
+				gitRecord.budgetLines.length > 0
+			) {
 				const warn =
 					params.warn ??
 					((message: string) => process.stderr.write(`Warning: ${message}\n`));
-				warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
 				if (gitRecord.budgetDecodeError) {
 					warn(
 						`Unable to read review budget records for run ${gitRecord.summary.id}; omitting review_budget: ${gitRecord.budgetDecodeError}`,
@@ -1975,9 +2217,14 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				} else {
 					const records = createMemoryRecordStore();
 					records.putRun(gitRecord.summary);
-					if (gitRecord.budgetLines.length > 0) {
+					const archivedLines = [
+						...gitRecord.stepLines,
+						...gitRecord.decisionLines,
+						...gitRecord.budgetLines,
+					];
+					if (archivedLines.length > 0) {
 						records.atomicAppend(
-							gitRecord.budgetLines.map((line) => ({
+							archivedLines.map((line) => ({
 								...line,
 							})),
 						);
@@ -1986,12 +2233,49 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						(step) =>
 							step.phase === "plan" && step.step_name.startsWith("reviewer:"),
 					);
+					const archivedBudgetStore = createReviewBudgetStore(
+						records,
+						undefined,
+						warn,
+					);
+					let archivedBaseline: ReturnType<
+						typeof archivedBudgetStore.getBaseline
+					> = null;
+					try {
+						archivedBaseline = archivedBudgetStore.getBaseline(
+							gitRecord.summary.id,
+						);
+					} catch {
+						// The budget wrapper below emits the canonical baseline-decode warning.
+					}
+					let governingState: GoverningReviewState | undefined;
+					if (archivedBaseline) {
+						governingState = tryDeriveGoverningReviewState(
+							records,
+							gitRecord.summary.id,
+							archivedBaseline.b0,
+							warn,
+						);
+						if (governingState)
+							reviewGovernance = tryBuildReviewGovernanceState(
+								{
+									runId: gitRecord.summary.id,
+									b0: archivedBaseline.b0,
+									recordStore: records,
+									reviewBudgetStore: archivedBudgetStore,
+									governingState,
+								},
+								warn,
+							);
+					}
+					const governingBaseline = governingState?.governingBaseline;
 					reviewBudget = tryBuildReviewBudgetState(
 						{
 							runId: gitRecord.summary.id,
-							mode: config.reviewBudget.mode,
-							store: createReviewBudgetStore(records),
+							mode: planConfig.reviewBudget.mode,
+							store: archivedBudgetStore,
 							hasPriorPlanReviewerStep: priorReviewer,
+							...(governingBaseline !== undefined ? { governingBaseline } : {}),
 							semanticHumanRequiredFor: (snapshot) => {
 								return semanticHumanRequiredFromSteps(snapshot, allSteps);
 							},
@@ -2019,6 +2303,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					max_steps: budget.max,
 					steps_remaining: budget.remaining,
 					...(reviewBudget ? { review_budget: reviewBudget } : {}),
+					...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
 					...progressFields,
 					...envelopeAttribution(gitRecord.summary),
 				},
@@ -2096,21 +2381,47 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		worktreePath,
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
-	if (config.reviewBudget.mode !== "off") {
+	let reviewGovernance: ReviewGovernanceState | undefined;
+	{
 		const warn =
 			params.warn ??
 			((message: string) => process.stderr.write(`Warning: ${message}\n`));
-		warnForReviewBudgetRunState(config.reviewBudget.mode, warn);
-		const recordContext = await createRecordContext({
-			runId: run.id,
-			startDir: params.startDir,
-			dbContext,
-		});
-		const reviewStore = createReviewBudgetStore(
-			recordContext.recordStore,
-			createReviewBudgetIndex(db),
+		const recordContext = await createReviewBudgetContext(
+			{ runId: run.id, startDir: params.startDir, dbContext },
+			warn,
 		);
+		const reviewStore = recordContext.store;
+		const configuredMode = recordContext.config.reviewBudget.mode;
 		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
+		let governingBaseline: number | undefined;
+		if (hasRecordRun) {
+			let baseline: ReturnType<typeof reviewStore.getBaseline> = null;
+			try {
+				baseline = reviewStore.getBaseline(run.id);
+			} catch {
+				// The budget wrapper below emits the canonical baseline-decode warning.
+			}
+			if (baseline) {
+				const governingState = tryDeriveGoverningReviewState(
+					recordContext.recordStore,
+					run.id,
+					baseline.b0,
+					warn,
+				);
+				governingBaseline = governingState?.governingBaseline;
+				if (governingState)
+					reviewGovernance = tryBuildReviewGovernanceState(
+						{
+							runId: run.id,
+							b0: baseline.b0,
+							recordStore: recordContext.recordStore,
+							reviewBudgetStore: reviewStore,
+							governingState,
+						},
+						warn,
+					);
+			}
+		}
 		const isPlanReviewer = (stepName: unknown, phase: unknown) =>
 			phase === "plan" &&
 			typeof stepName === "string" &&
@@ -2135,8 +2446,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			? tryBuildReviewBudgetState(
 					{
 						runId: run.id,
-						mode: config.reviewBudget.mode,
+						mode: configuredMode,
 						store: reviewStore,
+						governingBaseline,
 						hasPriorPlanReviewerStep: priorInDb || priorInRecords,
 						currentPlanMarkdown,
 						semanticHumanRequiredFor: (snapshot) => {
@@ -2166,11 +2478,13 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					},
 					warn,
 				)
-			: {
-					status: priorInDb ? "v1_compat" : "uninitialized",
-					mode: config.reviewBudget.mode,
-					enforcement_implemented: false,
-				};
+			: configuredMode === "off"
+				? undefined
+				: {
+						status: priorInDb ? "v1_compat" : "uninitialized",
+						mode: configuredMode,
+						enforcement_implemented: false,
+					};
 	}
 
 	outputSuccess(
@@ -2189,6 +2503,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			max_steps: budget.max,
 			steps_remaining: budget.remaining,
 			...(reviewBudget ? { review_budget: reviewBudget } : {}),
+			...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
 			...progressFields,
 			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},
@@ -2365,6 +2680,21 @@ export interface FinalizedRecordStep extends PreparedRecordStep {
 
 export type FinalizeWriteMode = "generic" | "paired-all-new";
 
+export type FinalizeAndWritePreparedStepResult =
+	| {
+			outcome: "written";
+			finalized: FinalizedRecordStep;
+			recorded: boolean;
+			stepLine: RecordLine;
+			dbResult: ReturnType<typeof recordStep>;
+	  }
+	| {
+			outcome: "coupled-key-exists";
+			finalized: FinalizedRecordStep;
+			key: string;
+			line: RecordLine;
+	  };
+
 /**
  * Resolve an admitted step's iteration, append its durable record operation(s),
  * and project the authoritative step line. Omitted-iteration collisions are
@@ -2386,12 +2716,7 @@ export async function finalizeAndWritePreparedStep(
 			envelope: ReturnType<typeof recordedEnvelope>,
 		) => AppendOp[];
 	},
-): Promise<{
-	finalized: FinalizedRecordStep;
-	recorded: boolean;
-	stepLine: RecordLine;
-	dbResult: ReturnType<typeof recordStep>;
-}> {
+): Promise<FinalizeAndWritePreparedStepResult> {
 	const callerOmittedIteration = prepared.iteration === undefined;
 	const initialSummary = computeRunSummary(ctx.db, prepared.runId);
 	const maxAttempts = callerOmittedIteration
@@ -2500,6 +2825,18 @@ export async function finalizeAndWritePreparedStep(
 				? (result.results[0]?.line ?? null)
 				: storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
 			if (!result.created && !stepLine) {
+				const coupled = result.duplicates.find(
+					(duplicate) => duplicate.index > 0,
+				);
+				if (coupled) {
+					return {
+						outcome: "coupled-key-exists",
+						finalized,
+						key:
+							ops[coupled.index]?.idempotencyKey ?? coupled.line.idempotencyKey,
+						line: coupled.line,
+					};
+				}
 				throw new RecordError(
 					"RECORD_PAIR_CORRUPT",
 					"Budget snapshot identity exists without its coupled step",
@@ -2530,7 +2867,13 @@ export async function finalizeAndWritePreparedStep(
 			durablePayload,
 			iteration,
 		);
-		return { finalized, recorded: created, stepLine, dbResult };
+		return {
+			outcome: "written",
+			finalized,
+			recorded: created,
+			stepLine,
+			dbResult,
+		};
 	}
 }
 
@@ -2674,6 +3017,12 @@ export async function recordStepInternal(
 					: undefined,
 			},
 		);
+		if (written.outcome === "coupled-key-exists") {
+			throw new RecordError(
+				"RECORD_PAIR_CORRUPT",
+				`Coupled record identity ${written.key} exists without its step`,
+			);
+		}
 		const dbResult = written.dbResult;
 		const after = computeRunSummary(db, prepared.runId);
 		return {

@@ -2,9 +2,9 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
 	buildReviewBudgetState,
+	buildReviewGovernanceState,
 	formatStateText,
 	tryBuildReviewBudgetState,
-	warnForReviewBudgetRunState,
 } from "../../../src/commands/run-v1.handler.js";
 import {
 	createMemoryRecordStore,
@@ -14,11 +14,11 @@ import {
 } from "../../../src/control-plane/index.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
-import { ENFORCED_REVIEW_BUDGET_WARNING } from "../../../src/review-budget/ensure-baseline.js";
 import {
 	DEFAULT_REVIEW_BUDGET_CONFIG,
 	type ParsedDeliveryBudget,
 } from "../../../src/review-budget/types.js";
+import { createReviewDecision } from "../../../src/review-governance/decisions.js";
 
 const origin: RecordOrigin = {
 	recorder: { installation_id: "22222222-2222-4222-8222-222222222222" },
@@ -93,6 +93,7 @@ function fixture(
 	const baseline = store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
+		mode: "advisory",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin,
@@ -124,11 +125,11 @@ function fixture(
 			...(options.cacheDerived === false ? {} : { derived }),
 		});
 	}
-	return { db, store };
+	return { db, store, records, baseline };
 }
 
 describe("run state review budget", () => {
-	test("omits review_budget when mode is off and reports v1 compatibility", () => {
+	test("uses a pinned baseline when current mode is off and reports v1 compatibility", () => {
 		const { db, store } = fixture();
 		try {
 			expect(
@@ -138,7 +139,11 @@ describe("run state review budget", () => {
 					store,
 					hasPriorPlanReviewerStep: false,
 				}),
-			).toBeUndefined();
+			).toMatchObject({
+				status: "active",
+				mode: "advisory",
+				enforcement_implemented: false,
+			});
 			const emptyRecords = createMemoryRecordStore();
 			emptyRecords.putRun({
 				id: "legacy",
@@ -332,6 +337,126 @@ describe("run state review budget", () => {
 		}
 	});
 
+	test("governance read model exposes route, gate, stable IDs, and malformed history", () => {
+		const { db, store, records, baseline } = fixture({ withSnapshot: false });
+		try {
+			const snapshot = store.appendSnapshot({
+				runId: "run1",
+				stepName: "reviewer:plan",
+				phase: "plan",
+				iteration: 1,
+				currentLedger: ledger,
+				findings: [],
+				assessments: [],
+				effectiveGateCauses: [
+					{ kind: "budget_alert", alert: "baseline_disputed" },
+				],
+			});
+			records.append({
+				runId: "run1",
+				stream: "steps",
+				idempotencyKey: "step:run1:reviewer:plan:plan:1",
+				payload: {
+					step_name: "reviewer:plan",
+					phase: "plan",
+					iteration: 1,
+					result_json: {
+						governance: {
+							route: "human_gate",
+							normalizedReadiness: "not_ready",
+						},
+					},
+				},
+				createdAt: "2026-09-17T00:01:00.000Z",
+				schemaVersion: 1,
+				provenance: "recorded",
+				origin,
+			});
+			records.append({
+				runId: "run1",
+				stream: "decisions",
+				idempotencyKey: "decision:review-gate:malformed",
+				payload: { kind: "plan-review-governance", version: 999 },
+				createdAt: "2026-09-17T00:02:00.000Z",
+				schemaVersion: 1,
+				provenance: "recorded",
+				origin,
+			});
+			for (let index = 0; index < 15; index++) {
+				const decision = createReviewDecision({
+					gateId: `historical-gate-${index}`,
+					snapshotId: snapshot.id,
+					choice: "retain_baseline",
+					findingRefs: [],
+					rationale: `historical decision ${index}`,
+					evidence: [],
+					approvedScope: { retained: [], removed: [] },
+				});
+				records.append({
+					runId: "run1",
+					stream: "decisions",
+					idempotencyKey: `decision:review-gate:${decision.gateId}`,
+					payload: decision,
+					createdAt: decision.createdAt,
+					schemaVersion: 1,
+					provenance: "recorded",
+					origin,
+				});
+			}
+			const state = buildReviewGovernanceState({
+				runId: "run1",
+				b0: baseline.b0,
+				recordStore: records,
+				reviewBudgetStore: store,
+			});
+			expect(state).toMatchObject({
+				normalized_route: "human_gate",
+				normalized_readiness: "not_ready",
+				governing_baseline: baseline.b0,
+				active_gate: { snapshot_id: snapshot.id },
+			});
+			expect(state.active_gate?.gate_id).toMatch(/^sha256:/);
+			expect(state.active_gate?.allowed_choices).toContain("retain_baseline");
+			expect(state.decision_count).toBe(15);
+			expect(state.latest_decisions).toHaveLength(10);
+			expect(state.diagnostics.join("\n")).toContain(
+				"unsupported review decision kind or version",
+			);
+			const lines: string[] = [];
+			const original = console.log;
+			console.log = (...args: unknown[]) => lines.push(String(args[0] ?? ""));
+			try {
+				formatStateText({
+					run: {
+						id: "run1",
+						plan_path: "/plan.md",
+						status: "active",
+						created_at: "now",
+						updated_at: "now",
+					},
+					steps: [],
+					summary: {
+						total_steps: 0,
+						phases_completed: [],
+						total_tokens_in: 0,
+						total_tokens_out: 0,
+						total_cost_usd: 0,
+						total_duration_ms: 0,
+					},
+					steps_used: 0,
+					max_steps: 1,
+					steps_remaining: 1,
+					review_governance: state,
+				});
+				expect(lines.join("\n")).toContain("decisions=15");
+			} finally {
+				console.log = original;
+			}
+		} finally {
+			db.close();
+		}
+	});
+
 	test("text formatter labels non-active and enforced telemetry honestly", () => {
 		const lines: string[] = [];
 		const original = console.log;
@@ -364,7 +489,9 @@ describe("run state review budget", () => {
 				},
 			});
 			expect(lines.join("\n")).toContain("status=v1_compat");
-			expect(lines.join("\n")).toContain("enforced: not implemented");
+			expect(lines.join("\n")).toContain(
+				"enforced: deterministic governance routing active",
+			);
 			expect(lines.join("\n")).not.toContain("(enforced)");
 		} finally {
 			console.log = original;
@@ -432,16 +559,5 @@ describe("run state review budget", () => {
 		expect(state).toBeUndefined();
 		expect(warnings[0]).toContain("run broken");
 		expect(warnings[0]).toContain("omitting review_budget");
-	});
-
-	test("warns for reserved enforced mode only", () => {
-		const warnings: string[] = [];
-		warnForReviewBudgetRunState("advisory", (warning) =>
-			warnings.push(warning),
-		);
-		warnForReviewBudgetRunState("enforced", (warning) =>
-			warnings.push(warning),
-		);
-		expect(warnings).toEqual([ENFORCED_REVIEW_BUDGET_WARNING]);
 	});
 });

@@ -359,25 +359,71 @@ describe("reviewer-plan template", () => {
 		expect(result.prompt).toContain("Assess every author-ledger `DCn`");
 		expect(result.prompt).toContain("stable ID");
 		expect(result.prompt).toContain("Do not author budget totals");
-		expect(result.prompt).toContain("Budget telemetry is advisory only");
+		expect(result.prompt).toContain("The CLI derives totals");
 		expect(result.prompt).toContain("review-budget mode is off");
 		expect(result.prompt).toContain("omit all budget-specific verdict fields");
+	});
+
+	test("requires an exhaustive evidence-rich initial pass", () => {
+		const result = renderTemplate("reviewer-plan", vars);
+		expect(result.prompt).toContain("one exhaustive pass");
+		expect(result.prompt).toContain("do not intentionally defer");
+		expect(result.prompt).toContain("`failure`");
+		expect(result.prompt).toContain("`lowestCostCorrection`");
+		expect(result.prompt).toContain("Nonblocking follow-ups");
+		expect(result.prompt).toContain("In pinned `enforced` mode");
+		expect(result.prompt).toContain("effort at most one point");
+		expect(result.prompt).toContain("ordinary v1 author/re-review cycle");
+		expect(result.prompt).toContain("`enforced` mode");
+		expect(result.prompt).toContain("`advisory` mode");
 	});
 });
 
 describe("reviewer-plan-continued template", () => {
-	test("omits the baseline and reassesses only changed debt claims", () => {
-		const result = renderTemplate("reviewer-plan-continued", {
+	function renderContinued() {
+		return renderTemplate("reviewer-plan-continued", {
 			plan_path: "docs/development/001-impl-cli.md",
 			review_path: "docs/development/reviews/001-review.md",
 			previous_review_commit: "abc123",
 			current_commit: "def456",
 		});
+	}
+
+	test("omits the baseline and reassesses only changed debt claims", () => {
+		const result = renderContinued();
 		expect(result.prompt).toContain("Do **not** emit `baselineAssessment`");
 		expect(result.prompt).toContain("new or changed");
 		expect(result.prompt).toContain("`Addresses`");
 		expect(result.prompt).toContain("Never emit reviewer-authored totals");
-		expect(result.prompt).toContain("route only by readiness and item action");
+		expect(result.prompt).toContain("The CLI derives aggregates and routes");
+	});
+
+	test("is closure-only and requires causal evidence for blocking findings", () => {
+		const result = renderContinued();
+		expect(result.prompt).toContain("closure review");
+		expect(result.prompt).toContain("top-level `priorFindings[]`");
+		expect(result.prompt).toContain("`Required prior-finding outcome IDs`");
+		expect(result.prompt).toContain("partially_addressed");
+		expect(result.prompt).toContain("`introducedBy`");
+		expect(result.prompt).toContain("omitted hunk headers");
+		expect(result.prompt).toContain('lateDiscovery: "critical_safety"');
+		expect(result.prompt).toContain("`priorDecisionId`");
+		expect(result.prompt).toContain("material `newEvidence`");
+		expect(result.prompt).toContain("Nonblocking follow-ups");
+		expect(result.prompt).toContain("In `enforced` mode");
+		expect(result.prompt).toContain("`advisory` mode");
+	});
+
+	test("defines the broad v1 fallback when governance context is absent", () => {
+		const result = renderContinued();
+		expect(result.prompt).toContain("No context present");
+		expect(result.prompt).toContain("broad v1 fallback");
+		expect(result.prompt).toContain(
+			"surface both prior and newly discovered blocking issues",
+		);
+		expect(result.prompt).toContain(
+			"omit `priorFindings[]`, `--prior-finding`, and `introducedBy`",
+		);
 	});
 });
 
@@ -455,9 +501,10 @@ describe("template stepName", () => {
 		"author-next-phase": "author:implement",
 		"author-process-plan-review": "author:fix-review",
 		"author-process-impl-review": "author:fix-review",
-		"reviewer-plan": "reviewer:review",
-		"reviewer-commit": "reviewer:review",
-		"reviewer-commit-continued": "reviewer:review",
+		"reviewer-plan": "reviewer:plan",
+		"reviewer-plan-continued": "reviewer:plan",
+		"reviewer-commit": "reviewer:commit",
+		"reviewer-commit-continued": "reviewer:commit",
 	};
 
 	test("all bundled templates have correct stepName in parsed metadata", () => {

@@ -127,10 +127,10 @@ const STEP_NAME_FALLBACKS: Record<string, string> = {
 	"author-next-phase": "author:implement",
 	"author-process-plan-review": "author:fix-review",
 	"author-process-impl-review": "author:fix-review",
-	"reviewer-plan": "reviewer:review",
-	"reviewer-plan-continued": "reviewer:review",
-	"reviewer-commit": "reviewer:review",
-	"reviewer-commit-continued": "reviewer:review",
+	"reviewer-plan": "reviewer:plan",
+	"reviewer-plan-continued": "reviewer:plan",
+	"reviewer-commit": "reviewer:commit",
+	"reviewer-commit-continued": "reviewer:commit",
 };
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;

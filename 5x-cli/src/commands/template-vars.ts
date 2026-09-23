@@ -11,9 +11,19 @@ import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
-import { getLatestStepForPhase } from "../db/operations-v1.js";
-import { getFileDiffSummary, getLatestCommit } from "../git.js";
+import {
+	getReviewerStepsForPhase,
+	getStepByIdentity,
+	type StepRow,
+} from "../db/operations-v1.js";
+import { getLatestCommit } from "../git.js";
 import { outputError } from "../output.js";
+import {
+	buildPlanReviewDiffContext,
+	formatPlanReviewDiffContext,
+	formatPlanReviewDiffFailure,
+	PlanDiffError,
+} from "../review-governance/plan-diff.js";
 import { loadTemplate, renderTemplate } from "../templates/loader.js";
 
 // ---------------------------------------------------------------------------
@@ -353,14 +363,70 @@ export interface ReviewDelta {
 	diffAppend: string | null;
 }
 
+/**
+ * Step identity of the review a continued prompt diffs against. For plan
+ * reviews under an active budget this is the latest durable snapshot's step
+ * key — the same identity closure composition resolves.
+ */
+export interface PriorReviewIdentity {
+	stepName: string;
+	phase: string | null;
+	iteration: number | null;
+}
+
 export interface ResolveReviewDeltaOptions {
 	db: Database;
 	runId: string;
 	phase: string | null;
 	planPath: string;
 	workdir: string;
-	/** Must match steps.step_name — typically "reviewer:review". */
-	stepName: string;
+	/** Durable identity of the prior review, when governance state has one. */
+	priorReview?: PriorReviewIdentity;
+}
+
+function isAcceptedReviewerVerdict(step: StepRow): boolean {
+	try {
+		const result = JSON.parse(step.result_json) as unknown;
+		return (
+			typeof result === "object" &&
+			result !== null &&
+			typeof (result as { readiness?: unknown }).readiness === "string"
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Locate the prior review step for a continued reviewer prompt.
+ *
+ * Prefers the durable identity when supplied. Otherwise falls back to the
+ * newest `reviewer:*` step in the phase that recorded an actual verdict, so
+ * the lookup works whichever `--record-step` name the orchestrator used
+ * (`reviewer:review`, `reviewer:plan`, `reviewer:commit`) and never diffs
+ * from a recorded invoke failure.
+ */
+export function findPriorReviewStep(
+	db: Database,
+	runId: string,
+	phase: string | null,
+	priorReview?: PriorReviewIdentity,
+): StepRow | null {
+	if (priorReview && priorReview.iteration !== null) {
+		const exact = getStepByIdentity(
+			db,
+			runId,
+			priorReview.stepName,
+			priorReview.phase,
+			priorReview.iteration,
+		);
+		if (exact) return exact;
+	}
+	return (
+		getReviewerStepsForPhase(db, runId, phase).find(
+			isAcceptedReviewerVerdict,
+		) ?? null
+	);
 }
 
 /**
@@ -374,10 +440,10 @@ export interface ResolveReviewDeltaOptions {
 export async function resolveReviewDelta(
 	opts: ResolveReviewDeltaOptions,
 ): Promise<ReviewDelta> {
-	const { db, runId, phase, planPath, workdir, stepName } = opts;
+	const { db, runId, phase, planPath, workdir, priorReview } = opts;
 	const empty: ReviewDelta = { vars: {}, diffAppend: null };
 
-	const priorStep = getLatestStepForPhase(db, runId, stepName, phase);
+	const priorStep = findPriorReviewStep(db, runId, phase, priorReview);
 	const previousCommit = priorStep?.head_commit ?? null;
 	if (!previousCommit) return empty;
 
@@ -394,35 +460,31 @@ export async function resolveReviewDelta(
 		current_commit: currentCommit,
 	};
 
-	if (currentCommit === previousCommit) {
+	try {
+		const context = await buildPlanReviewDiffContext({
+			workdir,
+			planPath,
+			previousReviewCommit: previousCommit,
+			currentCommit,
+		});
+		return { vars, diffAppend: formatPlanReviewDiffContext(context) };
+	} catch (error) {
+		const failure =
+			error instanceof PlanDiffError
+				? error
+				: new PlanDiffError(
+						"PLAN_DIFF_GIT_ERROR",
+						error instanceof Error ? error.message : String(error),
+					);
 		return {
 			vars,
-			diffAppend:
-				"\n## Plan Diff Since Last Review\n\n" +
-				"(no changes since the last review — HEAD is unchanged)\n",
+			diffAppend: formatPlanReviewDiffFailure({
+				previousReviewCommit: previousCommit,
+				currentCommit,
+				error: failure,
+			}),
 		};
 	}
-
-	let diff = "";
-	try {
-		diff = await getFileDiffSummary(
-			workdir,
-			previousCommit,
-			currentCommit,
-			planPath,
-		);
-	} catch {
-		diff = "";
-	}
-
-	const body = diff
-		? `\`\`\`diff\n${diff}\n\`\`\``
-		: "(plan file unchanged; changes may live in referenced artifacts)";
-
-	return {
-		vars,
-		diffAppend: `\n## Plan Diff Since Last Review\n\n${body}\n`,
-	};
 }
 
 // ---------------------------------------------------------------------------
