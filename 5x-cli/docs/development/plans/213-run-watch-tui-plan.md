@@ -125,9 +125,15 @@ All source/test paths below are relative to `5x-cli/` unless explicitly qualifie
 
 ### Surface Snapshot
 
-- Subsystems: 4 — provider normalization/log production; file tailing/decoding; watch state/presentation; CLI integration.
-- Production files: 18 — 10 existing TypeScript files and 8 new `src/watch/` files listed below. A renderer dependency, if selected by W1, additionally changes package metadata/lockfile rather than adding an in-repo subsystem.
-- Persistent/external boundaries: 3 — normalized provider/plugin contract; NDJSON files on disk; interactive terminal input/output. No new database persistence.
+- Subsystems: 4
+- Production files: 18
+- Persistent/external boundaries: 3
+
+The four subsystems are provider normalization/log production; file tailing/decoding; watch state/presentation; CLI integration.
+
+The 18 production files comprise 10 existing TypeScript files and 8 new `src/watch/` files listed below. A renderer dependency, if selected by W1, additionally changes package metadata/lockfile rather than adding an in-repo subsystem.
+
+The three persistent/external boundaries are the normalized provider/plugin contract; NDJSON files on disk; interactive terminal input/output. No new database persistence.
 
 ---
 
@@ -538,3 +544,7 @@ This plan implements [208-run-watch-tui](../../v2/208-run-watch-tui.md), motivat
 ### September 23, 2026 — Pre-review parser recovery
 
 Normalized positive Architecture delta literals from `+1`/`+2` to `1`/`2` after `BUDGET_INVALID_ARCHITECTURE` parser feedback. Scores, work-item IDs, phases, Surface Snapshot, and substantive content are unchanged. No reviewer has run; this is a syntax correction, not a response to review findings.
+
+### September 23, 2026 — Surface Snapshot parser recovery
+
+Moved Surface Snapshot explanations into separate prose after `BUDGET_SNAPSHOT_INVALID` blocked reviewer rendering. Recognized bullet values now contain only integer literals; counts remain 4, 18, and 3. Work-item IDs, budget scores, scope, and phases are unchanged. No reviewer has run; this is a formatting-only recovery from parser feedback.
