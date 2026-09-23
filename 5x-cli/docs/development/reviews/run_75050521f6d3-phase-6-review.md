@@ -172,3 +172,33 @@ None found. The refactor is a straightforward extraction; behavior at the call s
   - Remove the no-op `warnForReviewBudgetRunState` function and its call site, or repurpose it now that there's nothing to warn about.
   - Stop mutating `pending` in place inside `applyPlanReviewGovernance`, or document why the mutation is intentional (the paired writer reads the same object afterward).
 - **Ready for next phase:** ✅ — no P0/P1 items and nothing requires a human decision. Phase 7 (reviewer templates and workflow skills) can proceed with the above P2 items tracked as follow-up polish.
+
+---
+
+## Addendum (2026-09-22) — Second follow-up fix review
+
+**Reviewed:** `c6ec0e92ce4543b68d674cc9e5664beb7bc59fb0` (parent: `fde6dff`, the commit that carried the previous addendum)
+
+**Local verification:** `bun run typecheck` clean. `bun run lint` clean. `bun test` → 3576 pass / 0 fail (228 files). The previously-observed flaky `.txn.lock` concurrency test also passed cleanly this run.
+
+### Disposition of remaining findings from the prior addendum
+
+- **R1 (P2, "no test exercises gate-prompt open/repair through the record path")** — ✅ **Addressed.** New tests in `test/unit/commands/record-plan-reviewer-step.test.ts`: `enforced record opens a gate prompt and duplicate repairs it without duplicate records` captures an enforced baseline, records a snapshot with an unresolved `effectiveGateCauses` entry, asserts exactly one open prompt and one step/snapshot, deletes the prompt row to simulate a lost projection, retries the same record, and asserts the retry is a no-op write (`recorded: false`) that repairs exactly one open prompt without duplicating the step or snapshot. A companion test `advisory record with the same gate causes opens no prompt` confirms advisory never opens a gate. This is exactly the scenario I asked for.
+- **R2 (P2, "no test confirms pinned mode survives a live config change after capture")** — ✅ **Addressed**, and thoroughly. Three independent tests now cover this:
+  - `test/unit/commands/protocol-validate.test.ts` and `test/unit/commands/invoke.test.ts` each gained `recording stays enforced and opens a gate after live config flips to advisory`: capture a baseline under `enforced`, flip `ctx.config.reviewBudget.mode` to `advisory`, run the full protocol/invoke record path with a `human_required` item, and assert the baseline is still `enforced`, the recorded governance route is `human_gate`, and exactly one prompt row exists.
+  - `test/unit/commands/run-state-review-budget-wiring.test.ts` gained `run state reports the captured mode after live config flips in either direction`, covering both flip directions (`off`→captured-`enforced`, and `enforced`→captured-`advisory`), asserting `mode` and `enforcement_implemented` in the run-state envelope reflect the captured mode, not the live config.
+  This closes the gap comprehensively across all three call sites (protocol, invoke, run state).
+- **R3 (P2, "buildPlanReviewPromptContext has no direct tests")** — ✅ **Addressed.** New file `test/unit/review-governance/context.test.ts` builds a decision history with an active `defer_accept_risk`, a superseded `defer_accept_risk`, and its `trade_scope` correction, then asserts: (1) `excludes superseded accepted-risk decisions` — `deferredOrAcceptedRisks` contains only the active entry; and (2) `rebuilds the same context from records after every projection index is wiped` — deletes `review_budget_snapshots`, `review_budget_baselines`, `review_decision_index`, and `review_gate_index`, rebuilds the context, asserts it's `toEqual` the pre-wipe context, and confirms the read path repaired the index tables (row counts back to 1). Both of the specific gaps I named are now covered.
+- **R4 (P2, dead `activeDecisionIds` filter)** — ✅ **Addressed.** The `activeDecisionIds` set and its membership check are deleted from `buildPlanReviewPromptContext` (`src/review-governance/context.ts`); `deferredOrAcceptedRisks` now filters only on `decision.choice === "defer_accept_risk"`, relying on `state.history` already excluding stale/superseded decisions (as the new superseded-exclusion test now proves directly).
+- **R5 (P2, no-op `warnForReviewBudgetRunState`)** — ✅ **Addressed.** The function and both call sites in `run-v1.handler.ts` are removed entirely. Its now-obsolete unit test (`warns for reserved enforced mode only`) was also deleted from `run-state-review-budget.test.ts`. `ReviewBudgetMode` remains imported and used elsewhere in the file, so no orphaned import was left behind.
+- **R6 (P2, in-place mutation in `applyPlanReviewGovernance`)** — ✅ **Addressed.** `applyPlanReviewGovernance` now builds a fresh `decoratedPending` object via spread plus `structuredClone` of each mutated field (`mode`, `priorFindings`, `effectiveGateCauses`, `suppressedGateCauses`, `diagnostics`) instead of writing onto `pending` in place, and returns that new object. New test `governance decoration returns a new pending snapshot without mutating input` in `apply-context.test.ts` calls `Object.freeze(pending)` before invoking `applyPlanReviewGovernance` — a real mutation would throw under strict mode — and asserts the input is `toEqual` its pre-call snapshot while the result is a distinct object (`not.toBe`). This is a strong, mutation-proof regression test, not just an assertion on output shape.
+
+### New issues introduced by this revision
+
+None found. Every change in this commit is either a deletion of dead code (with its stale test removed alongside) or an additive test plus the minimal source change needed to make it pass. I checked the `structuredClone` additions in `apply.ts` don't change behavior for callers that already expected fresh arrays (`projectDurableSnapshot`'s `JSON.stringify` comparisons in `review-budget-context.ts` are unaffected by object identity).
+
+### Updated readiness
+
+- **P0/P1 blockers:** none remain, and none have remained since the first follow-up commit.
+- **P2 items:** all six carried-forward items from the previous addendum are now fixed and each has a targeted regression test. No new P2 items were introduced.
+- **Ready for next phase:** ✅ — Phase 6 (recording integration and workflow context) is complete. Typecheck, lint, and the full test suite (3576/3576) pass with no known flakes remaining. Phase 7 (reviewer templates and workflow skills) can proceed without any carried-forward corrections.
