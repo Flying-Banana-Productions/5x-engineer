@@ -5,6 +5,10 @@ import {
 	rejectCliOwnedBudgetFields,
 } from "../../../src/protocol.js";
 import {
+	IMPLEMENTATION_STATE_VERSION,
+	type ImplementationTextAmendmentPayload,
+} from "../../../src/review-budget/record-lines.js";
+import {
 	implementationReviewRound,
 	resolvePlanImpactSpans,
 	validateImplementationReview,
@@ -70,6 +74,41 @@ function certified(items: VerdictItem[], extra: Partial<ReviewerVerdict> = {}) {
 		creditClaimIds: ["DC0"],
 		approvedPlanBytes: ANCHOR,
 		approvedPlanHash: hashPlanBytes(ANCHOR),
+	});
+}
+
+function textAmendment(input: {
+	approvedBytes: string;
+	authorizedBytes: string;
+	parentLineageId?: string | null;
+}): ImplementationTextAmendmentPayload {
+	return {
+		kind: "implementation-text-amendment",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: "amend-1",
+		bindingId: "binding-1",
+		executionRunId: "run1",
+		guardId: "guard-1",
+		sourceObservationId: "obs-1",
+		parentLineageId: input.parentLineageId ?? null,
+		beforeCommit: "a".repeat(40),
+		afterCommit: "b".repeat(40),
+		beforeBlobHash: hashPlanBytes(input.approvedBytes),
+		afterBlobHash: hashPlanBytes(input.authorizedBytes),
+		authorizedPlanBytes: input.authorizedBytes,
+		createdAt: "2026-09-23T00:00:00.000Z",
+	};
+}
+
+function textOnlyDefect(staleText: string): VerdictItem {
+	return defect({
+		scopeClass: "plan_defect",
+		planWorkItemIds: undefined,
+		action: "auto_fix",
+		planImpact: {
+			kind: "text_only",
+			locations: [{ heading: "Phase 2: Protocol", staleText }],
+		},
 	});
 }
 
@@ -517,6 +556,71 @@ alpha then alpha
 		);
 	});
 
+	test("a malformed amendment chain does not authorize text-only spans", () => {
+		const staleText = "The stale wording lives here.";
+		const malformed = validateImplementationReview({
+			verdict: verdict([textOnlyDefect(staleText)]),
+			phase: "2",
+			mode: "enforced",
+			phaseIds: ["2"],
+			workItemIds: ["W1"],
+			approvedPlanBytes: ANCHOR,
+			approvedPlanHash: hashPlanBytes(ANCHOR),
+			amendments: [
+				textAmendment({
+					approvedBytes: ANCHOR,
+					authorizedBytes: ANCHOR,
+					parentLineageId: "not-the-approved-root",
+				}),
+			],
+		});
+		expect(malformed.valid).toBe(true);
+		expect(malformed.exemptionAuthorized).toBe(false);
+		expect(malformed.spans).toEqual([]);
+		expect(malformed.governance?.route).toBe("human_gate");
+		expect(malformed.governance?.nextAction).toBe("plan_amendment");
+		expect(
+			malformed.diagnostics.find(
+				(item) => item.code === "PLAN_IMPACT_NOT_AUTHORIZED",
+			)?.severity,
+		).toBe("error");
+		expect(malformed.diagnostics.map((item) => item.code)).not.toContain(
+			"PLAN_IMPACT_AMBIGUOUS",
+		);
+	});
+
+	test("a valid amendment chain authorizes stale text only in the amended anchor", () => {
+		const staleText = "The stale wording lives here.";
+		const approved = ANCHOR.replace(
+			staleText,
+			"The original wording lives here.",
+		);
+		expect(approved).not.toContain(staleText);
+		const authorized = validateImplementationReview({
+			verdict: verdict([textOnlyDefect(staleText)]),
+			phase: "2",
+			mode: "enforced",
+			phaseIds: ["2"],
+			workItemIds: ["W1"],
+			approvedPlanBytes: approved,
+			approvedPlanHash: hashPlanBytes(approved),
+			amendments: [
+				textAmendment({
+					approvedBytes: approved,
+					authorizedBytes: ANCHOR,
+				}),
+			],
+		});
+		expect(authorized.valid).toBe(true);
+		expect(authorized.exemptionAuthorized).toBe(true);
+		expect(authorized.governance?.route).toBe("author_revision");
+		const start = ANCHOR.indexOf(staleText);
+		expect(authorized.spans[0]).toMatchObject({
+			start: Buffer.byteLength(ANCHOR.slice(0, start)),
+			end: Buffer.byteLength(ANCHOR.slice(0, start + staleText.length)),
+		});
+	});
+
 	test("keeps shortcut evidence explicit and classifies precedence, scope, and critical findings", () => {
 		const unknownBoundary = certified([
 			defect({
@@ -687,5 +791,158 @@ alpha then alpha
 		});
 		expect(continued.domain).toBe("standalone");
 		expect(implementationReviewRound(4, "fresh-session")).toBe(5);
+	});
+
+	test("rejects plan contracts in a bound implementation phase", () => {
+		const bound = {
+			phase: "2",
+			phaseIds: ["2"],
+			workItemIds: ["W1"],
+		} as const;
+		const polish = validateImplementationReview({
+			verdict: verdict([
+				defect({
+					scopeClass: "polish",
+					planWorkItemIds: undefined,
+				}),
+			]),
+			mode: "enforced",
+			...bound,
+		});
+		expect(polish.valid).toBe(false);
+		expect(polish.fatalCode).toBe("PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE");
+
+		const baseline = validateImplementationReview({
+			verdict: verdict([], {
+				baselineAssessment: {
+					independentEffortEstimate: 2,
+					confidence: "high",
+					reason: "The original estimate remains sound.",
+				},
+			}),
+			mode: "advisory",
+			...bound,
+		});
+		expect(baseline.fatalCode).toBe("PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE");
+
+		const assessments = validateImplementationReview({
+			verdict: verdict([], {
+				creditAssessments: [
+					{
+						creditClaimId: "DC0",
+						eligibility: "eligible",
+						coupling: "intrinsic",
+						reason: "The simplification shipped.",
+					},
+				],
+			}),
+			mode: "enforced",
+			...bound,
+		});
+		expect(assessments.fatalCode).toBe("PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE");
+
+		const claim = validateImplementationReview({
+			verdict: verdict([
+				defect({
+					scopeClass: undefined,
+					planWorkItemIds: undefined,
+					creditClaim: {
+						creditClaimId: "DC0",
+						targetPhase: "2",
+						minimalAlternativeEffortDelta: 0,
+						minimalAlternativeArchitectureDelta: -1,
+						before: "Two stores.",
+						after: "One store.",
+					},
+				}),
+			]),
+			mode: "enforced",
+			...bound,
+		});
+		expect(claim.fatalCode).toBe("PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE");
+
+		const off = validateImplementationReview({
+			verdict: verdict([
+				defect({ scopeClass: "polish", planWorkItemIds: undefined }),
+			]),
+			phase: "2",
+			mode: "off",
+		});
+		expect(off.valid).toBe(true);
+		expect(off.domain).toBe("v1");
+		expect(off.governance).toBeNull();
+
+		const compatible = validateImplementationReview({
+			verdict: verdict([], {
+				baselineAssessment: {
+					independentEffortEstimate: 2,
+					confidence: "high",
+					reason: "The original estimate remains sound.",
+				},
+			}),
+			phase: "2",
+			mode: "enforced",
+			compatibility: true,
+			phaseIds: ["2"],
+			workItemIds: ["W1"],
+		});
+		expect(compatible.domain).toBe("v1");
+		expect(compatible.valid).toBe(true);
+
+		const unbound = validateImplementationReview({
+			verdict: verdict([
+				defect({ scopeClass: "polish", planWorkItemIds: undefined }),
+			]),
+			phase: "2",
+			mode: "advisory",
+		});
+		expect(unbound.valid).toBe(true);
+		expect(unbound.domain).toBe("standalone");
+
+		const legacy = validateImplementationReview({
+			verdict: verdict([
+				{
+					id: "R1",
+					title: "Legacy note",
+					action: "auto_fix",
+					reason: "No scope class was supplied.",
+				},
+			]),
+			mode: "enforced",
+			...bound,
+		});
+		expect(legacy.valid).toBe(true);
+		expect(legacy.domain).toBe("standalone");
+		expect(legacy.fatalCode).toBeUndefined();
+	});
+
+	test("standalone validation accepts an implementation verdict without a phase", () => {
+		const standalone = validateImplementationReview({
+			verdict: verdict([defect()]),
+			mode: "advisory",
+			hasRun: false,
+		});
+		expect(standalone.valid).toBe(true);
+		expect(standalone.domain).toBe("standalone");
+		expect(standalone.governance).toBeNull();
+		expect(standalone.exemptionAuthorized).toBe(false);
+		const missing = standalone.diagnostics.find(
+			(item) => item.code === "IMPLEMENTATION_CONTEXT_MISSING",
+		);
+		expect(missing?.severity).toBe("info");
+
+		const runAware = validateImplementationReview({
+			verdict: verdict([defect()]),
+			mode: "advisory",
+			hasRun: true,
+		});
+		expect(runAware.valid).toBe(false);
+		expect(runAware.fatalCode).toBe("UNKNOWN_PHASE");
+
+		const omitted = validateImplementationReview({
+			verdict: verdict([defect()]),
+			mode: "advisory",
+		});
+		expect(omitted.fatalCode).toBe("UNKNOWN_PHASE");
 	});
 });

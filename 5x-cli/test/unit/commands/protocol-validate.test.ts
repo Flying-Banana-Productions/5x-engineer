@@ -1755,17 +1755,7 @@ describe("protocol validate reviewer — implementation contract", () => {
 	test("rejects work-item ids that are not on the bound ledger", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ mode: "enforced" });
-		ctx.store.getImplementationBinding = () =>
-			({
-				id: "binding-1",
-				mode: "enforced",
-				phaseMap: [{ id: "2", heading: "Phase 2" }],
-				ledger: { workItems: [{ id: "W1", debtClaim: null }] },
-				approvedPlanBytes: "# Plan\n",
-				approvedPlanHash: "sha256:unused",
-			}) as unknown as ReturnType<typeof ctx.store.getImplementationBinding>;
-		ctx.store.getImplementationCompatibility = () => null;
-		ctx.store.listImplementationTextAmendments = () => [];
+		stubImplementationBinding(ctx, { mode: "enforced" });
 		try {
 			const input = writeInput(dir, {
 				readiness: "not_ready",
@@ -1786,4 +1776,306 @@ describe("protocol validate reviewer — implementation contract", () => {
 			cleanupDir(dir);
 		}
 	});
+
+	test("rejects plan-contract fields in a bound implementation phase", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		stubImplementationBinding(ctx, { mode: "enforced" });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [
+					{
+						id: "R1",
+						title: "Polish the wording",
+						action: "auto_fix",
+						reason: "The approved sentence is still stale.",
+						scopeClass: "polish",
+					},
+				],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE",
+			});
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("accepts a structurally valid implementation verdict without a run or phase", async () => {
+		const dir = makeTmpDir();
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("uses the binding ledger when live config is advisory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		stubImplementationBinding(ctx, { mode: "enforced", workItemIds: ["W1"] });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [implementationItem],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "WORK_ITEM_UNKNOWN" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("an advisory binding overrides enforced config", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		stubImplementationBinding(ctx, { mode: "advisory", workItemIds: ["W1"] });
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(false);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a compatibility record accepts a v1 implementation verdict", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.getImplementationBinding = () => null;
+		ctx.store.getImplementationCompatibility = () =>
+			({ id: "compat-1" }) as unknown as ReturnType<
+				typeof ctx.store.getImplementationCompatibility
+			>;
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [implementationItem],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("advisory mode with no binding warns that context is missing", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		ctx.store.getImplementationBinding = () => null;
+		ctx.store.getImplementationCompatibility = () => null;
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(true);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("enforced mode with no binding rejects a missing implementation context", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.getImplementationBinding = () => null;
+		ctx.store.getImplementationCompatibility = () => null;
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "IMPLEMENTATION_CONTEXT_MISSING" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a phase flag that conflicts with the envelope phase is rejected once", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+				phase: "3",
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "PHASE_CONFLICT" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a context error without --record stays advisory", async () => {
+		const dir = makeTmpDir();
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => {
+					throw new RecordContextError("WORKTREE_MISSING", "missing");
+				},
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("a context error with --record is a structured failure", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					record: true,
+					step: "reviewer:review",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => {
+						throw new RecordContextError("WORKTREE_MISSING", "missing");
+					},
+				}),
+			).rejects.toMatchObject({ code: "WORKTREE_MISSING" });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
 });
+
+function stubImplementationBinding(
+	ctx: ReturnType<typeof makeBudgetContext>,
+	binding: { mode: "advisory" | "enforced"; workItemIds?: string[] },
+): void {
+	ctx.store.getImplementationBinding = () =>
+		({
+			id: "binding-1",
+			mode: binding.mode,
+			phaseMap: [{ id: "2", heading: "Phase 2" }],
+			ledger: {
+				workItems: (binding.workItemIds ?? ["W1"]).map((id) => ({
+					id,
+					debtClaim: null,
+				})),
+			},
+			approvedPlanBytes: "# Plan\n",
+			approvedPlanHash: "sha256:unused",
+		}) as unknown as ReturnType<typeof ctx.store.getImplementationBinding>;
+	ctx.store.getImplementationCompatibility = () => null;
+	ctx.store.listImplementationTextAmendments = () => [];
+}

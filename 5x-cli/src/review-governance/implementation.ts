@@ -52,6 +52,12 @@ export interface ImplementationValidationInput {
 	approvedPlanBytes?: string;
 	approvedPlanHash?: string;
 	amendments?: readonly ImplementationTextAmendmentPayload[];
+	/**
+	 * True when validation is bound to a run. False is standalone protocol
+	 * validate: a missing phase is structural acceptance, not `UNKNOWN_PHASE`.
+	 * Omit to stay fail-closed when the phase is missing.
+	 */
+	hasRun?: boolean;
 	priorReviewCount?: number;
 	/** Ignored. A fresh session does not reset the phase review round. */
 	sessionId?: string;
@@ -702,7 +708,12 @@ export function validateImplementationReview(
 			"Implementation scope is not valid in a plan review phase.",
 		);
 	}
-	if (phaseId === "plan" || (!implementationContract && phaseId !== null)) {
+	// Legacy items with no scope class are neither contract. They stay on the
+	// prior acceptance path, including off mode, and are not plan contracts.
+	if (
+		phaseId === "plan" ||
+		(!implementationContract && !planContract && phaseId !== null)
+	) {
 		return {
 			valid: true,
 			accepted: true,
@@ -725,6 +736,23 @@ export function validateImplementationReview(
 		};
 	}
 	if (!phase || phaseId === null) {
+		if (!phase && input.hasRun === false) {
+			return {
+				valid: true,
+				accepted: true,
+				domain: "standalone",
+				diagnostics: [
+					diagnostic(
+						"IMPLEMENTATION_CONTEXT_MISSING",
+						"Standalone validation accepts the structural contract and does not certify implementation context.",
+						"info",
+					),
+				],
+				spans: [],
+				exemptionAuthorized: false,
+				governance: null,
+			};
+		}
 		return fatal(
 			"implementation",
 			"UNKNOWN_PHASE",
@@ -738,6 +766,24 @@ export function validateImplementationReview(
 			"UNKNOWN_PHASE",
 			`Phase '${phaseId}' is not in the approved plan phase map.`,
 		);
+	}
+	if (certifying && planContract) {
+		return fatal(
+			"implementation",
+			"PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE",
+			"Plan baseline, credit assessment, or plan scope fields are not valid in an implementation review.",
+		);
+	}
+	if (!implementationContract) {
+		return {
+			valid: true,
+			accepted: true,
+			domain: "standalone",
+			diagnostics: [],
+			spans: [],
+			exemptionAuthorized: false,
+			governance: null,
+		};
 	}
 	if (!certifying && input.mode === "enforced") {
 		return fatal(
@@ -754,14 +800,6 @@ export function validateImplementationReview(
 				"No persisted binding is available. Work-item linkage and span authorization are not certified.",
 				"info",
 			),
-		);
-	}
-	if (certifying && planContract) {
-		return fatal(
-			"implementation",
-			"PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE",
-			"Plan baseline, credit assessment, or plan scope fields are not valid in an implementation review.",
-			diagnostics,
 		);
 	}
 	if (input.workItemIds) {
@@ -815,43 +853,50 @@ export function validateImplementationReview(
 				),
 			);
 		} else {
+			const amendments = input.amendments ?? [];
 			const drift = detectPlanDrift({
 				approvedPlanBytes: input.approvedPlanBytes,
 				approvedPlanHash: input.approvedPlanHash,
-				amendments: input.amendments ?? [],
+				amendments,
 				currentPlanBytes: input.approvedPlanBytes,
 			});
-			if (!drift.chainValid && (input.amendments?.length ?? 0) > 0) {
+			if (amendments.length > 0 && !drift.chainValid) {
 				diagnostics.push(
 					diagnostic(
 						"PLAN_IMPACT_NOT_AUTHORIZED",
-						"The text-amendment lineage is unverified. Spans are resolved against the approved bytes only.",
-						"info",
-					),
-				);
-			}
-			const resolved = resolvePlanImpactSpans({
-				anchorText: drift.authorizedBytes,
-				locations,
-			});
-			if (resolved.status === "rejected") {
-				return fatal("implementation", resolved.code, resolved.message, [
-					...diagnostics,
-					diagnostic(resolved.code, resolved.message, "error", resolved.itemId),
-				]);
-			}
-			if (resolved.status === "ambiguous") {
-				diagnostics.push(
-					diagnostic(
-						"PLAN_IMPACT_AMBIGUOUS",
-						resolved.message,
+						"The text-amendment lineage is unverified. Text-only spans are not authorized.",
 						"error",
-						resolved.itemId,
 					),
 				);
 			} else {
-				spans = resolved.spans;
-				spansAuthorized = true;
+				const resolved = resolvePlanImpactSpans({
+					anchorText: drift.authorizedBytes,
+					locations,
+				});
+				if (resolved.status === "rejected") {
+					return fatal("implementation", resolved.code, resolved.message, [
+						...diagnostics,
+						diagnostic(
+							resolved.code,
+							resolved.message,
+							"error",
+							resolved.itemId,
+						),
+					]);
+				}
+				if (resolved.status === "ambiguous") {
+					diagnostics.push(
+						diagnostic(
+							"PLAN_IMPACT_AMBIGUOUS",
+							resolved.message,
+							"error",
+							resolved.itemId,
+						),
+					);
+				} else {
+					spans = resolved.spans;
+					spansAuthorized = true;
+				}
 			}
 		}
 	}

@@ -24,6 +24,7 @@ import {
 	canonicalPhaseId,
 	validateImplementationReview,
 	verdictUsesImplementationContract,
+	verdictUsesPlanContract,
 } from "../review-governance/implementation.js";
 import { validateRunId } from "../run-id.js";
 import {
@@ -543,124 +544,120 @@ export async function protocolValidate(
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
 	const warn =
 		params.warn ?? ((message: string) => console.error(`Warning: ${message}`));
-	if (
-		role === "reviewer" &&
-		verdictUsesImplementationContract(validated as ReviewerVerdict)
-	) {
+	if (role === "reviewer") {
 		const verdict = validated as ReviewerVerdict;
 		const envelopePhase = envelopeString(validated, "phase");
 		const envelopeDomain = envelopeReviewDomain(validated);
-		if (
-			params.phase &&
-			envelopePhase &&
-			params.phase !== envelopePhase &&
-			canonicalPhaseId(params.phase) !== canonicalPhaseId(envelopePhase)
-		) {
-			outputError(
-				"PHASE_MISMATCH",
-				`--phase is "${params.phase}" but result_json.phase is "${envelopePhase}". ` +
-					"These must match. Remove --phase to use result_json as authoritative, " +
-					"or correct the phase value.",
-			);
-		}
 		const phase = params.phase ?? envelopePhase;
 		const phaseId = phase ? canonicalPhaseId(phase) : null;
-		let phaseIds: string[] | undefined;
-		let workItemIds: string[] | undefined;
-		let creditClaimIds: string[] | undefined;
-		let approvedPlanBytes: string | undefined;
-		let approvedPlanHash: string | undefined;
-		let amendments:
-			| ReturnType<
-					ReviewBudgetCommandContext["store"]["listImplementationTextAmendments"]
-			  >
-			| undefined;
-		let mode: "off" | "advisory" | "enforced" = "advisory";
-		let compatibility = false;
-		let priorReviewCount = 0;
-		if (params.run && phaseId && phaseId !== "plan") {
-			const contextFactory =
-				params.createReviewBudgetContext ?? createReviewBudgetContext;
-			try {
-				const implementationContext = await contextFactory(
-					{ runId: params.run, startDir: params.startDir },
-					warn,
-				);
-				const binding = implementationContext.store.getImplementationBinding(
-					params.run,
-				);
-				const compat =
-					implementationContext.store.getImplementationCompatibility(
+		// Phase flag/envelope conflicts are rejected inside
+		// validateImplementationReview. Plan contracts are included only for a
+		// known non-plan phase; standalone plan verdicts stay on the plan path.
+		const contextualImplementationReview =
+			verdictUsesImplementationContract(verdict) ||
+			(verdictUsesPlanContract(verdict) &&
+				phaseId !== null &&
+				phaseId !== "plan");
+		if (contextualImplementationReview) {
+			let phaseIds: string[] | undefined;
+			let workItemIds: string[] | undefined;
+			let creditClaimIds: string[] | undefined;
+			let approvedPlanBytes: string | undefined;
+			let approvedPlanHash: string | undefined;
+			let amendments:
+				| ReturnType<
+						ReviewBudgetCommandContext["store"]["listImplementationTextAmendments"]
+				  >
+				| undefined;
+			let mode: "off" | "advisory" | "enforced" = "advisory";
+			let compatibility = false;
+			let priorReviewCount = 0;
+			if (params.run && phaseId && phaseId !== "plan") {
+				const contextFactory =
+					params.createReviewBudgetContext ?? createReviewBudgetContext;
+				try {
+					const implementationContext = await contextFactory(
+						{ runId: params.run, startDir: params.startDir },
+						warn,
+					);
+					const binding = implementationContext.store.getImplementationBinding(
 						params.run,
 					);
-				if (binding) {
-					mode = binding.mode;
-					phaseIds = binding.phaseMap.map((entry) => entry.id);
-					workItemIds = binding.ledger.workItems.map((item) => item.id);
-					creditClaimIds = binding.ledger.workItems.flatMap((item) =>
-						item.debtClaim ? [item.debtClaim.debtClaimId] : [],
-					);
-					approvedPlanBytes = binding.approvedPlanBytes;
-					approvedPlanHash = binding.approvedPlanHash;
-					amendments =
-						implementationContext.store.listImplementationTextAmendments(
+					const compat =
+						implementationContext.store.getImplementationCompatibility(
 							params.run,
-							binding.id,
 						);
-					priorReviewCount = implementationContext.recordStore
-						.listLines(params.run, "steps")
-						.filter((line) => {
-							const payload = line.payload as {
-								step_name?: unknown;
-								phase?: unknown;
-							};
-							return (
-								typeof payload.step_name === "string" &&
-								payload.step_name.startsWith("reviewer:") &&
-								typeof payload.phase === "string" &&
-								canonicalPhaseId(payload.phase) === phaseId
+					if (binding) {
+						mode = binding.mode;
+						phaseIds = binding.phaseMap.map((entry) => entry.id);
+						workItemIds = binding.ledger.workItems.map((item) => item.id);
+						creditClaimIds = binding.ledger.workItems.flatMap((item) =>
+							item.debtClaim ? [item.debtClaim.debtClaimId] : [],
+						);
+						approvedPlanBytes = binding.approvedPlanBytes;
+						approvedPlanHash = binding.approvedPlanHash;
+						amendments =
+							implementationContext.store.listImplementationTextAmendments(
+								params.run,
+								binding.id,
 							);
-						}).length;
-				} else if (compat) {
-					compatibility = true;
-					mode = "off";
-				} else {
-					mode = implementationContext.config.reviewBudget.mode;
-				}
-			} catch (err) {
-				if (!params.record && err instanceof RecordContextError) {
-					mode = "advisory";
-				} else if (err instanceof RecordContextError) {
-					outputError(err.code, err.message, err.detail);
-				} else {
-					throw err;
+						priorReviewCount = implementationContext.recordStore
+							.listLines(params.run, "steps")
+							.filter((line) => {
+								const payload = line.payload as {
+									step_name?: unknown;
+									phase?: unknown;
+								};
+								return (
+									typeof payload.step_name === "string" &&
+									payload.step_name.startsWith("reviewer:") &&
+									typeof payload.phase === "string" &&
+									canonicalPhaseId(payload.phase) === phaseId
+								);
+							}).length;
+					} else if (compat) {
+						compatibility = true;
+						mode = "off";
+					} else {
+						mode = implementationContext.config.reviewBudget.mode;
+					}
+				} catch (err) {
+					if (!params.record && err instanceof RecordContextError) {
+						mode = "advisory";
+					} else if (err instanceof RecordContextError) {
+						outputError(err.code, err.message, err.detail);
+					} else {
+						throw err;
+					}
 				}
 			}
-		}
-		const reviewed = validateImplementationReview({
-			verdict,
-			phase,
-			envelopePhase,
-			envelopeDomain,
-			mode,
-			compatibility,
-			phaseIds,
-			workItemIds,
-			creditClaimIds,
-			approvedPlanBytes,
-			approvedPlanHash,
-			amendments,
-			priorReviewCount,
-			sessionId: invocation?.sessionId,
-		});
-		if (!reviewed.valid) {
-			outputError(
-				reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
-				reviewed.fatalMessage ?? "Implementation review contract was rejected.",
-			);
-		}
-		for (const item of reviewed.diagnostics) {
-			warn(`${item.code}: ${item.message}`);
+			const reviewed = validateImplementationReview({
+				verdict,
+				phase,
+				envelopePhase,
+				envelopeDomain,
+				mode,
+				compatibility,
+				phaseIds,
+				workItemIds,
+				creditClaimIds,
+				approvedPlanBytes,
+				approvedPlanHash,
+				amendments,
+				hasRun: Boolean(params.run),
+				priorReviewCount,
+				sessionId: invocation?.sessionId,
+			});
+			if (!reviewed.valid) {
+				outputError(
+					reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
+					reviewed.fatalMessage ??
+						"Implementation review contract was rejected.",
+				);
+			}
+			for (const item of reviewed.diagnostics) {
+				warn(`${item.code}: ${item.message}`);
+			}
 		}
 	}
 	if (role === "reviewer" && resolvedPhase === "plan" && params.run) {
