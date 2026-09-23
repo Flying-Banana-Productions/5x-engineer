@@ -2,7 +2,7 @@
 
 **Version:** 1.1
 **Created:** September 23, 2026
-**Status:** Draft — pending staff engineer review
+**Status:** Reviewed — ready for implementation
 
 ---
 
@@ -40,6 +40,7 @@ Implementation extends the normalized provider contract additively, gives the ex
 - [Output normalization](../../v2/205-output-normalization.md) — streaming-output exception.
 - [State segmentation](../../v2/207-state-segmentation.md) — disposable telemetry presentation state.
 - [Implementation plan template](../../../../docs/_implementation_plan_template.md) — plan structure and delivery scoring.
+- [Plan review and closure addendum](../reviews/5x-cli-docs-development-plans-213-run-watch-tui-plan-review.md) — all five findings resolved; ready for implementation.
 
 ---
 
@@ -574,3 +575,7 @@ Moved Surface Snapshot explanations into separate prose after `BUDGET_SNAPSHOT_I
 Incorporated P1.1 with optional session-reported effective cwd, fresh-only fallback, unknown-resume omission, and mismatched OpenCode resume fixtures. Incorporated P1.2 by reusing the CLI lifecycle abort/cause, adding synchronous exit restoration and double-signal/grace-timeout coverage. Incorporated P1.3 with sorted legacy historical draining across bounded turns and multi-batch raw/human regressions. Incorporated P1.4 with capped width-independent paused models and a resize/selection/detail regression. Incorporated P2.1 with a named test-only adapter entry and exact source/compile/run commands before CLI exposure.
 
 Also clarified straightforward nonblocking follow-ups: global help, decoder caps for external metadata, legacy repeated-start ambiguity, reducer mutation/ring-buffer allowance, and capability-gated `Bun.Terminal` tests. Stable W1–W7 IDs and effort/architecture scores are unchanged; corrections replace underspecified mechanisms within existing deliveries rather than add new subsystems. Surface Snapshot production-file count now includes the three effective-cwd session implementations and global help file. No debt claims or deferred structured findings. This revision is document-only; no implementation, tests, or quality gates were run.
+
+### September 23, 2026 — Review approval
+
+The closure review addendum (commit `7063cf5`) confirms P1.1–P1.4 and P2.1 are resolved with no new issues and marks v1.1 ready for implementation. Updated status and linked the review artifact only; scope, budget, phases, and unchecked implementation items remain unchanged. No implementation, tests, or quality gates were run.
