@@ -99,3 +99,38 @@ The plan requires "render tests for fresh/continued native and invoke paths". Th
 - [ ] P2.3 Recovery guidance after a recorded decision; show where the gate ID comes from
 
 **Phase readiness:** Phase 7's structure and routing are complete, and the CLI contracts match. Correct P1.1 before running Phase 9's multi-round enforced end-to-end fixtures, because those fixtures would hit the prior-finding rejection.
+
+---
+
+## Addendum (2026-09-22) — Fix-round follow-up
+
+**Reviewed:** `c702c135aa5e9cd67e85c7e5d3482c67499b17c6` (previous review commit: `8c95e65062c518c6a78aa8b13634d0314398f99a`)
+
+**Local verification:** `bun run typecheck` clean. `bun run lint` clean. `bun test` → 3589 pass / 0 fail on a clean run (229 files); one unrelated cross-process race test (`review decision CLI > two independent processes converge on one gate decision and human step`) flaked once under `--concurrent` and passed on immediate rerun and in isolation — not a regression from this diff.
+
+### What changed
+
+- **`src/review-governance/closure.ts`**: extracted the required-outcome predicate into an exported `requiredClosureOutcomeFindings(...)`, reused by both `validateClosureReview` and the new context builder, so there is exactly one definition of "which prior findings must get an outcome."
+- **`src/review-governance/context.ts`**: `PlanReviewPromptContext` gains `requiredOutcomeIds`, computed via `requiredClosureOutcomeFindings`. `formatReviewerGovernanceContext` now renders a `Required prior-finding outcome IDs: ...` line.
+- **`src/templates/reviewer-plan-continued.md` (v7)**: the closure prompt now branches explicitly on whether the `## Plan-review governance context` block is present. When present, it restricts `priorFindings[]` outcomes to exactly the rendered required-ID list. When absent (mode off, `v1_compat`, or no active Delivery Budget), it defines a broad v1 fallback: re-review broadly, put new/prior issues in `items[]`, and omit `priorFindings[]`/`--prior-finding`/`introducedBy`.
+- **`src/templates/reviewer-plan.md` (v7)**: the `ready_with_corrections` definition is now split — the strict one-point/zero-architecture-delta shortcut applies only in pinned `enforced` mode; advisory/off/`v1_compat` keep the ordinary v1 author/re-review cycle.
+- **`src/skills/base/5x-plan-review/SKILL.tmpl.md`**: Step 4A now says explicitly to set `$GATE_ID` from `.data.gateId`, and gives a concrete idempotent-retry recovery procedure for the case where a decision was durably recorded but its route wasn't captured (re-submit the identical `5x review decide` payload; the CLI's already-resolved path returns the winning decision's route on a matching retry).
+- **`src/commands/invoke.handler.ts` / `template.handler.ts`**: added an `onRenderedPrompt` test hook (production behavior unchanged) enabling direct assertions on the fully-rendered prompt string.
+- **Tests**: new handler-level tests (`template-handler.test.ts`, `invoke.test.ts`) seed a real baseline/snapshot/deferral-decision fixture and assert the reviewer governance block appears in `reviewer-plan`/`reviewer-plan-continued` renders, the `## Governing decisions` block appears in the author render (and the reviewer block does not), and native (`templateRender`) and invoke (`invokeAgent`) renders produce byte-identical governance context blocks. A new `context.test.ts` test renders the required-IDs line and feeds it straight through `validateClosureReview`, proving the rendered set is exactly what the validator accepts (not just a superficial string match). Loader and skill tests were extended to match.
+
+### Prior findings — addressed / partially addressed / still open
+
+- **P1.1** (closure prompt didn't say which prior findings were required, enforced closure reviews could fail closed) — **addressed**. The fix closes the loop precisely: the same predicate now backs both the validator's `requiredFindings` and the rendered `Required prior-finding outcome IDs` line, and a new test (`context.test.ts`) proves a verdict built from exactly the rendered IDs is accepted by `validateClosureReview`. This is the strongest form of fix — it eliminates the possibility of the two computations drifting again, rather than just documenting the current required set.
+- **P1.2** (native/invoke render tests only exercised the formatter helper) — **addressed**. The new tests drive real `templateRender`/`invokeAgent` calls against a seeded governance fixture (baseline + snapshot with an open and a deferred finding + a resolved defer-accept-risk decision) and assert on the actual rendered prompt text, including exact byte-for-byte equality of the governance block between native and invoke paths, and correct suppression of the reviewer block in the author prompt. This is exactly the coverage the plan's completion gate and my prior finding asked for.
+- **P2.1** (no v1 fallback text when no governance context is appended) — **addressed**. `reviewer-plan-continued.md` now has an explicit "Context present" / "No context present" branch with concrete instructions for the fallback case, and a loader test asserts the fallback text is present.
+- **P2.2** (strict `ready_with_corrections` wording applied unconditionally) — **addressed**. The definition is now split by pinned mode, with the strict one-point/zero-delta shortcut scoped to `enforced` and the ordinary v1 cycle preserved for advisory/off/`v1_compat`.
+- **P2.3** (no recovery guidance after a recorded decision, no stated source for `$GATE_ID`) — **addressed**. The skill now states the `$GATE_ID` source explicitly and gives a correct, code-verified idempotent-retry recovery path (I traced `submitPlanReviewDecision`'s `alreadyResolved` branch in `review-decision.handler.ts` and confirmed a retry with a matching `decisionIntentHash` does return `acceptedWinnerResult(...)`, which includes `.data.route`).
+
+### New issues introduced by this revision
+
+None found. I checked the new `requiredClosureOutcomeFindings` extraction for behavioral drift from the original inline logic (none — it's a pure refactor with an added export), checked that the new `onRenderedPrompt` hook has no effect when omitted (both call sites use `deps?.onRenderedPrompt?.(...)`, a no-op when absent), and reran the full suite twice to confirm the one observed failure was pre-existing concurrency flakiness unrelated to this change.
+
+### Updated readiness
+
+- **Phase 7 completion:** ✅ — All five prior findings are addressed with fixes that are verified by new, targeted tests rather than just asserted in prose. `bun run typecheck`, `bun run lint`, and the full test suite are clean.
+- **Ready for next phase:** ✅ — No blockers remain. Phase 9's end-to-end enforced multi-round fixtures should no longer hit the prior-finding rejection this addendum previously flagged as a prerequisite.
