@@ -1,6 +1,6 @@
 # Run Watch TUI
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** September 23, 2026
 **Status:** Draft — pending staff engineer review
 
@@ -93,13 +93,17 @@ All source/test paths below are relative to `5x-cli/` unless explicitly qualifie
 
 **Extend event variants with optional fields instead of adding required variants.** Existing plugins can continue emitting their current `AgentEvent` objects. Keep `input_summary`, `output`, and tool names as fallbacks. Optional message/block identity and boundary markers on text/reasoning permit empty boundary deltas without changing existing exhaustive event switches. IDs are scoped by log source and source generation, not provider session ID (resumed sessions can produce multiple invocation logs).
 
+**Record session-reported workspace, not requested resume cwd.** Add optional read-only `AgentSession.workingDirectory`; bundled sessions expose their effective tool cwd. OpenCode resume uses stored `session.directory`, which can differ from the request. Prefer the reported directory; fall back to requested workdir only for fresh sessions. A resumed external session without a reported directory leaves the header workspace absent.
+
 **Normalize provider-specific structure at the mapper.** Each supported mapper recognizes its native path, search, range, and command fields and emits the shared shape. Do not expose raw arbitrary tool-input objects or parse them inside the renderer. Preserve supplied patches/change summaries with explicit truncation; do not synthesize Git diffs or treat requested edits as verified changes. Keep OpenCode's existing 500-character output contract and annotate truncation rather than silently expanding all invocation logs.
 
 **Separate attach classification from timestamps.** Snapshot file byte sizes before starting notifications. A record is historical only if its terminating newline is at or before that file's attach watermark; a partial record completed after attachment is live. Newly discovered files are live. Attach wall time or event timestamps cannot reliably establish this boundary.
 
 **Use deterministic observation ordering, not invented causality.** Preserve per-source byte order. Merge ready batches with a deterministic source/sequence tie-breaker; label the cross-invocation timeline as observed order and show recorded timestamps separately. Do not reorder a source on bad or backwards timestamps. File placement is first-seen order within directory groups, not continuously re-sorted recency.
 
-**Keep live state separate from navigation.** A paused viewport stores bounded rendered rows/detail and selected stable IDs while the reducer continues updating. Resume discards that snapshot and returns to live activity. If retained history is evicted underneath a selection, keep its bounded inspector snapshot and show an eviction boundary, not an ever-growing queue. Browsing an older invocation never auto-switches to a new one.
+**Keep live state separate from navigation.** A paused viewport stores bounded, width-independent row models (stable IDs, sanitized text, and inspector detail), not rendered rows, while the reducer continues updating. The same renderer lays out that snapshot at the current terminal size. Resume discards that snapshot and returns to live activity. If retained history is evicted underneath a selection, keep its bounded inspector snapshot and show an eviction boundary, not an ever-growing queue. Browsing an older invocation never auto-switches to a new one.
+
+**Reuse the process-wide signal owner.** TUI collection merges `getCliAbortSignal()` with watcher-local detach; it installs no competing SIGINT/SIGTERM handlers. Normal signal exits use `getCliAbortCause()` for 130/143, while q/raw Ctrl-C detach succeeds. A synchronous idempotent exit-time restore covers the lifecycle owner's second-signal and grace-timeout force exits without waiting for a frame write.
 
 **Report facts conservatively.** An ID-less end can match one unambiguous outstanding same-name call only, with estimated timing explicitly labeled; once concurrent ID-less calls overlap, render an uncertain group and never assign individual completion durations. Search activity belongs to a scope row, not every file under that scope. Read/edit starts are attempts; attributable results add success/error outcomes. Errors remain in counts after detail eviction. `done` closes only the source invocation; unmatched tools become outcome-unknown, not success. Silence shows age, never a hang verdict.
 
@@ -115,23 +119,23 @@ All source/test paths below are relative to `5x-cli/` unless explicitly qualifie
 
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
-| W1 | Terminal adapter and compatibility decision (phase 1) | 5 | 1 | - | - | New platform-facing lifecycle boundary, Bun/compiled validation, input and terminal restoration; adapter tests included. |
-| W2 | Optional normalized metadata across bundled providers (phase 2) | 3 | 2 | - | - | Crosses public provider API, three mappers, invocation header producer, and compatibility fixtures; adds a maintained external contract without migration. |
-| W3 | Replay-aware bounded tailing and decoding (phase 3) | 5 | 1 | - | - | Adds watermark/backpressure semantics to a filesystem boundary and a watch decoder; race, partial-record, polling, and legacy tests belong here. |
-| W4 | Watch reducer, attribution, and retention (phase 4) | 5 | 2 | - | - | New bounded state machine for concurrent invocations, tools, prose, counters, and evictions; deterministic fixtures and stress tests included. |
-| W5 | Responsive views and safe display formatting (phase 5) | 5 | 2 | - | - | New layout/formatting surface for compact/expanded views, Markdown, Unicode, path safety, inspectors, and activity clocks. |
-| W6 | Keyboard controller and watch command wiring (phase 6) | 3 | 1 | - | - | Integrates CLI validation, async collection, viewport state, lifecycle adapter, and rendering while preserving stream modes. |
-| W7 | Release failure handling, capability polish, and documentation (phase 7) | 2 | 0 | - | - | Finishes the existing watcher slice: failure/slow-terminal fixes, CLI help and docs, compiled/PTY validation, and manual acceptance; no new subsystem. |
+| W1 | Terminal adapter and compatibility decision (phase 1) | 5 | 1 | - | P1.2, P2.1 | New platform-facing lifecycle boundary, Bun/compiled validation, input and terminal restoration; adapter tests included. Scores unchanged: exit-time restore and a named test-only smoke entry clarify the existing lifecycle gate. |
+| W2 | Optional normalized metadata across bundled providers (phase 2) | 3 | 2 | - | P1.1 | Crosses public provider API, three mappers, invocation header producer, and compatibility fixtures; adds a maintained external contract without migration. Scores unchanged: optional effective-cwd accessors correct the existing workspace deliverable, without a new subsystem. |
+| W3 | Replay-aware bounded tailing and decoding (phase 3) | 5 | 1 | - | P1.3 | Adds watermark/backpressure semantics to a filesystem boundary and a watch decoder; race, partial-record, polling, and legacy tests belong here. Scores unchanged: mode-specific replay ordering and a larger regression fixture refine the existing compatibility work. |
+| W4 | Watch reducer, attribution, and retention (phase 4) | 5 | 2 | - | P1.4 | New bounded state machine for concurrent invocations, tools, prose, counters, and evictions; deterministic fixtures and stress tests included. Scores unchanged: width-independent snapshot data replaces rendered rows within the existing cap. |
+| W5 | Responsive views and safe display formatting (phase 5) | 5 | 2 | - | P1.4 | New layout/formatting surface for compact/expanded views, Markdown, Unicode, path safety, inspectors, and activity clocks. Scores unchanged: the same renderer reflows live or paused row models. |
+| W6 | Keyboard controller and watch command wiring (phase 6) | 3 | 1 | - | P1.2, P1.4 | Integrates CLI validation, async collection, viewport state, lifecycle adapter, and rendering while preserving stream modes. Scores unchanged: reuse existing signal ownership and re-layout the bounded snapshot rather than add parallel mechanisms. |
+| W7 | Release failure handling, capability polish, and documentation (phase 7) | 2 | 0 | - | P1.2 | Finishes the existing watcher slice: failure/slow-terminal fixes, CLI help and docs, compiled/PTY validation, and manual acceptance; no new subsystem. Scores unchanged: double-signal/grace-timeout cases extend the planned lifecycle matrix. |
 
 ### Surface Snapshot
 
 - Subsystems: 4
-- Production files: 18
+- Production files: 22
 - Persistent/external boundaries: 3
 
 The four subsystems are provider normalization/log production; file tailing/decoding; watch state/presentation; CLI integration.
 
-The 18 production files comprise 10 existing TypeScript files and 8 new `src/watch/` files listed below. A renderer dependency, if selected by W1, additionally changes package metadata/lockfile rather than adding an in-repo subsystem.
+The 22 production files comprise 14 existing TypeScript files and 8 new `src/watch/` files listed below. The revision adds the three session implementation files needed for P1.1 and `src/program.ts` for consistent help. `src/cli-lifecycle.ts` is reused unchanged. A renderer dependency, if selected by W1, additionally changes package metadata/lockfile rather than adding an in-repo subsystem.
 
 The three persistent/external boundaries are the normalized provider/plugin contract; NDJSON files on disk; interactive terminal input/output. No new database persistence.
 
@@ -170,7 +174,7 @@ watch/terminal.ts (safe styles, input, alternate screen, cleanup)
 
 ## Phase 1: Terminal compatibility and lifecycle foundation
 
-**Completion gate:** One selected terminal adapter can enter, draw, resize, read keys, and restore a terminal in Bun source and compiled execution. Injected-port unit tests prove idempotent cleanup after every partial initialization step. No user-facing `--tui` option is exposed yet.
+**Completion gate:** One selected terminal adapter can enter, draw, resize, read keys, and restore a terminal in Bun source and compiled execution via the test-only smoke entry below. Injected-port unit tests prove idempotent cleanup after every partial initialization step, including synchronous exit fallback independent of stalled frame writes. No user-facing `--tui` option is exposed yet.
 
 ### 1.1 W1 — Establish the terminal boundary
 
@@ -187,13 +191,14 @@ export interface WatchTerminal {
   draw(frame: WatchFrame): Promise<void>;
   onKey(listener: (key: string) => void): () => void;
   onResize(listener: () => void): () => void;
-  close(): void; // idempotent, restores prior raw-mode state
+  close(): void; // synchronous, idempotent restore; never waits for frame writes
 }
 ```
 
 - [ ] W1: Run the bounded candidate comparison with a 40×8 and 120×40 fixture, combining marks, CJK, emoji, resizing, q/Ctrl-C input, and a thrown draw error. Record the selected approach and source/compiled build evidence in this plan before implementing later renderer phases.
 - [ ] W1: Prefer a local adapter using `node:readline` keypress events and ANSI screen operations; verify `Bun.stringWidth` behavior against supported Bun versions. If widths need a pure-JS helper, select/pin it at this gate, not as ad hoc per-view logic.
 - [ ] W1: Inject stdin/stdout/signal ports for tests. Capture prior raw mode and input flow state; track every resource actually acquired. Restore cursor, styles, screen, raw input, listeners, and timers in reverse order even if entry/draw partially fails.
+- [ ] W1: Register a synchronous idempotent `process.on("exit")` restore before acquiring terminal state; remove it after normal restoration. Use a synchronous terminal-output path for restoration, not the async frame queue, and independently attempt raw-mode restoration if output fails. Test forced-exit restore with a stalled draw and partial entry; do not alter `cli-lifecycle.ts` signal ownership.
 - [ ] W1: Implement coalesced output: at most one frame write in flight and one latest pending frame; honor writable backpressure. Never buffer a frame per event. Terminal failures reject to the owner; the adapter does not print errors or call `process.exit()`.
 - [ ] W1: Verify an unsupported/dumb terminal can be rejected before entry; ensure labels/symbols work without color. Do not reuse the external OpenCode attach controller.
 
@@ -201,16 +206,17 @@ export interface WatchTerminal {
 
 - [ ] W1: Add `test/unit/watch/terminal.test.ts` with injected ports, partial-entry failures, repeated close, slow writes, and input subscription teardown; no process-wide env mutation or console capture.
 - [ ] W1: Add a reusable `test/helpers/watch-tui-harness.ts` fixture for adapter/lifecycle subprocess smoke testing. Keep platform-specific PTY setup in integration tests, not the production adapter.
+- [ ] W1: Add test-only entry `test/fixtures/watch-terminal-smoke.ts` importing the adapter directly (no CLI flag required), installing the existing CLI lifecycle and exercising draw/keys/resize/restore plus injected failure modes. From `5x-cli/`, run `bun test/fixtures/watch-terminal-smoke.ts`; after verifying `.5x/` exists, compile with `bun build --compile test/fixtures/watch-terminal-smoke.ts --outfile .5x/watch-terminal-smoke` and run `.5x/watch-terminal-smoke` under the same terminal harness. Record source/compiled evidence here; keep the generated binary untracked. `bun run build` alone does not exercise this Phase 1 entry.
 
 ---
 
 ## Phase 2: Additive provider and invocation metadata
 
-**Completion gate:** All bundled providers retain existing summary/text behavior while emitting available normalized IDs/targets. Old plugin event fixtures still typecheck and render identically through `StreamWriter`. Invocation logs record the actual provider workspace on fresh and resumed sessions.
+**Completion gate:** All bundled providers retain existing summary/text behavior while emitting available normalized IDs/targets. Old plugin event fixtures still typecheck and render identically through `StreamWriter`. Invocation logs prefer session-reported effective workspace, use requested cwd only as a fresh-session fallback, and omit unknown resumed workspace. An OpenCode resume whose stored directory differs from the request records the stored directory.
 
 ### 2.1 W2 — Settle and publish optional shapes
 
-**Files:** `src/providers/types.ts:84–91`; `src/index.ts:274–284`; `src/providers/log-writer.ts:40–48`; `src/commands/invoke.handler.ts:450–452,539–556,613–622`.
+**Files:** `src/providers/types.ts:32–44,84–91`; `src/providers/opencode.ts:174,791–837`; `packages/provider-claude-code/src/session.ts`; `packages/provider-cursor-agent/src/session.ts`; `src/index.ts:274–284`; `src/providers/log-writer.ts:40–48`; `src/commands/invoke.handler.ts:450–452,539–556,613–622`.
 
 Use this contract unless mapper fixtures demonstrate a specific incompatibility; document any refinement at this phase gate:
 
@@ -240,10 +246,11 @@ export interface ProseMetadata {
 // Intersect text/reasoning variants with ProseMetadata;
 // intersect tool_start/tool_end variants with ToolMetadata.
 // SessionStartEntry adds workspace?: string (absolute effective tool cwd).
+// AgentSession adds readonly workingDirectory?: string (reported effective cwd).
 ```
 
 - [ ] W2: Export the new public types from `src/index.ts` for provider packages. Do not require plugins to emit them or add a provider capability handshake.
-- [ ] W2: Populate `workspace` from the same `workdir` used by `startSession`/`resumeSession`, not `process.cwd()` or the control-plane root. Extend log-writer and invoke fixtures to assert explicit-workdir, mapped-worktree, and resume behavior.
+- [ ] W2: Expose optional read-only `AgentSession.workingDirectory`. OpenCodeSession reports the effective directory passed to it (stored `session.directory` on resume); ClaudeCodeSession and CursorAgentSession report their resolved subprocess cwd. Populate header `workspace` from this value; only fresh sessions may fall back to the requested workdir. Omit workspace for a resumed session without a reported directory; never substitute observer cwd or control-plane root. Extend provider-session, log-writer and invoke fixtures for explicit/mapped fresh workdirs, reported resume cwd, OpenCode stored directory differing from the request, and an old external session with no directory. Do not change OpenCode resume cwd semantics.
 - [ ] W2: Bound newly introduced metadata: at most 32 targets per event, 4 KiB per path/pattern/command, 16 KiB supplied patch/summary combined; set `detail_truncated` on loss. Preserve existing required summary/output semantics. Do not log arbitrary native input snapshots.
 
 ### 2.2 W2 — Provider mappings and identities
@@ -260,7 +267,7 @@ export interface ProseMetadata {
 
 ## Phase 3: Replay-aware bounded event source
 
-**Completion gate:** A deterministic tailer test suite proves historical/live classification without loss or duplication across attachment and concurrent append. A slow consumer cannot grow the pending queue without bound; abort interrupts catch-up. Existing raw/human watch integration tests pass unchanged.
+**Completion gate:** A deterministic tailer test suite proves historical/live classification without loss or duplication across attachment and concurrent append. A slow consumer cannot grow the pending queue without bound; abort interrupts catch-up. Existing raw/human watch integration tests pass unchanged, and a new two-file replay regression with more than 256 records per file proves unchanged source order and human-readable header grouping.
 
 ### 3.1 W3 — Watermarks and bounded draining
 
@@ -281,7 +288,7 @@ export interface ReplayProgress { pendingFiles: number; complete: boolean }
 ```
 
 - [ ] W3: Capture initial directory membership/file sizes before watch registration even in replay mode. Classify initial records by newline end offset; newly created logs are live even while another source is still replaying. Expose catch-up progress on byte consumption so malformed/empty files cannot leave “catching up” stuck forever.
-- [ ] W3: Preserve existing `poll()` test seam but limit one drain turn to a named byte/record budget, starting with 256 KiB / 256 records. Rotate source traversal across turns so a large first file cannot starve later ones. Continue scheduled catch-up even without another filesystem notification.
+- [ ] W3: Preserve existing `poll()` test seam but limit one drain turn to a named byte/record budget, starting with 256 KiB / 256 records. For raw/human modes, drain pre-watermark history in sorted file order, one source to its watermark across turns before advancing; retain that source cursor through backpressure. Keep live appends behind this historical prefix. Fair rotation is allowed for live draining after catch-up; TUI may also rotate historical sources under its explicit `replayMetadata` option to avoid starvation. Capture internal watermarks in all modes without exposing metadata in legacy output. Continue scheduled catch-up even without another filesystem notification.
 - [ ] W3: Replace eager queue growth with bounded pull/backpressure: notification/poll callbacks mark work ready; stop reading when queued parsed payload reaches 1 MiB or 256 records. Permit one capped record to make progress. Resume reading from stored byte offsets when the consumer drains; yield to the event loop between batches.
 - [ ] W3: Enforce the existing 1 MiB line cap for complete as well as partial lines; discard an oversized record through its next newline, not an arbitrary suffix that might parse as JSON. Keep UTF-8 byte framing intact and bound unread remainder buffers.
 - [ ] W3: Tail-only starts existing files at attach EOF and reads only a bounded first-line `session_start` for context. Suppress all historical activity/counters. If EOF was mid-record, discard through the next newline before processing later records; report unavailable header context rather than replaying old events.
@@ -299,8 +306,10 @@ export function decodeWatchEntry(line: TaggedLine): WatchInput | null;
 ```
 
 - [ ] W3: Validate required event fields; retain only validated optional metadata. Recognize `done` without copying an unbounded result text/structured object into UI state. Unknown event types are skipped with bounded diagnostics, not fatal errors.
+- [ ] W3: Enforce W2's optional-metadata caps again in `decodeWatchEntry` for external-plugin logs, with explicit truncation markers; do not rely solely on bundled mapper caps or copy arbitrary native input.
 - [ ] W3: Keep legacy known-tool target inference conservative: only a single path-like summary for a recognized read/edit tool; never extract file effects from shell text or guess a search scope from its pattern. Malformed metadata falls back to the original summary.
 - [ ] W3: Extend `test/unit/utils/ndjson-tailer.test.ts`; add `test/unit/watch/events.test.ts`. Cover files created during replay, append across watermark, partial Unicode/newline boundaries, poll fallback, missing directory, malformed/oversized lines, abort during catch-up, slow consumers, and source generation changes.
+- [ ] W3: Add tailer and raw/human integration fixtures with two sorted files each exceeding 256 records (also crossing the byte budget). Assert all historical source-1 records precede source-2 records with no repeated role headers caused by batch rotation, despite slow consumption; test TUI fair catch-up separately.
 
 ---
 
@@ -322,6 +331,7 @@ export interface WatchViewport {
   newerCount: number;
   showReasoning: boolean;
   reducedMotion: boolean;
+  pausedSnapshot?: WatchSnapshot; // capped width-independent row models/detail
 }
 export function createWatchState(partialHistory: boolean): WatchState;
 export function reduceWatchEvent(
@@ -341,10 +351,12 @@ export function reduceWatchAction(
 ### 4.2 W4 — Explicit retention and animation policy
 
 - [ ] W4: Centralize initial limits: 2,000 timeline records globally; 128 prose blocks with 256 KiB aggregate text; 8 KiB preview per output/patch and 4 MiB aggregate retained tool detail; 512 file/scope rows; 64 detailed invocation states; 128 active-call details per invocation and 1,024 globally; 256 KiB paused viewport snapshot. Bound IDs/labels and every secondary index as well as primary arrays.
+- [ ] W4: Store the paused snapshot as width-independent row models with stable IDs, sanitized text and inspector detail within the same 256 KiB cap, including the selected-error snapshot. Never retain pre-wrapped rows as its source of truth. Permit in-place reducer mutation/ring buffers so each replay event need not copy the full retained timeline.
 - [ ] W4: Retain compact aggregate category/error counters when their details expire; evict least-recent inactive invocation detail first. If active sources/calls exceed caps, keep an explicitly incomplete overflow summary rather than allocating indefinitely or claiming precise untracked matching. Compact tailer offset bookkeeping may scale with discovered files, but event payloads, file detail, prose, and UI invocation state must not.
 - [ ] W4: Expose “earlier detail discarded,” truncation and overflow counts in browse/inspector state. A returning source whose details were evicted is marked partially retained; do not silently reconstruct totals from incomplete data. Preserve a bounded selected-error snapshot if its timeline row expires.
 - [ ] W4: Use recorded timestamps for display only when valid; use injected monotonic receipt time for live fades and timers. Historical active tools may show recorded start age, but no fresh pulse. Never label a replay receipt as a new event. Maintain fixed 60-bin category strips and a one-second fade window only for live observations.
 - [ ] W4: Add reducer and retention suites with interleaved same-name calls, missing starts/ends/headers, overlapping role transitions, reasoning toggles, final usage replacement, invalid timestamps, thousands of files, and cap overflow. Assert state-size limits deterministically rather than brittle process-memory measurements.
+- [ ] W4: Include legacy OpenCode repeated ID-less starts after running-input signature changes; assert uncertain grouping and outcome-unknown on `done`, not fabricated parallel-call certainty.
 
 ---
 
@@ -370,6 +382,7 @@ export function safeDisplayText(text: string): string;
 ```
 
 - [ ] W5: Start with explicit breakpoints: minimal below 8 rows; compact at 8–23 rows; expanded at 24+ rows and 100+ columns; narrower screens stack or show one focused section. Clamp zero/unknown sizes to a safe minimal frame. Validate 1×1, 40×6, 60×10, 80×12, 100×24 and 140×40 snapshots.
+- [ ] W5: Let `renderWatch` select live row models or the paused width-independent snapshot from viewport state and lay either out at the current size. Never obtain paused inspector content from the changing live state during resize.
 - [ ] W5: Allocate compact space in order: context/status, bounded latest prose (normally 2–4 rows), active tool rows plus overflow count, then recent/file panels, then counters. On extremely tiny screens prioritize a status line and activity target; every other section remains reachable by view switching. Expanded layouts add a directory-grouped file list and bounded inspector without losing a “latest prose” location.
 - [ ] W5: Format workspace-relative paths with segment-aware containment (`/repo2` is not inside `/repo`); normalize native path syntax without assuming observer CWD, including Windows drive/UNC fixtures. Preserve filename/useful parents on truncation and full sanitized path in inspector.
 - [ ] W5: Strip/neutralize ESC, CSI, OSC (including hyperlinks/clipboard), C0/C1 controls and carriage-return tricks before width measurement. Treat tab/newline as layout input, never raw cursor control. Grapheme-aware wrapping must not split combining sequences or emoji. Only renderer-owned styles may become ANSI.
@@ -387,7 +400,7 @@ export function safeDisplayText(text: string): string;
 
 ## Phase 6: Interaction and command integration
 
-**Completion gate:** `5x run watch --tui` works with ambient and explicit identity; keyboard/resize actions preserve attribution and selection. TUI resources close before fatal diagnostics. Existing stream output is unchanged and no watcher exit sends agent cancellation.
+**Completion gate:** `5x run watch --tui` works with ambient and explicit identity; pause → resize to 40×6 → restore size preserves selected ID and inspector content without overflow. TUI resources close before fatal diagnostics, and the existing CLI lifecycle drives signal abort/status with synchronous forced-exit restoration. Existing stream output is unchanged and no watcher exit sends agent cancellation.
 
 ### 6.1 W6 — Controller and key surface
 
@@ -397,7 +410,7 @@ export function safeDisplayText(text: string): string;
 export interface WatchTuiOptions {
   source: AsyncIterable<WatchInput>;
   terminal: WatchTerminal;
-  signal: AbortSignal;
+  signal: AbortSignal; // getCliAbortSignal() merged with watcher-local detach
   detach(): void; // aborts only the watcher-owned source
   showReasoning: boolean;
   partialHistory: boolean;
@@ -408,8 +421,8 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 - [ ] W6: Collect continuously in bounded batches, including while paused/help is visible. Render on a separate clock, capped at 10 frames/second during activity and 1 frame/second when only age labels change. Coalesce resize/event dirtiness; avoid rebuilding histories per frame or replaying on resize.
 - [ ] W6: Bind Space to pause/resume; arrows or j/k to browse; PageUp/PageDown to page; End to follow latest; Tab/Shift-Tab to cycle focus/views; Enter to inspect/expand; Escape to close overlay; `[`/`]` to move invocations; r to toggle reasoning; m reduced motion; c low color; ? help; q/Ctrl-C detach. List all bindings in help. Do not persist preferences.
 - [ ] W6: Scrolling away suspends auto-follow. Preserve selected IDs and bounded viewport snapshot when paused; new arrivals increment a badge without changing the inspected invocation. Resuming moves to current activity; automatic role transitions occur only when following live.
-- [ ] W6: Resize recomputes layout only; clamp scroll offsets without resetting selection/follow. Retain the same selected event even if its panel moves behind a focus-switchable view.
-- [ ] W6: One try/finally owns controller subscriptions and terminal close; treat q/Ctrl-C as successful detach, SIGTERM as a terminating detach with documented conventional status. Signal handlers abort local tailing only. Raw-mode Ctrl-C arrives as input and must take the same cleanup path as SIGINT.
+- [ ] W6: Resize recomputes layout from live models or the frozen paused models only; clamp scroll offsets without resetting selection/follow. Retain the same selected event even if its panel moves behind a focus-switchable view. Add a controller test that pauses on inspector detail, ingests/evicts live data, resizes to 40×6 and back, and asserts the same selected ID, inspector text and paused state with width-bounded frames.
+- [ ] W6: One try/finally owns controller subscriptions and terminal close. Merge `getCliAbortSignal()` from `src/cli-lifecycle.ts` with the watcher-local detach controller, including already-aborted inputs; install no new TUI process signal handlers. q/raw-mode Ctrl-C abort only the local watcher and return success. OS SIGINT/SIGTERM use the same cleanup path but derive status 130/143 from `getCliAbortCause()`. Keep the W1 synchronous exit hook active until restoration is complete to cover second-signal or 2 s grace-timeout `process.exit`; cleanup must not wait on a stalled frame write. Never cancel provider execution.
 
 ### 6.2 W6 — CLI mode validation and lifecycle seam
 
@@ -417,7 +430,7 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 
 - [ ] W6: Add `tui?: boolean`/`--tui`, reject `--tui --human-readable` with `INVALID_ARGS` at handler entry, and update reasoning help to cover both human modes. Do not let global output defaults choose or override a watch mode.
 - [ ] W6: Preflight stdin/stdout TTY, supported terminal, and raw-mode capability; emit the normal pre-stream error contract with guidance to raw NDJSON or `--human-readable`. Finish existing run/context/worktree validation before alternate-screen entry. Non-TTY failure never prints escape sequences.
-- [ ] W6: Preserve existing stream branches and raw serialization. Construct a replay-aware tailer only for TUI options; route warnings through the watch decoder/controller after entry. Tailer/controller abort lifetimes are shared locally but never shared with provider execution.
+- [ ] W6: Preserve existing stream branches and raw serialization, including legacy signal behavior. Enable replay metadata and historical fairness only for TUI; legacy modes retain W3's sorted historical source cursor. Route TUI warnings through the watch decoder/controller after entry. Share the merged CLI/local abort signal with TUI tailer/controller, never provider execution; bypass the handler's existing stream-only SIGINT listener for TUI.
 - [ ] W6: Ensure initialization is inside cleanup coverage, not just consumer execution. After UI entry, unwind terminal and tailer first, then emit one `[watch] Error:` diagnostic on stderr and set a failing exit status; do not emit a JSON envelope into the UI stream. Preserve pre-UI error envelopes and existing stream-mode error behavior.
 - [ ] W6: Add unit controller tests with fake source/terminal/clock, plus subprocess cases for conflicts, non-TTY stdin or stdout, ambient/workdir selection, tail-only, and output defaults. Continue using the existing `watch-error-harness.ts` for legacy error-contract regression.
 
@@ -432,16 +445,17 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 **Files:** `src/watch/controller.ts`, `src/watch/terminal.ts`, `src/commands/run-v1.handler.ts:3346–3378` as needed for integration-found lifecycle fixes; new `test/integration/commands/run-watch-tui.test.ts`; extend watch harness.
 
 - [ ] W7: Exercise a recorded/synthetic run with author/reviewer transitions, simultaneous sources, 100,000 events, malformed metadata, giant tool results, quiet intervals, and long paused browsing. Assert bounded pending payload/state, responsive injected key/resize servicing between batches, and no per-event redraw explosion.
-- [ ] W7: PTY integration on supported Unix CI: verify alternate-screen exit/cursor/raw-mode restoration for q, Ctrl-C bytes, SIGINT, SIGTERM, source rejection, and renderer rejection. Use the existing repository subprocess conventions; gate only real PTY-dependent tests by capability and keep injected lifecycle coverage mandatory everywhere.
+- [ ] W7: Record replay throughput for the 100,000-event fixture and assert bounded per-batch processing work (including no full-timeline copy per event) using deterministic instrumentation; avoid a hardware-sensitive wall-clock unit-test threshold.
+- [ ] W7: PTY integration on supported Unix CI: verify alternate-screen exit/cursor/raw-mode restoration for q, Ctrl-C bytes, SIGINT, SIGTERM, source rejection, and renderer rejection. Add double-SIGINT/double-SIGTERM and grace-timeout exits with deliberately stalled draw/unwind; assert 130/143 and synchronous restoration independent of `finally`. Use `Bun.Terminal` where available, capability-gating these real PTY tests on older supported Bun versions; keep injected lifecycle coverage mandatory everywhere. Reuse the existing CLI lifecycle in the harness, not substitute signal logic.
 - [ ] W7: Start a separate log-producing child in the harness and prove it continues writing after watcher quit/failure. No test should require a live provider or network.
 - [ ] W7: Run source and `bun run build` compiled-binary smoke checks. Test slow output/backpressure, loss of terminal output, and empty directory waiting. Fix only this feature's failure handling/capability issues, not unrelated terminal abstractions.
 - [ ] W7: Run `bun run lint`, `bun run typecheck`, `bun test --concurrent`, and `bun run build` from `5x-cli/`. New subprocess tests use explicit timeouts, `stdin: "ignore"` unless intentionally piping/PTY input, and `cleanGitEnv()` for any process that may run git. Unit tests remain console-capture-free and deterministic under concurrency.
 
 ### 7.2 W7 — Operator contract and manual acceptance
 
-**File:** `README.md:143,259,382,646,724`; CLI watch help in `src/commands/run-v1.ts:341–371`.
+**Files:** `README.md:143,259,382,646,724`; CLI watch help in `src/commands/run-v1.ts:341–371` and global output help in `src/program.ts:27`.
 
-- [ ] W7: Document `--tui`, mode conflicts, TTY requirement, streaming-output exception, controls, reduced motion/color toggles, unknown/observed statuses, partial-history counts, retention limits, and read-only detach. Include ambient, explicit run, reasoning, and tail-only examples.
+- [ ] W7: Document `--tui`, mode conflicts, TTY requirement, streaming-output exception, controls, reduced motion/color toggles, unknown/observed statuses, partial-history counts, retention limits, and read-only detach. Distinguish successful q/raw Ctrl-C from OS signal status 130/143. Include ambient, explicit run, reasoning, and tail-only examples; update global help's watch-output description too.
 - [ ] W7: Manual 80×12 split-pane → 140×40 fullscreen → 40×6 → restored size: latest prose survives tool bursts, active target remains legible, inspection and follow state survive resizing, full paths/results remain inspectable within bounds, and older invocation browsing is not stolen by a new source.
 - [ ] W7: Manual replay/tail-only/error pass: historical activity does not pulse; live appends pulse once; quiet intervals show age; failed edits remain discoverable; `done` leaves final summary visible; next invocation is followed; low-color and reduced-motion modes communicate the same facts.
 - [ ] W7: Record platform/Bun version, selected renderer, sizes, fixture, cleanup result, and any unsupported capability in implementation completion notes. Update this plan's checklist and append revision history only when implementation/review changes warrant it.
@@ -452,7 +466,10 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 
 | File | Change |
 |------|--------|
-| `src/providers/types.ts:84–91` | W2 optional tool/prose metadata contract. |
+| `src/providers/types.ts:32–44,84–91` | W2 optional effective session cwd and tool/prose metadata contracts. |
+| `src/providers/opencode.ts:174,791–837` | W2 expose effective session directory, including stored resume directory. |
+| `packages/provider-claude-code/src/session.ts` | W2 expose resolved subprocess cwd as read-only session metadata. |
+| `packages/provider-cursor-agent/src/session.ts` | W2 expose resolved subprocess cwd as read-only session metadata. |
 | `src/index.ts:274–284` | W2 public metadata type exports for plugins. |
 | `src/providers/event-mapper.ts:233–453` | W2 OpenCode ID/target/message preservation. |
 | `packages/provider-claude-code/src/event-mapper.ts:3–180` | W2 Claude tool and message identities/targets. |
@@ -461,6 +478,7 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 | `src/commands/invoke.handler.ts:613–622` | W2 populate effective invocation workspace. |
 | `src/utils/ndjson-tailer.ts:30–365` | W3 replay positions, bounded draining, warning injection, cleanup. |
 | `src/commands/run-v1.ts:337–382` | W6/W7 TUI options and help. |
+| `src/program.ts:27` | W7 include TUI in global watch-output help. |
 | `src/commands/run-v1.handler.ts:3258–3378` | W6/W7 mode validation and TUI lifecycle dispatch. |
 | `src/watch/types.ts` (new) | W1/W4 internal frame, source, state, viewport/action types. |
 | `src/watch/terminal.ts` (new) | W1 terminal adapter and lifecycle, W7 capability/failure polish. |
@@ -482,6 +500,8 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 | `test/integration/commands/run-watch.test.ts` | W2/W3/W6 existing stream regressions and mode validation. |
 | `test/integration/commands/run-watch-tui.test.ts` (new) | W6/W7 CLI and terminal lifecycle. |
 | `test/helpers/watch-tui-harness.ts` (new) | W1/W7 controlled terminal/source failures and independent producer. |
+| `test/fixtures/watch-terminal-smoke.ts` (new) | W1 direct adapter source/compiled entry before CLI wiring; W7 forced-exit fixture. |
+| `test/unit/providers/opencode.test.ts`, `test/unit/providers/{claude-code,cursor-agent}/session.test.ts` | W2 session-reported effective cwd fixtures, including mismatched OpenCode resume request. |
 
 ## Tests
 
@@ -489,16 +509,16 @@ export function runWatchTui(options: WatchTuiOptions): Promise<void>;
 |------|-------|-----------|
 | Unit (W1) | `watch/terminal.test.ts` | Partial entry failure, prior raw state, idempotent restore, slow output coalescing, listener removal. |
 | Unit (W2) | Three provider mapper suites | Optional IDs/targets, native boundaries, deduplication, legacy events, unknown tools, supplied/truncated changes. |
-| Unit/integration (W2) | Log writer and invoke fixtures | Header workspace equals actual fresh/resumed provider workdir; additive fields do not invalidate old plugin shapes. |
+| Unit/integration (W2) | Provider sessions, log writer and invoke fixtures | Reported cwd wins, differing OpenCode resume request cannot override stored cwd, fresh-only fallback, unknown resumed cwd omitted; old plugin shapes remain valid. |
 | Unit (W3) | Tailer and `watch/events.test.ts` | Attach watermark races, new files, UTF-8, partial EOF, malformed lines, rotation/reset, bounded queues, polling fallback and abort. |
 | Unit (W4) | `watch/state.test.ts` | Independent overlapping invocations/tools, ID-less ambiguity, sticky prose, persistent error counts, usage replacement, no run completion inference. |
 | Unit (W4) | `watch/retention.test.ts` | All payload/index caps, overflow labels, paused eviction, no historical animation, deterministic long-session stress. |
 | Unit (W5) | `watch/format.test.ts` | Path containment, missing workspace, Windows/outside paths, grapheme width, ANSI/OSC/C0/C1 safety, Markdown text-only handling. |
 | Unit (W5) | `watch/render.test.ts` | Tiny/compact/expanded snapshots, narrative priority, multi-active overflow, inspector bounds, no-color/reduced-motion parity. |
-| Unit (W6) | `watch/controller.test.ts` | Follow/pause/new-event badge, keys, reasoning toggle, older invocation focus, resize stability, coalesced fake-clock redraws. |
-| Integration (W3/W6) | `commands/run-watch.test.ts` | Existing raw/human output and error contracts, no added positional fields on raw wrapper, global output defaults, ambient/workdir resolution. |
+| Unit (W6) | `watch/controller.test.ts` | Follow/pause/new-event badge, keys, reasoning toggle, older invocation focus, paused 40×6-and-back resize with stable ID/detail, coalesced fake-clock redraws, merged abort/status. |
+| Integration (W3/W6) | `commands/run-watch.test.ts` | Existing raw/human output and error contracts, sorted two-file replay exceeding record/byte budgets, no added positional fields on raw wrapper, global output defaults, ambient/workdir resolution. |
 | Integration (W6/W7) | `commands/run-watch-tui.test.ts` | Mode conflict, TTY validation, pre-entry error envelopes, post-entry diagnostic ordering, signals and provider-independent detach. |
-| Integration (W7) | PTY + compiled harness | Real terminal restoration on every exit path, source and compiled distribution compatibility, independent producer survives. |
+| Integration (W1/W7) | PTY + compiled smoke entry/harness | Real terminal restoration including double signals and grace-timeout stalled-write exit, status 130/143, source and compiled compatibility, independent producer survives. |
 | Manual (W7) | Split-pane/fullscreen replay fixture | Readability, animation fidelity, resizing while browsing, controls/help, low-color and reduced-motion accessibility. |
 
 The fixture vocabulary must include both old logs and new metadata, same-name concurrent calls, two simultaneous log sources sharing native IDs, timestamp anomalies, malformed optional values, missing session headers, failed edits followed by success, oversized outputs and terminal-control payloads. Prefer inline builders shared by these tests over captured provider transcripts containing potentially sensitive workspace content.
@@ -548,3 +568,9 @@ Normalized positive Architecture delta literals from `+1`/`+2` to `1`/`2` after 
 ### September 23, 2026 — Surface Snapshot parser recovery
 
 Moved Surface Snapshot explanations into separate prose after `BUDGET_SNAPSHOT_INVALID` blocked reviewer rendering. Recognized bullet values now contain only integer literals; counts remain 4, 18, and 3. Work-item IDs, budget scores, scope, and phases are unchanged. No reviewer has run; this is a formatting-only recovery from parser feedback.
+
+### September 23, 2026 — Review corrections (v1.1)
+
+Incorporated P1.1 with optional session-reported effective cwd, fresh-only fallback, unknown-resume omission, and mismatched OpenCode resume fixtures. Incorporated P1.2 by reusing the CLI lifecycle abort/cause, adding synchronous exit restoration and double-signal/grace-timeout coverage. Incorporated P1.3 with sorted legacy historical draining across bounded turns and multi-batch raw/human regressions. Incorporated P1.4 with capped width-independent paused models and a resize/selection/detail regression. Incorporated P2.1 with a named test-only adapter entry and exact source/compile/run commands before CLI exposure.
+
+Also clarified straightforward nonblocking follow-ups: global help, decoder caps for external metadata, legacy repeated-start ambiguity, reducer mutation/ring-buffer allowance, and capability-gated `Bun.Terminal` tests. Stable W1–W7 IDs and effort/architecture scores are unchanged; corrections replace underspecified mechanisms within existing deliveries rather than add new subsystems. Surface Snapshot production-file count now includes the three effective-cwd session implementations and global help file. No debt claims or deferred structured findings. This revision is document-only; no implementation, tests, or quality gates were run.
