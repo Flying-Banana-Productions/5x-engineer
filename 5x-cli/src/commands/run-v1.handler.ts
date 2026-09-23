@@ -1192,13 +1192,7 @@ export function buildReviewBudgetState(input: {
 	}
 	const pinnedMode = baseline.mode;
 
-	let snapshots: ReturnType<ReviewBudgetStore["listSnapshots"]> = [];
-	try {
-		snapshots = input.store.listSnapshots(input.runId);
-	} catch {
-		// Run-state governance reports the malformed history. Preserve baseline-only
-		// budget telemetry here so a valid governing B never reverts to baseline.b.
-	}
+	const snapshots = input.store.listSnapshots(input.runId);
 	const latest = snapshots.at(-1);
 	const initialAssessment = snapshots.find(
 		(snapshot) => snapshot.baselineAssessment !== undefined,
@@ -2233,7 +2227,11 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						(step) =>
 							step.phase === "plan" && step.step_name.startsWith("reviewer:"),
 					);
-					const archivedBudgetStore = createReviewBudgetStore(records);
+					const archivedBudgetStore = createReviewBudgetStore(
+						records,
+						undefined,
+						warn,
+					);
 					let archivedBaseline: ReturnType<
 						typeof archivedBudgetStore.getBaseline
 					> = null;
@@ -2390,6 +2388,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		const reviewStore = createReviewBudgetStore(
 			recordContext.recordStore,
 			createReviewBudgetIndex(db),
+			warn,
 		);
 		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
 		let governingBaseline: number | undefined;

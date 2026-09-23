@@ -156,9 +156,24 @@ function now(): string {
 export function createReviewBudgetStore(
 	recordStore: RecordStore,
 	index?: ReviewBudgetIndex,
+	onDiagnostic?: (message: string) => void,
 ): ReviewBudgetStore {
+	const reportedCorruptSnapshots = new Set<string>();
+
 	function budgetLines(runId: string) {
 		return recordStore.listLines(runId, "budget");
+	}
+
+	function reportCorruptSnapshot(
+		runId: string,
+		idempotencyKey: string,
+		error: unknown,
+	): void {
+		if (!onDiagnostic || reportedCorruptSnapshots.has(idempotencyKey)) return;
+		reportedCorruptSnapshots.add(idempotencyKey);
+		onDiagnostic(
+			`Skipping malformed review budget snapshot record ${idempotencyKey} for run ${runId}; repair or remove this record. Earlier valid snapshots remain in use. Cause: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	function projectSnapshotToIndex(
@@ -283,24 +298,37 @@ export function createReviewBudgetStore(
 
 		listSnapshots(runId) {
 			const allLines = budgetLines(runId);
-			const snapshots = allLines.flatMap((line, recordSeq) =>
-				typeof line.payload === "object" &&
-				line.payload !== null &&
-				(line.payload as { kind?: unknown }).kind === "snapshot"
-					? [{ line, recordSeq }]
-					: [],
-			);
+			const snapshots: Array<{
+				line: (typeof allLines)[number];
+				recordSeq: number;
+				record: ReviewBudgetSnapshotRecord;
+			}> = [];
+			for (const [recordSeq, line] of allLines.entries()) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !== "snapshot"
+				)
+					continue;
+				try {
+					snapshots.push({
+						line,
+						recordSeq,
+						record: snapshotRecord(line.payload),
+					});
+				} catch (error) {
+					reportCorruptSnapshot(runId, line.idempotencyKey, error);
+				}
+			}
 			const cached = index?.listSnapshots(runId);
 			if (
 				cached !== undefined &&
 				cached.length === snapshots.length &&
 				cached.every((record, position) => {
-					const payload = decodeBudgetSnapshotPayload(
-						snapshots[position]?.line.payload,
-					);
+					const decoded = snapshots[position]?.record;
 					return (
-						record.id === payload.id &&
-						(payload.baselineAssessment === undefined ||
+						record.id === decoded?.id &&
+						(decoded.baselineAssessment === undefined ||
 							record.baselineAssessment !== undefined)
 					);
 				})
@@ -308,8 +336,7 @@ export function createReviewBudgetStore(
 				return cached;
 			}
 			const records: ReviewBudgetSnapshotRecord[] = [];
-			for (const { line, recordSeq } of snapshots) {
-				const record = snapshotRecord(line.payload);
+			for (const { line, recordSeq, record } of snapshots) {
 				records.push(record);
 				index?.upsertSnapshot(record, line.idempotencyKey, recordSeq);
 			}

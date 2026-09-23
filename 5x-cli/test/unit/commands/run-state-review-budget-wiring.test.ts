@@ -248,13 +248,33 @@ function appendMalformedSnapshot(ctx: ReturnType<typeof setup>): void {
 	ctx.records.append({
 		runId: "run1",
 		stream: "budget",
-		idempotencyKey: "budget:snapshot:run1:malformed:plan:2",
+		idempotencyKey: "budget:snapshot:run1:malformed:plan:3",
 		payload: {
 			kind: "snapshot",
 			id: "malformed-snapshot",
 			runId: "run1",
 		},
 		...recordedEnvelope(origin),
+	});
+}
+
+function appendReviewFinding(ctx: ReturnType<typeof setup>): void {
+	createReviewBudgetStore(ctx.records).appendSnapshot({
+		runId: "run1",
+		stepName: "reviewer:plan",
+		phase: "plan",
+		iteration: 2,
+		currentLedger: ledger,
+		findings: [
+			{
+				id: "P1.ledger",
+				effortDelta: 2,
+				architectureDelta: 1,
+				scopeClass: "acceptance_required",
+				coupling: undefined,
+			},
+		],
+		assessments: [],
 	});
 }
 
@@ -455,7 +475,7 @@ describe("run state review-budget wiring", () => {
 		}
 	});
 
-	test("live and archived run state warn and omit governance for a malformed snapshot payload", async () => {
+	test("live and archived run state warn and preserve governance for a malformed snapshot payload", async () => {
 		const ctx = setup();
 		const warnings: string[] = [];
 		try {
@@ -463,11 +483,13 @@ describe("run state review-budget wiring", () => {
 
 			const live = (await captureState(ctx, { run: "run1" }, (message) =>
 				warnings.push(message),
-			)) as { data?: { review_governance?: unknown } };
-			expect(live.data?.review_governance).toBeUndefined();
+			)) as { data?: { review_governance?: Record<string, unknown> } };
+			expect(live.data?.review_governance).toMatchObject({
+				governing_baseline: 5,
+			});
 			expect(warnings).toContainEqual(
 				expect.stringContaining(
-					"Unable to read review governance records for run run1; omitting review_governance",
+					"Skipping malformed review budget snapshot record budget:snapshot:run1:malformed:plan:3",
 				),
 			);
 
@@ -477,11 +499,13 @@ describe("run state review-budget wiring", () => {
 				ctx,
 				{ plan: ctx.planPath },
 				(message) => warnings.push(message),
-			)) as { data?: { review_governance?: unknown } };
-			expect(archived.data?.review_governance).toBeUndefined();
+			)) as { data?: { review_governance?: Record<string, unknown> } };
+			expect(archived.data?.review_governance).toMatchObject({
+				governing_baseline: 5,
+			});
 			expect(warnings).toContainEqual(
 				expect.stringContaining(
-					"Unable to read review governance records for run run1; omitting review_governance",
+					"Skipping malformed review budget snapshot record budget:snapshot:run1:malformed:plan:3",
 				),
 			);
 		} finally {
@@ -505,9 +529,13 @@ describe("run state review-budget wiring", () => {
 				};
 			};
 			expect(live.data?.review_budget?.B).toBe(8);
-			expect(live.data?.review_governance).toBeUndefined();
+			expect(live.data?.review_governance).toMatchObject({
+				governing_baseline: 8,
+			});
 			expect(warnings).toContainEqual(
-				expect.stringContaining("omitting review_governance"),
+				expect.stringContaining(
+					"Skipping malformed review budget snapshot record",
+				),
 			);
 
 			warnings.length = 0;
@@ -523,9 +551,54 @@ describe("run state review-budget wiring", () => {
 				};
 			};
 			expect(archived.data?.review_budget?.B).toBe(8);
-			expect(archived.data?.review_governance).toBeUndefined();
+			expect(archived.data?.review_governance).toMatchObject({
+				governing_baseline: 8,
+			});
 			expect(warnings).toContainEqual(
-				expect.stringContaining("omitting review_governance"),
+				expect.stringContaining(
+					"Skipping malformed review budget snapshot record",
+				),
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("malformed trailing snapshot preserves the last valid findings ledger", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			appendHumanReview(ctx);
+			appendReviewFinding(ctx);
+			const before = (await captureState(ctx)) as {
+				data?: { review_budget?: Record<string, unknown> };
+			};
+			expect(before.data?.review_budget?.R).toBe(2);
+			expect(before.data?.review_budget?.P).toBe(1);
+
+			appendMalformedSnapshot(ctx);
+			const live = (await captureState(ctx, { run: "run1" }, (message) =>
+				warnings.push(message),
+			)) as { data?: { review_budget?: Record<string, unknown> } };
+			expect(live.data?.review_budget).toEqual(before.data?.review_budget);
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"repair or remove this record. Earlier valid snapshots remain in use",
+				),
+			);
+
+			warnings.length = 0;
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const archived = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as { data?: { review_budget?: Record<string, unknown> } };
+			expect(archived.data?.review_budget).toEqual(before.data?.review_budget);
+			expect(warnings).toContainEqual(
+				expect.stringContaining(
+					"repair or remove this record. Earlier valid snapshots remain in use",
+				),
 			);
 		} finally {
 			ctx.db.close();
