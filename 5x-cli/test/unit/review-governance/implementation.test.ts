@@ -8,6 +8,7 @@ import {
 	IMPLEMENTATION_STATE_VERSION,
 	type ImplementationTextAmendmentPayload,
 } from "../../../src/review-budget/record-lines.js";
+import { fingerprintImplementationVerdictItem } from "../../../src/review-governance/fingerprint.js";
 import {
 	implementationReviewRound,
 	resolvePlanImpactSpans,
@@ -944,5 +945,40 @@ alpha then alpha
 			mode: "advisory",
 		});
 		expect(omitted.fatalCode).toBe("UNKNOWN_PHASE");
+	});
+
+	test("fingerprints findings with the admitted numeric phase", () => {
+		const item = defect({ planWorkItemIds: ["W2", "W1"] });
+		const phase2 = validateImplementationReview({
+			verdict: verdict([item]),
+			phase: "phase-2",
+			mode: "enforced",
+			phaseIds: ["2", "3"],
+			workItemIds: ["W1", "W2"],
+			approvedPlanBytes: ANCHOR,
+			approvedPlanHash: hashPlanBytes(ANCHOR),
+		});
+		const phase3 = validateImplementationReview({
+			verdict: verdict([item]),
+			phase: "3",
+			mode: "enforced",
+			phaseIds: ["2", "3"],
+			workItemIds: ["W1", "W2"],
+			approvedPlanBytes: ANCHOR,
+			approvedPlanHash: hashPlanBytes(ANCHOR),
+		});
+		expect(phase2.governance?.findingIdentities).toEqual([
+			{
+				findingId: "I1",
+				phase: "2",
+				planWorkItemIds: ["W1", "W2"],
+				fingerprint: fingerprintImplementationVerdictItem(item, "2"),
+			},
+		]);
+		expect(phase3.governance?.findingIdentities?.[0]?.phase).toBe("3");
+		expect(phase3.governance?.findingIdentities?.[0]?.fingerprint).not.toBe(
+			phase2.governance?.findingIdentities?.[0]?.fingerprint,
+		);
+		expect(phase2.governance?.phase).toBe("2");
 	});
 });

@@ -293,6 +293,11 @@ export interface ImplementationGovernanceResult {
 	shortcutCandidate: boolean;
 	exemptionAuthorized: boolean;
 	actionableItems: VerdictItem[];
+	/**
+	 * Identities hashed with the admitted numeric phase. Later observation
+	 * writers reuse these instead of fingerprinting without a phase.
+	 */
+	findingIdentities: readonly ImplementationFindingIdentity[];
 	nonblockingMarkdown: string;
 	diagnostics: ImplementationDiagnostic[];
 }

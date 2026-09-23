@@ -293,7 +293,7 @@ export const ReviewerVerdictSchema = {
 					architectureDelta: {
 						type: "integer",
 						description:
-							"Plan reviews are limited to the allowed magnitude set. Implementation telemetry may be any integer.",
+							"Unconstrained signed integer so implementation telemetry is not limited to plan magnitudes. Plan-review provider schemas add the allowed magnitude enum.",
 					},
 					planWorkItemIds: {
 						type: "array",
@@ -469,34 +469,101 @@ export const ReviewerVerdictSchema = {
 	required: ["readiness", "items"],
 } as const;
 
+export type ReviewerSchemaDomain = "plan" | "implementation";
+
+function reviewerSchemaWithArchitectureDelta(
+	domain: ReviewerSchemaDomain,
+): Record<string, unknown> {
+	const items = ReviewerVerdictSchema.properties.items;
+	const item = items.items;
+	const architectureDelta =
+		domain === "plan"
+			? {
+					type: "integer",
+					enum: [...ARCHITECTURE_DELTAS],
+					description: "Allowed plan-review architecture magnitude.",
+				}
+			: {
+					type: "integer",
+					description: "Implementation telemetry may be any signed integer.",
+				};
+	return {
+		...ReviewerVerdictSchema,
+		properties: {
+			...ReviewerVerdictSchema.properties,
+			items: {
+				...items,
+				items: {
+					...item,
+					properties: {
+						...item.properties,
+						architectureDelta,
+					},
+				},
+			},
+		},
+	};
+}
+
 /**
- * Provider-facing reviewer schema for an active-budget plan review round.
- * `required` (initial review) demands the independent baseline estimate;
+ * Provider-facing reviewer schema for one admitted domain.
+ * Plan schemas constrain `architectureDelta` to the allowed magnitudes.
+ * Implementation schemas leave it an unrestricted integer.
+ * `required` (initial plan review) demands the independent baseline estimate;
  * `prohibited` (closure review) removes it and forbids its presence;
- * `optional` (initial-review retry) keeps the generic schema. The
- * contextual budget validator remains the final authority.
+ * `optional` (initial-review retry) leaves baseline assessment optional.
+ * The baseline contract applies only to plan reviews. The contextual
+ * validator remains the final authority.
  */
 export function reviewerVerdictSchemaFor(
 	baselineAssessment: "required" | "optional" | "prohibited",
+	domain: ReviewerSchemaDomain = "plan",
 ): Record<string, unknown> {
+	const base = reviewerSchemaWithArchitectureDelta(domain);
+	if (domain === "implementation") return base;
 	if (baselineAssessment === "required") {
 		return {
-			...ReviewerVerdictSchema,
+			...base,
 			required: [...ReviewerVerdictSchema.required, "baselineAssessment"],
 		};
 	}
 	if (baselineAssessment === "prohibited") {
-		const { baselineAssessment: _omitted, ...properties } =
-			ReviewerVerdictSchema.properties;
+		const properties = {
+			...(base.properties as Record<string, unknown>),
+		};
+		delete properties.baselineAssessment;
 		return {
-			...ReviewerVerdictSchema,
+			...base,
 			description:
 				"Closure review: omit baselineAssessment; it is initial-review only.",
 			properties,
 			not: { required: ["baselineAssessment"] },
 		};
 	}
-	return ReviewerVerdictSchema;
+	return base;
+}
+
+/**
+ * Selects the provider schema from the admitted phase. Unknown phase keeps
+ * the union schema, which does not enum-constrain architecture telemetry.
+ */
+export function reviewerProviderSchema(input: {
+	phaseId: string | null;
+	baselineAssessment?: "required" | "optional" | "prohibited";
+	planReviewTemplate?: boolean;
+}): Record<string, unknown> {
+	const domain: ReviewerSchemaDomain | null =
+		input.phaseId === "plan" ||
+		(input.phaseId === null && input.planReviewTemplate === true)
+			? "plan"
+			: input.phaseId !== null
+				? "implementation"
+				: null;
+	if (!domain) return ReviewerVerdictSchema;
+	return reviewerVerdictSchemaFor(
+		domain === "plan" ? (input.baselineAssessment ?? "optional") : "optional",
+		domain,
+	);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

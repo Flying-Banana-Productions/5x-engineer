@@ -43,8 +43,7 @@ import {
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
-	ReviewerVerdictSchema,
-	reviewerVerdictSchemaFor,
+	reviewerProviderSchema,
 } from "../protocol.js";
 import { createProvider as defaultCreateProvider } from "../providers/factory.js";
 import {
@@ -65,6 +64,7 @@ import {
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
+import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	ensureImplementationAdmission,
 	isImplementationAuthorTemplate,
@@ -698,7 +698,8 @@ export async function invokeAgent(
 		params.recordStep ?? resolved.stepName ?? "reviewer:plan";
 	// Generate against the same contract the budget validator will apply:
 	// an initial active review must carry baselineAssessment, a closure
-	// review must not. Off/v1-compatible runs keep the generic schema.
+	// review must not. Plan prompts constrain architecture magnitudes; numeric
+	// implementation phases keep unrestricted integer telemetry.
 	const baselineContract =
 		role === "reviewer" && recordPhase === "plan" && budgetContext
 			? planReviewBaselineAssessmentContract(budgetContext, runId, {
@@ -707,12 +708,17 @@ export async function invokeAgent(
 					iteration: params.iteration,
 				})
 			: undefined;
+	const admittedPhase = recordPhase ? canonicalPhaseId(recordPhase) : null;
 	const outputSchema =
 		role === "author"
 			? AuthorStatusSchema
-			: baselineContract
-				? reviewerVerdictSchemaFor(baselineContract)
-				: ReviewerVerdictSchema;
+			: reviewerProviderSchema({
+					phaseId: admittedPhase,
+					baselineAssessment: baselineContract,
+					planReviewTemplate: isPlanReviewTemplate(
+						resolved.selectedTemplateName,
+					),
+				});
 	const quiet = params.quiet ?? false;
 	const showReasoning = params.showReasoning ?? false;
 	const forceStderr = params.stderr ?? false;

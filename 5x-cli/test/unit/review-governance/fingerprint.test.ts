@@ -81,6 +81,24 @@ describe("canonicalFindingFingerprint", () => {
 			}),
 		).not.toBe(first);
 		expect(first).not.toBe(plan);
+		expect(() =>
+			canonicalFindingFingerprint({
+				...finding,
+				scopeClass: "implementation_defect",
+			}),
+		).toThrow("admitted numeric phase");
+		expect(() =>
+			fingerprintVerdictItem({
+				id: "I1",
+				title: finding.title,
+				action: "auto_fix",
+				reason: finding.failure,
+				scopeClass: "implementation_defect",
+				failure: finding.failure,
+				lowestCostCorrection: finding.lowestCostCorrection,
+				planWorkItemIds: ["W1"],
+			}),
+		).toThrow("admitted numeric phase");
 		expect(
 			fingerprintVerdictItem(
 				{

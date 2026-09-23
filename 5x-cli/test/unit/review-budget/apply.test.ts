@@ -7,13 +7,18 @@ import {
 } from "../../../src/control-plane/index.js";
 import type { ReviewBudgetSnapshotRecord } from "../../../src/control-plane/review-budget-store.js";
 import type { ReviewerVerdict } from "../../../src/protocol.js";
-import { reviewerVerdictSchemaFor } from "../../../src/protocol.js";
+import {
+	ReviewerVerdictSchema,
+	reviewerProviderSchema,
+	reviewerVerdictSchemaFor,
+} from "../../../src/protocol.js";
 import {
 	applyPlanReviewBudget,
 	baselineAssessmentContract,
 	findIncompleteDebtClaimItem,
 } from "../../../src/review-budget/apply.js";
 import {
+	ARCHITECTURE_DELTAS,
 	DEFAULT_REVIEW_BUDGET_CONFIG,
 	type ReviewBudgetConfig,
 } from "../../../src/review-budget/types.js";
@@ -119,6 +124,34 @@ function apply(
 }
 
 describe("applyPlanReviewBudget", () => {
+	test("refuses implementation scope classes in a plan snapshot", () => {
+		const { store } = setup();
+		const result = apply(
+			store,
+			verdict({
+				items: [
+					{
+						id: "I1",
+						title: "Impl",
+						action: "auto_fix",
+						reason: "Reason",
+						scopeClass: "implementation_defect",
+						effortDelta: 1,
+						architectureDelta: -7,
+						planWorkItemIds: ["W1"],
+					},
+				],
+			}),
+		);
+		expect(result).toMatchObject({
+			status: "error",
+			code: "BUDGET_ITEM_FIELDS_REQUIRED",
+		});
+		if (result.status === "error") {
+			expect(result.message).toContain("implementation scope class");
+		}
+	});
+
 	test("rejects reviewer-authored aggregates", () => {
 		const { store } = setup();
 		const aggregate = { ...verdict(), budget: { B0: 999 } } as ReviewerVerdict;
@@ -445,6 +478,67 @@ describe("baselineAssessment contract", () => {
 		expect(prohibited.not).toEqual({ required: ["baselineAssessment"] });
 		expect(reviewerVerdictSchemaFor("optional")).toHaveProperty(
 			"properties.baselineAssessment",
+		);
+	});
+
+	test("plan provider schemas keep architecture magnitudes and implementation schemas do not", () => {
+		const architectureDelta = (schema: Record<string, unknown>) => {
+			const properties = schema.properties as {
+				items: {
+					items: {
+						properties: { architectureDelta: Record<string, unknown> };
+					};
+				};
+			};
+			return properties.items.items.properties.architectureDelta;
+		};
+		const union = architectureDelta(
+			ReviewerVerdictSchema as unknown as Record<string, unknown>,
+		);
+		expect(union).not.toHaveProperty("enum");
+		expect(union.type).toBe("integer");
+
+		for (const contract of ["required", "optional", "prohibited"] as const) {
+			expect(
+				architectureDelta(reviewerVerdictSchemaFor(contract, "plan")).enum,
+			).toEqual([...ARCHITECTURE_DELTAS]);
+		}
+		const implementation = architectureDelta(
+			reviewerVerdictSchemaFor("required", "implementation"),
+		);
+		expect(implementation).not.toHaveProperty("enum");
+		expect(implementation.type).toBe("integer");
+		expect(implementation).not.toHaveProperty("minimum");
+		expect(
+			reviewerVerdictSchemaFor("required", "implementation").required,
+		).toEqual(["readiness", "items"]);
+
+		expect(
+			architectureDelta(
+				reviewerProviderSchema({
+					phaseId: "plan",
+					baselineAssessment: "required",
+				}),
+			).enum,
+		).toEqual([...ARCHITECTURE_DELTAS]);
+		expect(
+			architectureDelta(
+				reviewerProviderSchema({
+					phaseId: "2",
+					baselineAssessment: "required",
+				}),
+			),
+		).not.toHaveProperty("enum");
+		expect(
+			architectureDelta(
+				reviewerProviderSchema({
+					phaseId: null,
+					planReviewTemplate: true,
+				}),
+			).enum,
+		).toEqual([...ARCHITECTURE_DELTAS]);
+		expect(reviewerProviderSchema({ phaseId: null })).toBe(
+			ReviewerVerdictSchema,
 		);
 	});
 });

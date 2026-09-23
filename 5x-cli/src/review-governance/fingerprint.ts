@@ -26,6 +26,12 @@ function canonicalJson(values: Record<string, string>): string {
 	return JSON.stringify(sorted);
 }
 
+/** Canonical numeric phase id. Labels such as `phase-2` are not admitted. */
+function admittedNumericPhase(phase: string | undefined): string | null {
+	const trimmed = phase?.trim() ?? "";
+	return /^\d+(?:\.\d+)?$/.test(trimmed) ? trimmed : null;
+}
+
 export function canonicalFindingFingerprint(input: {
 	title: string;
 	scopeClass: PlanScopeClass | ImplementationScopeClass;
@@ -42,7 +48,13 @@ export function canonicalFindingFingerprint(input: {
 		title: normalizeText(input.title, true),
 	};
 	if (isImplementationScopeClass(input.scopeClass)) {
-		values.phase = normalizeText(input.phase ?? "");
+		const phase = admittedNumericPhase(input.phase);
+		if (!phase) {
+			throw new TypeError(
+				"Implementation fingerprints require an admitted numeric phase.",
+			);
+		}
+		values.phase = normalizeText(phase);
 		values.planWorkItemIds = (input.planWorkItemIds ?? [])
 			.map((id) => normalizeText(id))
 			.sort()
@@ -76,4 +88,25 @@ export function fingerprintVerdictItem(
 		phase: linkage?.phase,
 		planWorkItemIds: item.planWorkItemIds,
 	});
+}
+
+/**
+ * Implementation identity for an admitted numeric phase.
+ * Plan fingerprints stay on {@link fingerprintVerdictItem} and omit phase.
+ * Observation writers must use this helper (or the identities already
+ * attached to implementation governance) so cross-phase collisions cannot
+ * collapse onto an empty phase.
+ */
+export function fingerprintImplementationVerdictItem(
+	item: VerdictItem,
+	admittedPhase: string,
+	fallback?: PersistedFinding,
+): string {
+	const phase = admittedNumericPhase(admittedPhase);
+	if (!phase) {
+		throw new TypeError(
+			"Implementation fingerprints require an admitted numeric phase.",
+		);
+	}
+	return fingerprintVerdictItem(item, fallback, { phase });
 }

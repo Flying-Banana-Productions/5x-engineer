@@ -556,10 +556,14 @@ ${structured}
 
 			// A retry of the initial step may repeat its estimate.
 			await invoke(1);
-			const { ReviewerVerdictSchema } = await import(
+			const { reviewerVerdictSchemaFor } = await import(
 				"../../../src/protocol.js"
 			);
-			expect(schemas[2]).toEqual(ReviewerVerdictSchema);
+			expect(schemas[0]).toEqual(reviewerVerdictSchemaFor("required", "plan"));
+			expect(schemas[1]).toEqual(
+				reviewerVerdictSchemaFor("prohibited", "plan"),
+			);
+			expect(schemas[2]).toEqual(reviewerVerdictSchemaFor("optional", "plan"));
 		} finally {
 			ctx.db.close();
 			closeDb();

@@ -381,6 +381,7 @@ export {
 } from "./review-governance/decisions.js";
 export {
 	canonicalFindingFingerprint,
+	fingerprintImplementationVerdictItem,
 	fingerprintVerdictItem,
 } from "./review-governance/fingerprint.js";
 export type { PlanDiffFailure } from "./review-governance/plan-diff.js";

@@ -14,10 +14,12 @@ import {
 	type VerdictItem,
 } from "../protocol.js";
 import type { ImplementationTextAmendmentPayload } from "../review-budget/record-lines.js";
+import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { detectPlanDrift } from "./implementation-state.js";
 import type {
 	ImplementationDiagnostic,
 	ImplementationDiagnosticCode,
+	ImplementationFindingIdentity,
 	ImplementationGovernanceResult,
 	ImplementationNextAction,
 	PlanReviewRoute,
@@ -462,6 +464,20 @@ function textOnlyLocations(verdict: ReviewerVerdict): Array<{
 	return locations;
 }
 
+function implementationFindingIdentities(
+	items: readonly VerdictItem[],
+	phase: string,
+): ImplementationFindingIdentity[] {
+	return items
+		.filter((item) => isImplementationScopeClass(item.scopeClass))
+		.map((item) => ({
+			findingId: item.id,
+			phase,
+			planWorkItemIds: [...(item.planWorkItemIds ?? [])].sort(),
+			fingerprint: fingerprintImplementationVerdictItem(item, phase),
+		}));
+}
+
 function shortcutShape(item: VerdictItem): boolean {
 	return (
 		item.scopeClass === "implementation_defect" &&
@@ -656,6 +672,10 @@ function classify(input: {
 		shortcutCandidate,
 		exemptionAuthorized: input.spansAuthorized,
 		actionableItems: actionable,
+		findingIdentities: implementationFindingIdentities(
+			input.verdict.items,
+			input.phase,
+		),
 		nonblockingMarkdown: renderNonblocking(
 			input.verdict.nonblocking ?? [],
 			excludedPreExisting,
