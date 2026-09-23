@@ -1052,8 +1052,17 @@ class WorkingTreeRecordStore implements RecordStore {
 				owner,
 				started_at: new Date().toISOString(),
 			};
-			writeFileSync(temp, `${JSON.stringify(doc)}\n`);
-			this.fsyncFile(temp);
+			try {
+				writeFileSync(temp, `${JSON.stringify(doc)}\n`);
+				this.fsyncFile(temp);
+			} catch (err) {
+				// A holder may unlink this prepare temp while it owns `.txn.lock`.
+				// `linkSync` already retries that ENOENT; fsync/open must too.
+				// A missing run directory is not a retry.
+				unlinkQuiet(temp);
+				if (isErrno(err, "ENOENT") && existsSync(runDir)) continue;
+				throw err;
+			}
 			fire("after-lock-temp-written");
 
 			try {

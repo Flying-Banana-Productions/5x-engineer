@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
 	existsSync,
@@ -48,6 +48,13 @@ function makeRoot(): string {
 }
 
 afterEach(() => {
+	resetWorkingTreeLockOwnersForTest();
+});
+
+// Delete roots after the file, not in afterEach. Concurrent tests share this
+// list, and splicing it when one test finishes removes directories still in
+// use by another test.
+afterAll(() => {
 	resetWorkingTreeLockOwnersForTest();
 	for (const dir of dirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
@@ -743,6 +750,30 @@ describe("per-run writer lock", () => {
 			expect(after.getLine("run_1", "steps", stepKey)).not.toBeNull();
 		});
 	}, 15000);
+
+	test("lock prepare fsync ENOENT retries after the temp is unlinked", () => {
+		const root = makeRoot();
+		let removed = false;
+		const store = createWorkingTreeRecordStore({
+			recordsRoot: root,
+			now: () => FIXED_NOW,
+			fsyncFile: (path) => {
+				if (!removed && path.includes(".txn.lock.")) {
+					removed = true;
+					unlinkSync(path);
+					throw Object.assign(new Error(`ENOENT: ${path}`), {
+						code: "ENOENT",
+					});
+				}
+			},
+			fsyncDir: () => {},
+			onWarn: () => {},
+		});
+		store.putRun(v1Summary("run_1"));
+		expect(store.getRun("run_1")?.id).toBe("run_1");
+		expect(removed).toBe(true);
+		expect(existsSync(join(runDir(root, "run_1"), ".txn.lock"))).toBe(false);
+	});
 
 	test("after-lock-linked is already a complete live-PID record; contender does not steal", () => {
 		const root = makeRoot();

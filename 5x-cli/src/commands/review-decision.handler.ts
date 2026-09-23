@@ -522,13 +522,13 @@ export async function submitPlanReviewDecision(
 	if (!baseline)
 		fail("BUDGET_BASELINE_MISSING", "review budget baseline is missing");
 	const governance = createReviewGovernanceStore(ctx.recordStore, promptStore);
-	const alreadyResolved = ctx.recordStore.getLine(
-		input.runId,
-		"decisions",
-		governanceDecisionKey(input.gateId),
-	);
-	if (alreadyResolved) {
-		const winner = decodeReviewDecisionPayload(alreadyResolved.payload);
+	const decisionKey = governanceDecisionKey(input.gateId);
+	const readDecision = () =>
+		ctx.recordStore.getLine(input.runId, "decisions", decisionKey);
+	const acceptStoredWinner = async (
+		line: NonNullable<ReturnType<typeof readDecision>>,
+	) => {
+		const winner = decodeReviewDecisionPayload(line.payload);
 		const state = governingStateBeforeWinner(
 			ctx,
 			input.runId,
@@ -585,15 +585,22 @@ export async function submitPlanReviewDecision(
 			created: false,
 			abortRun: deps.abortRun,
 		});
-	}
+	};
+	const alreadyResolved = readDecision();
+	if (alreadyResolved) return acceptStoredWinner(alreadyResolved);
 	if (run.status !== "active")
 		fail("RUN_NOT_ACTIVE", `Run ${input.runId} is ${run.status}`);
 	const gate = governance.deriveOpenGate(input.runId);
-	if (!gate || gate.gateId !== input.gateId)
+	if (!gate || gate.gateId !== input.gateId) {
+		// The other process can commit between the first read and this
+		// derivation. Same-intent losers must observe that winner.
+		const raced = readDecision();
+		if (raced) return acceptStoredWinner(raced);
 		fail(
 			"REVIEW_GATE_NOT_OPEN",
 			`Review gate ${input.gateId} is not the current open gate`,
 		);
+	}
 	const governing = governance.deriveGoverningState(input.runId, baseline.b0);
 	const eligible = eligibleFindingMap(
 		ctx,

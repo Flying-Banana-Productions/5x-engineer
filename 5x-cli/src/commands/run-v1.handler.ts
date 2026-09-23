@@ -2923,13 +2923,15 @@ async function enforceFirstImplementationAdmission(input: {
 		}
 		const ctx = ctxResult.context;
 		workdir = ctx.effectiveWorkingDirectory;
-		const readPath = ctx.effectivePlanPath;
-		if (ctx.mappedWorktreePath && !existsSync(readPath)) {
-			throw new RecordError(
-				"PLAN_NOT_FOUND",
-				`Execution plan is not present in the mapped worktree: ${readPath}`,
-			);
-		}
+		// Identity stays the canonical plan path. Current bytes come from the
+		// mapped worktree copy when that file exists, so drift follows the
+		// checkout the author edits. A mapping that only relocates execution
+		// (for example quality cwd) may not contain the plan; fall back to
+		// the canonical file, the same rule as plan-phases reads.
+		const readPath =
+			ctx.planPathInWorktreeExists && existsSync(ctx.effectivePlanPath)
+				? ctx.effectivePlanPath
+				: run.plan_path;
 		if (existsSync(readPath)) {
 			try {
 				planMarkdown = readFileSync(readPath, "utf8");
