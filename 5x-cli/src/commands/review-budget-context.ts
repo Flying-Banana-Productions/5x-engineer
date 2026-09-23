@@ -1,4 +1,4 @@
-import { createReviewBudgetId } from "../control-plane/ids.js";
+import type { Database } from "bun:sqlite";
 import type { RecordLine, StepRecordPayload } from "../control-plane/index.js";
 import { stepIdempotencyKey } from "../control-plane/index.js";
 import type { RecordPerformer } from "../control-plane/record-types.js";
@@ -8,6 +8,7 @@ import {
 	createReviewBudgetStore,
 	type ReviewBudgetStore,
 } from "../control-plane/review-budget-store.js";
+import { createSqlitePromptStore } from "../control-plane/sqlite-store.js";
 import {
 	computeRunSummary,
 	getRunV1,
@@ -23,6 +24,11 @@ import {
 	encodeBudgetSnapshotPayload,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
+import {
+	createReviewGovernanceStore,
+	ensureReviewGatePrompt,
+	repairReviewGatePrompts,
+} from "../review-governance/store.js";
 import { createRecordContext } from "./record-context.js";
 import {
 	finalizeAndWritePreparedStep,
@@ -51,10 +57,45 @@ function projectDurableSnapshot(
 		JSON.stringify(durable.assessments) ===
 			JSON.stringify(pending.assessments) &&
 		JSON.stringify(durable.baselineAssessment) ===
-			JSON.stringify(pending.baselineAssessment)
+			JSON.stringify(pending.baselineAssessment) &&
+		JSON.stringify(durable.priorFindings ?? []) ===
+			JSON.stringify(pending.priorFindings) &&
+		JSON.stringify(durable.effectiveGateCauses) ===
+			JSON.stringify(pending.effectiveGateCauses) &&
+		JSON.stringify(durable.suppressedGateCauses) ===
+			JSON.stringify(pending.suppressedGateCauses) &&
+		JSON.stringify(durable.diagnostics ?? []) ===
+			JSON.stringify(pending.diagnostics)
 	) {
 		ctx.store.projectSnapshot(runId, key, pending.derived);
 	}
+}
+
+function repairGovernanceProjection(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	pending: PendingBudgetSnapshot,
+): void {
+	if (pending.mode !== "enforced" || pending.effectiveGateCauses.length === 0)
+		return;
+	const promptStore = createSqlitePromptStore(ctx.db as Database);
+	const governance = createReviewGovernanceStore(ctx.recordStore, promptStore);
+	repairReviewGatePrompts(ctx.recordStore, promptStore, runId);
+	const gate = governance.deriveOpenGate(runId);
+	if (!gate || gate.snapshotId !== pending.id) return;
+	const baseline = ctx.store.getBaseline(runId);
+	if (!baseline) return;
+	const state = governance.deriveGoverningState(runId, baseline.b0);
+	ensureReviewGatePrompt({
+		promptStore,
+		gate,
+		baselineReestimatePending: Boolean(state.baselineReestimatePending),
+		eligibleFindings: pending.findings.flatMap((finding) =>
+			finding.fingerprint
+				? [{ findingId: finding.id, fingerprint: finding.fingerprint }]
+				: [],
+		),
+	});
 }
 
 export async function createReviewBudgetContext(
@@ -183,6 +224,7 @@ export async function recordPlanReviewerStepWithSnapshot(
 			iteration: prepared.iteration,
 		});
 		projectDurableSnapshot(ctx, prepared.runId, snapshotKey, pending);
+		repairGovernanceProjection(ctx, prepared.runId, pending);
 		const after = computeRunSummary(ctx.db, prepared.runId);
 		return {
 			...dbResult,
@@ -220,7 +262,7 @@ export async function recordPlanReviewerStepWithSnapshot(
 						idempotencyKey: snapshotIdempotencyKey(finalized.runId, stepKey),
 						payload: encodeBudgetSnapshotPayload({
 							kind: "snapshot",
-							id: createReviewBudgetId(),
+							id: pending.id,
 							runId: finalized.runId,
 							stepKey,
 							currentLedger: pending.currentLedger,
@@ -229,6 +271,10 @@ export async function recordPlanReviewerStepWithSnapshot(
 							...(pending.baselineAssessment
 								? { baselineAssessment: pending.baselineAssessment }
 								: {}),
+							priorFindings: pending.priorFindings,
+							effectiveGateCauses: pending.effectiveGateCauses,
+							suppressedGateCauses: pending.suppressedGateCauses,
+							diagnostics: pending.diagnostics,
 							createdAt,
 						}),
 						createdAt,
@@ -250,6 +296,7 @@ export async function recordPlanReviewerStepWithSnapshot(
 		iteration: written.finalized.iteration,
 	});
 	projectDurableSnapshot(ctx, prepared.runId, snapshotKey, pending);
+	repairGovernanceProjection(ctx, prepared.runId, pending);
 	const after = computeRunSummary(ctx.db, prepared.runId);
 	return {
 		...written.dbResult,

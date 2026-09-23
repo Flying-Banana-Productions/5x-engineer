@@ -340,6 +340,11 @@ export {
 } from "./review-budget/types.js";
 // Plan-review governance policy. These exports are pure structural contracts
 // and policy helpers; persistence and command adapters remain internal.
+export type { AppliedPlanReviewGovernance } from "./review-governance/apply.js";
+export {
+	applyPlanReviewGovernance,
+	persistedFindingsFromSnapshots,
+} from "./review-governance/apply.js";
 export {
 	assessDebtEligibility,
 	validateClosureReview,
@@ -349,6 +354,12 @@ export {
 	decodeReviewDecisionPayload,
 	encodeReviewDecisionPayload,
 } from "./review-governance/codec.js";
+export type { PlanReviewPromptContext } from "./review-governance/context.js";
+export {
+	buildPlanReviewPromptContext,
+	formatAuthorGoverningDecisions,
+	formatReviewerGovernanceContext,
+} from "./review-governance/context.js";
 export type {
 	AcceptedRisk,
 	ApprovedScope,

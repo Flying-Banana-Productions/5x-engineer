@@ -1,9 +1,14 @@
-import type { ReviewGateCause } from "../review-governance/types.js";
+import type {
+	ClosureDiagnostic,
+	PriorFindingOutcome,
+	ReviewGateCause,
+} from "../review-governance/types.js";
 import type {
 	BaselineAssessment,
 	CreditAssessmentInput,
 	FindingDelta,
 	ParsedDeliveryBudget,
+	ReviewBudgetMode,
 	ReviewBudgetThresholds,
 	SurfaceSnapshot,
 } from "./types.js";
@@ -22,6 +27,7 @@ export interface BudgetBaselinePayload {
 	surface: SurfaceSnapshot;
 	originalSection: string | null;
 	configSnapshot: ReviewBudgetThresholds;
+	mode: Exclude<ReviewBudgetMode, "off">;
 	createdAt: string;
 }
 
@@ -40,8 +46,10 @@ export interface BudgetSnapshotPayload {
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
+	priorFindings?: PriorFindingOutcome[];
 	effectiveGateCauses?: ReviewGateCause[];
 	suppressedGateCauses?: ReviewGateCause[];
+	diagnostics?: ClosureDiagnostic[];
 	createdAt: string;
 }
 
@@ -114,6 +122,10 @@ export function decodeBudgetBaselinePayload(
 		configSnapshot: structuredClone(
 			object(value.configSnapshot, "configSnapshot"),
 		) as unknown as ReviewBudgetThresholds,
+		mode:
+			value.mode === "enforced" || value.mode === "advisory"
+				? value.mode
+				: "advisory",
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
@@ -134,12 +146,16 @@ export function encodeBudgetSnapshotPayload(
 	if (payload.baselineAssessment !== undefined) {
 		encoded.baselineAssessment = structuredClone(payload.baselineAssessment);
 	}
+	if (payload.priorFindings !== undefined)
+		encoded.priorFindings = structuredClone(payload.priorFindings);
 	if (payload.effectiveGateCauses !== undefined)
 		encoded.effectiveGateCauses = structuredClone(payload.effectiveGateCauses);
 	if (payload.suppressedGateCauses !== undefined)
 		encoded.suppressedGateCauses = structuredClone(
 			payload.suppressedGateCauses,
 		);
+	if (payload.diagnostics !== undefined)
+		encoded.diagnostics = structuredClone(payload.diagnostics);
 	return encoded;
 }
 
@@ -199,6 +215,13 @@ export function decodeBudgetSnapshotPayload(
 			reason: stringField(assessment.reason, "baselineAssessment.reason"),
 		};
 	}
+	if (value.priorFindings !== undefined) {
+		if (!Array.isArray(value.priorFindings))
+			throw new TypeError("priorFindings must be an array");
+		decoded.priorFindings = structuredClone(
+			value.priorFindings,
+		) as PriorFindingOutcome[];
+	}
 	for (const field of [
 		"effectiveGateCauses",
 		"suppressedGateCauses",
@@ -208,6 +231,13 @@ export function decodeBudgetSnapshotPayload(
 				throw new TypeError(`${field} must be an array`);
 			decoded[field] = structuredClone(value[field]) as ReviewGateCause[];
 		}
+	}
+	if (value.diagnostics !== undefined) {
+		if (!Array.isArray(value.diagnostics))
+			throw new TypeError("diagnostics must be an array");
+		decoded.diagnostics = structuredClone(
+			value.diagnostics,
+		) as ClosureDiagnostic[];
 	}
 	return decoded;
 }

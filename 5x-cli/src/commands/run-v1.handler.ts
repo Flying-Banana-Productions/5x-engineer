@@ -137,13 +137,13 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
-import { ENFORCED_REVIEW_BUDGET_WARNING } from "../review-budget/ensure-baseline.js";
 import type {
 	BaselineDirection,
 	BudgetAlert,
 	BudgetBand,
 	ReviewBudgetMode,
 } from "../review-budget/types.js";
+import { createReviewGovernanceStore } from "../review-governance/store.js";
 import { generateRunId, validateRunId } from "../run-id.js";
 import { NdjsonTailer } from "../utils/ndjson-tailer.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -967,14 +967,14 @@ export interface ReviewBudgetState {
 	budget_alerts?: BudgetAlert[];
 	requires_human?: boolean;
 	stale_plan?: true;
-	enforcement_implemented: false;
+	enforcement_implemented: boolean;
 }
 
 export function warnForReviewBudgetRunState(
-	mode: ReviewBudgetMode,
-	warn: (message: string) => void,
+	_mode: ReviewBudgetMode,
+	_warn: (message: string) => void,
 ): void {
-	if (mode === "enforced") warn(ENFORCED_REVIEW_BUDGET_WARNING);
+	// Enforcement is implemented. Kept as a compatibility no-op for callers.
 }
 
 /**
@@ -987,20 +987,21 @@ export function buildReviewBudgetState(input: {
 	store: ReviewBudgetStore;
 	hasPriorPlanReviewerStep: boolean;
 	currentPlanMarkdown?: string;
+	governingBaseline?: number;
 	semanticHumanRequiredFor?: (
 		snapshot: NonNullable<ReturnType<ReviewBudgetStore["latestSnapshot"]>>,
 	) => boolean;
 }): ReviewBudgetState | undefined {
-	if (input.mode === "off") return undefined;
-
 	const baseline = input.store.getBaseline(input.runId);
 	if (!baseline) {
+		if (input.mode === "off") return undefined;
 		return {
 			status: input.hasPriorPlanReviewerStep ? "v1_compat" : "uninitialized",
 			mode: input.mode,
 			enforcement_implemented: false,
 		};
 	}
+	const pinnedMode = baseline.mode;
 
 	const snapshots = input.store.listSnapshots(input.runId);
 	const latest = snapshots.at(-1);
@@ -1022,7 +1023,7 @@ export function buildReviewBudgetState(input: {
 	) {
 		derived = deriveBudget({
 			B0: baseline.b0,
-			B: baseline.b,
+			B: input.governingBaseline ?? baseline.b,
 			I: initialAssessment?.independentEffortEstimate ?? null,
 			workItems: latest.currentLedger.workItems,
 			findings: latest.findings,
@@ -1037,7 +1038,7 @@ export function buildReviewBudgetState(input: {
 			: baseline.originalLedger;
 		derived = deriveBudget({
 			B0: baseline.b0,
-			B: baseline.b,
+			B: input.governingBaseline ?? baseline.b,
 			I: null,
 			workItems: ledger.workItems,
 			findings: [],
@@ -1054,10 +1055,10 @@ export function buildReviewBudgetState(input: {
 		sumEffort(currentParse.value.workItems) !== derived.W;
 	return {
 		status: "active",
-		mode: input.mode,
+		mode: pinnedMode,
 		capture_kind: baseline.captureKind,
 		B0: baseline.b0,
-		B: baseline.b,
+		B: derived?.B ?? input.governingBaseline ?? baseline.b,
 		...(derived
 			? {
 					W: derived.W,
@@ -1077,7 +1078,7 @@ export function buildReviewBudgetState(input: {
 				}
 			: {}),
 		...(stalePlan ? { stale_plan: true as const } : {}),
-		enforcement_implemented: false,
+		enforcement_implemented: pinnedMode === "enforced",
 	};
 }
 
@@ -1246,7 +1247,7 @@ export function formatStateText(data: {
 		const budget = data.review_budget;
 		const modeLabel =
 			budget.mode === "enforced"
-				? "enforced: not implemented; advisory telemetry"
+				? "enforced: deterministic governance routing active"
 				: "advisory";
 		if (
 			budget.status === "active" &&
@@ -1963,7 +1964,10 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			);
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
-			if (config.reviewBudget.mode !== "off") {
+			if (
+				config.reviewBudget.mode !== "off" ||
+				gitRecord.budgetLines.length > 0
+			) {
 				const warn =
 					params.warn ??
 					((message: string) => process.stderr.write(`Warning: ${message}\n`));
@@ -2096,7 +2100,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		worktreePath,
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
-	if (config.reviewBudget.mode !== "off") {
+	{
 		const warn =
 			params.warn ??
 			((message: string) => process.stderr.write(`Warning: ${message}\n`));
@@ -2111,6 +2115,18 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			createReviewBudgetIndex(db),
 		);
 		const hasRecordRun = recordContext.recordStore.getRun(run.id) !== null;
+		let governingBaseline: number | undefined;
+		if (hasRecordRun) {
+			try {
+				const baseline = reviewStore.getBaseline(run.id);
+				if (baseline)
+					governingBaseline = createReviewGovernanceStore(
+						recordContext.recordStore,
+					).deriveGoverningState(run.id, baseline.b0).governingBaseline;
+			} catch {
+				// tryBuildReviewBudgetState emits the canonical corruption warning below.
+			}
+		}
 		const isPlanReviewer = (stepName: unknown, phase: unknown) =>
 			phase === "plan" &&
 			typeof stepName === "string" &&
@@ -2137,6 +2153,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						runId: run.id,
 						mode: config.reviewBudget.mode,
 						store: reviewStore,
+						governingBaseline,
 						hasPriorPlanReviewerStep: priorInDb || priorInRecords,
 						currentPlanMarkdown,
 						semanticHumanRequiredFor: (snapshot) => {
@@ -2166,11 +2183,13 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					},
 					warn,
 				)
-			: {
-					status: priorInDb ? "v1_compat" : "uninitialized",
-					mode: config.reviewBudget.mode,
-					enforcement_implemented: false,
-				};
+			: config.reviewBudget.mode === "off"
+				? undefined
+				: {
+						status: priorInDb ? "v1_compat" : "uninitialized",
+						mode: config.reviewBudget.mode,
+						enforcement_implemented: false,
+					};
 	}
 
 	outputSuccess(

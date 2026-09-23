@@ -14,7 +14,6 @@ import {
 } from "../../../src/control-plane/index.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
-import { ENFORCED_REVIEW_BUDGET_WARNING } from "../../../src/review-budget/ensure-baseline.js";
 import {
 	DEFAULT_REVIEW_BUDGET_CONFIG,
 	type ParsedDeliveryBudget,
@@ -93,6 +92,7 @@ function fixture(
 	const baseline = store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
+		mode: "advisory",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin,
@@ -128,7 +128,7 @@ function fixture(
 }
 
 describe("run state review budget", () => {
-	test("omits review_budget when mode is off and reports v1 compatibility", () => {
+	test("uses a pinned baseline when current mode is off and reports v1 compatibility", () => {
 		const { db, store } = fixture();
 		try {
 			expect(
@@ -138,7 +138,11 @@ describe("run state review budget", () => {
 					store,
 					hasPriorPlanReviewerStep: false,
 				}),
-			).toBeUndefined();
+			).toMatchObject({
+				status: "active",
+				mode: "advisory",
+				enforcement_implemented: false,
+			});
 			const emptyRecords = createMemoryRecordStore();
 			emptyRecords.putRun({
 				id: "legacy",
@@ -364,7 +368,9 @@ describe("run state review budget", () => {
 				},
 			});
 			expect(lines.join("\n")).toContain("status=v1_compat");
-			expect(lines.join("\n")).toContain("enforced: not implemented");
+			expect(lines.join("\n")).toContain(
+				"enforced: deterministic governance routing active",
+			);
 			expect(lines.join("\n")).not.toContain("(enforced)");
 		} finally {
 			console.log = original;
@@ -442,6 +448,6 @@ describe("run state review budget", () => {
 		warnForReviewBudgetRunState("enforced", (warning) =>
 			warnings.push(warning),
 		);
-		expect(warnings).toEqual([ENFORCED_REVIEW_BUDGET_WARNING]);
+		expect(warnings).toEqual([]);
 	});
 });

@@ -101,6 +101,7 @@ export function pendingSnapshot(iteration = 1): PendingBudgetSnapshot {
 		},
 	};
 	return {
+		id: `snapshot-${iteration}`,
 		runId: "run1",
 		stepName: "reviewer:review",
 		phase: "plan",
@@ -108,6 +109,10 @@ export function pendingSnapshot(iteration = 1): PendingBudgetSnapshot {
 		currentLedger,
 		findings: [],
 		assessments: [],
+		priorFindings: [],
+		effectiveGateCauses: [],
+		suppressedGateCauses: [],
+		diagnostics: [],
 		baselineAssessment: {
 			independentEffortEstimate: 2,
 			confidence: "high",

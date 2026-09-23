@@ -15,6 +15,11 @@ import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
+import {
+	buildPlanReviewPromptContext,
+	formatAuthorGoverningDecisions,
+	formatReviewerGovernanceContext,
+} from "../review-governance/context.js";
 import { validateRunId } from "../run-id.js";
 import {
 	getTemplateSource,
@@ -208,6 +213,7 @@ export async function templateRender(
 		(params.session || params.continueNative) && !params.newSession;
 	let mergedVars = explicitVars;
 	let reviewDiffAppend: string | null = null;
+	let renderBudgetContext: ReviewBudgetCommandContext | undefined;
 	if (
 		wantContinued &&
 		runDb &&
@@ -264,9 +270,8 @@ export async function templateRender(
 		resolvedPlanPath &&
 		config.reviewBudget.mode !== "off"
 	) {
-		let budgetContext: ReviewBudgetCommandContext;
 		try {
-			budgetContext = await (
+			renderBudgetContext = await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
 			)({
 				runId: params.run,
@@ -282,13 +287,13 @@ export async function templateRender(
 		try {
 			planMarkdown = (
 				deps?.readPlan ?? ((path) => readFileSync(path, "utf-8"))
-			)(budgetContext.executionContext.effectivePlanPath);
+			)(renderBudgetContext.executionContext.effectivePlanPath);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
 		}
 		const ensured = ensurePlanReviewBaselineForContext({
-			ctx: budgetContext,
+			ctx: renderBudgetContext,
 			runId: params.run,
 			planMarkdown,
 			optIn: false,
@@ -300,6 +305,24 @@ export async function templateRender(
 		}
 	}
 	let prompt = resolved.prompt;
+	if (params.run && isPlanReviewTemplate(resolved.selectedTemplateName)) {
+		try {
+			renderBudgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot });
+			const governanceContext = buildPlanReviewPromptContext({
+				runId: params.run,
+				configuredMode: config.reviewBudget.mode,
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+			});
+			if (governanceContext) {
+				prompt += `\n\n${resolved.selectedTemplateName.replace(/-continued$/, "") === "author-process-plan-review" ? formatAuthorGoverningDecisions(governanceContext) : formatReviewerGovernanceContext(governanceContext)}`;
+			}
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+	}
 
 	// -----------------------------------------------------------------------
 	// Post-render: append the review diff block (continued plan reviews only),

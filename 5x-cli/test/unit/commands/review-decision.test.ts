@@ -48,6 +48,7 @@ function fixture(opts?: { maxSteps?: number }) {
 	ctx.store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
+		mode: "enforced",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin: TEST_ORIGIN,

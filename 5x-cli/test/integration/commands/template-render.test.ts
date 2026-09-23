@@ -1775,9 +1775,7 @@ describe("5x template render", () => {
 					runId,
 				]);
 				expect(result.exitCode).toBe(0);
-				expect(result.stderr).toContain(
-					"reviewBudget.mode is enforced but enforcement is not implemented; recording advisory telemetry only",
-				);
+				expect(result.stderr).not.toContain("enforcement is not implemented");
 				const budgetPath = join(
 					dir,
 					"docs",

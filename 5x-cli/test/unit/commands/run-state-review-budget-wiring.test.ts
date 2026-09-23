@@ -101,6 +101,7 @@ function setup(mode: "off" | "advisory" = "advisory") {
 	createReviewBudgetStore(records).captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
+		mode: "advisory",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin,
@@ -196,7 +197,7 @@ function appendHumanReview(ctx: ReturnType<typeof setup>): void {
 }
 
 describe("run state review-budget wiring", () => {
-	test("runV1State includes active review_budget and omits it in off mode", async () => {
+	test("runV1State includes active review_budget even after config changes to off", async () => {
 		const advisory = setup();
 		try {
 			const envelope = (await captureState(advisory)) as {
@@ -215,7 +216,10 @@ describe("run state review-budget wiring", () => {
 			const envelope = (await captureState(off)) as {
 				data?: { review_budget?: unknown };
 			};
-			expect(envelope.data?.review_budget).toBeUndefined();
+			expect(envelope.data?.review_budget).toMatchObject({
+				status: "active",
+				mode: "advisory",
+			});
 		} finally {
 			off.db.close();
 		}

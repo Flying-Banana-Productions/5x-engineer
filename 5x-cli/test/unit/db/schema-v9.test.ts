@@ -6,7 +6,7 @@ test("v9 adds governance projections and versioned prompt context", () => {
 	const db = new Database(":memory:");
 	try {
 		runMigrations(db);
-		expect(getSchemaVersion(db)).toBe(9);
+		expect(getSchemaVersion(db)).toBe(10);
 		const tables = db
 			.query("SELECT name FROM sqlite_master WHERE type='table'")
 			.all() as Array<{ name: string }>;
@@ -20,6 +20,15 @@ test("v9 adds governance projections and versioned prompt context", () => {
 			.query("PRAGMA table_info(review_budget_baselines)")
 			.all() as Array<{ name: string }>;
 		expect(baselineColumns.map((row) => row.name)).toContain("mode");
+		const snapshotColumns = db
+			.query("PRAGMA table_info(review_budget_snapshots)")
+			.all() as Array<{ name: string }>;
+		expect(snapshotColumns.map((row) => row.name)).toContain(
+			"prior_findings_json",
+		);
+		expect(snapshotColumns.map((row) => row.name)).toContain(
+			"diagnostics_json",
+		);
 	} finally {
 		db.close();
 	}

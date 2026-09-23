@@ -531,7 +531,7 @@ describe("review-budget CLI integration", () => {
 	);
 
 	test(
-		"reserved enforced mode warns on render and direct-record capture without changing routing",
+		"enforced mode is pinned and derives governance routing without a legacy warning",
 		async () => {
 			for (const capture of ["render", "record"] as const) {
 				const ctx = await setup(VALID_BUDGET, "enforced");
@@ -562,13 +562,16 @@ describe("review-budget CLI integration", () => {
 									HUMAN_VERDICT,
 								);
 					expect(result.exitCode).toBe(0);
-					expect(result.stderr).toContain("enforcement is not implemented");
-					expect(budgetStore(ctx.dir).getBaseline(ctx.runId)).not.toBeNull();
+					expect(result.stderr).not.toContain("enforcement is not implemented");
+					expect(budgetStore(ctx.dir).getBaseline(ctx.runId)?.mode).toBe(
+						"enforced",
+					);
 					if (capture === "record") {
 						const verdict = JSON.parse(result.stdout).data.result;
 						expect(verdict.readiness).toBe("not_ready");
 						expect(verdict.budget.requiresHuman).toBe(true);
 						expect(verdict.budget.budgetBand).toBe("over_absolute");
+						expect(verdict.governance.route).toBe("human_gate");
 					}
 				} finally {
 					rmSync(ctx.dir, { recursive: true, force: true });

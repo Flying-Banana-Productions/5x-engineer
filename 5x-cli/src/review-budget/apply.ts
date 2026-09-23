@@ -1,3 +1,4 @@
+import { createReviewBudgetId } from "../control-plane/ids.js";
 import type { RecordOrigin } from "../control-plane/record-types.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
@@ -5,6 +6,7 @@ import {
 	type ReviewerVerdict,
 	rejectCliOwnedBudgetFields,
 } from "../protocol.js";
+import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
 import { deriveBudget } from "./arithmetic.js";
 import { ensurePlanReviewBaseline } from "./ensure-baseline.js";
 import {
@@ -21,6 +23,7 @@ import {
 } from "./types.js";
 
 export interface PendingBudgetSnapshot {
+	id: string;
 	runId: string;
 	stepName: string;
 	phase: string | undefined;
@@ -30,6 +33,11 @@ export interface PendingBudgetSnapshot {
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
 	derived: DerivedBudgetResult;
+	priorFindings: NonNullable<ReviewerVerdict["priorFindings"]>;
+	effectiveGateCauses: import("../review-governance/types.js").ReviewGateCause[];
+	suppressedGateCauses: import("../review-governance/types.js").ReviewGateCause[];
+	diagnostics: import("../review-governance/types.js").ClosureDiagnostic[];
+	mode?: "advisory" | "enforced";
 }
 
 export interface ApplyPlanReviewBudgetInput {
@@ -45,6 +53,7 @@ export interface ApplyPlanReviewBudgetInput {
 	optInBaseline: boolean;
 	origin: RecordOrigin;
 	warn: (message: string) => void;
+	governingBaseline?: number;
 }
 
 export type ApplyPlanReviewBudgetResult =
@@ -103,9 +112,9 @@ export function applyPlanReviewBudget(
 			cause instanceof Error ? cause.message : String(cause),
 		);
 	}
-	if (input.config.mode === "off") return { status: "skipped", reason: "off" };
-
 	let baseline = input.store.getBaseline(input.runId);
+	if (!baseline && input.config.mode === "off")
+		return { status: "skipped", reason: "off" };
 	if (!baseline || input.optInBaseline) {
 		const ensured = ensurePlanReviewBaseline({
 			runId: input.runId,
@@ -221,10 +230,16 @@ export function applyPlanReviewBudget(
 		}
 		findings.push({
 			id: item.id,
+			title: item.title,
 			effortDelta: item.effortDelta as number,
 			architectureDelta: item.architectureDelta as number,
 			scopeClass: item.scopeClass,
 			coupling: item.coupling,
+			...(item.failure ? { failure: item.failure } : {}),
+			...(item.lowestCostCorrection
+				? { lowestCostCorrection: item.lowestCostCorrection }
+				: {}),
+			fingerprint: fingerprintVerdictItem(item),
 			...(creditClaim ? { creditClaim } : {}),
 		});
 	}
@@ -291,20 +306,20 @@ export function applyPlanReviewBudget(
 		: latest
 			? undefined
 			: input.verdict.baselineAssessment;
-	const { mode: _mode, ...thresholds } = input.config;
 	const derived = deriveBudget({
 		B0: baseline.b0,
-		B: baseline.b,
+		B: input.governingBaseline ?? baseline.b,
 		I: firstAssessment?.independentEffortEstimate ?? null,
 		workItems: parsed.value.workItems,
 		findings,
 		assessments: effectiveAssessments,
-		config: thresholds,
+		config: baseline.configSnapshot,
 		semanticHumanRequired: input.verdict.items.some(
 			(item) => item.action === "human_required",
 		),
 	});
 	const pendingSnapshot: PendingBudgetSnapshot = {
+		id: matchingSnapshot?.id ?? createReviewBudgetId(),
 		runId: input.runId,
 		stepName: input.stepName,
 		phase: input.phase,
@@ -316,6 +331,10 @@ export function applyPlanReviewBudget(
 			? { baselineAssessment: snapshotBaselineAssessment }
 			: {}),
 		derived,
+		priorFindings: input.verdict.priorFindings ?? [],
+		effectiveGateCauses: [],
+		suppressedGateCauses: [],
+		diagnostics: [],
 	};
 	return {
 		status: "applied",

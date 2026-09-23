@@ -302,7 +302,7 @@ describe("protocol validate reviewer — active review budget", () => {
 		}
 	});
 
-	test("direct enforced capture uses the injected warning sink", async () => {
+	test("direct enforced capture does not emit a legacy warning", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();
 		const warnings: string[] = [];
@@ -324,7 +324,7 @@ describe("protocol validate reviewer — active review budget", () => {
 				warn: (message) => warnings.push(message),
 				createReviewBudgetContext: async () => ctx,
 			});
-			expect(warnings).toHaveLength(1);
+			expect(warnings).toHaveLength(0);
 		} finally {
 			ctx.db.close();
 			cleanupDir(dir);
@@ -408,6 +408,7 @@ describe("protocol validate reviewer — active review budget", () => {
 			ctx.store.captureBaseline({
 				runId: "run1",
 				captureKind: "initial",
+				mode: "advisory",
 				parsed: pendingSnapshot().currentLedger,
 				configSnapshot: pendingSnapshot().derived.thresholds,
 				origin: ctx.originFor({ kind: "system", role: "cli" }),
@@ -427,8 +428,10 @@ describe("protocol validate reviewer — active review budget", () => {
 		}
 	});
 
-	test("mode off skips review-budget context creation", async () => {
+	test("mode off inspects context for a previously pinned baseline", async () => {
 		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		ctx.config.reviewBudget.mode = "off";
 		try {
 			setupProjectDir(dir);
 			insertRun(dir, "run1", join(dir, "plan.md"));
@@ -445,11 +448,12 @@ describe("protocol validate reviewer — active review budget", () => {
 				startDir: dir,
 				createReviewBudgetContext: async () => {
 					calls++;
-					throw new Error("must not be called");
+					return ctx;
 				},
 			});
-			expect(calls).toBe(0);
+			expect(calls).toBe(1);
 		} finally {
+			ctx.db.close();
 			cleanupDir(dir);
 		}
 	});

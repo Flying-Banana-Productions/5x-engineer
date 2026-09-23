@@ -67,8 +67,8 @@ describe("migration v7: fresh DB", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 
-			expect(getSchemaVersion(db)).toBe(9);
-			expect(getMaxKnownSchemaVersion()).toBe(9);
+			expect(getSchemaVersion(db)).toBe(10);
+			expect(getMaxKnownSchemaVersion()).toBe(10);
 			expect(tableNames(db)).toContain("invocations");
 
 			const indexNames = invocationIndexNames(db);
@@ -217,7 +217,7 @@ describe("migration v7: from v6", () => {
 			);
 
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(9);
+			expect(getSchemaVersion(db)).toBe(10);
 			expect(tableNames(db)).toContain("invocations");
 			expect(tableNames(db)).toContain("prompts");
 

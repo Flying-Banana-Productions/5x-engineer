@@ -644,21 +644,21 @@ export function applyPlanReviewGovernance(input: {
 }): AppliedPlanReviewGovernance;
 ```
 
-- [ ] Extend the concrete `ApplyPlanReviewBudgetInput` with optional `governingBaseline`; in `applyPlanReviewBudget(input)` load the existing baseline before interpreting current config, use `baseline.mode` and `baseline.configSnapshot` for an active run, and pass folded `B` into `deriveBudget` instead of `baseline.b`. Thus a later config change—including `mode = "off"`—cannot disable or promote an active run. The baseline line remains immutable.
-- [ ] Add `mode: Exclude<ReviewBudgetMode, "off">` to `BudgetBaselinePayload`, `ReviewBudgetBaseline`, and `CaptureBaselineInput`; `ensurePlanReviewBaseline` passes the activation mode. `decodeBudgetBaselinePayload` defaults missing mode to `"advisory"`, and `createReviewBudgetIndex` round-trips it through the v9 baseline column. Mode `off` with no existing baseline creates none.
-- [ ] Move snapshot UUID allocation from `recordPlanReviewerStepWithSnapshot`'s `extraOps` callback into `applyPlanReviewBudget`: add `id` to `PendingBudgetSnapshot`, reuse `matchingSnapshot.id` on a retry of the same step tuple, and otherwise allocate once with `createReviewBudgetId()`. The paired writer persists `pending.id`. Governance therefore derives/decorates `snapshotId`/`gateId` before serialization while duplicate retries reproduce the durable identity.
-- [ ] Keep the concrete command order: resolve one `ReviewBudgetCommandContext`, perform pre-admission when capture might write, read `executionContext.effectivePlanPath`, call `applyPlanReviewBudget`, then apply governance to the returned decorated verdict and `PendingBudgetSnapshot`, and finally pass serialized verdict + pending snapshot to `recordPlanReviewerStepWithSnapshot(params, pending, ctx)`. Never create a parallel prepared/writer path or duplicate `originFor` construction.
-- [ ] Extend plan 208's `FindingDelta`, `PendingBudgetSnapshot`, `BudgetSnapshotPayload`, `ReviewBudgetSnapshotRecord`, codecs, facade, and v8/v9 index projection with `failure`, `lowestCostCorrection`, fingerprint, `priorFindings`, effective/suppressed route causes, and diagnostics so index deletion can rebuild identity/outcomes. Keep the concrete UUID `id` and `stepKey` tuple and exactly one snapshot per reviewer step; `derived` remains an index cache, not authoritative record payload.
-- [ ] Ensure admission happens before any reviewer snapshot/gate append. A terminal run, missing worktree, invalid diff, invalid verdict, or max-step failure writes nothing.
-- [ ] After a unique enforced reviewer record, derive/project a gate only when route is `human_gate`; retries derive the same ID and repair prompt/index projections. Advisory never opens a gate.
-- [ ] Remove `ENFORCED_REVIEW_BUDGET_WARNING`; update `ReviewBudgetState.enforcement_implemented` from literal `false` to `boolean` and derive it exactly as `pinnedMode === "enforced"`. It is `false` for advisory-pinned active runs, uninitialized runs, and `v1_compat`, preserving every pre-slice state; only enforced-pinned active runs report `true`. `buildReviewBudgetState` reports the baseline-pinned mode rather than current config. Update `src/config.ts`, `src/templates/5x.default.toml`, run-state text, and tests from “reserved/advisory telemetry” to implemented pinned-mode behavior.
+- [x] Extend the concrete `ApplyPlanReviewBudgetInput` with optional `governingBaseline`; in `applyPlanReviewBudget(input)` load the existing baseline before interpreting current config, use `baseline.mode` and `baseline.configSnapshot` for an active run, and pass folded `B` into `deriveBudget` instead of `baseline.b`. Thus a later config change—including `mode = "off"`—cannot disable or promote an active run. The baseline line remains immutable.
+- [x] Add `mode: Exclude<ReviewBudgetMode, "off">` to `BudgetBaselinePayload`, `ReviewBudgetBaseline`, and `CaptureBaselineInput`; `ensurePlanReviewBaseline` passes the activation mode. `decodeBudgetBaselinePayload` defaults missing mode to `"advisory"`, and `createReviewBudgetIndex` round-trips it through the v9 baseline column. Mode `off` with no existing baseline creates none.
+- [x] Move snapshot UUID allocation from `recordPlanReviewerStepWithSnapshot`'s `extraOps` callback into `applyPlanReviewBudget`: add `id` to `PendingBudgetSnapshot`, reuse `matchingSnapshot.id` on a retry of the same step tuple, and otherwise allocate once with `createReviewBudgetId()`. The paired writer persists `pending.id`. Governance therefore derives/decorates `snapshotId`/`gateId` before serialization while duplicate retries reproduce the durable identity.
+- [x] Keep the concrete command order: resolve one `ReviewBudgetCommandContext`, perform pre-admission when capture might write, read `executionContext.effectivePlanPath`, call `applyPlanReviewBudget`, then apply governance to the returned decorated verdict and `PendingBudgetSnapshot`, and finally pass serialized verdict + pending snapshot to `recordPlanReviewerStepWithSnapshot(params, pending, ctx)`. Never create a parallel prepared/writer path or duplicate `originFor` construction.
+- [x] Extend plan 208's `FindingDelta`, `PendingBudgetSnapshot`, `BudgetSnapshotPayload`, `ReviewBudgetSnapshotRecord`, codecs, facade, and v8/v9 index projection with `failure`, `lowestCostCorrection`, fingerprint, `priorFindings`, effective/suppressed route causes, and diagnostics so index deletion can rebuild identity/outcomes. Because v9 was already exercised by prior phases, add the new snapshot projection columns in additive migration v10 rather than mutating an applied migration. Keep the concrete UUID `id` and `stepKey` tuple and exactly one snapshot per reviewer step; `derived` remains an index cache, not authoritative record payload.
+- [x] Ensure admission happens before any reviewer snapshot/gate append. A terminal run, missing worktree, invalid diff, invalid verdict, or max-step failure writes nothing.
+- [x] After a unique enforced reviewer record, derive/project a gate only when route is `human_gate`; retries derive the same ID and repair prompt/index projections. Advisory never opens a gate.
+- [x] Remove `ENFORCED_REVIEW_BUDGET_WARNING`; update `ReviewBudgetState.enforcement_implemented` from literal `false` to `boolean` and derive it exactly as `pinnedMode === "enforced"`. It is `false` for advisory-pinned active runs, uninitialized runs, and `v1_compat`, preserving every pre-slice state; only enforced-pinned active runs report `true`. `buildReviewBudgetState` reports the baseline-pinned mode rather than current config. Update `src/config.ts`, `src/templates/5x.default.toml`, run-state text, and tests from “reserved/advisory telemetry” to implemented pinned-mode behavior.
 
 ### 6.2 Wire both reviewer writers — `src/commands/protocol.handler.ts:500–657`, `src/commands/invoke.handler.ts:730–888`
 
-- [ ] Route only reviewer protocol/invoke results with resolved phase `plan` and an active baseline through the composed budget/governance path; step identity continues to use `reviewer:*` names and performer role stays on the record-line origin. All other roles/phases retain existing paths.
-- [ ] Keep one success envelope. Post-envelope record failures remain stderr plus nonzero exit, matching current behavior.
-- [ ] Share one writer function between native validation and invoke; assert equal idempotency tuple, performer metadata, and decorated `result_json`.
-- [ ] Do not open human prompts during structural validation without `--record`.
+- [x] Route only reviewer protocol/invoke results with resolved phase `plan` and an active baseline through the composed budget/governance path; step identity continues to use `reviewer:*` names and performer role stays on the record-line origin. All other roles/phases retain existing paths.
+- [x] Keep one success envelope. Post-envelope record failures remain stderr plus nonzero exit, matching current behavior.
+- [x] Share one writer function between native validation and invoke; assert equal idempotency tuple, performer metadata, and decorated `result_json`.
+- [x] Do not open human prompts during structural validation without `--record`.
 
 ### 6.3 Review context projection — new `src/review-governance/context.ts`; extend template handler
 
@@ -681,12 +681,12 @@ export interface PlanReviewPromptContext {
 }
 ```
 
-- [ ] Build context from authoritative snapshots/decision lines, not mutable review Markdown or only the SQLite index.
-- [ ] In render/apply/run-state paths, resolve active mode as `store.getBaseline(runId)?.mode ?? config.reviewBudget.mode`; only the no-baseline `off` case skips budget/governance. Do not retain plan 208's current-config-only guards around an existing baseline.
-- [ ] Inject every applicable deferred/accepted-risk decision into every later reviewer plan review, including fresh provider sessions; native/invoke continuation must receive the same block.
-- [ ] Append a “Governing decisions” block to every `author-process-plan-review` render: finding IDs to skip, retained/removed scope, re-estimate request, and governing `B`. Do not tunnel these facts through `user_notes`.
-- [ ] Preserve decisions across author revisions and governing-baseline changes; superseded decisions remain in history but only the active decision governs.
-- [ ] Test index wipe, equal timestamps, removed/reintroduced finding IDs, changed fingerprints, and new-evidence re-raise.
+- [x] Build context from authoritative snapshots/decision lines, not mutable review Markdown or only the SQLite index.
+- [x] In render/apply/run-state paths, resolve active mode as `store.getBaseline(runId)?.mode ?? config.reviewBudget.mode`; only the no-baseline `off` case skips budget/governance. Do not retain plan 208's current-config-only guards around an existing baseline.
+- [x] Inject every applicable deferred/accepted-risk decision into every later reviewer plan review, including fresh provider sessions; native/invoke continuation must receive the same block.
+- [x] Append a “Governing decisions” block to every `author-process-plan-review` render: finding IDs to skip, retained/removed scope, re-estimate request, and governing `B`. Do not tunnel these facts through `user_notes`.
+- [x] Preserve decisions across author revisions and governing-baseline changes; superseded decisions remain in history but only the active decision governs.
+- [x] Test index wipe, equal timestamps, removed/reintroduced finding IDs, changed fingerprints, and new-evidence re-raise.
 
 ---
 

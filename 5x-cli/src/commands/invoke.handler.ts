@@ -28,6 +28,7 @@ import {
 import {
 	createSqliteInvocationStore,
 	type InvocationStore,
+	type StepRecordPayload,
 	withInvocationLifecycle,
 } from "../control-plane/index.js";
 import { getDb } from "../db/connection.js";
@@ -60,6 +61,19 @@ import {
 	applyPlanReviewBudget,
 	type PendingBudgetSnapshot,
 } from "../review-budget/apply.js";
+import { applyPlanReviewGovernance } from "../review-governance/apply.js";
+import {
+	buildPlanReviewPromptContext,
+	formatAuthorGoverningDecisions,
+	formatReviewerGovernanceContext,
+} from "../review-governance/context.js";
+import {
+	buildPlanReviewDiffContext,
+	PlanDiffError,
+	type PlanDiffFailure,
+} from "../review-governance/plan-diff.js";
+import { createReviewGovernanceStore } from "../review-governance/store.js";
+import type { PlanDiffContext } from "../review-governance/types.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -464,8 +478,7 @@ export async function invokeAgent(
 			(params.optInBudgetBaseline &&
 				isPlanReviewTemplate(resolved.selectedTemplateName))) &&
 		params.run &&
-		resolvedPlanPath &&
-		config.reviewBudget.mode !== "off"
+		resolvedPlanPath
 	) {
 		try {
 			budgetContext = await (
@@ -487,14 +500,29 @@ export async function invokeAgent(
 			const message = err instanceof Error ? err.message : String(err);
 			outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
 		}
-		const ensured = ensurePlanReviewBaselineForContext({
-			ctx: budgetContext,
-			runId: params.run,
-			planMarkdown,
-			optIn: params.optInBudgetBaseline ?? false,
-			performer: { kind: "agent", role: "reviewer", provider: providerName },
-			warn: deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
-		});
+		let existingBaseline = null;
+		try {
+			if (budgetContext.recordStore.getRun(params.run))
+				existingBaseline = budgetContext.store.getBaseline(params.run);
+		} catch {
+			// A mode-off legacy run may not have an authoritative records directory.
+		}
+		const ensured =
+			existingBaseline || budgetContext.config.reviewBudget.mode !== "off"
+				? ensurePlanReviewBaselineForContext({
+						ctx: budgetContext,
+						runId: params.run,
+						planMarkdown,
+						optIn: params.optInBudgetBaseline ?? false,
+						performer: {
+							kind: "agent",
+							role: "reviewer",
+							provider: providerName,
+						},
+						warn:
+							deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+					})
+				: ({ status: "skipped", reason: "off" } as const);
 		if (ensured.status === "error") {
 			outputError(ensured.code, ensured.message);
 		}
@@ -504,9 +532,35 @@ export async function invokeAgent(
 
 	// Append the review diff block (continued plan reviews only). The diff
 	// can't be a template variable (multi-line), so it's added post-render.
-	const renderedPrompt = reviewDiffAppend
+	let governanceAppend: string | null = null;
+	if (params.run && isPlanReviewTemplate(resolved.selectedTemplateName)) {
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: invocationWorkdir });
+			const governanceContext = buildPlanReviewPromptContext({
+				runId: params.run,
+				configuredMode: config.reviewBudget.mode,
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+			});
+			if (governanceContext) {
+				governanceAppend =
+					resolved.selectedTemplateName.replace(/-continued$/, "") ===
+					"author-process-plan-review"
+						? formatAuthorGoverningDecisions(governanceContext)
+						: formatReviewerGovernanceContext(governanceContext);
+			}
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+	}
+	const renderedPromptBase = reviewDiffAppend
 		? `${resolved.prompt}\n${reviewDiffAppend}`
 		: resolved.prompt;
+	const renderedPrompt = governanceAppend
+		? `${renderedPromptBase}\n\n${governanceAppend}`
+		: renderedPromptBase;
 
 	// Surface warnings (stderr for human visibility)
 	if (resolved.warnings.length > 0) {
@@ -708,11 +762,7 @@ export async function invokeAgent(
 
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
 	const recordPhase = params.phase ?? variables.phase_number;
-	if (
-		role === "reviewer" &&
-		recordPhase === "plan" &&
-		config.reviewBudget.mode !== "off"
-	) {
+	if (role === "reviewer" && recordPhase === "plan" && params.run) {
 		try {
 			budgetContext ??= await (
 				deps?.createReviewBudgetContext ?? createReviewBudgetContext
@@ -725,84 +775,157 @@ export async function invokeAgent(
 			} else throw err;
 		}
 	}
-	if (
-		role === "reviewer" &&
-		recordPhase === "plan" &&
-		budgetContext &&
-		config.reviewBudget.mode !== "off"
-	) {
+	if (role === "reviewer" && recordPhase === "plan" && budgetContext) {
 		const baseline = budgetContext.store.getBaseline(runId);
-		let admissionEligible = true;
-		const budgetStepName =
-			params.recordStep ?? resolved.stepName ?? "reviewer:review";
-		if (params.record && !baseline) {
-			try {
-				await prepareRecordStepAppend(
-					{
-						run: runId,
-						stepName: budgetStepName,
-						result: JSON.stringify(structured),
-						phase: recordPhase,
-						iteration: params.iteration,
-						performer: {
-							kind: "agent",
-							role,
-							provider: providerName,
+		const pinnedMode = baseline?.mode ?? budgetContext.config.reviewBudget.mode;
+		if (pinnedMode !== "off") {
+			let admissionEligible = true;
+			const budgetStepName =
+				params.recordStep ?? resolved.stepName ?? "reviewer:review";
+			if (params.record && !baseline) {
+				try {
+					await prepareRecordStepAppend(
+						{
+							run: runId,
+							stepName: budgetStepName,
+							result: JSON.stringify(structured),
+							phase: recordPhase,
+							iteration: params.iteration,
+							performer: {
+								kind: "agent",
+								role,
+								provider: providerName,
+							},
 						},
-					},
-					budgetContext,
-				);
-			} catch (err) {
-				if (err instanceof RecordError) admissionEligible = false;
-				else throw err;
-			}
-		}
-		if ((params.record || baseline) && admissionEligible) {
-			const stepName = budgetStepName;
-			const performer = {
-				kind: "agent",
-				role: "reviewer",
-				provider: providerName,
-			} as const;
-			let planMarkdown = "";
-			let planReadFailed = false;
-			try {
-				planMarkdown = readFileSync(
-					budgetContext.executionContext.effectivePlanPath,
-					"utf-8",
-				);
-			} catch (err) {
-				planReadFailed = true;
-				if (params.record) {
-					const message = err instanceof Error ? err.message : String(err);
-					outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+						budgetContext,
+					);
+				} catch (err) {
+					if (err instanceof RecordError) admissionEligible = false;
+					else throw err;
 				}
 			}
-			if (!planReadFailed) {
-				const applied = applyPlanReviewBudget({
-					runId,
-					stepName,
-					phase: recordPhase,
-					iteration: params.iteration,
-					planMarkdown,
-					verdict: structured as ReviewerVerdict,
-					config: budgetContext.config.reviewBudget,
-					store: budgetContext.store,
-					hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
-						budgetContext,
+			if ((params.record || baseline) && admissionEligible) {
+				const stepName = budgetStepName;
+				const performer = {
+					kind: "agent",
+					role: "reviewer",
+					provider: providerName,
+				} as const;
+				let planMarkdown = "";
+				let planReadFailed = false;
+				try {
+					planMarkdown = readFileSync(
+						budgetContext.executionContext.effectivePlanPath,
+						"utf-8",
+					);
+				} catch (err) {
+					planReadFailed = true;
+					if (params.record) {
+						const message = err instanceof Error ? err.message : String(err);
+						outputError("PLAN_NOT_FOUND", `Failed to read plan: ${message}`);
+					}
+				}
+				if (!planReadFailed) {
+					const governanceStore = createReviewGovernanceStore(
+						budgetContext.recordStore,
+					);
+					const governingState = baseline
+						? governanceStore.deriveGoverningState(runId, baseline.b0)
+						: undefined;
+					const applied = applyPlanReviewBudget({
 						runId,
-					),
-					optInBaseline:
-						(params.optInBudgetBaseline ?? false) && !optInCapturedBeforeInvoke,
-					origin: budgetContext.originFor(performer),
-					warn:
-						deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
-				});
-				if (applied.status === "error")
-					outputError(applied.code, applied.message);
-				if (applied.status === "applied") {
-					structured = applied.verdict;
-					pendingSnapshot = applied.pendingSnapshot;
+						stepName,
+						phase: recordPhase,
+						iteration: params.iteration,
+						planMarkdown,
+						verdict: structured as ReviewerVerdict,
+						config: budgetContext.config.reviewBudget,
+						store: budgetContext.store,
+						hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(
+							budgetContext,
+							runId,
+						),
+						optInBaseline:
+							(params.optInBudgetBaseline ?? false) &&
+							!optInCapturedBeforeInvoke,
+						origin: budgetContext.originFor(performer),
+						warn:
+							deps?.warn ?? ((message) => console.error(`Warning: ${message}`)),
+						...(governingState
+							? { governingBaseline: governingState.governingBaseline }
+							: {}),
+					});
+					if (applied.status === "error")
+						outputError(applied.code, applied.message);
+					if (applied.status === "applied") {
+						const activeBaseline = budgetContext.store.getBaseline(runId);
+						if (!activeBaseline)
+							outputError(
+								"BUDGET_BASELINE_MISSING",
+								"Review budget baseline is missing",
+							);
+						const snapshots = budgetContext.store.listSnapshots(runId);
+						const priorSnapshot = snapshots
+							.filter((snapshot) => snapshot.id !== applied.pendingSnapshot.id)
+							.at(-1);
+						let diffContext: PlanDiffContext | undefined;
+						let diffContextFailure: PlanDiffFailure | undefined;
+						if (priorSnapshot?.stepName) {
+							const priorStep = budgetContext.recordStore
+								.listLines(runId, "steps")
+								.find((line) => {
+									const payload = line.payload as Partial<StepRecordPayload>;
+									return (
+										payload.step_name === priorSnapshot.stepName &&
+										(payload.phase ?? null) === priorSnapshot.phase &&
+										payload.iteration === priorSnapshot.iteration
+									);
+								});
+							const head = (
+								priorStep?.payload as Partial<StepRecordPayload> | undefined
+							)?.head_commit;
+							if (head) {
+								try {
+									diffContext = await buildPlanReviewDiffContext({
+										workdir:
+											budgetContext.executionContext.effectiveWorkingDirectory,
+										planPath: budgetContext.executionContext.effectivePlanPath,
+										previousReviewCommit: head,
+									});
+								} catch (error) {
+									diffContextFailure =
+										error instanceof PlanDiffError
+											? { code: error.code, message: error.message }
+											: {
+													code: "PLAN_DIFF_GIT_ERROR",
+													message:
+														error instanceof Error
+															? error.message
+															: String(error),
+												};
+								}
+							}
+						}
+						const composed = applyPlanReviewGovernance({
+							verdict: structured as ReviewerVerdict,
+							budgetResult: applied,
+							snapshots,
+							decisions: governanceStore.listDecisions(runId),
+							governingState: governanceStore.deriveGoverningState(
+								runId,
+								activeBaseline.b0,
+							),
+							mode: activeBaseline.mode,
+							...(diffContext ? { diffContext } : {}),
+							...(diffContextFailure ? { diffContextFailure } : {}),
+						});
+						if (composed.status === "error")
+							outputError(composed.code, composed.message, {
+								diagnostics: composed.diagnostics,
+							});
+						structured = composed.verdict;
+						pendingSnapshot = composed.pendingSnapshot;
+					}
 				}
 			}
 		}

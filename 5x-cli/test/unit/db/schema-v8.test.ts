@@ -39,7 +39,7 @@ describe("migration v8 review-budget indexes", () => {
 	test("fresh database has v8 tables and nullable baseline assessment", () => {
 		const db = database();
 		runMigrations(db);
-		expect(getSchemaVersion(db)).toBe(9);
+		expect(getSchemaVersion(db)).toBe(10);
 		const tables = db
 			.query("SELECT name FROM sqlite_master WHERE type='table'")
 			.all() as Array<{ name: string }>;
@@ -62,7 +62,7 @@ describe("migration v8 review-budget indexes", () => {
 			id, run_id, role, provider_name, handle_json, cancellation_supported, status
 		) VALUES ('inv1', 'run1', 'reviewer', 'test', '{}', 0, 'running')`);
 		runMigrations(db);
-		expect(getSchemaVersion(db)).toBe(9);
+		expect(getSchemaVersion(db)).toBe(10);
 		expect(
 			(db.query("SELECT count(*) AS n FROM invocations").get() as { n: number })
 				.n,

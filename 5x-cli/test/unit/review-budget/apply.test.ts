@@ -372,7 +372,7 @@ describe("applyPlanReviewBudget", () => {
 		}
 	});
 
-	test("warns in reserved enforced mode without changing routing", () => {
+	test("captures enforced mode without a legacy warning", () => {
 		const { store } = setup();
 		const warnings: string[] = [];
 		const result = apply(store, verdict(), {
@@ -380,7 +380,8 @@ describe("applyPlanReviewBudget", () => {
 			warn: (message) => warnings.push(message),
 		});
 		expect(result.status).toBe("applied");
-		expect(warnings).toHaveLength(1);
+		expect(warnings).toHaveLength(0);
+		expect(store.getBaseline("run1")?.mode).toBe("enforced");
 		if (result.status === "applied")
 			expect(result.verdict.readiness).toBe("ready_with_corrections");
 	});

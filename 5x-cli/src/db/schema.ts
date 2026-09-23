@@ -585,6 +585,16 @@ const migrations: Migration[] = [
 			`);
 		},
 	},
+	{
+		version: 10,
+		description: "Persist plan-review closure context in the budget index",
+		up(db) {
+			db.exec(`
+				ALTER TABLE review_budget_snapshots ADD COLUMN prior_findings_json TEXT;
+				ALTER TABLE review_budget_snapshots ADD COLUMN diagnostics_json TEXT;
+			`);
+		},
+	},
 ];
 
 /**

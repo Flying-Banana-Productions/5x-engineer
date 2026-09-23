@@ -14,10 +14,15 @@ import type {
 	DerivedBudgetResult,
 	FindingDelta,
 	ParsedDeliveryBudget,
+	ReviewBudgetMode,
 	ReviewBudgetThresholds,
 	SurfaceSnapshot,
 } from "../review-budget/types.js";
-import type { ReviewGateCause } from "../review-governance/types.js";
+import type {
+	ClosureDiagnostic,
+	PriorFindingOutcome,
+	ReviewGateCause,
+} from "../review-governance/types.js";
 import { createReviewBudgetId } from "./ids.js";
 import type { RecordStore } from "./record-store.js";
 import { type RecordOrigin, recordedEnvelope } from "./record-types.js";
@@ -33,6 +38,7 @@ export interface ReviewBudgetBaseline {
 	surface: SurfaceSnapshot;
 	originalSection: string | null;
 	configSnapshot: ReviewBudgetThresholds;
+	mode: Exclude<ReviewBudgetMode, "off">;
 	createdAt: string;
 }
 
@@ -46,9 +52,11 @@ export interface ReviewBudgetSnapshotRecord {
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
+	priorFindings: PriorFindingOutcome[];
 	derived: DerivedBudgetResult | null;
 	effectiveGateCauses: ReviewGateCause[];
 	suppressedGateCauses: ReviewGateCause[];
+	diagnostics: ClosureDiagnostic[];
 	createdAt: string;
 }
 
@@ -58,6 +66,7 @@ export interface CaptureBaselineInput {
 	parsed: ParsedDeliveryBudget;
 	originalSection?: string;
 	configSnapshot: ReviewBudgetThresholds;
+	mode: Exclude<ReviewBudgetMode, "off">;
 	origin: RecordOrigin;
 }
 
@@ -74,9 +83,11 @@ export interface AppendSnapshotInput {
 	findings: FindingDelta[];
 	assessments: CreditAssessmentInput[];
 	baselineAssessment?: BaselineAssessment;
+	priorFindings?: PriorFindingOutcome[];
 	derived?: DerivedBudgetResult;
 	effectiveGateCauses?: ReviewGateCause[];
 	suppressedGateCauses?: ReviewGateCause[];
+	diagnostics?: ClosureDiagnostic[];
 	/** Optional for the Phase 4 utility; otherwise the baseline line origin is reused. */
 	origin?: RecordOrigin;
 }
@@ -107,6 +118,7 @@ function baselineRecord(raw: unknown): ReviewBudgetBaseline {
 		surface: payload.surface,
 		originalSection: payload.originalSection,
 		configSnapshot: payload.configSnapshot,
+		mode: payload.mode,
 		createdAt: payload.createdAt,
 	};
 }
@@ -131,6 +143,8 @@ function snapshotRecord(
 		derived,
 		effectiveGateCauses: payload.effectiveGateCauses ?? [],
 		suppressedGateCauses: payload.suppressedGateCauses ?? [],
+		priorFindings: payload.priorFindings ?? [],
+		diagnostics: payload.diagnostics ?? [],
 		createdAt: payload.createdAt,
 	};
 }
@@ -199,6 +213,7 @@ export function createReviewBudgetStore(
 					surface: input.parsed.surface,
 					originalSection: input.originalSection ?? null,
 					configSnapshot: input.configSnapshot,
+					mode: input.mode,
 					createdAt,
 				}),
 				createdAt,
@@ -247,8 +262,10 @@ export function createReviewBudgetStore(
 					...(input.baselineAssessment === undefined
 						? {}
 						: { baselineAssessment: input.baselineAssessment }),
+					priorFindings: input.priorFindings ?? [],
 					effectiveGateCauses: input.effectiveGateCauses ?? [],
 					suppressedGateCauses: input.suppressedGateCauses ?? [],
+					diagnostics: input.diagnostics ?? [],
 					createdAt,
 				}),
 				createdAt,

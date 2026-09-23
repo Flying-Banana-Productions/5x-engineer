@@ -209,7 +209,7 @@ describe("recordPlanReviewerStepWithSnapshot", () => {
 		);
 		const second = await recordPlanReviewerStepWithSnapshot(
 			omitted,
-			pendingSnapshot(),
+			pendingSnapshot(2),
 			ctx,
 		);
 		expect([first.iteration, second.iteration]).toEqual([1, 2]);

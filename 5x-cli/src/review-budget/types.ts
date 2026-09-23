@@ -103,10 +103,14 @@ export interface ParsedDeliveryBudget {
 
 export interface FindingDelta {
 	id: string;
+	title?: string;
 	effortDelta: number;
 	architectureDelta: number;
 	scopeClass: PlanScopeClass | undefined;
 	coupling: CouplingClass | undefined;
+	failure?: string;
+	lowestCostCorrection?: string;
+	fingerprint?: string;
 	creditClaim?: DebtClaimEvidence;
 	creditNContribution?: number;
 }

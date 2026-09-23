@@ -126,6 +126,7 @@ async function fixture(kind: "baseline" | "finding" = "baseline") {
 	budgets.captureBaseline({
 		runId,
 		captureKind: "initial",
+		mode: "enforced",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin: ORIGIN,
