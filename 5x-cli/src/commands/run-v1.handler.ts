@@ -138,10 +138,19 @@ import {
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
 import type {
-	BaselineDirection,
-	BudgetAlert,
-	BudgetBand,
-	ReviewBudgetMode,
+	ImplementationBindingPayload,
+	ImplementationCorrectionAttemptPayload,
+	ImplementationCreditClaimRecord,
+	ImplementationCreditReconciliationPayload,
+	ImplementationReviewContextPayload,
+	ImplementationReviewObservationPayload,
+} from "../review-budget/record-lines.js";
+import {
+	type BaselineDirection,
+	type BudgetAlert,
+	type BudgetBand,
+	isCompleteDebtClaimEvidence,
+	type ReviewBudgetMode,
 } from "../review-budget/types.js";
 import {
 	changedCodePaths,
@@ -166,6 +175,8 @@ import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
 	createReviewGovernanceStore,
+	type DerivedImplementationGate,
+	deriveOpenImplementationGate,
 } from "../review-governance/store.js";
 import type {
 	ReviewDecisionRoute,
@@ -1161,6 +1172,387 @@ export function tryBuildReviewGovernanceState(
 	}
 }
 
+export interface ImplementationGovernanceClaimView {
+	creditClaimId: string;
+	phase: string;
+	status: ImplementationCreditClaimRecord["status"] | "unassessed";
+	due: boolean;
+	reconciled: boolean;
+	approvedArchitectureDelta: number;
+	/** Approved envelope after a waiver or reduction. Not a measured post-state. */
+	effectiveApprovedMagnitude: number;
+	/** Measured post-state. Null when the claim has not been assessed. */
+	measuredArchitectureDelta: number | null;
+	/**
+	 * Spendable realized magnitude. Zero for waived, not_realized, pending,
+	 * future, and unassessed claims.
+	 */
+	realizedCredit: number;
+	/** True only when measured simplification was actually retained. */
+	physicallyRealized: boolean;
+	waiverDecisionId: string | null;
+}
+
+export interface ImplementationGovernanceCreditView {
+	grossEffort: number;
+	inheritedBaseline: number;
+	standardCeiling: number;
+	effectiveCeiling: number;
+	absoluteCeiling: number;
+	provisionalCredit: number;
+	realizedCredit: number;
+	positiveBurden: number;
+}
+
+/** Run-state read model. Readiness fields stay; presentation is additive. */
+export interface ImplementationGovernanceState
+	extends ImplementationGovernanceReadiness {
+	domain: "implementation";
+	phase: string | null;
+	binding: {
+		id: string;
+		sourceRunId: string;
+		sourceSnapshotId: string;
+		sourceBaselineId: string;
+		approvedPlanCommit: string;
+		mode: "advisory" | "enforced";
+	} | null;
+	reviewedRange: {
+		phase: string;
+		contextId: string;
+		baseCommit: string;
+		reviewedCommit: string;
+		patchHash: string;
+	} | null;
+	activeGate: {
+		gateId: string;
+		phase: string;
+		observationId: string;
+		bindingId: string;
+		causes: DerivedImplementationGate["causes"];
+	} | null;
+	qualityAttempt: {
+		id: string;
+		observationId: string;
+		phase: string;
+		outcome: ImplementationCorrectionAttemptPayload["outcome"];
+		shortcutInvalidated: boolean;
+		qualityPassed: boolean;
+		qualitySkipped: boolean;
+		qualityTimedOut: boolean;
+	} | null;
+	claims: ImplementationGovernanceClaimView[];
+	telemetry: {
+		phase: string;
+		reviewCycles: number;
+		fixCycles: number;
+		reviewOriginatedCommits: number;
+		qualityReruns: number;
+		classCounts: ImplementationReviewObservationPayload["telemetry"]["classCounts"];
+		planAmendments: number;
+		addedPaths: string[];
+		effortVariance: number;
+		architectureVariance: number;
+	} | null;
+	credit: ImplementationGovernanceCreditView | null;
+}
+
+function phaseOrdinal(
+	phaseMap: readonly { id: string }[],
+	phaseId: string,
+): number {
+	return phaseMap.findIndex((phase) => phase.id === phaseId);
+}
+
+function approvedIntrinsicClaims(binding: ImplementationBindingPayload): Array<{
+	creditClaimId: string;
+	phase: string;
+	approvedArchitectureDelta: number;
+}> {
+	const claims = [];
+	for (const item of binding.ledger.workItems) {
+		if (item.architectureDelta >= 0) continue;
+		const claim = item.debtClaim;
+		if (!isCompleteDebtClaimEvidence(claim)) continue;
+		if (claim.coupling !== "intrinsic") continue;
+		const target = binding.debtTargets.find(
+			(entry) => entry.claimId === claim.debtClaimId,
+		);
+		if (!target || phaseOrdinal(binding.phaseMap, target.phaseId) < 0) continue;
+		claims.push({
+			creditClaimId: claim.debtClaimId,
+			phase: target.phaseId,
+			approvedArchitectureDelta: item.architectureDelta,
+		});
+	}
+	return claims;
+}
+
+function latestClaimRecord(
+	reconciliations: readonly ImplementationCreditReconciliationPayload[],
+	bindingId: string,
+	creditClaimId: string,
+): ImplementationCreditClaimRecord | undefined {
+	for (const record of [...reconciliations].reverse()) {
+		if (record.bindingId !== bindingId) continue;
+		const claim = record.claims.find(
+			(entry) => entry.creditClaimId === creditClaimId,
+		);
+		if (claim) return claim;
+	}
+	return undefined;
+}
+
+function claimView(
+	claim: ReturnType<typeof approvedIntrinsicClaims>[number],
+	record: ImplementationCreditClaimRecord | undefined,
+	due: boolean,
+): ImplementationGovernanceClaimView {
+	const status = record?.status ?? "unassessed";
+	const measured = record?.realizedArchitectureDelta ?? null;
+	const effective =
+		record?.effectiveApprovedMagnitude ??
+		Math.abs(claim.approvedArchitectureDelta);
+	const spendable =
+		status === "realized" || status === "partial"
+			? Math.min(Math.abs(measured ?? 0), effective)
+			: 0;
+	return {
+		creditClaimId: claim.creditClaimId,
+		phase: claim.phase,
+		status,
+		due,
+		reconciled:
+			status === "realized" ||
+			status === "partial" ||
+			status === "not_realized" ||
+			status === "waived",
+		approvedArchitectureDelta: claim.approvedArchitectureDelta,
+		effectiveApprovedMagnitude: effective,
+		measuredArchitectureDelta: measured,
+		realizedCredit: spendable,
+		physicallyRealized: spendable > 0,
+		waiverDecisionId: record?.waiverDecisionId ?? null,
+	};
+}
+
+function creditView(
+	binding: ImplementationBindingPayload,
+	reconciliations: readonly ImplementationCreditReconciliationPayload[],
+): ImplementationGovernanceCreditView {
+	const latest = [...reconciliations]
+		.reverse()
+		.find((record) => record.bindingId === binding.id);
+	if (latest) {
+		return {
+			grossEffort: latest.budget.W,
+			inheritedBaseline: latest.budget.B,
+			standardCeiling: latest.budget.S,
+			effectiveCeiling: latest.budget.E,
+			absoluteCeiling: latest.budget.A,
+			provisionalCredit: latest.budget.provisionalCredit,
+			realizedCredit: latest.budget.realizedCredit,
+			positiveBurden: latest.budget.P,
+		};
+	}
+	const derived = deriveBudget({
+		B0: binding.b0,
+		B: binding.governingB,
+		I: null,
+		workItems: binding.ledger.workItems,
+		findings: [],
+		assessments: [],
+		config: binding.thresholds,
+		semanticHumanRequired: false,
+	});
+	const provisionalCredit = approvedIntrinsicClaims(binding).reduce(
+		(sum, claim) => sum + Math.abs(claim.approvedArchitectureDelta),
+		0,
+	);
+	return {
+		grossEffort: derived.W,
+		inheritedBaseline: derived.B,
+		standardCeiling: derived.S,
+		effectiveCeiling: derived.E,
+		absoluteCeiling: derived.A,
+		provisionalCredit,
+		realizedCredit: 0,
+		positiveBurden: derived.P,
+	};
+}
+
+/**
+ * Add binding, range, gate, quality, claim, and credit detail to readiness.
+ * Waived and not-realized claims contribute zero realized credit.
+ */
+export function presentImplementationGovernance(input: {
+	readiness: ImplementationGovernanceReadiness;
+	binding: ImplementationBindingPayload | null;
+	contexts: readonly ImplementationReviewContextPayload[];
+	observations: readonly ImplementationReviewObservationPayload[];
+	reconciliations: readonly ImplementationCreditReconciliationPayload[];
+	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
+	activeGate: DerivedImplementationGate | null;
+}): ImplementationGovernanceState {
+	const binding = input.binding;
+	const observations = binding
+		? input.observations.filter((row) => row.bindingId === binding.id)
+		: [];
+	const latestObservation = observations.at(-1);
+	const context = latestObservation
+		? input.contexts.find((row) => row.id === latestObservation.contextId)
+		: undefined;
+	const focusPhase =
+		latestObservation?.phase ?? binding?.phaseMap[0]?.id ?? null;
+	const focusIndex =
+		binding && focusPhase ? phaseOrdinal(binding.phaseMap, focusPhase) : -1;
+	const attempt = [...input.correctionAttempts]
+		.reverse()
+		.find(
+			(row) =>
+				binding !== null &&
+				row.bindingId === binding.id &&
+				(latestObservation === undefined ||
+					row.observationId === latestObservation.id),
+		);
+	const telemetry = latestObservation?.telemetry;
+	return {
+		...input.readiness,
+		domain: "implementation",
+		phase: focusPhase,
+		binding: binding
+			? {
+					id: binding.id,
+					sourceRunId: binding.sourceRunId,
+					sourceSnapshotId: binding.sourceSnapshotId,
+					sourceBaselineId: binding.sourceBaselineId,
+					approvedPlanCommit: binding.approvedPlanCommit,
+					mode: binding.mode,
+				}
+			: null,
+		reviewedRange:
+			context && latestObservation
+				? {
+						phase: latestObservation.phase,
+						contextId: context.id,
+						baseCommit: context.baseCommit,
+						reviewedCommit: context.reviewedCommit,
+						patchHash: context.patchHash,
+					}
+				: null,
+		activeGate: input.activeGate
+			? {
+					gateId: input.activeGate.gateId,
+					phase: input.activeGate.phase,
+					observationId: input.activeGate.observationId,
+					bindingId: input.activeGate.bindingId,
+					causes: structuredClone(input.activeGate.causes),
+				}
+			: null,
+		qualityAttempt: attempt
+			? {
+					id: attempt.id,
+					observationId: attempt.observationId,
+					phase: attempt.phase,
+					outcome: attempt.outcome,
+					shortcutInvalidated: attempt.shortcutInvalidated,
+					qualityPassed: attempt.qualityPassed,
+					qualitySkipped: attempt.qualitySkipped,
+					qualityTimedOut: attempt.qualityTimedOut,
+				}
+			: null,
+		claims: binding
+			? approvedIntrinsicClaims(binding).map((claim) =>
+					claimView(
+						claim,
+						latestClaimRecord(
+							input.reconciliations,
+							binding.id,
+							claim.creditClaimId,
+						),
+						focusIndex >= 0 &&
+							phaseOrdinal(binding.phaseMap, claim.phase) <= focusIndex,
+					),
+				)
+			: [],
+		telemetry:
+			telemetry && latestObservation
+				? {
+						phase: latestObservation.phase,
+						reviewCycles: telemetry.reviewCycles,
+						fixCycles: telemetry.fixCycles,
+						reviewOriginatedCommits: telemetry.reviewOriginatedCommits,
+						qualityReruns: telemetry.qualityReruns,
+						classCounts: { ...telemetry.classCounts },
+						planAmendments: telemetry.planAmendments,
+						addedPaths: [...telemetry.addedPaths],
+						effortVariance: telemetry.effortVariance,
+						architectureVariance: telemetry.architectureVariance,
+					}
+				: null,
+		credit: binding ? creditView(binding, input.reconciliations) : null,
+	};
+}
+
+function openImplementationGate(
+	recordStore: RecordStore,
+	runId: string,
+	binding: ImplementationBindingPayload | null,
+): DerivedImplementationGate | null {
+	if (!binding) return null;
+	for (const phase of binding.phaseMap) {
+		const gate = deriveOpenImplementationGate(recordStore, runId, phase.id);
+		if (gate) return gate;
+	}
+	return null;
+}
+
+function tryPresentImplementationGovernance(
+	input: {
+		readiness: ImplementationGovernanceReadiness;
+		store: ReviewBudgetStore;
+		recordStore: RecordStore;
+		runId: string;
+	},
+	warn: (message: string) => void,
+): ImplementationGovernanceState | undefined {
+	try {
+		const binding = input.store.getImplementationBinding(input.runId);
+		const observations = binding
+			? input.store.listImplementationReviews(input.runId)
+			: [];
+		const contexts = observations.flatMap((observation) => {
+			const context = input.store.getImplementationReviewContext(
+				input.runId,
+				observation.contextId,
+			);
+			return context ? [context] : [];
+		});
+		return presentImplementationGovernance({
+			readiness: input.readiness,
+			binding,
+			contexts,
+			observations,
+			reconciliations: binding
+				? input.store.listImplementationCreditReconciliations(input.runId)
+				: [],
+			correctionAttempts: binding
+				? input.store.listImplementationCorrectionAttempts(input.runId)
+				: [],
+			activeGate: openImplementationGate(
+				input.recordStore,
+				input.runId,
+				binding,
+			),
+		});
+	} catch (error) {
+		warn(
+			`Unable to read implementation governance detail for run ${input.runId}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
+
 function tryDeriveGoverningReviewState(
 	recordStore: RecordStore,
 	runId: string,
@@ -1408,7 +1800,7 @@ export function formatStateText(data: {
 	exported_by?: RecordOrigin;
 	review_budget?: ReviewBudgetState;
 	review_governance?: ReviewGovernanceState;
-	implementation_governance?: ImplementationGovernanceReadiness;
+	implementation_governance?: ImplementationGovernanceState;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1484,12 +1876,57 @@ export function formatStateText(data: {
 			);
 	}
 	if (data.implementation_governance?.executionObligations) {
-		const ready = data.implementation_governance.phases
+		const governance = data.implementation_governance;
+		const ready = governance.phases
 			.filter((phase) => phase.ready)
 			.map((phase) => phase.phase);
 		console.log(
-			`Implementation governance: obligations=yes checklist_sufficient=no ready=${ready.join(",") || "none"}${data.implementation_governance.planDrifted ? " plan_drift=yes" : ""}`,
+			`Implementation governance: domain=${governance.domain} phase=${governance.phase ?? "none"} obligations=yes checklist_sufficient=no ready=${ready.join(",") || "none"}${governance.planDrifted ? " plan_drift=yes" : ""}`,
 		);
+		if (governance.binding) {
+			console.log(
+				`Implementation binding: id=${governance.binding.id} source_run=${governance.binding.sourceRunId} source_snapshot=${governance.binding.sourceSnapshotId} mode=${governance.binding.mode}`,
+			);
+		}
+		if (governance.reviewedRange) {
+			const range = governance.reviewedRange;
+			console.log(
+				`Implementation range: ${range.baseCommit.slice(0, 12)}..${range.reviewedCommit.slice(0, 12)} phase=${range.phase}`,
+			);
+		}
+		if (governance.activeGate) {
+			console.log(
+				`Implementation gate: ${governance.activeGate.gateId} phase=${governance.activeGate.phase}`,
+			);
+		}
+		if (governance.qualityAttempt) {
+			const attempt = governance.qualityAttempt;
+			console.log(
+				`Implementation quality: outcome=${attempt.outcome} invalidated=${attempt.shortcutInvalidated ? "yes" : "no"} passed=${attempt.qualityPassed ? "yes" : "no"}`,
+			);
+		}
+		if (governance.credit) {
+			const credit = governance.credit;
+			console.log(
+				`Implementation credit: gross_effort=${credit.grossEffort} baseline=${credit.inheritedBaseline} standard=${credit.standardCeiling} effective=${credit.effectiveCeiling} absolute=${credit.absoluteCeiling} provisional=${credit.provisionalCredit} realized=${credit.realizedCredit} positive_burden=${credit.positiveBurden}`,
+			);
+		}
+		if (governance.claims.length > 0) {
+			const claims = governance.claims
+				.map((claim) => {
+					const physical =
+						claim.status === "waived" || claim.status === "not_realized"
+							? " not_physically_realized"
+							: "";
+					const measured =
+						claim.measuredArchitectureDelta === null
+							? "none"
+							: String(claim.measuredArchitectureDelta);
+					return `${claim.creditClaimId}=${claim.status} measured=${measured} credit=${claim.realizedCredit}${physical}`;
+				})
+				.join("; ");
+			console.log(`Implementation claims: ${claims}`);
+		}
 	}
 
 	if (steps.length === 0) {
@@ -2220,6 +2657,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
 			let reviewGovernance: ReviewGovernanceState | undefined;
+			let implementationGovernance: ImplementationGovernanceState | undefined;
 			// No live run context exists here; anchor current policy to the known
 			// plan, while durable baselines below continue to pin their own policy.
 			const { config: planConfig } = await resolveLayeredConfig(
@@ -2308,6 +2746,64 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						},
 						warn,
 					);
+					const archivedPlan = existsSync(planPath)
+						? readFileSync(planPath, "utf-8")
+						: null;
+					const hasImplementationHistory = gitRecord.steps.some((step) =>
+						isNumericImplementationPhase(step.phase),
+					);
+					let archivedEvidence = hasImplementationHistory;
+					if (!archivedEvidence) {
+						try {
+							archivedEvidence =
+								archivedBudgetStore.getImplementationBinding(
+									gitRecord.summary.id,
+								) !== null ||
+								archivedBudgetStore.getImplementationCompatibility(
+									gitRecord.summary.id,
+								) !== null;
+						} catch {
+							archivedEvidence = false;
+						}
+					}
+					if (archivedEvidence) {
+						let archivedHead: string | null = null;
+						try {
+							archivedHead = await getLatestCommit(projectRoot);
+						} catch {
+							archivedHead = null;
+						}
+						try {
+							const readiness = evaluateStoredImplementationBoundary({
+								store: archivedBudgetStore,
+								recordStore: records,
+								runId: gitRecord.summary.id,
+								intent: "run_complete",
+								mode: planConfig.reviewBudget.mode,
+								currentPlanBytes: archivedPlan,
+								headCommit: archivedHead,
+								hasImplementationHistory,
+								hasDeliveryBudget: archivedPlan
+									? parseDeliveryBudget(archivedPlan).ok
+									: false,
+							}).readiness;
+							if (readiness.executionObligations) {
+								implementationGovernance = tryPresentImplementationGovernance(
+									{
+										readiness,
+										store: archivedBudgetStore,
+										recordStore: records,
+										runId: gitRecord.summary.id,
+									},
+									warn,
+								);
+							}
+						} catch (error) {
+							warn(
+								`Unable to read implementation boundary for run ${gitRecord.summary.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
 				}
 			}
 			outputSuccess(
@@ -2327,6 +2823,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					steps_remaining: budget.remaining,
 					...(reviewBudget ? { review_budget: reviewBudget } : {}),
 					...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
+					...(implementationGovernance
+						? { implementation_governance: implementationGovernance }
+						: {}),
 					...progressFields,
 					...envelopeAttribution(gitRecord.summary),
 				},
@@ -2405,7 +2904,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
 	let reviewGovernance: ReviewGovernanceState | undefined;
-	let implementationGovernance: ImplementationGovernanceReadiness | undefined;
+	let implementationGovernance: ImplementationGovernanceState | undefined;
 	{
 		const warn =
 			params.warn ??
@@ -2549,7 +3048,15 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 							: false,
 					}).readiness;
 					if (readiness.executionObligations) {
-						implementationGovernance = readiness;
+						implementationGovernance = tryPresentImplementationGovernance(
+							{
+								readiness,
+								store: reviewStore,
+								recordStore: recordContext.recordStore,
+								runId: run.id,
+							},
+							warn,
+						);
 					}
 				} catch (error) {
 					warn(

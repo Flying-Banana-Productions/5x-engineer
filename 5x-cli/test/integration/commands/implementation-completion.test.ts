@@ -980,9 +980,19 @@ describe("implementation completion boundaries", () => {
 			).toBe(0);
 			const zeroState = await cli(zero.dir, ["run", "state", "--run", zeroRun]);
 			expect(zeroState.exitCode, zeroState.stderr).toBe(0);
-			expect(
-				JSON.parse(zeroState.stdout).data.implementation_governance.phases,
-			).toContainEqual(
+			const zeroGovernance = JSON.parse(zeroState.stdout).data
+				.implementation_governance;
+			expect(zeroGovernance.domain).toBe("implementation");
+			expect(zeroGovernance.binding.sourceRunId).toEqual(expect.any(String));
+			expect(zeroGovernance.reviewedRange.baseCommit).toEqual(
+				expect.any(String),
+			);
+			expect(zeroGovernance.reviewedRange.reviewedCommit).toBe(zeroCommit);
+			expect(zeroGovernance.credit.realizedCredit).toBe(0);
+			expect(zeroGovernance.credit.grossEffort).toBeGreaterThan(0);
+			expect(zeroGovernance.credit.positiveBurden).toBeGreaterThanOrEqual(0);
+			expect(zeroState.stdout).not.toContain("not_physically_realized");
+			expect(zeroGovernance.phases).toContainEqual(
 				expect.objectContaining({
 					phase: "1",
 					reviewed: true,

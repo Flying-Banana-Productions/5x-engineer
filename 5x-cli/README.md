@@ -33,7 +33,16 @@ with `5x review gate show` and `5x review decide`; do not answer their prompt
 notifications through generic prompt commands. Mode is pinned at baseline
 capture, advisory remains the default, and older baselines decode as advisory.
 Dashboard views/actions are intentionally deferred; handler-safe read/action
-exports are available for that follow-up.
+exports are available for that follow-up
+(`docs/v2/plan-inputs/10-plan-review-governance-dashboard.plan-input.md`).
+
+Implementation review inherits that approved ledger. A budgeted non-off
+execution binds the unique approved source (or fails closed), reviews an exact
+code range, and reconciles promised credit. `5x run state` shows gross effort,
+inherited ceilings, provisional and realized credit, and positive burden
+separately. Waived or unrealized credit is not reported as physically
+realized. Advisory remains the default. A separate implementation budget and
+output normalization are later follow-ups, not this slice.
 
 ### Native-First Subagent Execution
 

@@ -5,10 +5,10 @@
 | Field | Value |
 |---|---|
 | **Slice ID** | `v2-implementation-review-governance` |
-| **Status** | `draft` |
+| **Status** | `implemented` |
 | **Owner** | |
-| **Generated plan** | `-` |
-| **Last updated** | 2026-08-13 |
+| **Generated plan** | `docs/development/plans/210-implementation-review-governance-plan.md` |
+| **Last updated** | 2026-09-24 |
 
 ---
 
@@ -52,7 +52,7 @@ Implementation review remains within approved plan intent, converges on diff-cau
 
 ## Dependencies
 
-- [ ] `07-plan-review-governance.plan-input.md` is merged with an approved budget ledger, debt claims, and durable decisions.
+- [x] `07-plan-review-governance.plan-input.md` is merged with an approved budget ledger, debt claims, and durable decisions.
 
 **Assumptions** (ok to be wrong, but then spike or revise docs):
 

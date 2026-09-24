@@ -235,7 +235,8 @@ Query the current state of a run.
 
 - Returns ALL recorded steps for the run, ordered by creation time.
 - The `summary` field provides a computed snapshot so the orchestrating agent doesn't need to compute it from raw steps.
-- When review-budget mode is not `off`, `review_budget` reports `uninitialized`, `v1_compat`, or `active`. An active baseline includes the CLI-derived forecast shown above. It also includes `stale_plan: true` when the current plan's scored effort differs from the latest recorded snapshot; the field is omitted when the snapshot is current. `requires_human` is advisory telemetry and does not change readiness, command exit codes, or workflow routing. Reserved mode `enforced` still reports `enforcement_implemented: false` and behaves as advisory. In `off` mode the object is omitted.
+- When review-budget mode is not `off`, `review_budget` reports `uninitialized`, `v1_compat`, or `active`. An active baseline includes the CLI-derived forecast shown above. It also includes `stale_plan: true` when the current plan's scored effort differs from the latest recorded snapshot; the field is omitted when the snapshot is current. `requires_human` is advisory telemetry and does not change readiness, command exit codes, or workflow routing. A pinned enforced baseline reports `enforcement_implemented: true`. In `off` mode the object is omitted. Plan-only output is unchanged when the run has no implementation binding.
+- A bound implementation run adds `implementation_governance`: `domain` (`implementation`), `phase`, `binding` (id, source run, source snapshot, approved plan commit, pinned mode), `reviewedRange`, `activeGate`, `qualityAttempt`, `claims`, `telemetry`, and `credit`. `credit` lists gross effort, inherited baseline, standard/effective/absolute ceilings, provisional credit, realized credit, and positive burden as separate fields. Waived and not-realized claims have `realizedCredit: 0` and `physicallyRealized: false`. `checklistSufficient` is always false. The object is omitted for plan-only and v1-compatible runs.
 - `--plan` adds additive `source` / `source_ref` / `source_commit` / `source_age_seconds` / `diverged_sources` from git progress resolution (same algorithm as `plan phases`). Local SQLite still supplies the active run and step `id`s when present.
 - If `--plan` is used and no local run exists, a `run.json` at the winning git commit is surfaced (`status` from the record, steps decoded from `steps.jsonl`). Those git-only step objects omit `id` (SQLite autoincrement is local-only); other step keys match the SQLite path. `RUN_NOT_FOUND` only when neither the local index nor the resolved record has a run.
 
@@ -539,6 +540,18 @@ flags. Generic `prompt answer` is rejected for gate notifications with
 `REVIEW_GATE_DECISION_REQUIRED`. Unknown/stale findings, mismatched fingerprints,
 inapplicable fields, stale-at-acceptance decisions, and conflicting gate winners
 return structured errors and do not silently mutate governing state.
+
+Implementation review uses the same commands with a phase:
+
+```bash
+5x review implementation bind --run <execution> --source-run <plan-review>
+5x review gate show --run <run_id> --phase <p>
+5x review corrections finish --run <id> --phase <p> --review <observation-id> --commit <sha>
+```
+
+`bind` is required before the first implementation admission when the plan has a Delivery Budget and the resolved mode is not `off`. Zero or multiple approved sources return `IMPLEMENTATION_APPROVAL_REQUIRED`; a unique approved source can bind without the explicit flag. `corrections finish` runs the full layered quality configuration and does not accept a passed flag or a gate override. `review decide` for an implementation gate records the versioned implementation decision payload. Dashboard HTTP remains the follow-up in `docs/v2/plan-inputs/10-plan-review-governance-dashboard.plan-input.md`.
+
+For a non-plan phase, `protocol emit reviewer` items use `scopeClass` `implementation_defect`, `plan_defect`, `scope_expansion`, or `pre_existing`. A plan defect carries `planImpact` as `{ "kind": "text_only", "locations": [{ "heading": "...", "staleText": "..." }] }`, not a string. Repeated `--credit-realization '<json>'` supplies per-claim realization evidence. Standalone validation checks the structural union and does not certify work-item linkage or code evidence.
 
 ---
 

@@ -11,8 +11,12 @@ export type {
 	SubmitPlanReviewDecisionPayload,
 } from "./commands/review-decision.handler.js";
 export {
+	bindApprovedImplementation,
+	finishImplementationCorrections,
 	showPlanReviewGate,
+	showReviewGate,
 	submitPlanReviewDecision,
+	submitReviewDecision,
 } from "./commands/review-decision.handler.js";
 // Run identity
 export type {
@@ -38,6 +42,8 @@ export {
 	readPointer,
 	writePointer,
 } from "./commands/run-pointer.js";
+export type { ImplementationGovernanceState } from "./commands/run-v1.handler.js";
+export { presentImplementationGovernance } from "./commands/run-v1.handler.js";
 // Config
 export type { AgentConfigRole, FiveXConfig } from "./config.js";
 export {
@@ -360,12 +366,16 @@ export {
 	formatAuthorGoverningDecisions,
 	formatReviewerGovernanceContext,
 } from "./review-governance/context.js";
+export { evaluateImplementationCorrectionEligibility } from "./review-governance/corrections.js";
+export type { CreditReconciliationResult } from "./review-governance/credit-reconciliation.js";
+export { reconcileApprovedCredits } from "./review-governance/credit-reconciliation.js";
 export type {
 	AcceptedRisk,
 	ApprovedScope,
 	ArchitectureApproval,
 	DecisionAcceptance,
 	GoverningReviewState,
+	ImplementationDecisionPayload,
 	ReviewDecisionPayload,
 } from "./review-governance/decisions.js";
 export {
@@ -384,6 +394,15 @@ export {
 	fingerprintImplementationVerdictItem,
 	fingerprintVerdictItem,
 } from "./review-governance/fingerprint.js";
+export {
+	deriveImplementationGovernance,
+	validateImplementationReview,
+} from "./review-governance/implementation.js";
+export type {
+	ImplementationBoundaryResult,
+	ImplementationGovernanceReadiness,
+} from "./review-governance/implementation-boundary.js";
+export { evaluateImplementationBoundary } from "./review-governance/implementation-boundary.js";
 export type { PlanDiffFailure } from "./review-governance/plan-diff.js";
 export {
 	buildPlanReviewDiffContext,
