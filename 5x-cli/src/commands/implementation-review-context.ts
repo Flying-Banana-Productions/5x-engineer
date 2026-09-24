@@ -21,13 +21,16 @@ import {
 } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import {
+	encodeImplementationCreditReconciliationPayload,
 	encodeImplementationReviewObservationPayload,
 	type ImplementationBudgetInvariant,
+	type ImplementationCreditReconciliationPayload,
 	type ImplementationObservationGateCause,
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
 	type ImplementationReviewTelemetry,
 	type ImplementationTextAmendmentPayload,
+	implementationCreditReconciliationKey,
 	implementationReviewObservationKey,
 } from "../review-budget/record-lines.js";
 import type { BudgetAlert, BudgetBand } from "../review-budget/types.js";
@@ -36,6 +39,7 @@ import {
 	isExcludedPath,
 	parseCodePatch,
 } from "../review-governance/code-diff.js";
+import { reconcileApprovedCredits } from "../review-governance/credit-reconciliation.js";
 import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
@@ -82,6 +86,7 @@ export type ComposeImplementationReviewerRecordResult =
 	| {
 			status: "applied";
 			pending: PendingImplementationObservation;
+			reconciliation: ImplementationCreditReconciliationPayload;
 			diagnostics: ImplementationDiagnostic[];
 	  };
 
@@ -530,10 +535,6 @@ export async function composeImplementationReviewerRecord(input: {
 		route = "human_gate";
 		nextAction = "plan_amendment";
 	}
-	if (route === "complete" && gateCauses.length > 0) {
-		route = "human_gate";
-		nextAction = "human_gate";
-	}
 	let priorObservations: ImplementationReviewObservationPayload[];
 	try {
 		priorObservations = listRecordedImplementationReviews(
@@ -576,10 +577,76 @@ export async function composeImplementationReviewerRecord(input: {
 		phase: phaseId,
 		iteration: input.iteration ?? null,
 	};
+	const claimObservations = (input.verdict.creditRealizations ?? []).map(
+		(realization) => ({
+			creditClaimId: realization.creditClaimId,
+			realization: realization.realization,
+			realizedArchitectureDelta: realization.realizedArchitectureDelta,
+			evidence: realization.evidence,
+		}),
+	);
+	const contexts = input.ctx.store.listImplementationReviewContexts(
+		input.runId,
+		binding.id,
+	);
+	const contextCommit = new Map(
+		contexts.map((context) => [context.id, context.reviewedCommit]),
+	);
+	let attempts: ReturnType<
+		ReviewBudgetCommandContext["store"]["listImplementationCorrectionAttempts"]
+	>;
+	try {
+		attempts = input.ctx.store.listImplementationCorrectionAttempts(
+			input.runId,
+		);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: `Correction attempts could not be read: ${message}`,
+		};
+	}
+	const reconciled = reconcileApprovedCredits({
+		binding,
+		phase: phaseId,
+		reviewedCommit: stored.reviewedCommit,
+		readiness: input.verdict.readiness,
+		route,
+		realizations: claimObservations,
+		priorAssessments: priorObservations
+			.filter((observation) => observation.bindingId === binding.id)
+			.map((observation) => ({
+				observationId: observation.id,
+				reviewedCommit:
+					contextCommit.get(observation.contextId) ?? observation.createdAt,
+				claims: observation.claimObservations,
+				laterCodeChanged:
+					contextCommit.get(observation.contextId) !== stored.reviewedCommit,
+			})),
+		correctionAttempts: attempts,
+		findingArchitectureDeltas: input.verdict.items.map(
+			(item) => item.architectureDelta ?? 0,
+		),
+		stepKey,
+	});
+	if (reconciled.status === "rejected") {
+		return {
+			status: "error",
+			code: reconciled.code,
+			message: reconciled.message,
+		};
+	}
+	gateCauses.push(...reconciled.gateCauses);
+	if (route === "complete" && gateCauses.length > 0) {
+		route = "human_gate";
+		nextAction = "human_gate";
+	}
+	const observationId = createReviewBudgetId();
 	const pending: PendingImplementationObservation = {
 		kind: "implementation-review",
 		version: 1,
-		id: createReviewBudgetId(),
+		id: observationId,
 		runId: input.runId,
 		stepKey,
 		bindingId: binding.id,
@@ -591,14 +658,7 @@ export async function composeImplementationReviewerRecord(input: {
 		route,
 		nextAction,
 		diagnostics: reviewed.governance.diagnostics,
-		claimObservations: (input.verdict.creditRealizations ?? []).map(
-			(realization) => ({
-				creditClaimId: realization.creditClaimId,
-				realization: realization.realization,
-				realizedArchitectureDelta: realization.realizedArchitectureDelta,
-				evidence: realization.evidence,
-			}),
-		),
+		claimObservations,
 		gateCauses,
 		telemetry,
 		budgetInvariant,
@@ -608,6 +668,11 @@ export async function composeImplementationReviewerRecord(input: {
 	return {
 		status: "applied",
 		pending,
+		reconciliation: {
+			...reconciled.record,
+			id: createReviewBudgetId(),
+			observationId,
+		},
 		diagnostics: reviewed.diagnostics,
 	};
 }
@@ -653,6 +718,7 @@ export async function recordImplementationReviewerStepWithObservation(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
 	pending: PendingImplementationObservation,
 	ctx: ReviewBudgetCommandContext,
+	reconciliation?: ImplementationCreditReconciliationPayload,
 ): Promise<RecordImplementationReviewResult> {
 	const admitted = await prepareRecordStepAppend(params, ctx);
 	const { prepared } = admitted;
@@ -748,10 +814,10 @@ export async function recordImplementationReviewerStepWithObservation(
 					completionAuthorized: implementationCompletionAuthorized(pending),
 					createdAt,
 				};
-				return [
+				const ops = [
 					{
 						runId: finalized.runId,
-						stream: "budget",
+						stream: "budget" as const,
 						idempotencyKey: implementationReviewObservationKey(
 							finalized.runId,
 							stepKey,
@@ -761,6 +827,26 @@ export async function recordImplementationReviewerStepWithObservation(
 						...envelope,
 					},
 				];
+				if (reconciliation) {
+					ops.push({
+						runId: finalized.runId,
+						stream: "budget",
+						idempotencyKey: implementationCreditReconciliationKey(
+							finalized.runId,
+							stepKey,
+						),
+						payload: encodeImplementationCreditReconciliationPayload({
+							...reconciliation,
+							runId: finalized.runId,
+							stepKey,
+							observationId: payload.id,
+							createdAt,
+						}),
+						createdAt,
+						...envelope,
+					});
+				}
+				return ops;
 			},
 		},
 	);

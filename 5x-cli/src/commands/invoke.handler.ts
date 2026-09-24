@@ -59,6 +59,7 @@ import type {
 	RunResult,
 } from "../providers/types.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import type { ImplementationCreditReconciliationPayload } from "../review-budget/record-lines.js";
 import {
 	CodeDiffError,
 	readHeadCommit,
@@ -442,6 +443,9 @@ export async function invokeAgent(
 		: (effectiveWorkdir ?? projectRoot);
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingImplementation: PendingImplementationObservation | undefined;
+	let pendingCreditReconciliation:
+		| ImplementationCreditReconciliationPayload
+		| undefined;
 	const warn =
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	let reviewDiffAppend: string | null = null;
@@ -1008,6 +1012,7 @@ export async function invokeAgent(
 						}
 						if (composed.status === "applied") {
 							pendingImplementation = composed.pending;
+							pendingCreditReconciliation = composed.reconciliation;
 							for (const item of composed.diagnostics) {
 								warn(`${item.code}: ${item.message}`);
 							}
@@ -1215,6 +1220,7 @@ export async function invokeAgent(
 					},
 					pendingImplementation,
 					budgetContext,
+					pendingCreditReconciliation,
 				);
 				if (written.observation) {
 					structured = {

@@ -33,6 +33,7 @@ import {
 	type ImplementationCompatibilityPayload,
 	type ImplementationCompatibilityReason,
 	type ImplementationCorrectionAttemptPayload,
+	type ImplementationCreditReconciliationPayload,
 	type ImplementationDebtTarget,
 	type ImplementationPhaseMapping,
 	type ImplementationReviewContextPayload,
@@ -2130,6 +2131,28 @@ export function recordCorrectionAttempt(input: {
 	origin: RecordOrigin;
 }): { created: boolean; payload: ImplementationCorrectionAttemptPayload } {
 	return input.store.saveImplementationCorrectionAttempt(
+		input.payload,
+		input.origin,
+	);
+}
+
+export function listCreditReconciliations(
+	store: Pick<ReviewBudgetStore, "listImplementationCreditReconciliations">,
+	runId: string,
+): ImplementationCreditReconciliationPayload[] {
+	return store.listImplementationCreditReconciliations(runId);
+}
+
+/**
+ * Append a reconciliation observation. A later restoration is a new record
+ * with `supersedesId`; this write does not erase the predecessor.
+ */
+export function recordCreditReconciliation(input: {
+	store: Pick<ReviewBudgetStore, "saveImplementationCreditReconciliation">;
+	payload: ImplementationCreditReconciliationPayload;
+	origin: RecordOrigin;
+}): { created: boolean; payload: ImplementationCreditReconciliationPayload } {
+	return input.store.saveImplementationCreditReconciliation(
 		input.payload,
 		input.origin,
 	);

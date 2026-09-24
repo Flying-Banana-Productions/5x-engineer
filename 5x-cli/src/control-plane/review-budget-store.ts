@@ -7,6 +7,7 @@ import {
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
 	decodeImplementationCorrectionAttemptPayload,
+	decodeImplementationCreditReconciliationPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
@@ -15,11 +16,13 @@ import {
 	encodeImplementationBindingPayload,
 	encodeImplementationCompatibilityPayload,
 	encodeImplementationCorrectionAttemptPayload,
+	encodeImplementationCreditReconciliationPayload,
 	encodeImplementationReviewContextPayload,
 	encodeImplementationTextAmendmentPayload,
 	type ImplementationBindingPayload,
 	type ImplementationCompatibilityPayload,
 	type ImplementationCorrectionAttemptPayload,
+	type ImplementationCreditReconciliationPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
@@ -27,6 +30,7 @@ import {
 	implementationBindingKey,
 	implementationCompatibilityKey,
 	implementationCorrectionAttemptKey,
+	implementationCreditReconciliationKey,
 	implementationReviewContextKey,
 	implementationReviewObservationKey,
 	implementationTextAmendmentKey,
@@ -188,6 +192,13 @@ export interface ReviewBudgetStore {
 		payload: ImplementationCorrectionAttemptPayload,
 		origin: RecordOrigin,
 	): { created: boolean; payload: ImplementationCorrectionAttemptPayload };
+	listImplementationCreditReconciliations(
+		runId: string,
+	): ImplementationCreditReconciliationPayload[];
+	saveImplementationCreditReconciliation(
+		payload: ImplementationCreditReconciliationPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationCreditReconciliationPayload };
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -639,6 +650,44 @@ export function createReviewBudgetStore(
 			return {
 				created: result.created,
 				payload: decodeImplementationCorrectionAttemptPayload(
+					result.line.payload,
+				),
+			};
+		},
+
+		listImplementationCreditReconciliations(runId) {
+			const records: ImplementationCreditReconciliationPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-credit-reconciliation"
+				) {
+					continue;
+				}
+				records.push(
+					decodeImplementationCreditReconciliationPayload(line.payload),
+				);
+			}
+			return records;
+		},
+
+		saveImplementationCreditReconciliation(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.runId,
+				stream: "budget",
+				idempotencyKey: implementationCreditReconciliationKey(
+					payload.runId,
+					payload.stepKey,
+				),
+				payload: encodeImplementationCreditReconciliationPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationCreditReconciliationPayload(
 					result.line.payload,
 				),
 			};

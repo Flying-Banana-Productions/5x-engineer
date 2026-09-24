@@ -30,7 +30,8 @@ export type BudgetRecordKind =
 	| "implementation-text-amendment"
 	| "implementation-review-context"
 	| "implementation-review"
-	| "implementation-correction-attempt";
+	| "implementation-correction-attempt"
+	| "implementation-credit-reconciliation";
 export type CaptureKind = "initial" | "opt_in";
 
 export interface BudgetBaselinePayload {
@@ -643,6 +644,20 @@ export type ImplementationObservationGateCause =
 			kind: "inherited_budget";
 			band: BudgetBand;
 			alerts: BudgetAlert[];
+	  }
+	| {
+			kind: "credit_shortfall";
+			claimIds: string[];
+			claims: Array<{
+				creditClaimId: string;
+				approvedArchitectureDelta: number;
+				realizedArchitectureDelta: number;
+				evidence: string;
+			}>;
+	  }
+	| {
+			kind: "credit_unreconciled";
+			claimIds: string[];
 	  };
 
 export interface ImplementationBoundaryInventoryEntry {
@@ -963,6 +978,55 @@ function decodeObservationGateCause(
 				}
 				return alert as BudgetAlert;
 			}),
+		};
+	}
+	if (cause.kind === "credit_shortfall") {
+		if (!Array.isArray(cause.claimIds) || !Array.isArray(cause.claims)) {
+			throw new TypeError(
+				`gateCauses[${index}] credit_shortfall requires claimIds and claims`,
+			);
+		}
+		return {
+			kind: "credit_shortfall",
+			claimIds: cause.claimIds.map((entry, claimIndex) =>
+				stringField(entry, `gateCauses[${index}].claimIds[${claimIndex}]`),
+			),
+			claims: cause.claims.map((entry, claimIndex) => {
+				const claim = object(
+					entry,
+					`gateCauses[${index}].claims[${claimIndex}]`,
+				);
+				return {
+					creditClaimId: stringField(
+						claim.creditClaimId,
+						`gateCauses[${index}].claims[${claimIndex}].creditClaimId`,
+					),
+					approvedArchitectureDelta: integerField(
+						claim.approvedArchitectureDelta,
+						`gateCauses[${index}].claims[${claimIndex}].approvedArchitectureDelta`,
+					),
+					realizedArchitectureDelta: integerField(
+						claim.realizedArchitectureDelta,
+						`gateCauses[${index}].claims[${claimIndex}].realizedArchitectureDelta`,
+					),
+					evidence: stringField(
+						claim.evidence,
+						`gateCauses[${index}].claims[${claimIndex}].evidence`,
+						true,
+					),
+				};
+			}),
+		};
+	}
+	if (cause.kind === "credit_unreconciled") {
+		if (!Array.isArray(cause.claimIds)) {
+			throw new TypeError(`gateCauses[${index}].claimIds must be an array`);
+		}
+		return {
+			kind: "credit_unreconciled",
+			claimIds: cause.claimIds.map((entry, claimIndex) =>
+				stringField(entry, `gateCauses[${index}].claimIds[${claimIndex}]`),
+			),
 		};
 	}
 	throw new TypeError(`gateCauses[${index}].kind is invalid`);
@@ -1403,6 +1467,252 @@ export function decodeImplementationCorrectionAttemptPayload(
 		),
 		carriedClaims: decodeClaimObservations(value.carriedClaims),
 		qualityRerun: nonNegativeInteger(value.qualityRerun, "qualityRerun"),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+export type CreditReconciliationClaimStatus =
+	| "realized"
+	| "partial"
+	| "not_realized"
+	| "pending"
+	| "waived"
+	| "future";
+
+/** Measured post-state plus the approved envelope after waivers. */
+export interface ImplementationCreditClaimRecord {
+	creditClaimId: string;
+	phaseId: string;
+	status: CreditReconciliationClaimStatus;
+	approvedArchitectureDelta: number;
+	effectiveApprovedMagnitude: number;
+	realizedArchitectureDelta: number | null;
+	evidence: string | null;
+	assessedCommit: string | null;
+	sourceObservationId: string | null;
+	carried: boolean;
+	waiverDecisionId: string | null;
+}
+
+export interface ImplementationCreditBudgetSnapshot {
+	W: number;
+	R: number;
+	B: number;
+	P: number;
+	N: number;
+	D: number;
+	E: number;
+	S: number;
+	A: number;
+	provisionalCredit: number;
+	realizedCredit: number;
+	budgetBand: BudgetBand;
+	budgetAlerts: BudgetAlert[];
+	requiresHuman: boolean;
+}
+
+/**
+ * Immutable credit fold coupled to one reviewer step. A later restoration
+ * appends another record; it does not rewrite this one.
+ */
+export interface ImplementationCreditReconciliationPayload {
+	kind: "implementation-credit-reconciliation";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	runId: string;
+	stepKey: ImplementationReviewStepKey;
+	bindingId: string;
+	observationId: string;
+	phase: string;
+	reviewedCommit: string;
+	claims: ImplementationCreditClaimRecord[];
+	pendingClaimIds: string[];
+	supersedesId: string | null;
+	budget: ImplementationCreditBudgetSnapshot;
+	creditUnrealized: boolean;
+	material: boolean;
+	completionSatisfied: boolean;
+	createdAt: string;
+}
+
+export function implementationCreditReconciliationKey(
+	runId: string,
+	stepKey: ImplementationReviewStepKey,
+): string {
+	return `budget:implementation-credit-reconciliation:${runId}:${stepKey.stepName}:${stepKey.phase ?? ""}:${stepKey.iteration ?? ""}`;
+}
+
+const CREDIT_CLAIM_STATUSES = new Set<CreditReconciliationClaimStatus>([
+	"realized",
+	"partial",
+	"not_realized",
+	"pending",
+	"waived",
+	"future",
+]);
+
+const CREDIT_RECONCILIATION_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"stepKey",
+	"bindingId",
+	"observationId",
+	"phase",
+	"reviewedCommit",
+	"claims",
+	"pendingClaimIds",
+	"supersedesId",
+	"budget",
+	"creditUnrealized",
+	"material",
+	"completionSatisfied",
+	"createdAt",
+]);
+
+export function encodeImplementationCreditReconciliationPayload(
+	payload: ImplementationCreditReconciliationPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+function decodeCreditClaim(
+	raw: unknown,
+	index: number,
+): ImplementationCreditClaimRecord {
+	const claim = object(raw, `claims[${index}]`);
+	if (
+		!CREDIT_CLAIM_STATUSES.has(claim.status as CreditReconciliationClaimStatus)
+	) {
+		throw new TypeError(`claims[${index}].status is invalid`);
+	}
+	const realized = claim.realizedArchitectureDelta;
+	if (realized !== null && !Number.isInteger(realized)) {
+		throw new TypeError(
+			`claims[${index}].realizedArchitectureDelta must be an integer or null`,
+		);
+	}
+	return {
+		creditClaimId: stringField(
+			claim.creditClaimId,
+			`claims[${index}].creditClaimId`,
+		),
+		phaseId: stringField(claim.phaseId, `claims[${index}].phaseId`),
+		status: claim.status as CreditReconciliationClaimStatus,
+		approvedArchitectureDelta: integerField(
+			claim.approvedArchitectureDelta,
+			`claims[${index}].approvedArchitectureDelta`,
+		),
+		effectiveApprovedMagnitude: nonNegativeInteger(
+			claim.effectiveApprovedMagnitude,
+			`claims[${index}].effectiveApprovedMagnitude`,
+		),
+		realizedArchitectureDelta: realized as number | null,
+		evidence:
+			claim.evidence === null
+				? null
+				: stringField(claim.evidence, `claims[${index}].evidence`, true),
+		assessedCommit:
+			claim.assessedCommit === null
+				? null
+				: stringField(claim.assessedCommit, `claims[${index}].assessedCommit`),
+		sourceObservationId:
+			claim.sourceObservationId === null
+				? null
+				: stringField(
+						claim.sourceObservationId,
+						`claims[${index}].sourceObservationId`,
+					),
+		carried: booleanField(claim.carried, `claims[${index}].carried`),
+		waiverDecisionId:
+			claim.waiverDecisionId === null
+				? null
+				: stringField(
+						claim.waiverDecisionId,
+						`claims[${index}].waiverDecisionId`,
+					),
+	};
+}
+
+function decodeCreditBudget(raw: unknown): ImplementationCreditBudgetSnapshot {
+	const value = object(raw, "budget");
+	if (!BUDGET_BANDS.has(value.budgetBand as BudgetBand)) {
+		throw new TypeError("budget.budgetBand is invalid");
+	}
+	if (!Array.isArray(value.budgetAlerts)) {
+		throw new TypeError("budget.budgetAlerts must be an array");
+	}
+	return {
+		W: nonNegativeInteger(value.W, "budget.W"),
+		R: integerField(value.R, "budget.R"),
+		B: nonNegativeInteger(value.B, "budget.B"),
+		P: integerField(value.P, "budget.P"),
+		N: nonNegativeInteger(value.N, "budget.N"),
+		D: nonNegativeInteger(value.D, "budget.D"),
+		E: nonNegativeInteger(value.E, "budget.E"),
+		S: nonNegativeInteger(value.S, "budget.S"),
+		A: nonNegativeInteger(value.A, "budget.A"),
+		provisionalCredit: nonNegativeInteger(
+			value.provisionalCredit,
+			"budget.provisionalCredit",
+		),
+		realizedCredit: nonNegativeInteger(
+			value.realizedCredit,
+			"budget.realizedCredit",
+		),
+		budgetBand: value.budgetBand as BudgetBand,
+		budgetAlerts: value.budgetAlerts.map((alert, index) => {
+			if (!BUDGET_ALERTS.has(alert as BudgetAlert)) {
+				throw new TypeError(`budget.budgetAlerts[${index}] is invalid`);
+			}
+			return alert as BudgetAlert;
+		}),
+		requiresHuman: booleanField(value.requiresHuman, "budget.requiresHuman"),
+	};
+}
+
+export function decodeImplementationCreditReconciliationPayload(
+	raw: unknown,
+): ImplementationCreditReconciliationPayload {
+	const value = object(raw, "implementation credit reconciliation");
+	rejectUnknownKeys(
+		value,
+		CREDIT_RECONCILIATION_KEYS,
+		"implementation credit reconciliation",
+	);
+	if (value.kind !== "implementation-credit-reconciliation") {
+		throw new TypeError("invalid implementation credit reconciliation kind");
+	}
+	versionField(value.version);
+	if (!Array.isArray(value.claims) || !Array.isArray(value.pendingClaimIds)) {
+		throw new TypeError("claims and pendingClaimIds must be arrays");
+	}
+	return {
+		kind: "implementation-credit-reconciliation",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		stepKey: decodeObservationStepKey(value.stepKey),
+		bindingId: stringField(value.bindingId, "bindingId"),
+		observationId: stringField(value.observationId, "observationId"),
+		phase: stringField(value.phase, "phase"),
+		reviewedCommit: stringField(value.reviewedCommit, "reviewedCommit"),
+		claims: value.claims.map((entry, index) => decodeCreditClaim(entry, index)),
+		pendingClaimIds: value.pendingClaimIds.map((entry, index) =>
+			stringField(entry, `pendingClaimIds[${index}]`),
+		),
+		supersedesId:
+			value.supersedesId === null
+				? null
+				: stringField(value.supersedesId, "supersedesId"),
+		budget: decodeCreditBudget(value.budget),
+		creditUnrealized: booleanField(value.creditUnrealized, "creditUnrealized"),
+		material: booleanField(value.material, "material"),
+		completionSatisfied: booleanField(
+			value.completionSatisfied,
+			"completionSatisfied",
+		),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }

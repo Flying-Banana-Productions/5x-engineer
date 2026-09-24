@@ -20,7 +20,10 @@ import {
 	readInvocationLogSummary,
 } from "../providers/log-writer.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
-import type { ImplementationBindingPayload } from "../review-budget/record-lines.js";
+import type {
+	ImplementationBindingPayload,
+	ImplementationCreditReconciliationPayload,
+} from "../review-budget/record-lines.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
 	canonicalPhaseId,
@@ -558,6 +561,9 @@ export async function protocolValidate(
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
 	let pendingImplementation: PendingImplementationObservation | undefined;
+	let pendingCreditReconciliation:
+		| ImplementationCreditReconciliationPayload
+		| undefined;
 	let implementationRecordContext: ReviewBudgetCommandContext | undefined;
 	let implementationBinding: ImplementationBindingPayload | null = null;
 	const warn =
@@ -692,6 +698,7 @@ export async function protocolValidate(
 			}
 			if (composed?.status === "applied") {
 				pendingImplementation = composed.pending;
+				pendingCreditReconciliation = composed.reconciliation;
 				for (const item of composed.diagnostics) {
 					warn(`${item.code}: ${item.message}`);
 				}
@@ -946,6 +953,7 @@ export async function protocolValidate(
 				},
 				pendingImplementation,
 				implementationRecordContext,
+				pendingCreditReconciliation,
 			);
 			if (written.observation) {
 				validated = {
