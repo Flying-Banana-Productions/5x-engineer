@@ -152,3 +152,27 @@ This is a test-coverage gap, not a defect I can point to a concrete wrong behavi
 
 - **Phase 8 completion:** ✅ — All four P1 blockers from the prior review are fixed with direct regression coverage on the real production path, and every P2 item raised previously is also resolved. `tsc`, lint, and the full scoped test set are clean.
 - **Ready for next phase:** ✅ — with one new P2 (test-coverage only, `auto_fix`) noted above. Nothing here requires a design decision or blocks moving on.
+
+---
+
+## Addendum (2026-09-24, second) — restore_simplification test coverage closed
+
+**Reviewed:** `1b3cdbe348c4dd05b977a8011e10cf477f115bad` (single commit on top of `8a6f814`: "Test restore_simplification reconciliation mapping and waiver isolation.")
+**Local verification:** `bun test test/unit/review-governance test/unit/commands/implementation-review-context.test.ts test/unit/commands/implementation-review-decision.test.ts test/unit/db test/integration/code-review-diff.test.ts test/integration/commands/implementation-review-governance.test.ts` → 339 pass / 0 fail (up from 337); `bunx tsc --noEmit` clean; `bunx --bun @biomejs/biome check` on the touched files clean. This revision is test-only — no `src/` file changed.
+
+### What's addressed (✅)
+
+- **P2.2 — `restore_simplification` reconciliation mapping now has both unit and end-to-end coverage.** Two tests were added:
+  - `credit-reconciliation.test.ts`, "claim decisions map to waivers or restorations in isolation": drives `humanDebtDecisionsFromImplementationDecisions` directly with `approve_higher_burden`, `reduce_scope`, `restore_simplification` (with and without `supersedesObservationId`), and `abort` inputs, and asserts the exact mapped output — confirming `approve_higher_burden`/`reduce_scope` become `waiver`s, `restore_simplification` becomes a `restoration` only when `supersedesObservationId` is present, and `abort` (and a restoration missing `supersedesObservationId`) map to nothing.
+  - `implementation-review-context.test.ts`, "an accepted restoration reopens the superseded claim without waiving it": a full four-iteration `composeImplementationReviewerRecord` scenario — realize a claim, settle it (`carried: true`), record a `restore_simplification` decision through the real step/decision append path, and confirm the next composition reopens the claim (`status: "pending"`, `carried: false`, `effectiveApprovedMagnitude` back to the full original magnitude, `waiverDecisionId: null`, `credit_unreconciled` gate cause reappears), then confirms a fresh partial realization is accepted afterward. This is a meaningful, non-vacuous test: it would catch a regression in either the `restoration` mapping or the `restored()`/`settledPastClaim()` consumption in `credit-reconciliation.ts`, and it explicitly distinguishes restoration (full magnitude reopened) from waiver (reduced magnitude, no reopening) — the exact distinction the prior review's gap was about.
+
+  **Addressed.** This closes the last open item from the prior review.
+
+### Remaining concerns
+
+None. All P1 items from the original review and all P2 items (including the one raised in the previous addendum) are now resolved with direct regression coverage.
+
+### Updated readiness
+
+- **Phase 8 completion:** ✅ — Every item raised across both prior review passes is now addressed. `tsc`, lint, and the full scoped test set are clean, and test count increased (337 → 339) without any regressions.
+- **Ready for next phase:** ✅ — No corrections remain outstanding for this phase.
