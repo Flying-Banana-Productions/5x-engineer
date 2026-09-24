@@ -120,3 +120,40 @@ Fix:
 - [ ] P2.2 Decide waiver-without-observation credit semantics.
 - [ ] P2.3 Reject ineligible known claim IDs.
 - [ ] P2.4 Cleanups (commit fallback, `supersedesId` identity, dead parameter, redundant branch).
+
+---
+
+## Addendum (2026-09-24) — Multi-phase deadlock fix and evidence/waiver corrections
+
+**Reviewed:** `0b63b9caf0a1c608b5e239ffeaa506dd4b6f188b` (`9fa14a6` reconciliation/composition changes + `0b63b9c` formatting-only follow-up)
+
+**Local verification:** `bunx tsc --noEmit` clean; `bun test test/unit/review-governance test/unit/review-budget test/unit/commands` → 941 pass / 0 fail (up from 931 in the prior review); `bunx @biomejs/biome check src/ test/` clean, confirming `0b63b9c` is formatting-only (whitespace/wrap changes only, verified by diff). Full `bun test` was still running in the background at review time; the targeted suites covering every changed module are green and the formatting commit's diff contains no logic changes, so I did not block on the full run.
+
+### What's addressed (✅)
+
+- **P0.1 — Past-phase claim deadlock (fixed):** `reconcileApprovedCredits` now takes `priorReconciliations` and, for any approved claim whose `phaseId` differs from the current phase, calls the new `settledPastClaim` helper instead of routing through same-phase carry-forward/pending logic. `settledPastClaim` (`src/review-governance/credit-reconciliation.ts:393`) walks the binding's own prior reconciliation records (filtered to the claim's target phase) most-recent-first and returns the last non-`pending`/non-`future` entry, honoring active restorations. Composition (`src/commands/implementation-review-context.ts:602-621`) now loads and passes `priorReconciliations` from `listCreditReconciliations`, filtered to the current binding. I re-ran the exact two-phase repro from the prior review as an automated test (`test/unit/review-governance/credit-reconciliation.test.ts`, "a past-phase settled claim stays realized when later code changes") and as a full composition test (`test/unit/commands/implementation-review-context.test.ts`, "a settled phase-1 claim lets phase 2 complete"): phase 2 now reaches `complete` with `realizedCredit: 3` and no `credit_unreconciled` cause. A fresh realization for a past-phase claim is still correctly rejected `CREDIT_CLAIM_WRONG_PHASE`, and a past-phase claim with no settled record in its own phase still correctly stays `pending`/gated (own new test: "a past-phase claim with no settlement stays unreconciled"). This matches the plan's target-phase-only invalidation rule and is well covered.
+
+- **P1.1 — Composition-level tests (fixed):** `test/unit/commands/implementation-review-context.test.ts` gained a new `describe("implementation credit reconciliation composition", …)` block covering: persistence of the reconciliation record under the step key with invoke/protocol parity, idempotent replay, `complete → human_gate` downgrade on a `credit_unreconciled` cause, rejection propagation (`CREDIT_REALIZATION_INVALID`) through `composeImplementationReviewerRecord`, the two-phase settled-carry scenario, the same-phase correction-attempt carry-forward scenario, and advisory-mode evidence/waiver behavior. This is exactly the coverage gap flagged previously and it is what caught the original P0.1 bug class.
+
+- **P1.2 — Evidence handling (fixed):** `evidenceReferencesCommit` (`src/review-governance/credit-reconciliation.ts:333`) now accepts a ≥7-hex-char prefix of the full reviewed SHA, not just an exact full-SHA substring match. In non-`enforced` binding mode, a failed evidence reference is downgraded from a hard rejection to a `CREDIT_EVIDENCE_UNRESOLVED` info diagnostic plus a `pending` claim status, rather than aborting the whole record; `enforced` mode still hard-rejects. Composition threads `reconciled.diagnostics` into `reviewed.governance.diagnostics`. Covered directly (`"a short commit prefix is evidence and a missing reference is advisory"`) and at the composition layer (`"advisory evidence stays diagnostic…"`).
+
+- **P2.1 — Human debt decisions / binding evidence wiring (fixed, with one residual note):** `humanDebtDecisionsFromBinding` decodes `binding.effectiveDecisions` into typed waiver/restoration decisions and composition now passes it, plus a `bindingEvidence` object, into `reconcileApprovedCredits`. The waiver path is exercised end-to-end by a real binding with `effectiveDecisions` set (`"advisory evidence stays diagnostic…"` test, `waived` context). One residual: `bindingEvidence` is constructed in composition directly from the same `binding` object being reconciled (`id`/`ledgerHash`/`decisionsHash` all sourced from it), so the `STALE_BINDING` check it feeds is tautologically always satisfied in production — it can only ever fire in a unit test that deliberately mismatches the two. This isn't a regression (it wasn't wired at all before) and isn't blocking, but the check currently provides no real protection against a stale in-memory binding; it would need to compare against an independently-sourced hash (e.g. one embedded in a recorded step) to do that. Low-priority follow-up, not a blocker.
+
+- **P2.2 — Waiver-without-observation credit (resolved as a real fix, not just documented as a choice):** The unconditional `realizedN += effectiveMagnitude` on a waiver with no observation is gone. Waived claims with no measurement now record `realizedArchitectureDelta: null` and contribute nothing to `realizedN`, confirmed by `"a waiver without a measurement grants no realized credit"` and the composition `"envelope"` case (`realizedCredit: 0`). This is a stronger resolution than I expected from a `human_required` item — it removes the free-credit bug entirely rather than choosing between the two policy options I posed, which is the correct behavior per the plan's "missing due credit is not spendable" and "waiver affects... not the historical measured post-state." Treating as resolved.
+
+- **P2.3 — Ineligible known claim IDs (fixed):** The separate `known` set (built from all ledger `debtClaimId`s regardless of eligibility) is gone; unknown-claim checks now use `approvedById.get(...)`, which is built only from `eligibleClaim` results (negative delta, complete debt-claim evidence, `intrinsic` coupling). A realization for a non-intrinsic/non-negative ledger claim ID is now correctly rejected `CREDIT_CLAIM_UNKNOWN` instead of silently dropped, confirmed by `"an ineligible ledger claim id is unknown"`.
+
+- **P2.4 — Cleanups (all fixed):** the `contextCommit.get(...) ?? observation.createdAt` timestamp fallback is gone (now `flatMap` skips observations with no resolvable context commit); `supersedesId` (predecessor reconciliation record) and the new `supersedesObservationId` (observation a restoration supersedes) are now distinct fields end-to-end (type, encode/decode, tests); `findingArchitectureDeltas` (dead void-ed parameter) is removed entirely; the redundant `!laterCodeChanged && reviewedCommit === input.reviewedCommit` branch in `carriedAssessment` was collapsed into the single `!laterCodeChanged` branch.
+
+### Remaining concerns
+
+- Only the P2.1 binding-evidence tautology noted above, which is cosmetic/defense-in-depth rather than a functional gap for Phase 7's scope.
+
+### New issues introduced by this revision
+
+None found. I re-read the full current `credit-reconciliation.ts` and the composition wiring, traced the past-phase branch (including its interaction with active waivers and restorations layered on top of a settled record), and re-ran the type check, targeted unit/composition suites, and lint — all clean. `0b63b9c` is confirmed whitespace-only against `9fa14a6` by diff inspection.
+
+### Updated readiness
+
+- **Phase 7 completion:** ✅ — the P0 blocker and both P1 items are fixed and directly tested; all P2 items are fixed except a non-blocking, cosmetic wiring gap in the binding-evidence staleness check.
+- **Ready for next phase:** ✅ — no remaining blockers or human-required items.
