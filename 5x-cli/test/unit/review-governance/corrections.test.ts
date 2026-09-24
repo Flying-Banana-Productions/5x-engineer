@@ -11,8 +11,10 @@ import { createReviewBudgetStore } from "../../../src/control-plane/review-budge
 import type { ReviewerVerdict } from "../../../src/protocol.js";
 import {
 	encodeImplementationReviewObservationPayload,
+	IMPLEMENTATION_STATE_VERSION,
 	type ImplementationBindingPayload,
 	type ImplementationClaimObservation,
+	type ImplementationCorrectionAttemptPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	implementationReviewObservationKey,
@@ -544,6 +546,80 @@ describe("finishImplementationCorrection", () => {
 		expect(second.status).toBe("complete");
 		if (second.status === "complete") expect(second.resumed).toBe(true);
 		expect(calls).toBe(1);
+	});
+
+	test("a durably saved passing attempt resumes after a crash without rerunning quality", async () => {
+		const { store, recordStore } = setup();
+		const digest = qualityConfigDigest({
+			gates: ["bun test"],
+			skipQualityGates: false,
+			executionDirectory: "/repo",
+		});
+		const saved: ImplementationCorrectionAttemptPayload = {
+			kind: "implementation-correction-attempt",
+			version: IMPLEMENTATION_STATE_VERSION,
+			id: "attempt-crash",
+			runId: RUN,
+			observationId: "obs-1",
+			phase: "6",
+			bindingId: "bind-1",
+			authorCommit: COMMIT,
+			tree: TREE,
+			qualityConfigDigest: digest,
+			executionDirectory: "/repo",
+			outcome: "passed",
+			shortcutInvalidated: false,
+			reason: "passed",
+			qualityPassed: true,
+			qualitySkipped: false,
+			qualityTimedOut: false,
+			qualityResults: [
+				{
+					command: "bun test",
+					passed: true,
+					durationMs: 4,
+					timedOut: false,
+				},
+			],
+			architectureDelta: 0,
+			boundaryChanges: [],
+			changedPaths: ["src/fix.ts"],
+			inventoryClean: true,
+			boundaryUncertain: false,
+			sourceObservationId: "obs-1",
+			assessedCommit: REVIEWED,
+			destinationCommit: COMMIT,
+			carriedClaims: CLAIMS,
+			qualityRerun: 1,
+			createdAt: "2026-09-23 00:00:03",
+		};
+		store.saveImplementationCorrectionAttempt(saved, ORIGIN);
+		let calls = 0;
+		const resumed = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-1",
+			commit: COMMIT,
+			store,
+			recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit(),
+			runQuality: async () => {
+				calls += 1;
+				return passingQuality();
+			},
+		});
+		expect(resumed.status).toBe("complete");
+		if (resumed.status !== "complete") return;
+		expect(resumed.resumed).toBe(true);
+		expect(resumed.attempt.id).toBe("attempt-crash");
+		expect(resumed.carriedClaims).toEqual(CLAIMS);
+		expect(calls).toBe(0);
+		expect(store.listImplementationCorrectionAttempts(RUN)).toHaveLength(1);
 	});
 
 	test("stale pre-review quality is not proof", async () => {
