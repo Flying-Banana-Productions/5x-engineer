@@ -21,7 +21,7 @@ import type {
 	ReviewBudgetSnapshotRecord,
 	ReviewBudgetStore,
 } from "../control-plane/review-budget-store.js";
-import { gitShowFile } from "../git.js";
+import { gitShowFile, gitShowFileBytes } from "../git.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
 import { planSlugFromPath, relativePathUnder } from "../paths.js";
@@ -67,6 +67,7 @@ import {
 } from "./decisions.js";
 import {
 	evaluateSupersedingLedger,
+	normalizeCheckboxMarkers,
 	verifyGuardedPlanBytes,
 	worktreeMatchesCommit,
 } from "./plan-amendment.js";
@@ -113,9 +114,9 @@ function hashJson(value: unknown): string {
 	return hashPlanBytes(stableStringify(value));
 }
 
-/** Ignore checkbox toggles on Markdown task-list items only. */
+/** Ignore checkbox toggles, including ordered-list markers. */
 export function normalizeCheckboxState(markdown: string): string {
-	return markdown.replace(/^(\s*[-*+]\s+)\[[ xX]\]/gm, "$1[ ]");
+	return normalizeCheckboxMarkers(markdown);
 }
 
 /**
@@ -282,6 +283,22 @@ export async function showPlanAtCommit(
 			strict: true,
 			exact: true,
 		});
+	} catch {
+		return null;
+	}
+}
+
+/** Raw `git show` bytes. Invalid UTF-8 is preserved for the amendment guard. */
+export async function showPlanBlobAtCommit(
+	workdir: string,
+	commit: string,
+	planPath: string,
+	options?: { repoRoot?: string },
+): Promise<Buffer | null> {
+	const repoPath = planRepoPath(planPath, options?.repoRoot ?? workdir);
+	if (!repoPath) return null;
+	try {
+		return await gitShowFileBytes(workdir, commit, repoPath);
 	} catch {
 		return null;
 	}
@@ -1332,6 +1349,9 @@ export function verifyAuthorTextAmendment(input: {
 	}
 	const parent = loaded.amendments.at(-1);
 	const guard = latest.textGuard;
+	if (loaded.amendments.some((amendment) => amendment.guardId === guard.id)) {
+		return { status: "not_applicable" };
+	}
 	if (
 		guard.parentLineageId !== (parent?.id ?? null) ||
 		guard.anchorBlobHash !== replay.authorizedHash
@@ -1393,7 +1413,11 @@ export function verifyAuthorTextAmendment(input: {
 	return { status: "verified", amendment: recorded.amendment };
 }
 
-/** Author admission reads the committed blob. The worktree copy must match it. */
+/**
+ * Author admission reads the committed blob as raw bytes. The worktree copy
+ * must match it. The author's recorded commit is the blob to verify; HEAD is
+ * used only when that result omits a commit.
+ */
 export async function admitAuthorTextAmendmentFromGit(input: {
 	store: ReviewBudgetStore;
 	binding: ImplementationBindingPayload;
@@ -1403,19 +1427,23 @@ export async function admitAuthorTextAmendmentFromGit(input: {
 	planPath: string;
 	repoRoot?: string;
 	worktreePlanBytes: Buffer | null;
+	authorCommit?: string;
 }): Promise<AuthorTextAmendmentResult> {
-	let afterCommit: string;
-	try {
-		afterCommit = await readHeadCommit(workdirCodeDiffGit(input.workdir));
-	} catch (error) {
-		return {
-			status: "failed",
-			code: error instanceof CodeDiffError ? error.code : "CODE_DIFF_GIT_ERROR",
-			message: error instanceof Error ? error.message : String(error),
-			blocking: input.binding.mode === "enforced",
-		};
+	let afterCommit = input.authorCommit?.trim() ?? "";
+	if (afterCommit.length === 0) {
+		try {
+			afterCommit = await readHeadCommit(workdirCodeDiffGit(input.workdir));
+		} catch (error) {
+			return {
+				status: "failed",
+				code:
+					error instanceof CodeDiffError ? error.code : "CODE_DIFF_GIT_ERROR",
+				message: error instanceof Error ? error.message : String(error),
+				blocking: input.binding.mode === "enforced",
+			};
+		}
 	}
-	const committed = await showPlanAtCommit(
+	const committed = await showPlanBlobAtCommit(
 		input.workdir,
 		afterCommit,
 		input.planPath,
@@ -1426,8 +1454,7 @@ export async function admitAuthorTextAmendmentFromGit(input: {
 		binding: input.binding,
 		origin: input.origin,
 		phase: input.phase,
-		committedPlanBytes:
-			committed === null ? null : Buffer.from(committed, "utf8"),
+		committedPlanBytes: committed,
 		worktreePlanBytes: input.worktreePlanBytes,
 		afterCommit,
 	});

@@ -248,8 +248,18 @@ export function extractBudgetTableBytes(
 	return { ok: true, tableBytes: markdown.slice(start, end) };
 }
 
+const CHECKBOX_MARKER_SOURCE = String.raw`^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]`;
+
+/**
+ * Collapse `[ ]`, `[x]`, and `[X]` to `[ ]` without changing byte length.
+ * Other bytes, including text injected in place of a marker, stay intact.
+ */
+export function normalizeCheckboxMarkers(markdown: string): string {
+	return markdown.replace(new RegExp(CHECKBOX_MARKER_SOURCE, "gm"), "$1[ ]");
+}
+
 function checkboxIdentity(line: string): string {
-	return line.replace(/^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]/, "$1[ ]");
+	return line.replace(new RegExp(CHECKBOX_MARKER_SOURCE), "$1[ ]");
 }
 
 /** Phase headings, checklist identities, and protected section bytes. */
@@ -311,24 +321,6 @@ function protectedByteRanges(markdown: string): Array<{
 		start: encoder.encode(markdown.slice(0, range.start)).length,
 		end: encoder.encode(markdown.slice(0, range.end)).length,
 	}));
-}
-
-function checkboxByteRanges(markdown: string): Array<{
-	start: number;
-	end: number;
-}> {
-	const encoder = new TextEncoder();
-	const ranges: Array<{ start: number; end: number }> = [];
-	for (const line of markdownLines(markdown)) {
-		const checkbox = /^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]/.exec(line.text);
-		if (!checkbox?.[1]) continue;
-		const markerStart = line.start + checkbox[1].length;
-		ranges.push({
-			start: encoder.encode(markdown.slice(0, markerStart)).length,
-			end: encoder.encode(markdown.slice(0, markerStart + 3)).length,
-		});
-	}
-	return ranges;
 }
 
 function rangesOverlap(
@@ -484,7 +476,14 @@ export function verifyGuardedPlanBytes(input: {
 	const after = new TextDecoder("utf-8", { fatal: true }).decode(
 		input.committed,
 	);
-	const before = Buffer.from(input.guard.anchorBytes, "utf8");
+	// Checkbox markers are not free-replacement spans. Only an exact toggle
+	// (`[ ]`, `[x]`, `[X]`) disappears under normalization; any other bytes
+	// written over a marker remain and fail the fixed-segment match.
+	const before = Buffer.from(
+		normalizeCheckboxMarkers(input.guard.anchorBytes),
+		"utf8",
+	);
+	const committed = Buffer.from(normalizeCheckboxMarkers(after), "utf8");
 	const protectedRanges = protectedByteRanges(input.guard.anchorBytes);
 	for (const span of input.guard.allowedSpans) {
 		if (protectedRanges.some((range) => rangesOverlap(span, range))) {
@@ -496,11 +495,7 @@ export function verifyGuardedPlanBytes(input: {
 			};
 		}
 	}
-	const editable = [
-		...input.guard.allowedSpans,
-		...checkboxByteRanges(input.guard.anchorBytes),
-	];
-	if (!fixedSegmentsMatch(before, input.committed, editable)) {
+	if (!fixedSegmentsMatch(before, committed, input.guard.allowedSpans)) {
 		return {
 			ok: false,
 			code: "PLAN_AMENDMENT_OUT_OF_SPAN",

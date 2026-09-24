@@ -1248,6 +1248,13 @@ export async function invokeAgent(
 			const worktreePlanBytes = existsSync(readPath)
 				? readFileSync(readPath)
 				: null;
+			const authorCommit =
+				structured &&
+				typeof structured === "object" &&
+				"commit" in structured &&
+				typeof (structured as { commit?: unknown }).commit === "string"
+					? (structured as { commit: string }).commit
+					: undefined;
 			const admitted = await admitAuthorTextAmendmentFromGit({
 				store: budgetContext.store,
 				binding: authorBinding,
@@ -1261,6 +1268,7 @@ export async function invokeAgent(
 				planPath,
 				repoRoot: budgetContext.executionContext.controlPlaneRoot,
 				worktreePlanBytes,
+				authorCommit,
 			});
 			if (admitted.status === "failed") {
 				if (admitted.blocking) outputError(admitted.code, admitted.message);

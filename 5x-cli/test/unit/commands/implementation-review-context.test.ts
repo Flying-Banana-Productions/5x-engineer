@@ -24,6 +24,7 @@ import {
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
@@ -976,5 +977,126 @@ describe("implementation review observations", () => {
 		expect(composed.pending.phase).toBe("1");
 		expect(composed.pending.telemetry.reviewCycles).toBe(2);
 		ctx.db.close();
+	});
+
+	test("snapshots a text guard and downgrades when the lineage cannot be verified", async () => {
+		const markdown = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+## Design Decisions
+
+Keep the approved ledger.
+
+## Phase 1: Bind
+
+Bind execution to the approved plan.
+
+- [ ] Complete the phase
+
+## Acceptance
+
+The binding is unchanged.
+`;
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const seedBinding = binding();
+		seedBinding.approvedPlanBytes = markdown;
+		seedBinding.approvedPlanHash = hashPlanBytes(markdown);
+		seedBinding.phaseMap = [{ id: "1", heading: "Phase 1: Bind" }];
+		seed(ctx, seedBinding);
+		const verdict = {
+			readiness: "not_ready" as const,
+			items: [
+				{
+					id: "R1",
+					title: "Stale wording",
+					action: "auto_fix" as const,
+					reason: "The sentence is stale.",
+					scopeClass: "plan_defect" as const,
+					priority: "P2" as const,
+					effortDelta: 0,
+					architectureDelta: 0,
+					planImpact: {
+						kind: "text_only" as const,
+						locations: [
+							{
+								heading: "Phase 1: Bind",
+								staleText: "Bind execution to the approved plan.",
+							},
+						],
+					},
+				},
+			],
+		};
+		const composed = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: PHASE,
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(composed.status).toBe("applied");
+		if (composed.status !== "applied") return;
+		expect(composed.pending.nextAction).toBe("author_revision");
+		expect(composed.pending.textGuard?.allowedSpans).toHaveLength(1);
+		const written = await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			composed.pending,
+			ctx,
+		);
+		expect(written.observation?.textGuard?.id).toBe(
+			composed.pending.textGuard?.id,
+		);
+		const broken = makeBudgetContext({ mode: "enforced" });
+		const brokenBinding = binding();
+		brokenBinding.approvedPlanBytes = markdown;
+		brokenBinding.approvedPlanHash = hashPlanBytes(markdown);
+		brokenBinding.phaseMap = [{ id: "1", heading: "Phase 1: Bind" }];
+		seed(broken, brokenBinding);
+		broken.store.saveImplementationTextAmendment(
+			{
+				kind: "implementation-text-amendment",
+				version: 1,
+				id: "amend-broken",
+				bindingId: brokenBinding.id,
+				executionRunId: "run1",
+				guardId: "guard-old",
+				sourceObservationId: "obs-old",
+				parentLineageId: "missing",
+				beforeCommit: "a".repeat(40),
+				afterCommit: "b".repeat(40),
+				beforeBlobHash: hashPlanBytes(markdown),
+				afterBlobHash: hashPlanBytes(markdown),
+				authorizedPlanBytes: markdown,
+				createdAt: "2026-09-23 00:00:00",
+			},
+			TEST_ORIGIN,
+		);
+		const downgraded = await composeImplementationReviewerRecord({
+			ctx: broken,
+			runId: "run1",
+			stepName: STEP,
+			phase: PHASE,
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(downgraded.status).toBe("applied");
+		if (downgraded.status !== "applied") return;
+		expect(downgraded.pending.route).toBe("human_gate");
+		expect(downgraded.pending.nextAction).toBe("plan_amendment");
+		expect(downgraded.pending.textGuard).toBeUndefined();
+		ctx.db.close();
+		broken.db.close();
 	});
 });

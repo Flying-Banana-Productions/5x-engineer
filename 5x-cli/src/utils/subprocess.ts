@@ -73,6 +73,30 @@ export const subprocess = {
 		};
 	},
 
+	/** Same as {@link execGit} but preserves stdout bytes, including invalid UTF-8. */
+	async execGitBytes(
+		args: string[],
+		workdir: string,
+	): Promise<{ stdout: Buffer; stderr: string; exitCode: number }> {
+		const proc = Bun.spawn(["git", ...args], {
+			cwd: workdir,
+			env: cleanEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).arrayBuffer(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return {
+			stdout: Buffer.from(stdout),
+			stderr: stderr.trim(),
+			exitCode,
+		};
+	},
+
 	/**
 	 * Execute a git command with stdin supplied (e.g. `git patch-id --stable`).
 	 * Same env sanitization as {@link execGit}.

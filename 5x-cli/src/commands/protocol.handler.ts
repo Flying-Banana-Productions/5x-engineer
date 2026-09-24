@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
-import { outputError, outputSuccess } from "../output.js";
+import { CliError, outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import {
@@ -881,6 +881,13 @@ export async function protocolValidate(
 					const worktreePlanBytes = existsSync(readPath)
 						? readFileSync(readPath)
 						: null;
+					const authorCommit =
+						validated &&
+						typeof validated === "object" &&
+						"commit" in validated &&
+						typeof (validated as { commit?: unknown }).commit === "string"
+							? (validated as { commit: string }).commit
+							: undefined;
 					const admitted = await admitAuthorTextAmendmentFromGit({
 						store: authorContext.store,
 						binding: authorBinding,
@@ -890,6 +897,7 @@ export async function protocolValidate(
 						planPath,
 						repoRoot: authorContext.executionContext.controlPlaneRoot,
 						worktreePlanBytes,
+						authorCommit,
 					});
 					if (admitted.status === "failed") {
 						if (admitted.blocking) {
@@ -898,7 +906,8 @@ export async function protocolValidate(
 						warn(`${admitted.code}: ${admitted.message}`);
 					}
 				}
-			} catch {
+			} catch (err) {
+				if (err instanceof CliError) throw err;
 				// A run with no execution binding keeps ordinary author recording.
 			}
 		}

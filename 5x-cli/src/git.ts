@@ -664,6 +664,29 @@ export async function gitShowFile(
 	return result.stdout;
 }
 
+/** `git show commit:path` as raw bytes. Null if the path is missing. */
+export async function gitShowFileBytes(
+	workdir: string,
+	commit: string,
+	path: string,
+): Promise<Buffer | null> {
+	const result = await subprocess.execGitBytes(
+		["show", `${commit}:${path}`],
+		workdir,
+	);
+	if (result.exitCode !== 0) {
+		const tree = await run(
+			["ls-tree", "-r", "--name-only", "-z", commit, "--", `:(literal)${path}`],
+			workdir,
+		);
+		if (tree.exitCode !== 0 || tree.stdout.split("\0").includes(path)) {
+			throw new Error(result.stderr || `Could not read ${commit}:${path}`);
+		}
+		return null;
+	}
+	return result.stdout;
+}
+
 /** Staged or unstaged removals relative to HEAD, including archive moves. */
 export async function gitDeletedPaths(workdir: string): Promise<string[]> {
 	const result = await run(

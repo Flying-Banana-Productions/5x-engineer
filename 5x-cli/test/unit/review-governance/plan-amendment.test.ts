@@ -145,10 +145,11 @@ function guardFor(
 	staleText: string,
 	parentLineageId: string | null = null,
 	anchorCommit = "a".repeat(40),
+	id = "guard-1",
 ): TextAmendmentGuard {
 	const start = Buffer.from(markdown, "utf8").indexOf(Buffer.from(staleText));
 	const prepared = prepareTextAmendmentGuard({
-		id: "guard-1",
+		id,
 		anchorBytes: markdown,
 		anchorCommit,
 		parentLineageId,
@@ -400,6 +401,80 @@ describe("plan amendment guards", () => {
 			committed: Buffer.from(toggled, "utf8"),
 		});
 		expect(ok.ok).toBe(true);
+		const injected = markdown.replace(
+			"- [ ] Complete the phase",
+			"- Also build a whole new subsystem\n- [x] Complete the phase",
+		);
+		const injection = verifyGuardedPlanBytes({
+			guard,
+			committed: Buffer.from(injected, "utf8"),
+		});
+		expect(injection.ok).toBe(false);
+		if (!injection.ok)
+			expect(injection.code).toBe("PLAN_AMENDMENT_OUT_OF_SPAN");
+		const multiline = markdown.replace(
+			"- [ ] Complete the phase",
+			"- [Also\nbuild] Complete the phase",
+		);
+		const payload = verifyGuardedPlanBytes({
+			guard,
+			committed: Buffer.from(multiline, "utf8"),
+		});
+		expect(payload.ok).toBe(false);
+		if (!payload.ok) expect(payload.code).toBe("PLAN_AMENDMENT_OUT_OF_SPAN");
+		const ordered = markdown.replace(
+			"- [ ] Complete the phase",
+			"- [ ] Complete the phase\n1. [ ] Ordered item",
+		);
+		const orderedGuard = guardFor(
+			ordered,
+			"Bind execution to the approved plan.",
+		);
+		const toggledOrdered = ordered.replace(
+			"1. [ ] Ordered item",
+			"1. [x] Ordered item",
+		);
+		const orderedOk = verifyGuardedPlanBytes({
+			guard: orderedGuard,
+			committed: Buffer.from(toggledOrdered, "utf8"),
+		});
+		expect(orderedOk.ok).toBe(true);
+		expect(
+			detectPlanDrift({
+				approvedPlanBytes: ordered,
+				approvedPlanHash: hashPlanBytes(ordered),
+				amendments: [],
+				currentPlanBytes: toggledOrdered,
+			}).drifted,
+		).toBe(false);
+	});
+
+	test("matches CRLF and non-ASCII anchors inside the authorized span", () => {
+		const markdown = plan("Bind execution — to the approved plan.").replace(
+			/\n/g,
+			"\r\n",
+		);
+		const stale = "Bind execution — to the approved plan.";
+		const guard = guardFor(markdown, stale);
+		const replaced = markdown.replace(
+			stale,
+			"Bind execution — to that approved plan.",
+		);
+		const ok = verifyGuardedPlanBytes({
+			guard,
+			committed: Buffer.from(replaced, "utf8"),
+		});
+		expect(ok.ok).toBe(true);
+		const outside = markdown.replace(
+			"Keep the approved ledger.",
+			"Keep another ledger.",
+		);
+		const rejected = verifyGuardedPlanBytes({
+			guard,
+			committed: Buffer.from(outside, "utf8"),
+		});
+		expect(rejected.ok).toBe(false);
+		if (!rejected.ok) expect(rejected.code).toBe("PLAN_AMENDMENT_OUT_OF_SPAN");
 	});
 
 	test("verified lineage reaches a ready review without rebinding", () => {
@@ -471,6 +546,7 @@ describe("plan amendment guards", () => {
 			secondText,
 			first.amendment.id,
 			"b".repeat(40),
+			"guard-2",
 		);
 		const next = observation(binding, nextGuard, "obs-2");
 		next.stepKey = { stepName: "reviewer:review", phase: "1", iteration: 1 };
@@ -508,7 +584,7 @@ describe("plan amendment guards", () => {
 		expect(store.getImplementationBinding("exec")?.approvedPlanHash).toBe(
 			binding.approvedPlanHash,
 		);
-		const stale = verifyAuthorTextAmendment({
+		const again = verifyAuthorTextAmendment({
 			store,
 			binding,
 			origin: ORIGIN,
@@ -516,6 +592,65 @@ describe("plan amendment guards", () => {
 			committedPlanBytes: Buffer.from(twice, "utf8"),
 			worktreePlanBytes: Buffer.from(twice, "utf8"),
 			afterCommit: "d".repeat(40),
+		});
+		expect(again).toEqual({ status: "not_applicable" });
+		expect(
+			store.listImplementationTextAmendments("exec", binding.id),
+		).toHaveLength(2);
+	});
+
+	test("a second author pass after one review treats the guard as consumed", () => {
+		const markdown = plan();
+		const stale = "Bind execution to the approved plan.";
+		const guard = guardFor(markdown, stale);
+		const { store, binding } = setup(markdown, guard);
+		const amended = markdown.replace(
+			stale,
+			"Bind the execution run to the approved plan.",
+		);
+		const bytes = Buffer.from(amended, "utf8");
+		const first = verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: bytes,
+			worktreePlanBytes: bytes,
+			afterCommit: "b".repeat(40),
+		});
+		expect(first.status).toBe("verified");
+		const second = verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: bytes,
+			worktreePlanBytes: bytes,
+			afterCommit: "b".repeat(40),
+		});
+		expect(second).toEqual({ status: "not_applicable" });
+		expect(
+			store.listImplementationTextAmendments("exec", binding.id),
+		).toHaveLength(1);
+	});
+
+	test("an unconsumed guard against a different lineage head is stale", () => {
+		const markdown = plan();
+		const guard = guardFor(
+			markdown,
+			"Bind execution to the approved plan.",
+			"missing-parent",
+		);
+		const { store, binding } = setup(markdown, guard);
+		const bytes = Buffer.from(markdown, "utf8");
+		const stale = verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: bytes,
+			worktreePlanBytes: bytes,
+			afterCommit: "b".repeat(40),
 		});
 		expect(stale).toMatchObject({
 			status: "failed",
