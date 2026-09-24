@@ -996,6 +996,23 @@ export async function submitReviewDecision(
 			{ runId: input.runId },
 			deps.warn ?? ((message) => console.error(`Warning: ${message}`)),
 		));
+	const storedLine = ctx.recordStore.getLine(
+		input.runId,
+		"decisions",
+		governanceDecisionKey(input.gateId),
+	);
+	if (storedLine) {
+		try {
+			const stored = decodeImplementationDecisionPayload(storedLine.payload);
+			return acceptStoredImplementationDecision(
+				{ ...input, phase: stored.phase },
+				stored,
+				{ ...deps, context: ctx },
+			);
+		} catch (error) {
+			if (error instanceof CliError) throw error;
+		}
+	}
 	const gate = findImplementationGate(
 		ctx,
 		input.runId,
@@ -1036,14 +1053,145 @@ async function showImplementationReviewGate(
 		decisionsHash: binding.decisionsHash,
 	});
 	const context = prompt.context;
+	const claimDecision =
+		context?.type === "implementation_review_gate" &&
+		context.allowedChoices.some(
+			(choice) =>
+				choice === "approve_higher_burden" ||
+				choice === "reduce_scope" ||
+				choice === "restore_simplification",
+		);
 	return {
 		open: true as const,
 		domain: "implementation" as const,
 		gate,
 		promptId: prompt.id,
 		...context,
-		exampleCommand: `5x review decide --gate ${gate.gateId} --choice <choice> --rationale '<text>'`,
+		exampleCommand: claimDecision
+			? `5x review decide --gate ${gate.gateId} --input-json '{"choice":"<choice>","rationale":"<text>","claimAdjustments":[{"creditClaimId":"<id>","approvedArchitectureDelta":0}]}'`
+			: `5x review decide --gate ${gate.gateId} --choice <choice> --rationale '<text>'`,
 	};
+}
+
+async function acceptStoredImplementationDecision(
+	input: SubmitPlanReviewDecisionInput & {
+		phase: string;
+		claimAdjustments?: ImplementationDecisionPayload["claimAdjustments"];
+	},
+	stored: ImplementationDecisionPayload,
+	deps: ReviewDecisionDeps,
+) {
+	const ctx = deps.context;
+	if (!ctx) fail("NO_CONTROL_PLANE", "review context is missing");
+	const promptStore =
+		deps.promptStore ?? createSqlitePromptStore(ctx.db as Database);
+	const binding = ctx.store.getImplementationBinding(input.runId);
+	if (!binding)
+		fail("IMPLEMENTATION_BINDING_MISSING", "implementation binding is missing");
+	const observation = ctx.store
+		.listImplementationReviews(input.runId)
+		.find((candidate) => candidate.id === stored.observationId);
+	const eligible = new Map<string, string>();
+	for (const ref of stored.findingRefs)
+		eligible.set(ref.findingId, ref.fingerprint);
+	for (const cause of observation?.gateCauses ?? []) {
+		if ("findingId" in cause) eligible.set(cause.findingId, cause.fingerprint);
+	}
+	const findingRefs = implementationFindingRefs({
+		eligible,
+		findingIds: input.findingIds ?? [],
+		supplied: input.payload.findingRefs ?? [],
+	});
+	let proposed: ImplementationDecisionPayload;
+	try {
+		proposed = createImplementationDecision({
+			gateId: stored.gateId,
+			observationId: stored.observationId,
+			bindingId: stored.bindingId,
+			phase: stored.phase,
+			choice: input.payload.choice as ImplementationDecisionChoice,
+			findingRefs,
+			rationale: input.payload.rationale,
+			evidence: input.payload.evidence ?? [],
+			claimAdjustments: input.claimAdjustments ?? [],
+			ledgerHash: stored.ledgerHash,
+			decisionsHash: stored.decisionsHash,
+			createdAt: stored.createdAt,
+		});
+	} catch (error) {
+		fail(
+			"REVIEW_DECISION_INVALID",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+	if (proposed.decisionIntentHash !== stored.decisionIntentHash)
+		fail(
+			"REVIEW_GATE_ALREADY_RESOLVED",
+			"review gate was resolved by a different decision",
+			{ decision: stored },
+		);
+	return finishImplementationDecision({
+		ctx,
+		promptStore,
+		deps,
+		runId: input.runId,
+		binding,
+		stored,
+		created: false,
+	});
+}
+
+function implementationFindingRefs(input: {
+	eligible: ReadonlyMap<string, string>;
+	findingIds: readonly string[];
+	supplied: readonly FindingIdentity[];
+}): FindingIdentity[] {
+	if (
+		input.supplied.some(
+			(ref) =>
+				!ref ||
+				typeof ref !== "object" ||
+				typeof ref.findingId !== "string" ||
+				typeof ref.fingerprint !== "string",
+		)
+	)
+		fail(
+			"REVIEW_DECISION_INVALID",
+			"findingRefs must contain findingId/fingerprint pairs",
+		);
+	const findingIds = [...input.findingIds];
+	const findingRefs = [...input.supplied];
+	const allFindingIds = [
+		...findingIds,
+		...findingRefs.map((ref) => ref.findingId),
+	];
+	if (
+		duplicates(findingIds).length ||
+		duplicates(findingRefs.map((ref) => ref.findingId)).length ||
+		duplicates(allFindingIds).length
+	)
+		fail(
+			"REVIEW_DECISION_INVALID",
+			"duplicate finding identities are not allowed",
+		);
+	for (const findingId of findingIds) {
+		const fingerprint = input.eligible.get(findingId);
+		if (!fingerprint)
+			fail(
+				"REVIEW_DECISION_FINDING_INVALID",
+				`finding ${findingId} is not eligible for this gate`,
+			);
+		findingRefs.push({ findingId, fingerprint });
+	}
+	for (const ref of findingRefs) {
+		const fingerprint = input.eligible.get(ref.findingId);
+		if (!fingerprint || fingerprint !== ref.fingerprint)
+			fail(
+				"REVIEW_DECISION_FINDING_INVALID",
+				`finding ${ref.findingId} is unknown, stale, or has a mismatched fingerprint`,
+			);
+	}
+	return findingRefs;
 }
 
 function findImplementationGate(
@@ -1109,17 +1257,17 @@ async function submitImplementationReviewDecision(
 				: [],
 		),
 	);
-	const findingRefs =
-		input.payload.findingRefs ??
-		(input.findingIds ?? []).flatMap((findingId) => {
-			const cause = gate.causes.find(
-				(candidate) =>
-					"findingId" in candidate && candidate.findingId === findingId,
-			);
-			return cause && "fingerprint" in cause
-				? [{ findingId: cause.findingId, fingerprint: cause.fingerprint }]
-				: [];
-		});
+	const findingRefs = implementationFindingRefs({
+		eligible: new Map(
+			gate.causes.flatMap((cause) =>
+				"findingId" in cause
+					? [[cause.findingId, cause.fingerprint] as const]
+					: [],
+			),
+		),
+		findingIds: input.findingIds ?? [],
+		supplied: input.payload.findingRefs ?? [],
+	});
 	const gateClaimIds = new Set(
 		gate.causes.flatMap((cause) =>
 			cause.kind === "credit_shortfall" || cause.kind === "credit_unreconciled"
@@ -1219,6 +1367,29 @@ async function submitImplementationReviewDecision(
 			"review gate was resolved by a different decision",
 			{ decision: stored },
 		);
+	return finishImplementationDecision({
+		ctx,
+		promptStore,
+		deps,
+		runId: input.runId,
+		binding,
+		stored,
+		created: written.outcome !== "coupled-key-exists",
+	});
+}
+
+async function finishImplementationDecision(input: {
+	ctx: ReviewBudgetCommandContext;
+	promptStore: PromptStore;
+	deps: ReviewDecisionDeps;
+	runId: string;
+	binding: NonNullable<
+		ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
+	>;
+	stored: ImplementationDecisionPayload;
+	created: boolean;
+}) {
+	const { ctx, promptStore, deps, stored, binding } = input;
 	const acceptance = classifyDecisionAcceptance({
 		decision: stored,
 		steps: ctx.recordStore.listLines(input.runId, "steps"),
@@ -1238,7 +1409,7 @@ async function submitImplementationReviewDecision(
 	const successor = deriveOpenImplementationGate(
 		ctx.recordStore,
 		input.runId,
-		gate.phase,
+		stored.phase,
 	);
 	const nextAction = implementationDecisionNextAction(
 		stored.choice,
@@ -1269,7 +1440,7 @@ async function submitImplementationReviewDecision(
 		});
 	return {
 		decision: stored,
-		created: written.outcome !== "coupled-key-exists",
+		created: input.created,
 		route,
 		nextAction,
 		...(successor && successor.gateId !== stored.gateId

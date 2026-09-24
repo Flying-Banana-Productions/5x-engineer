@@ -25,6 +25,7 @@ import {
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
+import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
 import {
 	hashPlanBytes,
 	recordCorrectionAttempt,
@@ -1505,5 +1506,121 @@ describe("implementation credit reconciliation composition", () => {
 		expect(envelope.pending.route).toBe("complete");
 		advisory.db.close();
 		waived.db.close();
+	});
+
+	test("an accepted higher-burden decision clears the same-phase shortfall", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const seedBinding = creditBinding();
+		const item = seedBinding.ledger.workItems[0];
+		if (!item) throw new Error("missing work item");
+		item.architectureDelta = -5;
+		ctx.store.saveImplementationBinding(seedBinding, TEST_ORIGIN);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const verdict = {
+			readiness: "ready" as const,
+			items: [],
+			creditRealizations: [
+				{
+					creditClaimId: "DC1",
+					realization: "not_realized" as const,
+					realizedArchitectureDelta: 0,
+					evidence: `No collapse at ${COMMIT}.`,
+				},
+			],
+		};
+		const first = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(first.status).toBe("applied");
+		if (first.status !== "applied") return;
+		expect(
+			first.pending.gateCauses.some(
+				(cause) => cause.kind === "credit_shortfall",
+			),
+		).toBe(true);
+		await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			first.pending,
+			ctx,
+			first.reconciliation,
+		);
+		const made = createImplementationDecision({
+			gateId: "gate-burden",
+			observationId: first.pending.id,
+			bindingId: seedBinding.id,
+			phase: "1",
+			choice: "approve_higher_burden",
+			findingRefs: [],
+			rationale: "Approve the unrealized burden",
+			evidence: [],
+			claimAdjustments: [
+				{ creditClaimId: "DC1", approvedArchitectureDelta: 0 },
+			],
+			ledgerHash: seedBinding.ledgerHash,
+			decisionsHash: seedBinding.decisionsHash,
+			createdAt: "2026-01-02 00:00:00",
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "steps",
+			idempotencyKey: "step:run1:human:review-governance:1:2",
+			payload: {
+				step_name: "human:review-governance",
+				phase: "1",
+				iteration: 2,
+				result_json: { decisionId: made.decisionId, gateId: made.gateId },
+				head_commit: null,
+				patch_id: null,
+				diff_summary: null,
+				duration_ms: null,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				model: null,
+			},
+			createdAt: "2026-01-02 00:00:00",
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "decisions",
+			idempotencyKey: `decision:review-gate:${made.gateId}`,
+			payload: made,
+			createdAt: made.createdAt,
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		const second = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 2,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(second.status).toBe("applied");
+		if (second.status !== "applied") return;
+		expect(
+			second.pending.gateCauses.some(
+				(cause) => cause.kind === "credit_shortfall",
+			),
+		).toBe(false);
+		expect(second.reconciliation.claims[0]).toMatchObject({
+			creditClaimId: "DC1",
+			effectiveApprovedMagnitude: 0,
+			waiverDecisionId: made.decisionId,
+		});
+		ctx.db.close();
 	});
 });

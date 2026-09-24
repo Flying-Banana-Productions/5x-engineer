@@ -345,13 +345,18 @@ export function reindexReviewGovernance(
 						observationId: observation.id,
 						...(predecessorGateId ? { predecessorGateId } : {}),
 						...(winner ? { resolvedDecisionId: winner.decisionId } : {}),
-						seq: seq + chainDepth,
+						seq: seq * 1024 + chainDepth,
 					});
 					gateCount += 1;
 					chainDepth += 1;
 					if (!winner) break;
+					if (
+						winner.choice === "authorize_amendment" ||
+						winner.choice === "reduce_scope"
+					)
+						break;
 					const next = applyImplementationDecisionCauseCoverage(causes, winner);
-					if (next.length === 0 || next.length === causes.length) break;
+					if (next.length === 0) break;
 					causes = next;
 					predecessorGateId = gateId;
 				}

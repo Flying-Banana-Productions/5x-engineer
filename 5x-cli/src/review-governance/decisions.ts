@@ -1044,7 +1044,13 @@ export function listImplementationDecisions(
 	return { decisions, diagnostics };
 }
 
-/** Fingerprint carried on an accepted implementation decision, never copied from the binding. */
+/**
+ * Consistency assertion for the fingerprint stored on an accepted
+ * implementation decision. Those hashes are copied from the binding when the
+ * decision is written, so a matching pair is not evidence the binding is
+ * still current. Reconciliation rejects the pair only when it disagrees
+ * with the binding passed into credit composition.
+ */
 export function bindingEvidenceFromImplementationDecisions(input: {
 	recordStore: RecordStore;
 	runId: string;

@@ -41,9 +41,14 @@ import {
 } from "../review-governance/code-diff.js";
 import {
 	humanDebtDecisionsFromBinding,
+	humanDebtDecisionsFromImplementationDecisions,
 	reconcileApprovedCredits,
 } from "../review-governance/credit-reconciliation.js";
-import { bindingEvidenceFromImplementationDecisions } from "../review-governance/decisions.js";
+import {
+	bindingEvidenceFromImplementationDecisions,
+	classifyDecisionAcceptance,
+	listImplementationDecisions,
+} from "../review-governance/decisions.js";
 import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
@@ -317,6 +322,29 @@ function gateCausesFor(input: {
 		});
 	}
 	return causes;
+}
+
+function humanDebtDecisionsForReconciliation(
+	recordStore: ReviewBudgetCommandContext["recordStore"],
+	runId: string,
+	binding: NonNullable<
+		ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
+	>,
+) {
+	const steps = recordStore.listLines(runId, "steps");
+	const budget = recordStore.listLines(runId, "budget");
+	const accepted = listImplementationDecisions(
+		recordStore,
+		runId,
+	).decisions.filter(
+		(decision) =>
+			decision.bindingId === binding.id &&
+			classifyDecisionAcceptance({ decision, steps, budget }).accepted,
+	);
+	return [
+		...humanDebtDecisionsFromBinding(binding),
+		...humanDebtDecisionsFromImplementationDecisions(accepted),
+	];
 }
 
 function activitySteps(ctx: ReviewBudgetCommandContext, runId: string) {
@@ -640,7 +668,11 @@ export async function composeImplementationReviewerRecord(input: {
 			}),
 		priorReconciliations,
 		correctionAttempts: attempts,
-		humanDebtDecisions: humanDebtDecisionsFromBinding(binding),
+		humanDebtDecisions: humanDebtDecisionsForReconciliation(
+			input.ctx.recordStore,
+			input.runId,
+			binding,
+		),
 		bindingEvidence: bindingEvidenceFromImplementationDecisions({
 			recordStore: input.ctx.recordStore,
 			runId: input.runId,

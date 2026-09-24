@@ -12,6 +12,7 @@ import {
 } from "../control-plane/types.js";
 import {
 	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
 	decodeImplementationReviewObservationPayload,
 	type ImplementationObservationGateCause,
 	type ImplementationReviewObservationPayload,
@@ -19,7 +20,6 @@ import {
 import {
 	decodeImplementationDecisionPayload,
 	decodeReviewDecisionPayload,
-	encodeImplementationDecisionPayload,
 	encodeReviewDecisionPayload,
 } from "./codec.js";
 import {
@@ -32,14 +32,12 @@ import {
 	governanceCorrectionKey,
 	governanceDecisionKey,
 	type ImplementationDecisionPayload,
-	implementationDecisionNextAction,
 	listGovernanceDecisions,
 	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
 import type {
 	ImplementationDecisionChoice,
-	ImplementationNextAction,
 	ReviewDecisionRoute,
 	ReviewGateCause,
 } from "./types.js";
@@ -303,15 +301,6 @@ export interface DerivedImplementationGate {
 	resolved: boolean;
 }
 
-export interface ResolveImplementationGateResult {
-	created: boolean;
-	decision: ImplementationDecisionPayload;
-	semanticRetry?: boolean;
-	route: ReviewDecisionRoute;
-	nextAction: ImplementationNextAction | "aborted";
-	successorGateId?: string;
-}
-
 export interface ReviewGovernanceStore {
 	getDecision(runId: string, decisionId: string): ReviewDecisionPayload | null;
 	listDecisions(runId: string): ReviewDecisionPayload[];
@@ -322,14 +311,6 @@ export interface ReviewGovernanceStore {
 		runId: string,
 		phase: string,
 	): DerivedImplementationGate | null;
-	resolveImplementationGate(input: {
-		runId: string;
-		decision: ImplementationDecisionPayload;
-		humanStep: StepRecordPayload;
-		origin: RecordOrigin;
-		ledgerHash: string;
-		decisionsHash: string;
-	}): ResolveImplementationGateResult;
 }
 
 function routeForChoice(
@@ -494,113 +475,6 @@ export function createReviewGovernanceStore(
 		deriveOpenImplementationGate(runId, phase) {
 			return deriveOpenImplementationGate(recordStore, runId, phase);
 		},
-		resolveImplementationGate(input) {
-			if (input.humanStep.step_name !== "human:review-governance")
-				throw new TypeError("human governance step has the wrong step name");
-			if (
-				input.decision.ledgerHash !== input.ledgerHash ||
-				input.decision.decisionsHash !== input.decisionsHash
-			)
-				throw new TypeError(
-					"implementation decision fingerprint does not match the binding",
-				);
-			const result = input.humanStep.result_json;
-			if (
-				!result ||
-				typeof result !== "object" ||
-				(result as { decisionId?: unknown }).decisionId !==
-					input.decision.decisionId ||
-				(result as { gateId?: unknown }).gateId !== input.decision.gateId
-			)
-				throw new TypeError(
-					"human governance step must be stamped with decisionId and gateId",
-				);
-			const decisionKey = input.decision.supersedesDecisionId
-				? governanceCorrectionKey(input.decision.decisionId)
-				: governanceDecisionKey(input.decision.gateId);
-			const ops: AppendOp[] = [
-				{
-					runId: input.runId,
-					stream: "steps",
-					idempotencyKey: `step:${input.runId}:human:review-governance:${input.humanStep.phase ?? ""}:${input.humanStep.iteration}`,
-					payload: structuredClone(input.humanStep),
-					createdAt: input.decision.createdAt,
-					schemaVersion: 1,
-					provenance: "recorded",
-					origin: input.origin,
-				},
-				{
-					runId: input.runId,
-					stream: "decisions",
-					idempotencyKey: decisionKey,
-					payload: encodeImplementationDecisionPayload(input.decision),
-					createdAt: input.decision.createdAt,
-					schemaVersion: 1,
-					provenance: "recorded",
-					origin: input.origin,
-				},
-			];
-			const appended = recordStore.atomicAppendIfAllNew(ops);
-			const stored = appended.created
-				? input.decision
-				: (() => {
-						const winnerLine = recordStore.getLine(
-							input.runId,
-							"decisions",
-							decisionKey,
-						);
-						if (!winnerLine) {
-							if (
-								appended.duplicates.some((duplicate) => duplicate.index === 0)
-							)
-								throw new ReviewGovernanceStoreError(
-									"REVIEW_GATE_STEP_CONFLICT",
-									"human governance step identity already exists for a different decision",
-								);
-							throw new ReviewGovernanceStoreError(
-								"REVIEW_GATE_DECISION_CONFLICT",
-								"governance decision batch conflicted without a readable winner",
-							);
-						}
-						return decodeImplementationDecisionPayload(winnerLine.payload);
-					})();
-			const successor = deriveOpenImplementationGate(
-				recordStore,
-				input.runId,
-				input.decision.phase,
-			);
-			const uncovered =
-				successor && successor.gateId !== stored.gateId
-					? successor.causes.length
-					: 0;
-			const nextAction = implementationDecisionNextAction(
-				stored.choice,
-				uncovered,
-			);
-			const route: ReviewDecisionRoute =
-				nextAction === "aborted"
-					? "aborted"
-					: nextAction === "plan_amendment" || nextAction === "author_revision"
-						? "author_revision"
-						: nextAction === "human_gate"
-							? "human_gate"
-							: "complete";
-			return {
-				created: appended.created,
-				decision: stored,
-				...(appended.created
-					? {}
-					: {
-							semanticRetry:
-								stored.decisionIntentHash === input.decision.decisionIntentHash,
-						}),
-				route,
-				nextAction,
-				...(successor && successor.gateId !== stored.gateId
-					? { successorGateId: successor.gateId }
-					: {}),
-			};
-		},
 	};
 }
 
@@ -627,6 +501,7 @@ export function deriveOpenImplementationGate(
 	);
 	const latest = observations.at(-1);
 	if (!latest || latest.gateCauses.length === 0) return null;
+	const fingerprint = bindingFingerprint(recordStore, runId, latest.bindingId);
 	const decisions = listImplementationDecisions(recordStore, runId).decisions;
 	let causes = latest.gateCauses;
 	let predecessorGateId: string | undefined;
@@ -654,32 +529,47 @@ export function deriveOpenImplementationGate(
 				observationId: latest.id,
 				bindingId: latest.bindingId,
 				phase,
-				ledgerHash: "",
-				decisionsHash: "",
+				ledgerHash: fingerprint.ledgerHash,
+				decisionsHash: fingerprint.decisionsHash,
 				causes,
 				resolved: false,
 			};
 		}
+		// Scope and amendment decisions pause for a plan change. They do not
+		// leave the decided gate open, and they do not mint a successor.
+		if (
+			decision.choice === "authorize_amendment" ||
+			decision.choice === "reduce_scope"
+		)
+			return null;
 		const next = applyImplementationDecisionCauseCoverage(causes, decision);
 		if (next.length === 0) return null;
-		if (next.length === causes.length) {
-			return {
-				domain: "implementation",
-				gateId,
-				runId,
-				observationId: latest.id,
-				bindingId: latest.bindingId,
-				phase,
-				ledgerHash: "",
-				decisionsHash: "",
-				causes,
-				resolved: false,
-			};
-		}
+		// A decision that covers nothing still advances. The successor is a
+		// different gate because it names this gate as its predecessor.
 		causes = next;
 		predecessorGateId = gateId;
 	}
 	return null;
+}
+
+function bindingFingerprint(
+	recordStore: RecordStore,
+	runId: string,
+	bindingId: string,
+): { ledgerHash: string; decisionsHash: string } {
+	for (const line of recordStore.listLines(runId, "budget")) {
+		try {
+			const binding = decodeImplementationBindingPayload(line.payload);
+			if (binding.id === bindingId)
+				return {
+					ledgerHash: binding.ledgerHash,
+					decisionsHash: binding.decisionsHash,
+				};
+		} catch {
+			// Budget lines that are not bindings are skipped.
+		}
+	}
+	return { ledgerHash: "", decisionsHash: "" };
 }
 
 export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
@@ -688,11 +578,7 @@ export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
 > = {
 	authorize_amendment: ["rationale", "findingRefs"],
 	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
-	restore_simplification: [
-		"rationale",
-		"claimAdjustments",
-		"supersedesObservationId",
-	],
+	restore_simplification: ["rationale", "claimAdjustments"],
 	approve_higher_burden: ["rationale", "claimAdjustments"],
 	reduce_scope: ["rationale", "claimAdjustments"],
 	abort: ["rationale"],
@@ -729,26 +615,30 @@ export function allowedImplementationChoices(
 	causes: readonly ImplementationObservationGateCause[],
 ): ImplementationDecisionChoice[] {
 	const choices: ImplementationDecisionChoice[] = [];
-	for (const cause of causes) {
-		if (cause.kind === "plan_amendment") choices.push("authorize_amendment");
-		if (
-			cause.kind === "semantic_human" ||
-			cause.kind === "critical_safety" ||
-			cause.kind === "plan_amendment"
+	if (causes.some((cause) => cause.kind === "plan_amendment"))
+		choices.push("authorize_amendment");
+	if (
+		causes.some(
+			(cause) =>
+				cause.kind === "semantic_human" ||
+				cause.kind === "critical_safety" ||
+				cause.kind === "plan_amendment",
 		)
-			choices.push("defer_accept_risk");
-		if (
-			cause.kind === "credit_shortfall" ||
-			cause.kind === "inherited_budget"
-		) {
-			choices.push(
-				"restore_simplification",
-				"approve_higher_burden",
-				"reduce_scope",
-			);
-		}
-		if (cause.kind === "credit_unreconciled") choices.push("reduce_scope");
-	}
+	)
+		choices.push("defer_accept_risk");
+	// Claim choices require a shortfall whose claim ids scope validation and
+	// coverage can both accept. Unreconciled claims and inherited budget
+	// alerts stay on the gate until a later review or an abort.
+	if (
+		causes.some(
+			(cause) => cause.kind === "credit_shortfall" && cause.claimIds.length > 0,
+		)
+	)
+		choices.push(
+			"restore_simplification",
+			"approve_higher_burden",
+			"reduce_scope",
+		);
 	choices.push("abort");
 	return [...new Set(choices)];
 }

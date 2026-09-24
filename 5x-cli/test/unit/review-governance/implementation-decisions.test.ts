@@ -25,6 +25,7 @@ import {
 } from "../../../src/review-governance/decisions.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import {
+	allowedImplementationChoices,
 	createReviewGovernanceStore,
 	deriveOpenImplementationGate,
 	repairReviewGatePrompts,
@@ -216,60 +217,51 @@ describe("implementation review decisions", () => {
 		expect(withDomain).not.toBe(plan);
 	});
 
-	test("same-intent CAS keeps one decision and a different intent loses", () => {
+	test("a decision that covers nothing advances to a successor gate", () => {
+		const store = seed();
+		appendObservation(
+			store,
+			observation({
+				gateCauses: [
+					{
+						kind: "credit_unreconciled",
+						claimIds: ["C2"],
+					},
+				],
+			}),
+		);
+		const gate = deriveOpenImplementationGate(store, runId, "1");
+		if (!gate) throw new Error("expected gate");
+		const made = decision(gate.gateId, "defer_accept_risk");
+		store.append({
+			runId,
+			stream: "decisions",
+			idempotencyKey: `decision:review-gate:${made.gateId}`,
+			payload: made,
+			...recordedEnvelope(origin),
+		});
+		const successor = deriveOpenImplementationGate(store, runId, "1");
+		expect(successor?.gateId).toBeTruthy();
+		expect(successor?.gateId).not.toBe(gate.gateId);
+		expect(successor?.causes.map((cause) => cause.kind)).toEqual([
+			"credit_unreconciled",
+		]);
+	});
+
+	test("scope and amendment decisions leave no open gate", () => {
 		const store = seed();
 		appendObservation(store);
-		const governance = createReviewGovernanceStore(store);
-		const gate = governance.deriveOpenImplementationGate(runId, "1");
+		const gate = deriveOpenImplementationGate(store, runId, "1");
 		if (!gate) throw new Error("expected gate");
-		const winner = decision(gate.gateId);
-		const human = (id: string, iteration: number): StepRecordPayload => ({
-			...step("human:review-governance", iteration, "1", {
-				decisionId: id,
-				gateId: gate.gateId,
-			}).payload,
-		});
-		expect(
-			governance.resolveImplementationGate({
-				runId,
-				decision: winner,
-				humanStep: human(winner.decisionId, 2),
-				origin,
-				ledgerHash: "ledger-a",
-				decisionsHash: "decisions-a",
-			}).created,
-		).toBe(true);
-		const same = createImplementationDecision({
-			...winner,
-			decisionId: "22222222-2222-4222-8222-222222222222",
-			createdAt: "2026-01-03 00:00:00",
-		});
-		const retry = governance.resolveImplementationGate({
+		const made = decision(gate.gateId, "reduce_scope");
+		store.append({
 			runId,
-			decision: same,
-			humanStep: human(same.decisionId, 3),
-			origin,
-			ledgerHash: "ledger-a",
-			decisionsHash: "decisions-a",
+			stream: "decisions",
+			idempotencyKey: `decision:review-gate:${made.gateId}`,
+			payload: made,
+			...recordedEnvelope(origin),
 		});
-		expect(retry.created).toBe(false);
-		expect(retry.semanticRetry).toBe(true);
-		expect(retry.decision.decisionId).toBe(winner.decisionId);
-		const other = createImplementationDecision({
-			...winner,
-			rationale: "A different operator intent",
-			decisionId: "33333333-3333-4333-8333-333333333333",
-		});
-		const loser = governance.resolveImplementationGate({
-			runId,
-			decision: other,
-			humanStep: human(other.decisionId, 4),
-			origin,
-			ledgerHash: "ledger-a",
-			decisionsHash: "decisions-a",
-		});
-		expect(loser.semanticRetry).toBe(false);
-		expect(store.listLines(runId, "decisions")).toHaveLength(1);
+		expect(deriveOpenImplementationGate(store, runId, "1")).toBeNull();
 	});
 
 	test("a same-phase review before the human step is stale and a later one is not", () => {
@@ -491,6 +483,44 @@ describe("implementation review decisions", () => {
 		).toBe(false);
 	});
 
+	test("offered choices are only those scope and coverage can satisfy", () => {
+		expect(
+			allowedImplementationChoices([
+				{
+					kind: "credit_shortfall",
+					claimIds: ["C1"],
+					claims: [
+						{
+							creditClaimId: "C1",
+							approvedArchitectureDelta: -4,
+							realizedArchitectureDelta: -1,
+							evidence: "partial",
+						},
+					],
+				},
+			]),
+		).toEqual([
+			"restore_simplification",
+			"approve_higher_burden",
+			"reduce_scope",
+			"abort",
+		]);
+		expect(
+			allowedImplementationChoices([
+				{ kind: "credit_unreconciled", claimIds: ["C2"] },
+			]),
+		).toEqual(["abort"]);
+		expect(
+			allowedImplementationChoices([
+				{
+					kind: "inherited_budget",
+					band: "over_absolute",
+					alerts: ["credit_unrealized"],
+				},
+			]),
+		).toEqual(["abort"]);
+	});
+
 	test("claim scope rejects arbitrary ids and broader credit", () => {
 		const made = decision("gate", "approve_higher_burden");
 		expect(() =>
@@ -597,32 +627,26 @@ describe("implementation review decisions", () => {
 			"5x review decide",
 		);
 		const made = decision(gate.gateId, "abort");
-		governance.resolveImplementationGate({
+		store.append({
 			runId,
-			decision: made,
-			humanStep: step("human:review-governance", 2, "1", {
+			stream: "steps",
+			idempotencyKey: "human",
+			payload: step("human:review-governance", 2, "1", {
 				decisionId: made.decisionId,
 				gateId: made.gateId,
 			}).payload,
-			origin,
-			ledgerHash: "ledger-a",
-			decisionsHash: "decisions-a",
+			...recordedEnvelope(origin),
+		});
+		store.append({
+			runId,
+			stream: "decisions",
+			idempotencyKey: `decision:review-gate:${made.gateId}`,
+			payload: made,
+			...recordedEnvelope(origin),
 		});
 		expect(repairReviewGatePrompts(store, prompts, runId)).toBe(1);
 		expect(prompts.listOpenPrompts(runId)).toHaveLength(0);
-		expect(
-			governance.resolveImplementationGate({
-				runId,
-				decision: made,
-				humanStep: step("human:review-governance", 2, "1", {
-					decisionId: made.decisionId,
-					gateId: made.gateId,
-				}).payload,
-				origin,
-				ledgerHash: "ledger-a",
-				decisionsHash: "decisions-a",
-			}).nextAction,
-		).toBe("aborted");
+		expect(deriveOpenImplementationGate(store, runId, "1")).toBeNull();
 	});
 
 	test("wiped index rebuild matches the live implementation projection", () => {

@@ -359,6 +359,54 @@ function evidenceDiagnostic(
 	};
 }
 
+/**
+ * Accepted implementation claim decisions become reconciliation inputs.
+ * Burden and scope reductions are waivers of the remaining magnitude.
+ * Restoration reopens the superseded observation and does not waive credit.
+ */
+export function humanDebtDecisionsFromImplementationDecisions(
+	decisions: readonly {
+		decisionId: string;
+		choice: string;
+		claimAdjustments: readonly {
+			creditClaimId: string;
+			approvedArchitectureDelta: number;
+			supersedesObservationId?: string;
+		}[];
+	}[],
+): HumanDebtDecision[] {
+	const mapped: HumanDebtDecision[] = [];
+	for (const decision of decisions) {
+		for (const adjustment of decision.claimAdjustments) {
+			if (
+				decision.choice === "approve_higher_burden" ||
+				decision.choice === "reduce_scope"
+			) {
+				mapped.push({
+					kind: "waiver",
+					decisionId: decision.decisionId,
+					creditClaimId: adjustment.creditClaimId,
+					approvedMagnitude: -adjustment.approvedArchitectureDelta || 0,
+					active: true,
+				});
+			}
+			if (
+				decision.choice === "restore_simplification" &&
+				adjustment.supersedesObservationId
+			) {
+				mapped.push({
+					kind: "restoration",
+					decisionId: decision.decisionId,
+					creditClaimId: adjustment.creditClaimId,
+					supersedesObservationId: adjustment.supersedesObservationId,
+					active: true,
+				});
+			}
+		}
+	}
+	return mapped;
+}
+
 export function humanDebtDecisionsFromBinding(
 	binding: ImplementationBindingPayload,
 ): HumanDebtDecision[] {
