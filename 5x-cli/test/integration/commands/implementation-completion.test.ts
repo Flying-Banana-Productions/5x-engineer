@@ -6,7 +6,7 @@ import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
-function git(cwd: string, ...args: string[]): void {
+function git(cwd: string, ...args: string[]): string {
 	const result = Bun.spawnSync(["git", ...args], {
 		cwd,
 		env: cleanGitEnv(),
@@ -15,6 +15,7 @@ function git(cwd: string, ...args: string[]): void {
 		stderr: "pipe",
 	});
 	if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+	return result.stdout.toString().trim();
 }
 
 async function cli(cwd: string, args: string[], stdin?: unknown) {
@@ -256,6 +257,282 @@ describe("implementation completion boundaries", () => {
 				"completed",
 			]);
 			expect(done.exitCode).toBe(0);
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"a review commit after the reviewed code still allows phase completion",
+		async () => {
+			const { dir, planPath } = await initRepo("enforced");
+			const sourceId = await startRun(dir, planPath);
+			const review = await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					sourceId,
+					"--record",
+					"--step",
+					"reviewer:plan",
+					"--phase",
+					"plan",
+					"--iteration",
+					"0",
+				],
+				{
+					readiness: "ready",
+					items: [],
+					baselineAssessment: {
+						independentEffortEstimate: 2,
+						confidence: "high",
+						reason: "The original scope is two points.",
+					},
+				},
+			);
+			expect(review.exitCode, review.stderr).toBe(0);
+			expect(
+				(
+					await cli(dir, [
+						"run",
+						"complete",
+						"--run",
+						sourceId,
+						"--status",
+						"completed",
+					])
+				).exitCode,
+			).toBe(0);
+			const executionId = await startRun(dir, planPath);
+			mkdirSync(join(dir, "src"), { recursive: true });
+			writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
+			const committed = await cli(dir, [
+				"commit",
+				"--run",
+				executionId,
+				"--phase",
+				"1",
+				"--message",
+				"implement",
+				"--all-files",
+			]);
+			expect(committed.exitCode, committed.stderr).toBe(0);
+			const end = git(dir, "rev-parse", "HEAD");
+			const author = await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"author",
+					"--run",
+					executionId,
+					"--record",
+					"--step",
+					"author:implement",
+					"--phase",
+					"1",
+					"--iteration",
+					"1",
+					"--no-phase-checklist-validate",
+				],
+				{ result: "complete", commit: end },
+			);
+			expect(author.exitCode, `${author.stdout}\n${author.stderr}`).toBe(0);
+			const rendered = await cli(dir, [
+				"template",
+				"render",
+				"reviewer-commit",
+				"--run",
+				executionId,
+				"--var",
+				"phase_number=1",
+				"--var",
+				`commit_hash=${end}`,
+				"--var",
+				`plan_path=${planPath}`,
+			]);
+			expect(rendered.exitCode, `${rendered.stdout}\n${rendered.stderr}`).toBe(
+				0,
+			);
+			const contextId = JSON.parse(rendered.stdout).data
+				.review_context_id as string;
+			const verdict = await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					executionId,
+					"--record",
+					"--step",
+					"reviewer:review",
+					"--phase",
+					"1",
+					"--iteration",
+					"1",
+					"--review-context",
+					contextId,
+				],
+				{
+					readiness: "ready",
+					items: [],
+					nonblocking: [
+						{
+							id: "n1",
+							title: "Note",
+							reason: "No code change is required.",
+							scopeClass: "pre_existing",
+						},
+					],
+				},
+			);
+			expect(verdict.exitCode, `${verdict.stdout}\n${verdict.stderr}`).toBe(0);
+			mkdirSync(join(dir, "docs", "development", "reviews"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(dir, "docs", "development", "reviews", "phase-1.md"),
+				"approved\n",
+			);
+			const reviewCommit = await cli(dir, [
+				"commit",
+				"--run",
+				executionId,
+				"--phase",
+				"1",
+				"--message",
+				"record review",
+				"--all-files",
+			]);
+			expect(reviewCommit.exitCode, reviewCommit.stderr).toBe(0);
+			expect(git(dir, "rev-parse", "HEAD")).not.toBe(end);
+			const completed = await cli(dir, [
+				"run",
+				"record",
+				"phase:complete",
+				"--run",
+				executionId,
+				"--phase",
+				"1",
+				"--result",
+				JSON.stringify({ phase: "1" }),
+			]);
+			expect(completed.exitCode, `${completed.stdout}\n${completed.stderr}`).toBe(
+				0,
+			);
+			writeFileSync(join(dir, "src", "a.ts"), "export const a = 2;\n");
+			const later = await cli(dir, [
+				"commit",
+				"--run",
+				executionId,
+				"--phase",
+				"1",
+				"--message",
+				"after review",
+				"--all-files",
+			]);
+			expect(later.exitCode, later.stderr).toBe(0);
+			const seal = await cli(dir, [
+				"run",
+				"complete",
+				"--run",
+				executionId,
+				"--status",
+				"completed",
+			]);
+			expect(seal.exitCode).not.toBe(0);
+			expect(seal.stderr + seal.stdout).toContain(
+				"IMPLEMENTATION_BOUNDARY_BLOCKED",
+			);
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"next-phase author rendering is blocked while an earlier phase is open",
+		async () => {
+			const { dir, planPath } = await initRepo("enforced");
+			writeFileSync(
+				planPath,
+				`${planMarkdown()}\n## Phase 2: Follow\n\n**Completion gate:** Later.\n\n- [ ] Follow\n`,
+			);
+			git(dir, "add", "-A");
+			git(dir, "commit", "-m", "add phase 2");
+			const sourceId = await startRun(dir, planPath);
+			const review = await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					sourceId,
+					"--record",
+					"--step",
+					"reviewer:plan",
+					"--phase",
+					"plan",
+					"--iteration",
+					"0",
+				],
+				{
+					readiness: "ready",
+					items: [],
+					baselineAssessment: {
+						independentEffortEstimate: 2,
+						confidence: "high",
+						reason: "The original scope is two points.",
+					},
+				},
+			);
+			expect(review.exitCode, review.stderr).toBe(0);
+			expect(
+				(
+					await cli(dir, [
+						"run",
+						"complete",
+						"--run",
+						sourceId,
+						"--status",
+						"completed",
+					])
+				).exitCode,
+			).toBe(0);
+			const executionId = await startRun(dir, planPath);
+			const first = await cli(dir, [
+				"template",
+				"render",
+				"author-next-phase",
+				"--run",
+				executionId,
+				"--var",
+				`plan_path=${planPath}`,
+				"--var",
+				"phase_number=1",
+				"--var",
+				"user_notes=bind",
+			]);
+			expect(first.exitCode, `${first.stdout}\n${first.stderr}`).toBe(0);
+			const next = await cli(dir, [
+				"template",
+				"render",
+				"author-next-phase",
+				"--run",
+				executionId,
+				"--var",
+				`plan_path=${planPath}`,
+				"--var",
+				"phase_number=2",
+				"--var",
+				"user_notes=blocked",
+			]);
+			expect(next.exitCode).not.toBe(0);
+			expect(next.stderr + next.stdout).toContain(
+				"IMPLEMENTATION_BOUNDARY_BLOCKED",
+			);
 		},
 		{ timeout: 30000 },
 	);

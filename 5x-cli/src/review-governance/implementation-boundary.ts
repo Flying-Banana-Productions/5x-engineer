@@ -76,6 +76,12 @@ export interface ImplementationBoundaryInput {
 	/** Phases with an unresolved material implementation gate. */
 	openMaterialGatePhases: readonly string[];
 	headCommit: string | null;
+	/**
+	 * Reviewed commits whose range to `headCommit` changes only excluded
+	 * paths (review artifacts, run records, the plan). Equality with
+	 * `headCommit` is always fresh; these commits are additional matches.
+	 */
+	codeEquivalentCommits?: readonly string[];
 	hasImplementationHistory: boolean;
 	hasDeliveryBudget: boolean;
 	malformed?: { message: string } | null;
@@ -175,6 +181,7 @@ function phaseSettlement(input: {
 	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
 	openMaterialGatePhases: readonly string[];
 	headCommit: string | null;
+	codeEquivalentCommits?: readonly string[];
 	requireHeadMatch: boolean;
 }): ImplementationBoundaryPhaseReadiness {
 	const observation = latestForPhase(
@@ -198,9 +205,12 @@ function phaseSettlement(input: {
 	const reviewedCommit = context?.reviewedCommit ?? null;
 	const headMatches =
 		!input.requireHeadMatch ||
-		input.headCommit === null ||
-		reviewedCommit === input.headCommit ||
-		proof;
+		proof ||
+		commitMatchesHead(
+			reviewedCommit,
+			input.headCommit,
+			input.codeEquivalentCommits,
+		);
 	const ordinaryComplete =
 		observation?.route === "complete" &&
 		observation.completionAuthorized === true &&
@@ -220,9 +230,12 @@ function phaseSettlement(input: {
 	const reconciliationFresh =
 		reconciliation !== undefined &&
 		(!input.requireHeadMatch ||
-			input.headCommit === null ||
-			reconciliation.reviewedCommit === input.headCommit ||
-			proof);
+			proof ||
+			commitMatchesHead(
+				reconciliation.reviewedCommit,
+				input.headCommit,
+				input.codeEquivalentCommits,
+			));
 	const claimsReconciled =
 		phaseClaims.length === 0
 			? true
@@ -331,6 +344,7 @@ export function evaluateImplementationBoundary(
 		input.intent !== "run_complete" &&
 		(input.phase === undefined ||
 			phaseIndex(input.binding.phaseMap, input.phase) < 0);
+	const freshPhase = freshnessPhaseId(input.binding, input.intent, input.phase);
 	const settlements = phasesToCheck.map((phase) =>
 		phaseSettlement({
 			binding: input.binding as ImplementationBindingPayload,
@@ -341,7 +355,10 @@ export function evaluateImplementationBoundary(
 			correctionAttempts: input.correctionAttempts,
 			openMaterialGatePhases: input.openMaterialGatePhases,
 			headCommit: input.headCommit,
-			requireHeadMatch: input.intent !== "advance" && phase.id === input.phase,
+			...(input.codeEquivalentCommits
+				? { codeEquivalentCommits: input.codeEquivalentCommits }
+				: {}),
+			requireHeadMatch: phase.id === freshPhase,
 		}),
 	);
 	const readiness: ImplementationGovernanceReadiness = {
@@ -369,6 +386,12 @@ export function evaluateImplementationBoundary(
 			"The text-amendment lineage is unverified. Checkbox-only matches still use the approved bytes.",
 		);
 	}
+	const headUnresolved = input.intent !== "advance" && input.headCommit === null;
+	if (headUnresolved) {
+		diagnostics.push(
+			"HEAD could not be resolved; completion freshness cannot be verified.",
+		);
+	}
 	for (const phase of settlements) {
 		if (!phase.reviewed) {
 			diagnostics.push(
@@ -389,6 +412,7 @@ export function evaluateImplementationBoundary(
 		unknownPhase ||
 		planMissing ||
 		drift.drifted ||
+		headUnresolved ||
 		settlements.some((phase) => !phase.ready);
 	if (!blocked) return allow(readiness, diagnostics);
 	if (pinned === "advisory") return allow(readiness, diagnostics);
@@ -400,6 +424,27 @@ export function evaluateImplementationBoundary(
 		readiness,
 		diagnostics,
 	);
+}
+
+/** Last phase on seal; the named phase on completion; never on advance. */
+function freshnessPhaseId(
+	binding: ImplementationBindingPayload,
+	intent: ImplementationBoundaryIntent,
+	phase: string | undefined,
+): string | null {
+	if (intent === "advance") return null;
+	if (intent === "run_complete") return binding.phaseMap.at(-1)?.id ?? null;
+	return phase ?? null;
+}
+
+function commitMatchesHead(
+	commit: string | null,
+	headCommit: string | null,
+	equivalent: readonly string[] | undefined,
+): boolean {
+	if (!commit || !headCommit) return false;
+	if (commit === headCommit) return true;
+	return equivalent?.includes(commit) === true;
 }
 
 function phasesForIntent(
@@ -423,6 +468,7 @@ export function evaluateStoredImplementationBoundary(input: {
 	mode: ReviewBudgetMode;
 	currentPlanBytes: string | null;
 	headCommit: string | null;
+	codeEquivalentCommits?: readonly string[];
 	hasImplementationHistory: boolean;
 	hasDeliveryBudget: boolean;
 }): ImplementationBoundaryResult {
@@ -471,6 +517,9 @@ export function evaluateStoredImplementationBoundary(input: {
 			correctionAttempts: [],
 			openMaterialGatePhases: [],
 			headCommit: input.headCommit,
+			...(input.codeEquivalentCommits
+				? { codeEquivalentCommits: input.codeEquivalentCommits }
+				: {}),
 			hasImplementationHistory: input.hasImplementationHistory,
 			hasDeliveryBudget: input.hasDeliveryBudget,
 			malformed: {
@@ -506,6 +555,9 @@ export function evaluateStoredImplementationBoundary(input: {
 		correctionAttempts,
 		openMaterialGatePhases,
 		headCommit: input.headCommit,
+		...(input.codeEquivalentCommits
+			? { codeEquivalentCommits: input.codeEquivalentCommits }
+			: {}),
 		hasImplementationHistory: input.hasImplementationHistory,
 		hasDeliveryBudget: input.hasDeliveryBudget,
 	});

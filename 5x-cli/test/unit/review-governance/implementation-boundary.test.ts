@@ -359,6 +359,72 @@ describe("evaluateImplementationBoundary", () => {
 		).toBe("IMPLEMENTATION_EVIDENCE_MALFORMED");
 	});
 
+	test("review-only commits after reviewedCommit stay fresh for completion and reconciliation", () => {
+		const next = "e".repeat(40);
+		const fresh = input({
+			headCommit: next,
+			codeEquivalentCommits: [COMMIT],
+		});
+		expect(fresh.status).toBe("allow");
+		expect(fresh.readiness.phases[0]?.reviewed).toBe(true);
+		expect(fresh.readiness.phases[0]?.claimsReconciled).toBe(true);
+		const codeDelta = input({ headCommit: next });
+		expect(codeDelta.status).toBe("deny");
+		expect(codeDelta.readiness.phases[0]?.reviewed).toBe(false);
+		expect(codeDelta.readiness.phases[0]?.claimsReconciled).toBe(false);
+	});
+
+	test("run completion checks the last phase for code added after review", () => {
+		const next = "e".repeat(40);
+		const phaseTwo = {
+			...observation("complete"),
+			id: "obs-2",
+			phase: "2",
+			contextId: "ctx-2",
+			claimObservations: [],
+		};
+		const phaseTwoContext = {
+			...context(),
+			id: "ctx-2",
+			phase: "2",
+		};
+		const settled = input({
+			intent: "run_complete",
+			phase: undefined,
+			observations: [observation("complete"), phaseTwo],
+			contexts: [context(), phaseTwoContext],
+			headCommit: next,
+			codeEquivalentCommits: [COMMIT],
+		});
+		expect(settled.status).toBe("allow");
+		const drifted = input({
+			intent: "run_complete",
+			phase: undefined,
+			observations: [observation("complete"), phaseTwo],
+			contexts: [context(), phaseTwoContext],
+			headCommit: next,
+		});
+		expect(drifted.status).toBe("deny");
+		expect(drifted.readiness.phases.find((phase) => phase.phase === "2")?.reviewed).toBe(
+			false,
+		);
+	});
+
+	test("unresolved HEAD denies enforced completion and stays advisory", () => {
+		const missing = input({ headCommit: null });
+		expect(missing.status).toBe("deny");
+		expect(missing.diagnostics.join("\n")).toContain("HEAD could not be resolved");
+		const advisory = input({
+			binding: binding("advisory"),
+			headCommit: null,
+		});
+		expect(advisory.status).toBe("allow");
+		expect(advisory.diagnostics.join("\n")).toContain("HEAD could not be resolved");
+		expect(input({ intent: "advance", phase: "1", headCommit: null }).status).toBe(
+			"allow",
+		);
+	});
+
 	test("a zero-claim phase completes from the review alone", () => {
 		const zero = binding();
 		const source = zero.ledger.workItems[0];

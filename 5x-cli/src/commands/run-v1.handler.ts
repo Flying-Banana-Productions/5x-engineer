@@ -148,6 +148,11 @@ import {
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
+import {
+	changedCodePaths,
+	isCodeAncestor,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	evaluateStoredImplementationBoundary,
@@ -3058,6 +3063,95 @@ function implementationHistoryPresent(
 	}
 }
 
+function hasImplementationBinding(
+	recordStore: RecordStore,
+	runId: string,
+): boolean {
+	try {
+		return (
+			createReviewBudgetStore(recordStore).getImplementationBinding(runId) !==
+			null
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Reviewed commits that differ from HEAD only by excluded workflow paths.
+ * A git failure leaves the commit unmatched so enforced freshness still denies.
+ */
+async function equivalentReviewedCommits(input: {
+	store: ReviewBudgetStore;
+	runId: string;
+	headCommit: string;
+	workdir: string;
+	intent: "phase_complete" | "run_complete" | "advance";
+	phase?: string;
+}): Promise<string[]> {
+	if (input.intent === "advance") return [];
+	let binding: ReturnType<ReviewBudgetStore["getImplementationBinding"]>;
+	try {
+		binding = input.store.getImplementationBinding(input.runId);
+	} catch {
+		return [];
+	}
+	if (!binding) return [];
+	const phaseId =
+		input.intent === "run_complete"
+			? binding.phaseMap.at(-1)?.id
+			: (canonicalPhaseId(input.phase ?? "") ?? input.phase);
+	if (!phaseId) return [];
+	let reviewedCommits: string[] = [];
+	let excludedPaths: string[] = [];
+	try {
+		const observation = [...input.store.listImplementationReviews(input.runId)]
+			.reverse()
+			.find((row) => row.bindingId === binding?.id && row.phase === phaseId);
+		if (observation) {
+			const context = input.store.getImplementationReviewContext(
+				input.runId,
+				observation.contextId,
+			);
+			if (context?.reviewedCommit) {
+				reviewedCommits.push(context.reviewedCommit);
+				excludedPaths = context.excludedPaths;
+			}
+		}
+		const reconciliation = [
+			...input.store.listImplementationCreditReconciliations(input.runId),
+		]
+			.reverse()
+			.find((row) => row.bindingId === binding?.id && row.phase === phaseId);
+		if (
+			reconciliation?.reviewedCommit &&
+			!reviewedCommits.includes(reconciliation.reviewedCommit)
+		) {
+			reviewedCommits.push(reconciliation.reviewedCommit);
+		}
+	} catch {
+		return [];
+	}
+	const git = workdirCodeDiffGit(input.workdir);
+	const equivalent: string[] = [];
+	for (const commit of reviewedCommits) {
+		if (commit === input.headCommit) continue;
+		try {
+			if (!(await isCodeAncestor(git, commit, input.headCommit))) continue;
+			const paths = await changedCodePaths(
+				git,
+				commit,
+				input.headCommit,
+				excludedPaths,
+			);
+			if (paths.length === 0) equivalent.push(commit);
+		} catch {
+			// Unresolved ancestry is not a freshness match.
+		}
+	}
+	return equivalent;
+}
+
 async function enforceImplementationBoundary(input: {
 	intent: "phase_complete" | "run_complete" | "advance";
 	phase?: string;
@@ -3071,11 +3165,13 @@ async function enforceImplementationBoundary(input: {
 	if (!run) return null;
 	let planMarkdown: string | null = null;
 	let headCommit: string | null = null;
+	let workdir: string | undefined;
 	if (input.controlPlane) {
 		const ctxResult = resolveRunExecutionContext(input.db, input.runId, {
 			controlPlaneRoot: input.controlPlane.controlPlaneRoot,
 		});
 		if (ctxResult.ok) {
+			workdir = ctxResult.context.effectiveWorkingDirectory;
 			const readPath =
 				ctxResult.context.planPathInWorktreeExists &&
 				existsSync(ctxResult.context.effectivePlanPath)
@@ -3105,6 +3201,17 @@ async function enforceImplementationBoundary(input: {
 	}
 	const parsed = planMarkdown ? parseDeliveryBudget(planMarkdown) : null;
 	const store = createReviewBudgetStore(input.recordStore);
+	const codeEquivalentCommits =
+		headCommit && workdir
+			? await equivalentReviewedCommits({
+					store,
+					runId: input.runId,
+					headCommit,
+					workdir,
+					intent: input.intent,
+					phase: input.phase,
+				})
+			: [];
 	const boundary = evaluateStoredImplementationBoundary({
 		store,
 		recordStore: input.recordStore,
@@ -3116,6 +3223,7 @@ async function enforceImplementationBoundary(input: {
 		mode: input.config.reviewBudget?.mode ?? "advisory",
 		currentPlanBytes: planMarkdown,
 		headCommit,
+		...(codeEquivalentCommits.length > 0 ? { codeEquivalentCommits } : {}),
 		hasImplementationHistory: implementationHistoryPresent(
 			input.db,
 			input.recordStore,
@@ -3140,12 +3248,16 @@ async function enforceFirstImplementationAdmission(input: {
 	controlPlane?: ControlPlaneResult;
 	recordStore: RecordStore;
 	originFor: (performer: RecordPerformer) => RecordOrigin;
+	/** Seal path. Does not attribute admission to a fabricated phase. */
+	force?: boolean;
 }): Promise<void> {
 	const admitsGovernance =
+		input.force === true ||
 		isImplementationAuthorAdmission(
 			input.params.stepName,
 			input.params.phase,
-		) || input.params.stepName === "phase:complete";
+		) ||
+		input.params.stepName === "phase:complete";
 	if (!admitsGovernance) {
 		return;
 	}
@@ -3217,14 +3329,30 @@ export async function recordStepInternal(
 ): Promise<RecordStepResult & { max_steps: number }> {
 	const writer = await resolveRecordWriter(params, dbContext);
 	const { db, config, controlPlane, recordStore, originFor } = writer;
-	if (params.stepName === "phase:complete" && params.phase) {
+	if (
+		params.stepName === "phase:complete" &&
+		params.phase &&
+		hasImplementationBinding(recordStore, params.run)
+	) {
 		const phaseId = canonicalPhaseId(params.phase) ?? params.phase;
-		const existing = getSteps(db, params.run).find(
+		const steps = getSteps(db, params.run);
+		const existing = [...steps].reverse().find(
 			(step) =>
 				step.step_name === "phase:complete" &&
 				(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId,
 		);
-		if (existing) {
+		const reopened =
+			existing !== undefined &&
+			steps.some(
+				(step) =>
+					step.id > existing.id &&
+					(step.step_name === "run:reopen" ||
+						((step.step_name.startsWith("author:") ||
+							step.step_name.startsWith("reviewer:")) &&
+							(canonicalPhaseId(step.phase ?? "") ?? step.phase) ===
+								phaseId)),
+			);
+		if (existing && !reopened) {
 			const after = computeRunSummary(db, params.run);
 			return {
 				step_id: existing.id,
@@ -3633,15 +3761,23 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 			);
 			if (!hasBinding && hasHistory) {
 				await enforceFirstImplementationAdmission({
-					params: { run: runId, stepName: "phase:complete", phase: "1" },
+					params: { run: runId, stepName: "run:complete" },
 					db,
 					config,
 					controlPlane,
 					recordStore: recordCtx.recordStore,
 					originFor: recordCtx.originFor,
+					force: true,
 				});
 			}
-			if (hasHistory || budgetStore.getImplementationBinding(runId) !== null) {
+			let boundAfterAdmission = false;
+			try {
+				boundAfterAdmission =
+					budgetStore.getImplementationBinding(runId) !== null;
+			} catch {
+				boundAfterAdmission = true;
+			}
+			if (hasHistory || boundAfterAdmission) {
 				await enforceImplementationBoundary({
 					intent: "run_complete",
 					runId,

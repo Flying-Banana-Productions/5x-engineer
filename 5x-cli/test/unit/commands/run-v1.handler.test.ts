@@ -3,7 +3,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,10 @@ import {
 	RecordError,
 	recordStepInternal,
 } from "../../../src/commands/run-v1.handler.js";
+import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
+import type { ImplementationBindingPayload } from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { FiveXConfigSchema } from "../../../src/config.js";
 import type {
 	RecordOrigin,
@@ -379,5 +383,112 @@ describe("recordStepInternal dual-write", () => {
 		const budget = ctx.recordStore.listLines("run1", "budget")[0];
 		expect(step?.origin).toEqual(origin);
 		expect(budget?.origin).toEqual(origin);
+	});
+
+	test("unbound phase completion still allocates the next iteration", async () => {
+		const ctx = writer();
+		const first = await recordStepInternal(
+			{
+				run: "run1",
+				stepName: "phase:complete",
+				phase: "1",
+				result: "{}",
+			},
+			ctx,
+		);
+		const second = await recordStepInternal(
+			{
+				run: "run1",
+				stepName: "phase:complete",
+				phase: "1",
+				result: "{}",
+			},
+			ctx,
+		);
+		expect(first.recorded).toBe(true);
+		expect(second.recorded).toBe(true);
+		expect(second.iteration).toBe(first.iteration + 1);
+	});
+
+	test("a bound duplicate completion returns the original until reopen or new same-phase work", async () => {
+		const ctx = writer();
+		const bytes = "# Plan\n";
+		writeFileSync(join(tmp, "plan.md"), bytes);
+		const ledger = {
+			estimateConfidence: "high" as const,
+			workItems: [],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		};
+		const stable = (value: unknown): string => {
+			if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+			if (value && typeof value === "object") {
+				return `{${Object.entries(value as Record<string, unknown>)
+					.filter(([, item]) => item !== undefined)
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
+					.join(",")}}`;
+			}
+			return JSON.stringify(value);
+		};
+		const approved: ImplementationBindingPayload = {
+			kind: "implementation-binding",
+			version: 1,
+			id: "bind-1",
+			executionRunId: "run1",
+			sourceRunId: "source",
+			sourceSnapshotId: "snap",
+			sourceBaselineId: "base",
+			approvedPlanCommit: "a".repeat(40),
+			approvedPlanHash: hashPlanBytes(bytes),
+			approvedPlanBytes: bytes,
+			b0: 20,
+			governingB: 20,
+			mode: "advisory",
+			thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+			ledger,
+			effectiveDecisions: [],
+			phaseMap: [{ id: "1", heading: "Phase 1" }],
+			debtTargets: [],
+			ledgerHash: hashPlanBytes(stable(ledger)),
+			decisionsHash: hashPlanBytes(stable([])),
+			createdAt: "2026-09-24 00:00:00",
+		};
+		createReviewBudgetStore(ctx.recordStore).saveImplementationBinding(
+			approved,
+			originFor({ kind: "system", role: "cli" }),
+		);
+		const params = {
+			run: "run1",
+			stepName: "phase:complete",
+			phase: "1",
+			result: "{}",
+		};
+		const first = await recordStepInternal(params, ctx);
+		const duplicate = await recordStepInternal(params, ctx);
+		expect(duplicate.recorded).toBe(false);
+		expect(duplicate.step_id).toBe(first.step_id);
+		await recordStepInternal(
+			{
+				run: "run1",
+				stepName: "author:implement",
+				phase: "1",
+				result: "{}",
+			},
+			ctx,
+		);
+		const afterWork = await recordStepInternal(params, ctx);
+		expect(afterWork.recorded).toBe(true);
+		expect(afterWork.step_id).not.toBe(first.step_id);
+		await recordStepInternal(
+			{ run: "run1", stepName: "run:reopen", result: "{}" },
+			ctx,
+		);
+		const afterReopen = await recordStepInternal(params, ctx);
+		expect(afterReopen.recorded).toBe(true);
+		expect(afterReopen.step_id).not.toBe(afterWork.step_id);
 	});
 });
