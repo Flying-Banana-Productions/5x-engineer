@@ -792,4 +792,156 @@ describe("implementation code-review context", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"ignores dirty mapped-worktree run records and still rejects code changes",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				await approveAndClose(dir, planPath);
+				const created = await cli(dir, ["worktree", "create", "-p", planPath]);
+				if (created.exitCode !== 0) {
+					throw new Error(`${created.stdout}\n${created.stderr}`);
+				}
+				const worktree = JSON.parse(created.stdout).data
+					.worktree_path as string;
+				const executionId = await startRun(dir, planPath);
+				const worktreePlan = join(
+					worktree,
+					"docs",
+					"development",
+					"plans",
+					"governance.md",
+				);
+				const opened = await cli(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`plan_path=${worktreePlan}`,
+				]);
+				if (opened.exitCode !== 0) {
+					throw new Error(`${opened.stdout}\n${opened.stderr}`);
+				}
+				const before = preAuthorCommit(worktree, executionId);
+				expect(before).toBeTruthy();
+				mkdirSync(join(worktree, "src"), { recursive: true });
+				writeFileSync(join(worktree, "src", "app.ts"), "export const n = 1;\n");
+				const committed = await cli(dir, [
+					"commit",
+					"--run",
+					executionId,
+					"--phase",
+					"1",
+					"--message",
+					"implement",
+					"--all-files",
+				]);
+				if (committed.exitCode !== 0) {
+					throw new Error(`${committed.stdout}\n${committed.stderr}`);
+				}
+				const end = git(worktree, "rev-parse", "HEAD");
+				const author = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"author",
+						"--run",
+						executionId,
+						"--record",
+						"--step",
+						"author:implement",
+						"--phase",
+						"1",
+						"--iteration",
+						"1",
+						"--no-phase-checklist-validate",
+					],
+					{ result: "complete", commit: end },
+				);
+				if (author.exitCode !== 0) {
+					throw new Error(`${author.stdout}\n${author.stderr}`);
+				}
+				const dirtySteps = git(worktree, "status", "--porcelain");
+				expect(dirtySteps).toContain("steps.jsonl");
+				const review = await cli(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`commit_hash=${end}`,
+					"--var",
+					`plan_path=${worktreePlan}`,
+				]);
+				if (review.exitCode !== 0) {
+					throw new Error(`${review.stdout}\n${review.stderr}`);
+				}
+				const rendered = JSON.parse(review.stdout).data as {
+					prompt: string;
+				};
+				expect(rendered.prompt).toContain("src/app.ts");
+				expect(rendered.prompt).toContain("docs/development/runs");
+				const context = readJsonl(worktree, executionId, "budget").find(
+					(line) => line.payload.kind === "implementation-review-context",
+				);
+				const excluded = context?.payload.excludedPaths as string[];
+				expect(excluded).toContain("docs/development/runs");
+				expect(excluded?.some((path) => path.startsWith("/"))).toBe(false);
+				const dirtyRecords = git(worktree, "status", "--porcelain");
+				expect(dirtyRecords).toContain("steps.jsonl");
+				expect(dirtyRecords).toContain("budget.jsonl");
+				const again = await cli(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`commit_hash=${end}`,
+					"--var",
+					`plan_path=${worktreePlan}`,
+					"--new-session",
+				]);
+				if (again.exitCode !== 0) {
+					throw new Error(`${again.stdout}\n${again.stderr}`);
+				}
+
+				writeFileSync(join(worktree, "src", "app.ts"), "export const n = 2;\n");
+				const dirty = await cli(dir, [
+					"template",
+					"render",
+					"reviewer-commit",
+					"--run",
+					executionId,
+					"--var",
+					"phase_number=1",
+					"--var",
+					`commit_hash=${end}`,
+					"--var",
+					`plan_path=${worktreePlan}`,
+					"--new-session",
+				]);
+				expect(dirty.exitCode).not.toBe(0);
+				const dirtyText = `${dirty.stdout}\n${dirty.stderr}`;
+				expect(dirtyText).toContain("CODE_DIFF_DIRTY");
+				expect(dirtyText).toContain("src/app.ts");
+				expect(dirtyText).not.toContain("steps.jsonl");
+				expect(dirtyText).not.toContain("budget.jsonl");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
 });

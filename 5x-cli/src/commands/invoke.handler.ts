@@ -738,6 +738,7 @@ export async function invokeAgent(
 				phase: params.phase ?? mergedVars.phase_number ?? "",
 				excludedPaths: implementationExcludedPaths({
 					repoRoot: rootResult.stdout.trim(),
+					controlPlaneRoot: budgetContext.executionContext.controlPlaneRoot,
 					planPath: resolvedPlanPath,
 					paths: config.paths,
 				}),

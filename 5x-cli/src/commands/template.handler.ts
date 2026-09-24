@@ -543,6 +543,8 @@ export async function templateRender(
 					"",
 				excludedPaths: implementationExcludedPaths({
 					repoRoot: rootResult.stdout.trim(),
+					controlPlaneRoot:
+						renderBudgetContext.executionContext.controlPlaneRoot,
 					planPath: resolvedPlanPath,
 					paths: config.paths,
 				}),

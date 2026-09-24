@@ -9,7 +9,7 @@
 
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import {
 	getReviewerStepsForPhase,
@@ -168,11 +168,35 @@ export function needsReviewDelta(templateName: string): boolean {
 }
 
 /**
+ * Repo-relative workflow evidence path for git status and diff pathspecs.
+ *
+ * Configured records and review directories are absolute under the canonical
+ * control-plane checkout. A mapped worktree reports the same git paths, so
+ * those directories are relativized against the control-plane root when they
+ * are not already inside the checkout where status runs. Paths that escape
+ * either root are omitted. Only the exact configured records directory,
+ * registered review directories, and plan file are candidates.
+ */
+function workflowEvidenceRepoPath(
+	path: string,
+	repoRoot: string,
+	controlPlaneRoot: string | undefined,
+): string | null {
+	if (!isAbsolute(path)) return planRepoPath(path, repoRoot);
+	const inCheckout = planRepoPath(path, repoRoot);
+	if (inCheckout) return inCheckout;
+	if (!controlPlaneRoot) return null;
+	return planRepoPath(path, controlPlaneRoot);
+}
+
+/**
  * Paths that are workflow evidence, not implementation changes: run records,
  * registered review artifacts, and the exact plan file.
  */
 export function implementationExcludedPaths(input: {
 	repoRoot: string;
+	/** Canonical checkout that configured absolute paths were resolved against. */
+	controlPlaneRoot?: string;
 	planPath: string | null;
 	paths: Pick<
 		FiveXConfig["paths"],
@@ -189,7 +213,13 @@ export function implementationExcludedPaths(input: {
 	return [
 		...new Set(
 			candidates
-				.map((path) => planRepoPath(path, input.repoRoot))
+				.map((path) =>
+					workflowEvidenceRepoPath(
+						path,
+						input.repoRoot,
+						input.controlPlaneRoot,
+					),
+				)
 				.filter((path): path is string => Boolean(path)),
 		),
 	].sort();
