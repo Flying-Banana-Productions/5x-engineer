@@ -157,3 +157,29 @@ None found. I re-read the full current `credit-reconciliation.ts` and the compos
 
 - **Phase 7 completion:** ✅ — the P0 blocker and both P1 items are fixed and directly tested; all P2 items are fixed except a non-blocking, cosmetic wiring gap in the binding-evidence staleness check.
 - **Ready for next phase:** ✅ — no remaining blockers or human-required items.
+
+---
+
+## Addendum (2026-09-24) — Binding-evidence staleness check no longer self-validates
+
+**Reviewed:** `14063dd337f2f097e3ad88d98b948e72562407c8`
+
+**Local verification:** `bunx tsc --noEmit` clean; `bun test test/unit/review-governance test/unit/review-budget test/unit/commands` → 942 pass / 0 fail (up from 941 in the prior addendum); `bunx @biomejs/biome check src/ test/` clean.
+
+### What's addressed (✅)
+
+- **P2.1-residual — `bindingEvidence` tautology (fixed):** Composition (`src/commands/implementation-review-context.ts:641-646`) no longer constructs `bindingEvidence` from the same `binding` object it is validating. It now omits the field entirely, with a comment explaining that observations and pre-author steps only record a `bindingId`, not the ledger/decisions hashes needed for a real fingerprint, and that Phase 8 decision records are expected to carry and supply that fingerprint. `reconcileApprovedCredits` (`src/review-governance/credit-reconciliation.ts:445-461`) keeps the `STALE_BINDING` comparison itself unchanged — it still rejects on any mismatch when `bindingEvidence` is supplied — and its doc comment now states plainly that copying these fields from `binding` cannot detect staleness. This is the minimal, correct fix: rather than fabricating a fingerprint or deleting a check that will become meaningful once Phase 8 lands, it stops asserting a false guarantee in production while preserving the mechanism for a real caller. The plan checklist (Phase 8, binding decisions item) was updated in the same commit to explicitly require carrying `sourceBindingId`/ledger/decisions hashes on decision records and passing them into reconciliation as `bindingEvidence`, closing the loop on how this gets exercised for real.
+- **New test coverage:** `test/unit/review-governance/credit-reconciliation.test.ts` replaces the old self-referential "stale bindings" case (which asserted rejection against a *different* placeholder `binding-1` id that could never occur from composition) with `"independently recorded binding evidence rejects a hash or id mismatch"`, which builds `bindingEvidence` from a value copied once at "recording time" and shows: (a) omitting it still reconciles, (b) supplying a byte-identical independently-recorded copy still reconciles, and (c) mutating any one of `id`/`ledgerHash`/`decisionsHash` after the fact correctly produces `STALE_BINDING`. This is a meaningfully stronger test than before — it exercises the check the way a real Phase 8 caller would (evidence captured earlier, compared against a possibly-drifted current binding), not a same-object comparison.
+
+### Remaining concerns
+
+None from this change. The check is now inert in production exactly as documented (no caller currently supplies `bindingEvidence`), which is the correct, honest state until Phase 8 wires a real fingerprint — not a gap, since Phase 7's own scope never required cross-run binding-evidence enforcement to be live yet, only that reconciliation not silently invent it.
+
+### New issues introduced by this revision
+
+None found. Diff is scoped exactly to the P2.1-residual finding: a doc-comment-driven omission of a self-referential input, one clarifying doc comment in the reconciliation function, an updated plan checklist line, and a replaced/strengthened test. No control flow, arithmetic, or persistence changed.
+
+### Updated readiness
+
+- **Phase 7 completion:** ✅ — no open findings remain, at any priority.
+- **Ready for next phase:** ✅.
