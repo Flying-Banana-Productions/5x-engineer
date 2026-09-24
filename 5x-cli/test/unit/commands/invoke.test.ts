@@ -69,6 +69,18 @@ function cleanupDir(dir: string): void {
 	} catch {}
 }
 
+/** Per-test control-plane file. Never touches the process-wide getDb singleton. */
+function openPrivateControlPlaneDb(dir: string): Database {
+	const stateDir = join(dir, ".5x");
+	mkdirSync(stateDir, { recursive: true });
+	const db = new Database(join(stateDir, "5x.db"));
+	db.exec("PRAGMA busy_timeout=5000");
+	db.exec("PRAGMA journal_mode=WAL");
+	db.exec("PRAGMA foreign_keys=ON");
+	runMigrations(db);
+	return db;
+}
+
 function structuredProvider(structured: unknown): AgentProvider {
 	const result = {
 		text: "structured response",
@@ -173,15 +185,15 @@ describe("invoke reviewer — plan read state", () => {
 				stderr: "pipe",
 			});
 		}
-		await initScaffold({ startDir: dir });
-		const planPath = join(dir, "plan.md");
-		writeFileSync(planPath, "# Provider-visible plan\n");
-		const db = getDb(dir);
-		createRunV1(db, { id: "run1", planPath });
-		closeDb();
-		_resetForTest();
-		const structured = humanGate
-			? `[sample.structured]
+		// Create the file first so initScaffold skips the process-wide singleton.
+		const db = openPrivateControlPlaneDb(dir);
+		try {
+			await initScaffold({ startDir: dir });
+			const planPath = join(dir, "plan.md");
+			writeFileSync(planPath, "# Provider-visible plan\n");
+			createRunV1(db, { id: "run1", planPath });
+			const structured = humanGate
+				? `[sample.structured]
 readiness = "not_ready"
 creditAssessments = []
 
@@ -202,7 +214,7 @@ independentEffortEstimate = 2
 confidence = "high"
 reason = "The original estimate remains sound."
 `
-			: `[sample.structured]
+				: `[sample.structured]
 readiness = "ready"
 items = []
 creditAssessments = []
@@ -212,9 +224,9 @@ independentEffortEstimate = 2
 confidence = "high"
 reason = "estimate"
 `;
-		writeFileSync(
-			join(dir, "5x.toml"),
-			`[author]
+			writeFileSync(
+				join(dir, "5x.toml"),
+				`[author]
 provider = "sample"
 model = "sample/test"
 
@@ -227,14 +239,19 @@ echo = false
 
 ${structured}
 `,
-		);
-		return planPath;
+			);
+			return { planPath, db };
+		} catch (error) {
+			db.close();
+			throw error;
+		}
 	}
 
 	async function invokeWithBudgetContext(
 		dir: string,
 		planPath: string,
 		effectivePlanPath: string,
+		db: Database,
 		onCreateProvider?: () => never,
 	) {
 		const ctx = makeBudgetContext();
@@ -252,6 +269,7 @@ ${structured}
 					workdir: dir,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					...(onCreateProvider
 						? { createProvider: async () => onCreateProvider() }
@@ -265,35 +283,48 @@ ${structured}
 
 	test("empty readable plan reaches budget parsing", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
 			const emptyPath = join(dir, "empty.md");
 			writeFileSync(emptyPath, "");
 			let providerCreations = 0;
 			await expect(
-				invokeWithBudgetContext(dir, planPath, emptyPath, () => {
-					providerCreations++;
-					throw new Error("provider must not be created before preflight");
-				}),
+				invokeWithBudgetContext(
+					dir,
+					setup.planPath,
+					emptyPath,
+					setup.db,
+					() => {
+						providerCreations++;
+						throw new Error("provider must not be created before preflight");
+					},
+				),
 			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
 			expect(providerCreations).toBe(0);
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
 
 	test("unreadable plan maps to PLAN_NOT_FOUND", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
 			await expect(
-				invokeWithBudgetContext(dir, planPath, join(dir, "missing.md")),
+				invokeWithBudgetContext(
+					dir,
+					setup.planPath,
+					join(dir, "missing.md"),
+					setup.db,
+				),
 			).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -301,8 +332,11 @@ ${structured}
 	test("continued reviewer opt-in captures once before provider and records the step snapshot", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			ctx.db.run(
@@ -323,6 +357,7 @@ ${structured}
 					optInBudgetBaseline: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					createProvider: async (role, config) => {
 						providerCreations++;
@@ -345,8 +380,7 @@ ${structured}
 			expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -354,8 +388,11 @@ ${structured}
 	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ mode: "enforced" });
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir, true);
+			const setup = await setupBudgetInvoke(dir, true);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			const seed = pendingSnapshot();
@@ -380,7 +417,7 @@ ${structured}
 					quiet: true,
 					workdir: dir,
 				},
-				{ createReviewBudgetContext: async () => ctx },
+				{ db, createReviewBudgetContext: async () => ctx },
 			);
 
 			const line = ctx.recordStore.listLines("run1", "steps")[0];
@@ -397,8 +434,7 @@ ${structured}
 			});
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -406,8 +442,11 @@ ${structured}
 	test("invoke and template handlers append byte-identical reviewer governance context", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ mode: "enforced" });
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			seedPromptGovernanceContext(ctx);
@@ -422,6 +461,7 @@ ${structured}
 					newSession: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					onRenderedPrompt: (prompt) => {
 						nativePrompt = prompt;
@@ -438,6 +478,7 @@ ${structured}
 					quiet: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					createProvider: async () =>
 						structuredProvider({
@@ -460,6 +501,7 @@ ${structured}
 					quiet: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					createProvider: async () =>
 						structuredProvider({
@@ -488,8 +530,7 @@ ${structured}
 			);
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -497,8 +538,11 @@ ${structured}
 	test("provider schema follows the baselineAssessment contract the budget validator enforces", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			const schemas: Record<string, unknown>[] = [];
@@ -528,6 +572,7 @@ ${structured}
 						newSession: true,
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => ctx,
 						createProvider: async () => {
 							const provider = structuredProvider(initialVerdict);
@@ -580,16 +625,18 @@ ${structured}
 			expect(schemas[2]).toEqual(reviewerVerdictSchemaFor("optional", "plan"));
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
 
 	test("opt-in on an author invocation is rejected before provider creation", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			let providerCreations = 0;
 			await expect(
 				invokeAgent(
@@ -603,6 +650,7 @@ ${structured}
 						optInBudgetBaseline: true,
 					},
 					{
+						db,
 						createProvider: async () => {
 							providerCreations++;
 							throw new Error("provider must not be created");
@@ -612,8 +660,7 @@ ${structured}
 			).rejects.toMatchObject({ code: "BUDGET_BASELINE_OPT_IN_INVALID" });
 			expect(providerCreations).toBe(0);
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -1713,17 +1760,6 @@ The binding is unchanged.
 		});
 		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
 		return result.stdout.toString().trim();
-	}
-
-	function openPrivateControlPlaneDb(dir: string): Database {
-		const stateDir = join(dir, ".5x");
-		mkdirSync(stateDir, { recursive: true });
-		const db = new Database(join(stateDir, "5x.db"));
-		db.exec("PRAGMA busy_timeout=5000");
-		db.exec("PRAGMA journal_mode=WAL");
-		db.exec("PRAGMA foreign_keys=ON");
-		runMigrations(db);
-		return db;
 	}
 
 	async function setupAuthorInvoke(dir: string) {

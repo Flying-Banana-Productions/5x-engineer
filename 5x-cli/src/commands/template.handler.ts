@@ -9,6 +9,7 @@
  * - describe: Show detailed metadata for a specific template
  */
 
+import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig, resolveLayeredConfig } from "../config.js";
@@ -108,6 +109,8 @@ export interface TemplateRenderDeps {
 	readPlan?: (path: string) => string;
 	warn?: (message: string) => void;
 	onRenderedPrompt?: (prompt: string) => void;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	db?: Database;
 }
 
 async function capturePreAuthorHead(input: {
@@ -194,7 +197,8 @@ export async function templateRender(
 	const projectRoot = controlPlane.controlPlaneRoot;
 	const stateDir = controlPlane.stateDir;
 
-	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
+	const db =
+		deps?.db ?? getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
 	runDb = db;
 	try {
 		runMigrations(db);
