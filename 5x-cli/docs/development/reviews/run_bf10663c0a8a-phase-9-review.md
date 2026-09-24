@@ -113,3 +113,37 @@ None found. The `codeEquivalentCommits` array is computed once per boundary call
 
 - **Phase 9 completion:** ✅ — The P0 blocker and both P1 findings are fixed with direct, verifiable code changes and matching regression tests (unit-level isolating the predicate change, integration-level reproducing the real workflow). Both P2 findings from the original review (unresolved-HEAD fail-open, binding-shim phase fabrication) are also fixed. Full local test suite for the affected files passes (43/43), and typecheck/lint are clean.
 - **Ready for next phase:** ✅ — No blocking or human-required items remain. The one open item (P2.2, additional integration coverage) is optional hardening with existing unit-level coverage as a safety net, not a correctness gap.
+
+---
+
+## Addendum (2026-09-24) — Correction carry-forward route fix and full P2.2 integration coverage
+
+**Reviewed:** `a42ee00..2ded60c` (single commit `2ded60c`)
+**Local verification:** `bun test test/unit/review-governance/implementation-boundary.test.ts test/integration/commands/implementation-completion.test.ts test/unit/commands/run-state-review-budget-wiring.test.ts test/unit/commands/run-v1.handler.test.ts` → 48 pass / 0 fail (up from 43). `bunx tsc --noEmit` and `bun run lint`/`biome check` are clean. Everything else in this addendum is static.
+
+This revision is one commit that both fixes a real bug found while closing out P2.2 and adds the integration tests the prior addendum asked for.
+
+### What's addressed (✅)
+
+- **P2.2 — Integration coverage lagged the Phase 9 test list**: Fully addressed. Six new integration tests were added to `implementation-completion.test.ts`, closing every scenario named in the original review and the prior addendum:
+  - `"multiple approved sources block completion until one source is selected"` — zero/multiple approved candidates, `IMPLEMENTATION_APPROVAL_REQUIRED` on both `phase:complete` and direct author admission, then successful `review implementation bind --source-run`, then still-blocked completion until the phase is actually reviewed.
+  - `"a direct author record keeps the legacy commit parent and still blocks the next phase"` — direct author recording with no `implementation:pre-author` step (`preAuthorSteps(...) === []` asserted), confirming the legacy git-commit-parent fallback from Phase 3, plus next-phase admission still blocked.
+  - `"a zero-claim review seals, and a realized claim seals only after the realization"` — a zero-claim phase completes from the review alone; a phase with a due claim is blocked (`completionAuthorized: false`, `IMPLEMENTATION_BOUNDARY_BLOCKED`) until a `creditRealizations` verdict realizes it, then completes and seals.
+  - `"a material shortfall in the last phase blocks phase and run completion"` — a `not_realized` claim at the last phase blocks both `phase:complete` and `run complete`, and `run state`'s `implementation_governance.phases` correctly reports `ready: false` for that phase.
+  - `"an eligible correction proof carries the realized claim through phase completion"` — the end-to-end shortcut path: a `ready_with_corrections` verdict with exactly one mechanical P2 `auto_fix` `implementation_defect` and a realized claim, then `review corrections finish` producing a `status: "complete"` attempt, then `phase:complete` succeeds via the carry-forward proof, then a further code commit after the correction still blocks `run complete`.
+  All five were verified by reading each test body; they exercise real CLI subprocess paths end-to-end (`protocol validate`, `template render`, `run record`, `review corrections finish`, `run complete`, `run state`), not just the pure predicate. Verified.
+
+- **A previously undiscovered bug in `implementation-boundary.ts`, found and fixed while adding this coverage**: `phaseSettlement`'s `correctedComplete` branch previously required `observation?.route === "final_corrections"` for the carry-forward exemption. Reading `src/review-governance/implementation.ts` (the function that actually derives and stores `governance.route` on real observations) shows the enforced/advisory route derivation only ever produces `"human_gate"`, `"author_revision"`, or `"complete"` — `"final_corrections"` is a value the pure `evaluateImplementationCorrectionEligibility` helper in `corrections.ts` returns internally but which is never persisted onto a real `ImplementationReviewObservationPayload.route`. That means the pre-existing `correctedComplete` branch was **unreachable for any real observation** — the entire Phase 6 CLI-shortcut carry-forward completion path was dead code before this commit, even though `finishImplementationCorrection` had been faithfully recording eligible correction attempts all along. The fix changes the route check to `observation?.route === "final_corrections" || observation?.route === "author_revision"`, which matches the actual value (`"author_revision"`) that `implementation.ts` stores for the eligible-shortcut case. This is safe because `finishImplementationCorrection` (the sole production writer of `ImplementationCorrectionAttemptPayload`) only ever creates an attempt capable of satisfying `exactCorrectionCarryProof` when `evaluateImplementationCorrectionEligibility(observation.originalVerdict).status === "eligible"` **and** `observation.route === "author_revision"` with no gate causes/error diagnostics in enforced mode (`durableShortcut` in `corrections.ts`) — so broadening the route match does not let an ordinary (non-eligible) `author_revision` observation slip through; the `proof` check remains the actual gate, and only genuinely eligible attempts can ever produce it. Verified by tracing the full call graph (`implementation.ts` → `governance.route`; `corrections.ts` → `finishImplementationCorrection` → `durableShortcut` gate → `recordCorrectionAttempt`) and confirming no other code path writes a correction attempt. New unit test in `implementation-boundary.test.ts` (extending `"carry-forward requires the exact eligible correction proof"`) directly asserts `allow` for an `author_revision`-routed observation with a matching proof. The new integration test `"an eligible correction proof carries the realized claim through phase completion"` is the regression test that would have failed before this fix, since it exercises the real `implementation.ts` → `finishImplementationCorrection` → `evaluateStoredImplementationBoundary` path.
+
+### Newly introduced issues
+
+None found. This is a one-line logic fix (route-check broadening) plus test additions; no new code paths, no new I/O, no new failure modes. The change is strictly a bugfix that makes an already-written, already-gated code path (correction-attempt carry-forward) reachable — it does not weaken any existing check, since the `proof` computation (`exactCorrectionCarryProof`) is unchanged and remains the actual authorization gate.
+
+### Remaining concerns
+
+None at P0/P1/P2. All items from the original review and the first addendum are now resolved.
+
+### Updated readiness
+
+- **Phase 9 completion:** ✅ — All P0/P1/P2 items from both the original review and the first addendum are closed. This revision additionally found and fixed a genuine dead-code bug (the Phase 6 CLI-shortcut carry-forward path was unreachable) while closing out the integration-coverage gap, and added direct regression coverage for it at both the unit and integration level. 48/48 targeted tests pass; typecheck and lint are clean.
+- **Ready for next phase:** ✅ — No blocking, human-required, or open P2 items remain for Phase 9.
