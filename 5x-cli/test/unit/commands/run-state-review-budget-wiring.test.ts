@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	buildReviewBudgetState,
 	loadGitRecordForPlan,
 	runV1State,
 	semanticHumanRequiredFromSteps,
@@ -23,6 +24,8 @@ import { setOutputFormat } from "../../../src/output.js";
 import { planSlugFromPath } from "../../../src/paths.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { createReviewDecision } from "../../../src/review-governance/decisions.js";
+import { evaluateStoredImplementationBoundary } from "../../../src/review-governance/implementation-boundary.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { createReviewGovernanceStore } from "../../../src/review-governance/store.js";
 
 const origin: RecordOrigin = {
@@ -600,6 +603,88 @@ describe("run state review-budget wiring", () => {
 					"repair or remove this record. Earlier valid snapshots remain in use",
 				),
 			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("implementation boundary is reported separately from the plan budget", async () => {
+		const ctx = setup();
+		try {
+			appendHumanReview(ctx);
+			const envelope = (await captureState(ctx)) as {
+				data?: {
+					review_budget?: Record<string, unknown>;
+					implementation_governance?: unknown;
+				};
+			};
+			expect(envelope.data?.review_budget).toMatchObject({
+				status: "active",
+				B: 5,
+				W: 5,
+				R: 0,
+			});
+			expect(envelope.data?.implementation_governance).toBeUndefined();
+
+			const store = createReviewBudgetStore(ctx.records);
+			const planBudget = buildReviewBudgetState({
+				runId: "run1",
+				mode: "advisory",
+				store,
+				hasPriorPlanReviewerStep: true,
+			});
+			store.saveImplementationBinding(
+				{
+					kind: "implementation-binding",
+					version: 1,
+					id: "bind-1",
+					executionRunId: "run1",
+					sourceRunId: "source",
+					sourceSnapshotId: "snap",
+					sourceBaselineId: "base",
+					approvedPlanCommit: "a".repeat(40),
+					approvedPlanHash: hashPlanBytes(planText),
+					approvedPlanBytes: planText,
+					b0: 5,
+					governingB: 9,
+					mode: "enforced",
+					thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+					ledger,
+					effectiveDecisions: [],
+					phaseMap: [{ id: "1", heading: "Phase 1" }],
+					debtTargets: [],
+					ledgerHash: "ledger",
+					decisionsHash: "decisions",
+					createdAt: "2026-09-17 00:00:03",
+				},
+				origin,
+			);
+			const boundary = evaluateStoredImplementationBoundary({
+				store,
+				recordStore: ctx.records,
+				runId: "run1",
+				intent: "run_complete",
+				mode: "advisory",
+				currentPlanBytes: planText,
+				headCommit: null,
+				hasImplementationHistory: false,
+				hasDeliveryBudget: true,
+			});
+			expect(boundary.readiness).toMatchObject({
+				executionObligations: true,
+				checklistSufficient: false,
+				bindingPresent: true,
+			});
+			expect(
+				buildReviewBudgetState({
+					runId: "run1",
+					mode: "advisory",
+					store,
+					hasPriorPlanReviewerStep: true,
+				}),
+			).toEqual(planBudget);
+			expect(planBudget?.B).toBe(5);
+			expect(planBudget?.R).toBe(0);
 		} finally {
 			ctx.db.close();
 		}

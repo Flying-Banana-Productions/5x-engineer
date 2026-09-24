@@ -97,15 +97,16 @@ function dueClaims(binding: ImplementationBindingPayload): DueClaim[] {
 	const claims: DueClaim[] = [];
 	for (const item of binding.ledger.workItems) {
 		if (item.architectureDelta >= 0) continue;
-		if (!isCompleteDebtClaimEvidence(item.debtClaim)) continue;
-		if (item.debtClaim.coupling !== "intrinsic") continue;
+		const claim = item.debtClaim;
+		if (!isCompleteDebtClaimEvidence(claim)) continue;
+		if (claim.coupling !== "intrinsic") continue;
 		const target = binding.debtTargets.find(
-			(entry) => entry.claimId === item.debtClaim.debtClaimId,
+			(entry) => entry.claimId === claim.debtClaimId,
 		);
 		if (!target) continue;
 		if (phaseIndex(binding.phaseMap, target.phaseId) < 0) continue;
 		claims.push({
-			creditClaimId: item.debtClaim.debtClaimId,
+			creditClaimId: claim.debtClaimId,
 			phaseId: target.phaseId,
 		});
 	}

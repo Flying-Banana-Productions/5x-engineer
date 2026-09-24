@@ -2505,33 +2505,52 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						enforcement_implemented: false,
 					};
 		if (hasRecordRun) {
-			let headCommit: string | null = null;
-			try {
-				headCommit = await getLatestCommit(
-					recordContext.executionContext.effectiveWorkingDirectory,
-				);
-			} catch {
-				headCommit = null;
+			const hasImplementationHistory = implementationHistoryPresent(
+				db,
+				recordContext.recordStore,
+				run.id,
+			);
+			let implementationEvidence = hasImplementationHistory;
+			if (!implementationEvidence) {
+				try {
+					implementationEvidence =
+						reviewStore.getImplementationBinding(run.id) !== null ||
+						reviewStore.getImplementationCompatibility(run.id) !== null;
+				} catch {
+					// The plan budget reader already reports an unreadable budget stream.
+				}
 			}
-			implementationGovernance = evaluateStoredImplementationBoundary({
-				store: reviewStore,
-				recordStore: recordContext.recordStore,
-				runId: run.id,
-				intent: "run_complete",
-				mode: configuredMode,
-				currentPlanBytes: currentPlanMarkdown ?? null,
-				headCommit,
-				hasImplementationHistory: implementationHistoryPresent(
-					db,
-					recordContext.recordStore,
-					run.id,
-				),
-				hasDeliveryBudget: currentPlanMarkdown
-					? parseDeliveryBudget(currentPlanMarkdown).ok
-					: false,
-			}).readiness;
-			if (!implementationGovernance.executionObligations) {
-				implementationGovernance = undefined;
+			if (implementationEvidence) {
+				let headCommit: string | null = null;
+				try {
+					headCommit = await getLatestCommit(
+						recordContext.executionContext.effectiveWorkingDirectory,
+					);
+				} catch {
+					headCommit = null;
+				}
+				try {
+					const readiness = evaluateStoredImplementationBoundary({
+						store: reviewStore,
+						recordStore: recordContext.recordStore,
+						runId: run.id,
+						intent: "run_complete",
+						mode: configuredMode,
+						currentPlanBytes: currentPlanMarkdown ?? null,
+						headCommit,
+						hasImplementationHistory,
+						hasDeliveryBudget: currentPlanMarkdown
+							? parseDeliveryBudget(currentPlanMarkdown).ok
+							: false,
+					}).readiness;
+					if (readiness.executionObligations) {
+						implementationGovernance = readiness;
+					}
+				} catch (error) {
+					warn(
+						`Unable to read implementation boundary for run ${run.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 			}
 		}
 	}

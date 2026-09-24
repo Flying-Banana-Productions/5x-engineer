@@ -361,11 +361,13 @@ describe("evaluateImplementationBoundary", () => {
 
 	test("a zero-claim phase completes from the review alone", () => {
 		const zero = binding();
+		const source = zero.ledger.workItems[0];
+		if (!source) throw new Error("missing fixture work item");
 		zero.ledger = {
 			...zero.ledger,
 			workItems: [
 				{
-					...zero.ledger.workItems[0],
+					...source,
 					architectureDelta: 0,
 					debtClaim: null,
 				},
