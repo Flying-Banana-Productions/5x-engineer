@@ -336,6 +336,8 @@ export async function phaseFinishCore(
 			status: authorComplete ? "completed" : "skipped",
 		};
 	} else if (
+		// Checklist skip does not disable implementation governance. Author
+		// admission and phase:complete still consult the boundary predicate.
 		params.phaseChecklistValidate === false ||
 		!isNumericPhaseRef(params.phase)
 	) {

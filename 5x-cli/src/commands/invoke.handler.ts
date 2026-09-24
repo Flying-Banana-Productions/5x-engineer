@@ -77,6 +77,7 @@ import {
 	validateImplementationReview,
 	verdictUsesImplementationContract,
 } from "../review-governance/implementation.js";
+import { evaluateStoredImplementationBoundary } from "../review-governance/implementation-boundary.js";
 import {
 	admitAuthorTextAmendmentFromGit,
 	capturePhaseAuthorAdmission,
@@ -565,6 +566,27 @@ export async function invokeAgent(
 				const phase = canonicalPhaseId(
 					params.phase ?? mergedVars.phase_number ?? "",
 				);
+				if (phase && phase !== "plan") {
+					const boundary = evaluateStoredImplementationBoundary({
+						store: budgetContext.store,
+						recordStore: budgetContext.recordStore,
+						runId: params.run,
+						intent: "advance",
+						phase,
+						mode: admission.binding.mode,
+						currentPlanBytes: markdown,
+						headCommit: null,
+						hasImplementationHistory: true,
+						hasDeliveryBudget: true,
+					});
+					if (boundary.status === "deny") {
+						outputError(
+							boundary.code ?? "IMPLEMENTATION_BOUNDARY_BLOCKED",
+							boundary.message ?? "Implementation boundary denied advancement.",
+							boundary.readiness,
+						);
+					}
+				}
 				if (!phase || phase === "plan") {
 					outputError(
 						"UNKNOWN_PHASE",

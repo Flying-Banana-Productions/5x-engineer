@@ -29,6 +29,7 @@ import {
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
+import { evaluateStoredImplementationBoundary } from "../review-governance/implementation-boundary.js";
 import {
 	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
@@ -389,6 +390,30 @@ export async function templateRender(
 				outputError(admission.code, admission.message, admission.detail);
 			}
 			if (admission.status === "bound") {
+				const phase = canonicalPhaseId(
+					explicitVars.phase_number ?? mergedVars.phase_number ?? "",
+				);
+				if (phase && phase !== "plan") {
+					const boundary = evaluateStoredImplementationBoundary({
+						store: renderBudgetContext.store,
+						recordStore: renderBudgetContext.recordStore,
+						runId: params.run,
+						intent: "advance",
+						phase,
+						mode: admission.binding.mode,
+						currentPlanBytes: markdown,
+						headCommit: null,
+						hasImplementationHistory: true,
+						hasDeliveryBudget: true,
+					});
+					if (boundary.status === "deny") {
+						outputError(
+							boundary.code ?? "IMPLEMENTATION_BOUNDARY_BLOCKED",
+							boundary.message ?? "Implementation boundary denied advancement.",
+							boundary.readiness,
+						);
+					}
+				}
 				await capturePreAuthorHead({
 					runId: params.run,
 					phase: explicitVars.phase_number ?? mergedVars.phase_number,

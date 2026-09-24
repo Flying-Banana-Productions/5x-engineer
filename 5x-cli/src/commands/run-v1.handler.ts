@@ -150,6 +150,10 @@ import {
 } from "../review-governance/decisions.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
+	evaluateStoredImplementationBoundary,
+	type ImplementationGovernanceReadiness,
+} from "../review-governance/implementation-boundary.js";
+import {
 	ensureImplementationAdmission,
 	isImplementationAuthorAdmission,
 } from "../review-governance/implementation-state.js";
@@ -1399,6 +1403,7 @@ export function formatStateText(data: {
 	exported_by?: RecordOrigin;
 	review_budget?: ReviewBudgetState;
 	review_governance?: ReviewGovernanceState;
+	implementation_governance?: ImplementationGovernanceReadiness;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1472,6 +1477,14 @@ export function formatStateText(data: {
 			console.log(
 				`Governance diagnostics: ${governance.diagnostics.join("; ")}`,
 			);
+	}
+	if (data.implementation_governance?.executionObligations) {
+		const ready = data.implementation_governance.phases
+			.filter((phase) => phase.ready)
+			.map((phase) => phase.phase);
+		console.log(
+			`Implementation governance: obligations=yes checklist_sufficient=no ready=${ready.join(",") || "none"}${data.implementation_governance.planDrifted ? " plan_drift=yes" : ""}`,
+		);
 	}
 
 	if (steps.length === 0) {
@@ -2387,6 +2400,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
 	let reviewGovernance: ReviewGovernanceState | undefined;
+	let implementationGovernance: ImplementationGovernanceReadiness | undefined;
 	{
 		const warn =
 			params.warn ??
@@ -2490,6 +2504,36 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						mode: configuredMode,
 						enforcement_implemented: false,
 					};
+		if (hasRecordRun) {
+			let headCommit: string | null = null;
+			try {
+				headCommit = await getLatestCommit(
+					recordContext.executionContext.effectiveWorkingDirectory,
+				);
+			} catch {
+				headCommit = null;
+			}
+			implementationGovernance = evaluateStoredImplementationBoundary({
+				store: reviewStore,
+				recordStore: recordContext.recordStore,
+				runId: run.id,
+				intent: "run_complete",
+				mode: configuredMode,
+				currentPlanBytes: currentPlanMarkdown ?? null,
+				headCommit,
+				hasImplementationHistory: implementationHistoryPresent(
+					db,
+					recordContext.recordStore,
+					run.id,
+				),
+				hasDeliveryBudget: currentPlanMarkdown
+					? parseDeliveryBudget(currentPlanMarkdown).ok
+					: false,
+			}).readiness;
+			if (!implementationGovernance.executionObligations) {
+				implementationGovernance = undefined;
+			}
+		}
 	}
 
 	outputSuccess(
@@ -2509,6 +2553,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			steps_remaining: budget.remaining,
 			...(reviewBudget ? { review_budget: reviewBudget } : {}),
 			...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
+			...(implementationGovernance
+				? { implementation_governance: implementationGovernance }
+				: {}),
 			...progressFields,
 			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},
@@ -2961,17 +3008,126 @@ export function deriveImplementationActivityTelemetry(input: {
  * context resolution — critical for `5x commit` where re-discovery from cwd
  * could target the wrong control-plane.
  */
+function isNumericImplementationPhase(
+	phase: string | null | undefined,
+): boolean {
+	if (!phase) return false;
+	const id = canonicalPhaseId(phase);
+	return id !== null && id !== "plan";
+}
+
+function implementationHistoryPresent(
+	db: Database,
+	recordStore: RecordStore,
+	runId: string,
+): boolean {
+	if (
+		getSteps(db, runId).some((step) => isNumericImplementationPhase(step.phase))
+	) {
+		return true;
+	}
+	try {
+		return recordStore.listLines(runId, "steps").some((line) => {
+			const payload = line.payload as { phase?: unknown };
+			return (
+				typeof payload.phase === "string" &&
+				isNumericImplementationPhase(payload.phase)
+			);
+		});
+	} catch {
+		return false;
+	}
+}
+
+async function enforceImplementationBoundary(input: {
+	intent: "phase_complete" | "run_complete" | "advance";
+	phase?: string;
+	runId: string;
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	recordStore: RecordStore;
+}): Promise<ImplementationGovernanceReadiness | null> {
+	const run = getRunV1(input.db, input.runId);
+	if (!run) return null;
+	let planMarkdown: string | null = null;
+	let headCommit: string | null = null;
+	if (input.controlPlane) {
+		const ctxResult = resolveRunExecutionContext(input.db, input.runId, {
+			controlPlaneRoot: input.controlPlane.controlPlaneRoot,
+		});
+		if (ctxResult.ok) {
+			const readPath =
+				ctxResult.context.planPathInWorktreeExists &&
+				existsSync(ctxResult.context.effectivePlanPath)
+					? ctxResult.context.effectivePlanPath
+					: run.plan_path;
+			if (existsSync(readPath)) {
+				try {
+					planMarkdown = readFileSync(readPath, "utf8");
+				} catch {
+					planMarkdown = null;
+				}
+			}
+			try {
+				headCommit = await getLatestCommit(
+					ctxResult.context.effectiveWorkingDirectory,
+				);
+			} catch {
+				headCommit = null;
+			}
+		}
+	} else if (existsSync(run.plan_path)) {
+		try {
+			planMarkdown = readFileSync(run.plan_path, "utf8");
+		} catch {
+			planMarkdown = null;
+		}
+	}
+	const parsed = planMarkdown ? parseDeliveryBudget(planMarkdown) : null;
+	const store = createReviewBudgetStore(input.recordStore);
+	const boundary = evaluateStoredImplementationBoundary({
+		store,
+		recordStore: input.recordStore,
+		runId: input.runId,
+		intent: input.intent,
+		...(input.phase
+			? { phase: canonicalPhaseId(input.phase) ?? input.phase }
+			: {}),
+		mode: input.config.reviewBudget?.mode ?? "advisory",
+		currentPlanBytes: planMarkdown,
+		headCommit,
+		hasImplementationHistory: implementationHistoryPresent(
+			input.db,
+			input.recordStore,
+			input.runId,
+		),
+		hasDeliveryBudget: parsed?.ok === true,
+	});
+	if (boundary.status === "deny") {
+		throw new RecordError(
+			boundary.code ?? "IMPLEMENTATION_BOUNDARY_BLOCKED",
+			boundary.message ?? "Implementation boundary denied this transition.",
+			{ diagnostics: boundary.diagnostics, readiness: boundary.readiness },
+		);
+	}
+	return boundary.readiness;
+}
+
 async function enforceFirstImplementationAdmission(input: {
-	params: RunRecordParams & { run: string; stepName: string };
+	params: RunRecordParams & { run: string; stepName: string; result?: string };
 	db: Database;
 	config: FiveXConfig;
 	controlPlane?: ControlPlaneResult;
 	recordStore: RecordStore;
 	originFor: (performer: RecordPerformer) => RecordOrigin;
 }): Promise<void> {
-	if (
-		!isImplementationAuthorAdmission(input.params.stepName, input.params.phase)
-	) {
+	const admitsGovernance =
+		isImplementationAuthorAdmission(
+			input.params.stepName,
+			input.params.phase,
+		) || input.params.stepName === "phase:complete";
+	if (!admitsGovernance) {
 		return;
 	}
 	const run = getRunV1(input.db, input.params.run);
@@ -3042,6 +3198,28 @@ export async function recordStepInternal(
 ): Promise<RecordStepResult & { max_steps: number }> {
 	const writer = await resolveRecordWriter(params, dbContext);
 	const { db, config, controlPlane, recordStore, originFor } = writer;
+	if (params.stepName === "phase:complete" && params.phase) {
+		const phaseId = canonicalPhaseId(params.phase) ?? params.phase;
+		const existing = getSteps(db, params.run).find(
+			(step) =>
+				step.step_name === "phase:complete" &&
+				(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId,
+		);
+		if (existing) {
+			const after = computeRunSummary(db, params.run);
+			return {
+				step_id: existing.id,
+				step_name: existing.step_name,
+				phase: existing.phase,
+				iteration: existing.iteration,
+				recorded: false,
+				total_steps: after.total_steps,
+				max_steps: getMaxStepsPerRun(
+					config as unknown as Record<string, unknown>,
+				),
+			};
+		}
+	}
 	await enforceFirstImplementationAdmission({
 		params,
 		db,
@@ -3050,6 +3228,27 @@ export async function recordStepInternal(
 		recordStore,
 		originFor,
 	});
+	if (params.stepName === "phase:complete") {
+		await enforceImplementationBoundary({
+			intent: "phase_complete",
+			...(params.phase ? { phase: params.phase } : {}),
+			runId: params.run,
+			db,
+			config,
+			controlPlane,
+			recordStore,
+		});
+	} else if (isImplementationAuthorAdmission(params.stepName, params.phase)) {
+		await enforceImplementationBoundary({
+			intent: "advance",
+			...(params.phase ? { phase: params.phase } : {}),
+			runId: params.run,
+			db,
+			config,
+			controlPlane,
+			recordStore,
+		});
+	}
 
 	const preparedOutcome = await prepareRecordStepAppend(params, {
 		db,
@@ -3395,6 +3594,50 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 			"UNSUPPORTED_FORMAT_VERSION",
 			`This CLI writes run.json format_version ${RUN_RECORD_FORMAT_VERSION} and cannot complete a run whose summary is format_version ${summary.format_version}. Use a CLI that understands that format, or do not complete this run with this binary.`,
 		);
+	}
+
+	if (status === "completed") {
+		try {
+			const budgetStore = createReviewBudgetStore(recordCtx.recordStore);
+			let hasBinding = false;
+			try {
+				hasBinding =
+					budgetStore.getImplementationBinding(runId) !== null ||
+					budgetStore.getImplementationCompatibility(runId) !== null;
+			} catch {
+				hasBinding = true;
+			}
+			const hasHistory = implementationHistoryPresent(
+				db,
+				recordCtx.recordStore,
+				runId,
+			);
+			if (!hasBinding && hasHistory) {
+				await enforceFirstImplementationAdmission({
+					params: { run: runId, stepName: "phase:complete", phase: "1" },
+					db,
+					config,
+					controlPlane,
+					recordStore: recordCtx.recordStore,
+					originFor: recordCtx.originFor,
+				});
+			}
+			if (hasHistory || budgetStore.getImplementationBinding(runId) !== null) {
+				await enforceImplementationBoundary({
+					intent: "run_complete",
+					runId,
+					db,
+					config,
+					controlPlane,
+					recordStore: recordCtx.recordStore,
+				});
+			}
+		} catch (err) {
+			if (err instanceof RecordError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
 	}
 
 	const stepName = status === "completed" ? "run:complete" : "run:abort";

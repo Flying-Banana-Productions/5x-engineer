@@ -583,6 +583,7 @@ Report to the human: all phases implemented and reviewed.
 - The author should not have reverted previous work
 
 ### Phase boundary:
+- `5x plan phases` is a checklist report. Checked boxes alone are not enough for enforced implementation advancement. Read `implementation_governance` from `5x run state`; it is ready only when the phase is reviewed, due claims are reconciled, and no material gate is open.
 - BEFORE recording `phase:complete`, run `5x plan phases $PLAN_PATH` and confirm current phase shows `done: true`
 - If checklist is not updated, record `phase:checklist_mismatch` and escalate to human — do NOT record `phase:complete`
 - Phase count should not have changed since the run started
