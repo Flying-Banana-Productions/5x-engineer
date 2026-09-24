@@ -160,9 +160,7 @@ function planAmendmentCount(input: {
 		input.observations.map((observation) => [observation.id, observation]),
 	);
 	const fingerprints = new Set<string>();
-	const addCauses = (
-		causes: readonly ImplementationObservationGateCause[],
-	) => {
+	const addCauses = (causes: readonly ImplementationObservationGateCause[]) => {
 		for (const cause of causes) {
 			if (cause.kind === "plan_amendment") fingerprints.add(cause.fingerprint);
 		}

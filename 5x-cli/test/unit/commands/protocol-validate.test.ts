@@ -22,10 +22,10 @@ import {
 } from "../../../src/commands/protocol.handler.js";
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
-import { runMigrations } from "../../../src/db/schema.js";
 import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
-import type { AgentProvider } from "../../../src/providers/types.js";
+import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
+import type { AgentProvider } from "../../../src/providers/types.js";
 import { implementationReviewObservationKey } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import {
@@ -2311,10 +2311,12 @@ describe("protocol and invoke implementation recording", () => {
 				};
 			};
 
-			const steps = ctx.recordStore.listLines("run1", "steps").filter((line) => {
-				const name = (line.payload as { step_name?: string }).step_name;
-				return name === "reviewer:commit";
-			});
+			const steps = ctx.recordStore
+				.listLines("run1", "steps")
+				.filter((line) => {
+					const name = (line.payload as { step_name?: string }).step_name;
+					return name === "reviewer:commit";
+				});
 			const observations = ctx.store.listImplementationReviews("run1");
 			expect(steps).toHaveLength(1);
 			expect(observations).toHaveLength(1);
@@ -2334,15 +2336,15 @@ describe("protocol and invoke implementation recording", () => {
 			expect(step.phase).toBe("1");
 			expect(step.iteration).toBe(1);
 			expect(protocolRecord.data?.result?.governance?.route).toBe("complete");
-			expect(protocolRecord.data?.result?.governance?.completionAuthorized).toBe(
-				true,
-			);
+			expect(
+				protocolRecord.data?.result?.governance?.completionAuthorized,
+			).toBe(true);
 			expect(invokeEnvelope.data?.result?.governance?.route).toBe(
 				protocolRecord.data?.result?.governance?.route,
 			);
-			expect(invokeEnvelope.data?.result?.governance?.completionAuthorized).toBe(
-				true,
-			);
+			expect(
+				invokeEnvelope.data?.result?.governance?.completionAuthorized,
+			).toBe(true);
 			expect(invokeEnvelope.data?.result?.governance?.gateCauses).toEqual(
 				protocolRecord.data?.result?.governance?.gateCauses,
 			);
