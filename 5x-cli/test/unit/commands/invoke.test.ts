@@ -26,7 +26,6 @@ import { invokeAgent } from "../../../src/commands/invoke.handler.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
 import { templateRender } from "../../../src/commands/template.handler.js";
 import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
-import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { createProvider } from "../../../src/providers/factory.js";
@@ -1348,8 +1347,8 @@ describe("invoke — worktree envelope fields (unit)", () => {
 
 describe("invoke implementation admission", () => {
 	test("sqlite-only budgeted author invoke requires approval before a provider", async () => {
-		_resetForTest();
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
 			Bun.spawnSync(["git", "init"], {
 				cwd: dir,
@@ -1358,7 +1357,6 @@ describe("invoke implementation admission", () => {
 				stdout: "pipe",
 				stderr: "pipe",
 			});
-			mkdirSync(join(dir, ".5x"), { recursive: true });
 			const planPath = join(dir, "plan.md");
 			writeFileSync(
 				planPath,
@@ -1387,10 +1385,10 @@ describe("invoke implementation admission", () => {
 				join(dir, "5x.toml"),
 				'[reviewBudget]\nmode = "advisory"\n',
 			);
-			const db = new Database(join(dir, ".5x", "5x.db"));
-			runMigrations(db);
+			// Private file DB so concurrent unit tests never open or close the
+			// process-wide singleton while another invoke still holds it.
+			db = openPrivateControlPlaneDb(dir);
 			createRunV1(db, { id: "run_admission01", planPath });
-			db.close();
 			let providerCalls = 0;
 			await expect(
 				invokeAgent(
@@ -1402,6 +1400,7 @@ describe("invoke implementation admission", () => {
 						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => {
 							throw new RecordContextError(
 								"RECORDS_UNAVAILABLE",
@@ -1417,8 +1416,7 @@ describe("invoke implementation admission", () => {
 			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
 			expect(providerCalls).toBe(0);
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -1531,6 +1529,7 @@ describe("invoke implementation review recording", () => {
 
 	test("invoke records the durable observation and rejects a pair collision", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
 			for (const args of [
 				["init"],
@@ -1545,12 +1544,11 @@ describe("invoke implementation review recording", () => {
 					stderr: "pipe",
 				});
 			}
+			// Create the file first so initScaffold skips the process-wide singleton.
+			db = openPrivateControlPlaneDb(dir);
 			await initScaffold({ startDir: dir });
 			writeFileSync(join(dir, "plan.md"), "# Provider-visible plan\n");
-			const db = getDb(dir);
 			createRunV1(db, { id: "run1", planPath: join(dir, "plan.md") });
-			closeDb();
-			_resetForTest();
 			writeFileSync(
 				join(dir, "5x.toml"),
 				`[author]
@@ -1602,6 +1600,7 @@ model = "sample/test"
 						],
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => ctx,
 						createProvider: async () => structuredProvider(verdict()),
 					},
@@ -1678,6 +1677,7 @@ model = "sample/test"
 						],
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => ctx,
 						createProvider: async () => structuredProvider(verdict()),
 					},
@@ -1685,8 +1685,7 @@ model = "sample/test"
 			).rejects.toMatchObject({ code: "RECORD_PAIR_CORRUPT" });
 			ctx.db.close();
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
