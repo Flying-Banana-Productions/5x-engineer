@@ -689,4 +689,62 @@ describe("run state review-budget wiring", () => {
 			ctx.db.close();
 		}
 	});
+
+	test("archived run state presents implementation governance for a bound execution", async () => {
+		const ctx = setup();
+		const warnings: string[] = [];
+		try {
+			createReviewBudgetStore(ctx.records).saveImplementationBinding(
+				{
+					kind: "implementation-binding",
+					version: 1,
+					id: "bind-1",
+					executionRunId: "run1",
+					sourceRunId: "source",
+					sourceSnapshotId: "snap",
+					sourceBaselineId: "base",
+					approvedPlanCommit: "a".repeat(40),
+					approvedPlanHash: hashPlanBytes(planText),
+					approvedPlanBytes: planText,
+					b0: 5,
+					governingB: 9,
+					mode: "enforced",
+					thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+					ledger,
+					effectiveDecisions: [],
+					phaseMap: [{ id: "1", heading: "Phase 1" }],
+					debtTargets: [],
+					ledgerHash: "ledger",
+					decisionsHash: "decisions",
+					createdAt: "2026-09-17 00:00:03",
+				},
+				origin,
+			);
+			ctx.db.exec("DELETE FROM runs WHERE id = 'run1'");
+			const envelope = (await captureState(
+				ctx,
+				{ plan: ctx.planPath },
+				(message) => warnings.push(message),
+			)) as {
+				data?: {
+					implementation_governance?: {
+						domain?: string;
+						binding?: { id?: string; sourceRunId?: string };
+					};
+				};
+			};
+			expect(warnings).toEqual([]);
+			expect(envelope.data?.implementation_governance).toMatchObject({
+				domain: "implementation",
+				binding: {
+					id: "bind-1",
+					sourceRunId: "source",
+					sourceSnapshotId: "snap",
+					mode: "enforced",
+				},
+			});
+		} finally {
+			ctx.db.close();
+		}
+	});
 });

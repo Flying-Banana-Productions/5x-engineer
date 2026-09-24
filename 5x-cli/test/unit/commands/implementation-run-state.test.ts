@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { presentImplementationGovernance } from "../../../src/commands/run-v1.handler.js";
+import {
+	formatStateText,
+	type ImplementationGovernanceClaimView,
+	type ImplementationGovernanceState,
+	presentImplementationGovernance,
+} from "../../../src/commands/run-v1.handler.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationCorrectionAttemptPayload,
@@ -424,6 +429,118 @@ describe("implementation run state", () => {
 		expect(state.claims.every((claim) => claim.physicallyRealized)).toBe(false);
 		expect(state.claims.every((claim) => claim.realizedCredit === 0)).toBe(
 			true,
+		);
+	});
+
+	test("text formatter tags waived and not_realized claims and separates credit", () => {
+		const claim = (
+			overrides: Partial<ImplementationGovernanceClaimView> &
+				Pick<ImplementationGovernanceClaimView, "creditClaimId" | "status">,
+		): ImplementationGovernanceClaimView => ({
+			phase: "1",
+			due: true,
+			reconciled: true,
+			approvedArchitectureDelta: -2,
+			effectiveApprovedMagnitude: 2,
+			measuredArchitectureDelta: null,
+			realizedCredit: 0,
+			physicallyRealized: false,
+			waiverDecisionId: null,
+			...overrides,
+		});
+		const governance: ImplementationGovernanceState = {
+			executionObligations: true,
+			checklistSufficient: false,
+			planDrifted: false,
+			bindingPresent: true,
+			phases: [],
+			domain: "implementation",
+			phase: "1",
+			binding: {
+				id: "bind-1",
+				sourceRunId: "source-run",
+				sourceSnapshotId: "snap-1",
+				sourceBaselineId: "base-1",
+				approvedPlanCommit: COMMIT,
+				mode: "enforced",
+			},
+			reviewedRange: null,
+			activeGate: null,
+			qualityAttempt: null,
+			telemetry: null,
+			credit: {
+				grossEffort: 6,
+				inheritedBaseline: 8,
+				standardCeiling: 10,
+				effectiveCeiling: 9,
+				absoluteCeiling: 12,
+				provisionalCredit: 3,
+				realizedCredit: 1,
+				positiveBurden: 2,
+			},
+			claims: [
+				claim({
+					creditClaimId: "DC-waived",
+					status: "waived",
+					waiverDecisionId: "decision-1",
+					effectiveApprovedMagnitude: 0,
+				}),
+				claim({
+					creditClaimId: "DC-missed",
+					status: "not_realized",
+					measuredArchitectureDelta: 0,
+				}),
+				claim({
+					creditClaimId: "DC-kept",
+					status: "realized",
+					measuredArchitectureDelta: -1,
+					realizedCredit: 1,
+					physicallyRealized: true,
+				}),
+			],
+		};
+		const lines: string[] = [];
+		const original = console.log;
+		console.log = (...args: unknown[]) => lines.push(String(args[0] ?? ""));
+		try {
+			formatStateText({
+				run: {
+					id: "run-1",
+					plan_path: "/plan.md",
+					status: "active",
+					created_at: "2026-09-24 00:00:00",
+					updated_at: "2026-09-24 00:00:00",
+				},
+				steps: [],
+				summary: {
+					total_steps: 0,
+					phases_completed: [],
+					total_tokens_in: 0,
+					total_tokens_out: 0,
+					total_cost_usd: 0,
+					total_duration_ms: 0,
+				},
+				steps_used: 0,
+				max_steps: 250,
+				steps_remaining: 250,
+				implementation_governance: governance,
+			});
+		} finally {
+			console.log = original;
+		}
+		const text = lines.join("\n");
+		expect(text).toContain(
+			"Implementation credit: gross_effort=6 baseline=8 standard=10 effective=9 absolute=12 provisional=3 realized=1 positive_burden=2",
+		);
+		expect(text).toContain(
+			"DC-waived=waived measured=none credit=0 not_physically_realized",
+		);
+		expect(text).toContain(
+			"DC-missed=not_realized measured=0 credit=0 not_physically_realized",
+		);
+		expect(text).toContain("DC-kept=realized measured=-1 credit=1");
+		expect(text).not.toContain(
+			"DC-kept=realized measured=-1 credit=1 not_physically_realized",
 		);
 	});
 });
