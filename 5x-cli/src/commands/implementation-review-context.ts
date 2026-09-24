@@ -640,11 +640,10 @@ export async function composeImplementationReviewerRecord(input: {
 		priorReconciliations,
 		correctionAttempts: attempts,
 		humanDebtDecisions: humanDebtDecisionsFromBinding(binding),
-		bindingEvidence: {
-			id: binding.id,
-			ledgerHash: binding.ledgerHash,
-			decisionsHash: binding.decisionsHash,
-		},
+		// Observations and pre-author steps record bindingId only, not
+		// ledger or decisions hashes. There is no independent fingerprint
+		// to compare, so omit bindingEvidence. Phase 8 decision records
+		// must carry those hashes and pass them into reconciliation.
 		stepKey,
 	});
 	if (reconciled.status === "rejected") {

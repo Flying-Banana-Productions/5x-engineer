@@ -65,6 +65,13 @@ export interface CreditReconciliationInput {
 	priorReconciliations?: readonly ImplementationCreditReconciliationPayload[];
 	correctionAttempts?: readonly ImplementationCorrectionAttemptPayload[];
 	humanDebtDecisions?: readonly HumanDebtDecision[];
+	/**
+	 * Binding id and hashes recorded independently of `binding` (a prior
+	 * observation, step, or Phase 8 decision). Omit when no such record
+	 * exists. Copying these fields from `binding` cannot detect staleness.
+	 * Phase 8 decision records are expected to carry this fingerprint so
+	 * composition can pass it here.
+	 */
 	bindingEvidence?: {
 		id: string;
 		ledgerHash: string;

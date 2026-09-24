@@ -299,7 +299,7 @@ describe("approved credit reconciliation", () => {
 		}
 	});
 
-	test("rejects duplicate, future, wrong-phase, overclaimed, and stale bindings", () => {
+	test("rejects duplicate, future, wrong-phase, and overclaimed realizations", () => {
 		expect(
 			reconcile({
 				realizations: [realized("DC1", -3), realized("DC1", -3)],
@@ -322,15 +322,31 @@ describe("approved credit reconciliation", () => {
 			status: "rejected",
 			code: "CREDIT_REALIZATION_INVALID",
 		});
+	});
+
+	test("independently recorded binding evidence rejects a hash or id mismatch", () => {
+		const source = binding();
+		const recorded = {
+			id: source.id,
+			ledgerHash: source.ledgerHash,
+			decisionsHash: source.decisionsHash,
+		};
+		expect(reconcile({ binding: source }).status).toBe("reconciled");
 		expect(
-			reconcile({
-				bindingEvidence: {
-					id: "bind-1",
-					ledgerHash: "other",
-					decisionsHash: "decisions",
-				},
-			}),
-		).toMatchObject({ status: "rejected", code: "STALE_BINDING" });
+			reconcile({ binding: source, bindingEvidence: recorded }).status,
+		).toBe("reconciled");
+		for (const bindingEvidence of [
+			{ ...recorded, ledgerHash: "other-ledger" },
+			{ ...recorded, decisionsHash: "other-decisions" },
+			{ ...recorded, id: "other-binding" },
+		]) {
+			expect(reconcile({ binding: source, bindingEvidence })).toMatchObject({
+				status: "rejected",
+				code: "STALE_BINDING",
+				message:
+					"Binding evidence does not match the approved execution binding.",
+			});
+		}
 	});
 
 	test("a large shortfall within budget is a material gate and a small one above E is too", () => {
