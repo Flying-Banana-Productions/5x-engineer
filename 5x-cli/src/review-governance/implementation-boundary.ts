@@ -215,8 +215,13 @@ function phaseSettlement(input: {
 		observation?.route === "complete" &&
 		observation.completionAuthorized === true &&
 		headMatches;
+	// Eligible CLI shortcuts are stored as author_revision. The exact proof
+	// authorizes completion for that route and for final_corrections.
 	const correctedComplete =
-		observation?.route === "final_corrections" && proof && headMatches;
+		proof &&
+		headMatches &&
+		(observation?.route === "final_corrections" ||
+			observation?.route === "author_revision");
 	const reviewed = ordinaryComplete || correctedComplete;
 
 	const phaseClaims = dueClaims(input.binding).filter(

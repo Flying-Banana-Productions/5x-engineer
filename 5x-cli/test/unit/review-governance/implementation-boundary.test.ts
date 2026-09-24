@@ -339,6 +339,18 @@ describe("evaluateImplementationBoundary", () => {
 		).toBe("allow");
 		expect(
 			input({
+				observations: [
+					{
+						...observation("author_revision", false),
+						claimObservations: obs.claimObservations,
+					},
+				],
+				correctionAttempts: [attempt],
+				headCommit: next,
+			}).status,
+		).toBe("allow");
+		expect(
+			input({
 				observations: [obs],
 				correctionAttempts: [{ ...attempt, qualitySkipped: true }],
 				headCommit: next,
