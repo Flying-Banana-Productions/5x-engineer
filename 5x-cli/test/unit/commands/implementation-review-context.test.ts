@@ -1623,4 +1623,164 @@ describe("implementation credit reconciliation composition", () => {
 		});
 		ctx.db.close();
 	});
+
+	test("an accepted restoration reopens the superseded claim without waiving it", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const seedBinding = creditBinding();
+		ctx.store.saveImplementationBinding(seedBinding, TEST_ORIGIN);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const verdict = realizedVerdict(COMMIT);
+		const first = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(first.status).toBe("applied");
+		if (first.status !== "applied") return;
+		expect(first.reconciliation.claims[0]).toMatchObject({
+			status: "realized",
+			realizedArchitectureDelta: -3,
+		});
+		await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			first.pending,
+			ctx,
+			first.reconciliation,
+		);
+		const settled = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 2,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(settled.status).toBe("applied");
+		if (settled.status !== "applied") return;
+		expect(settled.reconciliation.claims[0]).toMatchObject({
+			status: "realized",
+			carried: true,
+			sourceObservationId: first.pending.id,
+		});
+		const made = createImplementationDecision({
+			gateId: "gate-restore",
+			observationId: first.pending.id,
+			bindingId: seedBinding.id,
+			phase: "1",
+			choice: "restore_simplification",
+			findingRefs: [],
+			rationale: "Reopen the settled claim",
+			evidence: [],
+			claimAdjustments: [
+				{
+					creditClaimId: "DC1",
+					approvedArchitectureDelta: -3,
+					supersedesObservationId: first.pending.id,
+				},
+			],
+			ledgerHash: seedBinding.ledgerHash,
+			decisionsHash: seedBinding.decisionsHash,
+			createdAt: "2026-01-02 00:00:00",
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "steps",
+			idempotencyKey: "step:run1:human:review-governance:1:2",
+			payload: {
+				step_name: "human:review-governance",
+				phase: "1",
+				iteration: 2,
+				result_json: { decisionId: made.decisionId, gateId: made.gateId },
+				head_commit: null,
+				patch_id: null,
+				diff_summary: null,
+				duration_ms: null,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				model: null,
+			},
+			createdAt: "2026-01-02 00:00:00",
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "decisions",
+			idempotencyKey: `decision:review-gate:${made.gateId}`,
+			payload: made,
+			createdAt: made.createdAt,
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		const reopened = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 3,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(reopened.status).toBe("applied");
+		if (reopened.status !== "applied") return;
+		expect(reopened.reconciliation.supersedesObservationId).toBe(
+			first.pending.id,
+		);
+		expect(reopened.reconciliation.claims[0]).toMatchObject({
+			creditClaimId: "DC1",
+			status: "pending",
+			carried: false,
+			effectiveApprovedMagnitude: 3,
+			realizedArchitectureDelta: null,
+			waiverDecisionId: null,
+			sourceObservationId: null,
+		});
+		expect(reopened.pending.gateCauses).toContainEqual({
+			kind: "credit_unreconciled",
+			claimIds: ["DC1"],
+		});
+		const fresh = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 4,
+			verdict: {
+				readiness: "ready",
+				items: [],
+				creditRealizations: [
+					{
+						creditClaimId: "DC1",
+						realization: "partial",
+						realizedArchitectureDelta: -1,
+						evidence: `Partial collapse remains at ${COMMIT}.`,
+					},
+				],
+			},
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(fresh.status).toBe("applied");
+		if (fresh.status !== "applied") return;
+		expect(fresh.reconciliation.claims[0]).toMatchObject({
+			creditClaimId: "DC1",
+			status: "partial",
+			carried: false,
+			sourceObservationId: null,
+			realizedArchitectureDelta: -1,
+			effectiveApprovedMagnitude: 3,
+			waiverDecisionId: null,
+		});
+		ctx.db.close();
+	});
 });

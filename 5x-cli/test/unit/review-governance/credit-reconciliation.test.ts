@@ -18,6 +18,7 @@ import {
 	type EffortPoints,
 } from "../../../src/review-budget/types.js";
 import {
+	humanDebtDecisionsFromImplementationDecisions,
 	implementationDueClaimObligation,
 	reconcileApprovedCredits,
 } from "../../../src/review-governance/credit-reconciliation.js";
@@ -803,5 +804,83 @@ describe("approved credit reconciliation", () => {
 		expect(result.record.budget.realizedCredit).toBe(0);
 		expect(result.record.completionSatisfied).toBe(true);
 		expect(result.gateCauses).toEqual([]);
+	});
+
+	test("claim decisions map to waivers or restorations in isolation", () => {
+		const mapped = humanDebtDecisionsFromImplementationDecisions([
+			{
+				decisionId: "dec-burden",
+				choice: "approve_higher_burden",
+				claimAdjustments: [
+					{ creditClaimId: "DC1", approvedArchitectureDelta: 0 },
+				],
+			},
+			{
+				decisionId: "dec-scope",
+				choice: "reduce_scope",
+				claimAdjustments: [
+					{ creditClaimId: "DC2", approvedArchitectureDelta: -1 },
+				],
+			},
+			{
+				decisionId: "dec-restore",
+				choice: "restore_simplification",
+				claimAdjustments: [
+					{
+						creditClaimId: "DC1",
+						approvedArchitectureDelta: -3,
+						supersedesObservationId: "obs-1",
+					},
+				],
+			},
+			{
+				decisionId: "dec-restore-missing",
+				choice: "restore_simplification",
+				claimAdjustments: [
+					{ creditClaimId: "DC3", approvedArchitectureDelta: -3 },
+				],
+			},
+			{
+				decisionId: "dec-abort",
+				choice: "abort",
+				claimAdjustments: [
+					{ creditClaimId: "DC1", approvedArchitectureDelta: 0 },
+				],
+			},
+		]);
+		expect(mapped).toEqual([
+			{
+				kind: "waiver",
+				decisionId: "dec-burden",
+				creditClaimId: "DC1",
+				approvedMagnitude: 0,
+				active: true,
+			},
+			{
+				kind: "waiver",
+				decisionId: "dec-scope",
+				creditClaimId: "DC2",
+				approvedMagnitude: 1,
+				active: true,
+			},
+			{
+				kind: "restoration",
+				decisionId: "dec-restore",
+				creditClaimId: "DC1",
+				supersedesObservationId: "obs-1",
+				active: true,
+			},
+		]);
+		expect(
+			mapped.filter((decision) => decision.kind === "waiver"),
+		).toHaveLength(2);
+		expect(
+			mapped.filter((decision) => decision.kind === "restoration"),
+		).toEqual([
+			expect.objectContaining({
+				decisionId: "dec-restore",
+				supersedesObservationId: "obs-1",
+			}),
+		]);
 	});
 });
