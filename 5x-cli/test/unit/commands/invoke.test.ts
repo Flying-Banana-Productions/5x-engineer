@@ -1715,6 +1715,17 @@ The binding is unchanged.
 		return result.stdout.toString().trim();
 	}
 
+	function openPrivateControlPlaneDb(dir: string): Database {
+		const stateDir = join(dir, ".5x");
+		mkdirSync(stateDir, { recursive: true });
+		const db = new Database(join(stateDir, "5x.db"));
+		db.exec("PRAGMA busy_timeout=5000");
+		db.exec("PRAGMA journal_mode=WAL");
+		db.exec("PRAGMA foreign_keys=ON");
+		runMigrations(db);
+		return db;
+	}
+
 	async function setupAuthorInvoke(dir: string) {
 		for (const args of [
 			["init"],
@@ -1723,7 +1734,6 @@ The binding is unchanged.
 		] as const) {
 			git(dir, [...args]);
 		}
-		await initScaffold({ startDir: dir });
 		const planPath = join(dir, "plan.md");
 		writeFileSync(planPath, approved);
 		writeFileSync(
@@ -1733,159 +1743,164 @@ provider = "sample"
 model = "sample/test"
 `,
 		);
-		const db = getDb(dir);
-		createRunV1(db, { id: "run1", planPath });
-		closeDb();
-		_resetForTest();
-		git(dir, ["add", "-A"]);
-		git(dir, ["commit", "-m", "approved plan"]);
+		// Private file DB so concurrent unit tests never open or close the
+		// process-wide singleton while another invoke still holds it.
+		const db = openPrivateControlPlaneDb(dir);
+		try {
+			createRunV1(db, { id: "run1", planPath });
+			git(dir, ["add", "-A"]);
+			git(dir, ["commit", "-m", "approved plan"]);
 
-		const ctx = makeBudgetContext({ mode: "enforced" });
-		const ledger = {
-			estimateConfidence: "high" as const,
-			workItems: [
-				{
-					id: "W1",
-					title: "Bind",
-					effort: 2 as const,
-					architectureDelta: 0 as const,
-					debtClaim: null,
-					addresses: [],
-					rationale: "Required",
-					line: 1,
+			const ctx = makeBudgetContext({ mode: "enforced" });
+			const ledger = {
+				estimateConfidence: "high" as const,
+				workItems: [
+					{
+						id: "W1",
+						title: "Bind",
+						effort: 2 as const,
+						architectureDelta: 0 as const,
+						debtClaim: null,
+						addresses: [],
+						rationale: "Required",
+						line: 1,
+					},
+				],
+				surface: {
+					subsystems: 1,
+					productionFiles: 1,
+					persistentOrExternalBoundaries: 0,
 				},
-			],
-			surface: {
-				subsystems: 1,
-				productionFiles: 1,
-				persistentOrExternalBoundaries: 0,
-			},
-		};
-		const binding = {
-			kind: "implementation-binding" as const,
-			version: 1 as const,
-			id: "binding-1",
-			executionRunId: "run1",
-			sourceRunId: "source",
-			sourceSnapshotId: "snap",
-			sourceBaselineId: "base",
-			approvedPlanCommit: "c".repeat(40),
-			approvedPlanBytes: approved,
-			approvedPlanHash: hashPlanBytes(approved),
-			b0: 2,
-			governingB: 2,
-			mode: "enforced" as const,
-			thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
-			ledger,
-			effectiveDecisions: [],
-			phaseMap: [{ id: "1", heading: "Phase 1: Bind" }],
-			debtTargets: [],
-			ledgerHash: hashPlanBytes(stableStringify(ledger)),
-			decisionsHash: hashPlanBytes(stableStringify([])),
-			createdAt: "2026-01-01 00:00:00",
-		};
-		ctx.store.saveImplementationBinding(binding, TEST_ORIGIN);
-		const stale = "Bind execution to the approved plan.";
-		const staleAt = Buffer.from(approved, "utf8").indexOf(Buffer.from(stale));
-		const prepared = prepareTextAmendmentGuard({
-			id: "guard-1",
-			anchorBytes: approved,
-			anchorCommit: "a".repeat(40),
-			parentLineageId: null,
-			allowedSpans: [
-				{
-					itemId: "R1",
-					heading: "Phase 1: Bind",
-					staleText: stale,
-					start: staleAt,
-					end: staleAt + Buffer.byteLength(stale),
-				},
-			],
-		});
-		if (!prepared.ok) throw new Error(prepared.message);
-		ctx.recordStore.append({
-			runId: "run1",
-			stream: "budget",
-			idempotencyKey: implementationReviewObservationKey("run1", {
-				stepName: "reviewer:review",
-				phase: "1",
-				iteration: 0,
-			}),
-			payload: encodeImplementationReviewObservationPayload({
-				kind: "implementation-review",
-				version: 1,
-				id: "obs-1",
+			};
+			const binding = {
+				kind: "implementation-binding" as const,
+				version: 1 as const,
+				id: "binding-1",
+				executionRunId: "run1",
+				sourceRunId: "source",
+				sourceSnapshotId: "snap",
+				sourceBaselineId: "base",
+				approvedPlanCommit: "c".repeat(40),
+				approvedPlanBytes: approved,
+				approvedPlanHash: hashPlanBytes(approved),
+				b0: 2,
+				governingB: 2,
+				mode: "enforced" as const,
+				thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+				ledger,
+				effectiveDecisions: [],
+				phaseMap: [{ id: "1", heading: "Phase 1: Bind" }],
+				debtTargets: [],
+				ledgerHash: hashPlanBytes(stableStringify(ledger)),
+				decisionsHash: hashPlanBytes(stableStringify([])),
+				createdAt: "2026-01-01 00:00:00",
+			};
+			ctx.store.saveImplementationBinding(binding, TEST_ORIGIN);
+			const stale = "Bind execution to the approved plan.";
+			const staleAt = Buffer.from(approved, "utf8").indexOf(Buffer.from(stale));
+			const prepared = prepareTextAmendmentGuard({
+				id: "guard-1",
+				anchorBytes: approved,
+				anchorCommit: "a".repeat(40),
+				parentLineageId: null,
+				allowedSpans: [
+					{
+						itemId: "R1",
+						heading: "Phase 1: Bind",
+						staleText: stale,
+						start: staleAt,
+						end: staleAt + Buffer.byteLength(stale),
+					},
+				],
+			});
+			if (!prepared.ok) throw new Error(prepared.message);
+			ctx.recordStore.append({
 				runId: "run1",
-				stepKey: {
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
 					stepName: "reviewer:review",
 					phase: "1",
 					iteration: 0,
-				},
-				bindingId: binding.id,
-				contextId: "ctx-1",
-				domain: "implementation",
-				phase: "1",
-				originalVerdict: {
-					readiness: "not_ready",
-					items: [
-						{
-							id: "R1",
-							title: "Stale wording",
-							action: "auto_fix",
-							reason: "The sentence is stale.",
-							scopeClass: "plan_defect",
-							priority: "P2",
-							effortDelta: 0,
-							architectureDelta: 0,
-							planImpact: {
-								kind: "text_only",
-								locations: [
-									{
-										heading: "Phase 1: Bind",
-										staleText: stale,
-									},
-								],
-							},
-						},
-					],
-				},
-				outcomes: [],
-				route: "author_revision",
-				nextAction: "author_revision",
-				diagnostics: [],
-				claimObservations: [],
-				gateCauses: [],
-				telemetry: {
-					reviewCycles: 1,
-					fixCycles: 0,
-					reviewOriginatedCommits: 0,
-					qualityReruns: 0,
-					classCounts: {
-						implementation_defect: 0,
-						plan_defect: 1,
-						scope_expansion: 0,
-						pre_existing: 0,
+				}),
+				payload: encodeImplementationReviewObservationPayload({
+					kind: "implementation-review",
+					version: 1,
+					id: "obs-1",
+					runId: "run1",
+					stepKey: {
+						stepName: "reviewer:review",
+						phase: "1",
+						iteration: 0,
 					},
-					planAmendments: 0,
-					addedPaths: [],
-					boundaryInventory: [],
-					effortVariance: 0,
-					architectureVariance: 0,
-				},
-				budgetInvariant: { W: 2, R: 0, B: 2, D: 0 },
-				completionAuthorized: false,
-				textGuard: prepared.guard,
+					bindingId: binding.id,
+					contextId: "ctx-1",
+					domain: "implementation",
+					phase: "1",
+					originalVerdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "R1",
+								title: "Stale wording",
+								action: "auto_fix",
+								reason: "The sentence is stale.",
+								scopeClass: "plan_defect",
+								priority: "P2",
+								effortDelta: 0,
+								architectureDelta: 0,
+								planImpact: {
+									kind: "text_only",
+									locations: [
+										{
+											heading: "Phase 1: Bind",
+											staleText: stale,
+										},
+									],
+								},
+							},
+						],
+					},
+					outcomes: [],
+					route: "author_revision",
+					nextAction: "author_revision",
+					diagnostics: [],
+					claimObservations: [],
+					gateCauses: [],
+					telemetry: {
+						reviewCycles: 1,
+						fixCycles: 0,
+						reviewOriginatedCommits: 0,
+						qualityReruns: 0,
+						classCounts: {
+							implementation_defect: 0,
+							plan_defect: 1,
+							scope_expansion: 0,
+							pre_existing: 0,
+						},
+						planAmendments: 0,
+						addedPaths: [],
+						boundaryInventory: [],
+						effortVariance: 0,
+						architectureVariance: 0,
+					},
+					budgetInvariant: { W: 2, R: 0, B: 2, D: 0 },
+					completionAuthorized: false,
+					textGuard: prepared.guard,
+					createdAt: "2026-09-23 00:00:01",
+				}),
 				createdAt: "2026-09-23 00:00:01",
-			}),
-			createdAt: "2026-09-23 00:00:01",
-			...recordedEnvelope(TEST_ORIGIN),
-		});
-		ctx.executionContext.controlPlaneRoot = dir;
-		ctx.executionContext.effectiveWorkingDirectory = dir;
-		ctx.executionContext.effectivePlanPath = planPath;
-		ctx.executionContext.planPathInWorktreeExists = true;
-		ctx.executionContext.run.plan_path = planPath;
-		return { ctx, planPath };
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			ctx.executionContext.controlPlaneRoot = dir;
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = planPath;
+			ctx.executionContext.planPathInWorktreeExists = true;
+			ctx.executionContext.run.plan_path = planPath;
+			return { ctx, planPath, db };
+		} catch (error) {
+			db.close();
+			throw error;
+		}
 	}
 
 	function providerThatCommitsOutOfSpan(
@@ -1936,7 +1951,7 @@ model = "sample/test"
 
 	test("uses the author result commit and surfaces a typed amendment failure", async () => {
 		const dir = makeTmpDir();
-		const { ctx, planPath } = await setupAuthorInvoke(dir);
+		const { ctx, planPath, db } = await setupAuthorInvoke(dir);
 		try {
 			await expect(
 				invokeAgent(
@@ -1956,6 +1971,7 @@ model = "sample/test"
 						],
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => ctx,
 						createProvider: async () =>
 							providerThatCommitsOutOfSpan(dir, planPath, true),
@@ -1967,15 +1983,14 @@ model = "sample/test"
 			).toHaveLength(0);
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db.close();
 			cleanupDir(dir);
 		}
 	}, 30000);
 
 	test("falls back to HEAD when the author result omits commit", async () => {
 		const dir = makeTmpDir();
-		const { ctx, planPath } = await setupAuthorInvoke(dir);
+		const { ctx, planPath, db } = await setupAuthorInvoke(dir);
 		try {
 			await expect(
 				invokeAgent(
@@ -1995,6 +2010,7 @@ model = "sample/test"
 						],
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => ctx,
 						createProvider: async () =>
 							providerThatCommitsOutOfSpan(dir, planPath, false),
@@ -2003,8 +2019,7 @@ model = "sample/test"
 			).rejects.toMatchObject({ code: "PLAN_AMENDMENT_DIRTY" });
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db.close();
 			cleanupDir(dir);
 		}
 	}, 30000);

@@ -17,6 +17,7 @@
  * the run row surfaced once — not a check in this file.
  */
 
+import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -144,6 +145,8 @@ export interface InvokeAgentDeps {
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
 	warn?: (message: string) => void;
 	onRenderedPrompt?: (prompt: string) => void;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	db?: Database;
 }
 
 export interface InvokeParams {
@@ -308,10 +311,12 @@ export async function invokeAgent(
 	let runDb: ReturnType<typeof getDb> | undefined;
 
 	{
-		const db = getDb(
-			controlPlane.controlPlaneRoot,
-			controlPlaneDbPath(controlPlane.controlPlaneRoot, stateDir),
-		);
+		const db =
+			deps?.db ??
+			getDb(
+				controlPlane.controlPlaneRoot,
+				controlPlaneDbPath(controlPlane.controlPlaneRoot, stateDir),
+			);
 		runDb = db;
 		try {
 			runMigrations(db);
