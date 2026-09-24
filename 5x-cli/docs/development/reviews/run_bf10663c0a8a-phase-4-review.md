@@ -23,7 +23,7 @@ There are two gaps:
 - A clean `ready` verdict under a binding whose inherited budget needs a human publishes `route: complete` / `nextAction: complete` alongside an `inherited_budget` gate cause.
 - The "protocol/invoke parity" test only calls the composer twice. No test exercises the handler wiring that this phase actually changed.
 
-**Readiness:** Ready with corrections. One P1 route-coherence defect and one P1 test gap, both mechanical (`auto_fix`). The P2 items are telemetry fidelity and hardening.
+**Readiness:** Not ready. One P1 route-coherence defect and one P1 test gap are open. Both are mechanical (`auto_fix`), and P2 items are unaffected by this rating. The P2 items are telemetry fidelity and hardening.
 
 ---
 
