@@ -1527,7 +1527,10 @@ export interface ImplementationCreditReconciliationPayload {
 	reviewedCommit: string;
 	claims: ImplementationCreditClaimRecord[];
 	pendingClaimIds: string[];
+	/** Predecessor reconciliation record. Never an observation id. */
 	supersedesId: string | null;
+	/** Observation a restoration supersedes. History stays on that observation. */
+	supersedesObservationId: string | null;
 	budget: ImplementationCreditBudgetSnapshot;
 	creditUnrealized: boolean;
 	material: boolean;
@@ -1564,6 +1567,7 @@ const CREDIT_RECONCILIATION_KEYS = new Set([
 	"claims",
 	"pendingClaimIds",
 	"supersedesId",
+	"supersedesObservationId",
 	"budget",
 	"creditUnrealized",
 	"material",
@@ -1706,6 +1710,13 @@ export function decodeImplementationCreditReconciliationPayload(
 			value.supersedesId === null
 				? null
 				: stringField(value.supersedesId, "supersedesId"),
+		supersedesObservationId:
+			value.supersedesObservationId == null
+				? null
+				: stringField(
+						value.supersedesObservationId,
+						"supersedesObservationId",
+					),
 		budget: decodeCreditBudget(value.budget),
 		creditUnrealized: booleanField(value.creditUnrealized, "creditUnrealized"),
 		material: booleanField(value.material, "material"),

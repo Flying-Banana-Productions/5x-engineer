@@ -283,7 +283,6 @@ describe("approved credit reconciliation", () => {
 	test("implementation variance and unknown negative deltas do not create credit", () => {
 		const result = ok(
 			reconcile({
-				findingArchitectureDeltas: [-8, -5],
 				realizations: [realized("DC1", -3)],
 			}),
 		);
@@ -422,7 +421,8 @@ describe("approved credit reconciliation", () => {
 				],
 			}),
 		);
-		expect(result.record.supersedesId).toBe("obs-1");
+		expect(result.record.supersedesId).toBeNull();
+		expect(result.record.supersedesObservationId).toBe("obs-1");
 		expect(result.record.claims[0]?.status).toBe("pending");
 		expect(result.record.budget.realizedCredit).toBe(0);
 		expect(result.record.completionSatisfied).toBe(false);
@@ -599,6 +599,195 @@ describe("approved credit reconciliation", () => {
 		expect(listed.map((record) => record.id)).toEqual(["rec-1", "rec-2"]);
 		expect(listed[0]?.claims[0]?.status).toBe("realized");
 		expect(listed[1]?.supersedesId).toBe("rec-1");
+		expect(listed[1]?.supersedesObservationId).toBe("obs-1");
 		expect(listed[1]?.claims[0]?.status).toBe("pending");
+	});
+
+	test("a past-phase settled claim stays realized when later code changes", () => {
+		const phaseOne = ok(
+			reconcile({
+				id: "rec-phase-1",
+				observationId: "obs-phase-1",
+				createdAt: "2026-09-24 00:00:00",
+			}),
+		);
+		const phaseTwo = ok(
+			reconcile({
+				phase: "2",
+				reviewedCommit: NEXT,
+				readiness: "ready",
+				route: "complete",
+				realizations: [],
+				priorReconciliations: [phaseOne.record],
+				priorAssessments: [
+					{
+						observationId: "obs-phase-1",
+						reviewedCommit: COMMIT,
+						claims: [realized("DC1", -3)],
+						laterCodeChanged: true,
+					},
+				],
+			}),
+		);
+		expect(phaseTwo.record.claims[0]).toMatchObject({
+			creditClaimId: "DC1",
+			status: "realized",
+			realizedArchitectureDelta: -3,
+			carried: true,
+		});
+		expect(phaseTwo.record.budget.realizedCredit).toBe(3);
+		expect(phaseTwo.record.pendingClaimIds).toEqual([]);
+		expect(phaseTwo.gateCauses).toEqual([]);
+		expect(phaseTwo.record.completionSatisfied).toBe(true);
+		expect(
+			reconcile({
+				phase: "2",
+				reviewedCommit: NEXT,
+				realizations: [realized("DC1", -3, "realized", NEXT)],
+				priorReconciliations: [phaseOne.record],
+			}),
+		).toMatchObject({ status: "rejected", code: "CREDIT_CLAIM_WRONG_PHASE" });
+	});
+
+	test("a past-phase claim with no settlement stays unreconciled", () => {
+		const open = ok(
+			reconcile({
+				phase: "1",
+				realizations: [],
+				readiness: "not_ready",
+				route: "author_revision",
+				id: "rec-open",
+			}),
+		);
+		const later = ok(
+			reconcile({
+				phase: "2",
+				reviewedCommit: NEXT,
+				readiness: "ready",
+				realizations: [],
+				priorReconciliations: [open.record],
+			}),
+		);
+		expect(later.record.claims[0]?.status).toBe("pending");
+		expect(later.gateCauses).toEqual([
+			{ kind: "credit_unreconciled", claimIds: ["DC1"] },
+		]);
+	});
+
+	test("same-phase code changes still invalidate an assessment without a proof", () => {
+		const invalidated = ok(
+			reconcile({
+				reviewedCommit: NEXT,
+				realizations: [],
+				priorAssessments: [
+					{
+						observationId: "obs-1",
+						reviewedCommit: COMMIT,
+						claims: [realized("DC1", -3)],
+						laterCodeChanged: true,
+					},
+				],
+			}),
+		);
+		expect(invalidated.record.claims[0]?.status).toBe("pending");
+		expect(invalidated.gateCauses).toEqual([
+			{ kind: "credit_unreconciled", claimIds: ["DC1"] },
+		]);
+	});
+
+	test("a short commit prefix is evidence and a missing reference is advisory", () => {
+		const short = ok(
+			reconcile({
+				realizations: [
+					realized("DC1", -3, "realized", COMMIT.slice(0, 7)),
+				],
+			}),
+		);
+		expect(short.record.claims[0]?.status).toBe("realized");
+
+		const advisoryBinding = binding();
+		advisoryBinding.mode = "advisory";
+		const unresolved = ok(
+			reconcile({
+				binding: advisoryBinding,
+				realizations: [
+					{
+						...realized("DC1", -3),
+						evidence: "The stores collapsed, with no commit cited.",
+					},
+				],
+			}),
+		);
+		expect(unresolved.record.claims[0]?.status).toBe("pending");
+		expect(unresolved.record.budget.realizedCredit).toBe(0);
+		expect(unresolved.diagnostics[0]?.code).toBe("CREDIT_EVIDENCE_UNRESOLVED");
+		expect(
+			reconcile({
+				realizations: [
+					{
+						...realized("DC1", -3),
+						evidence: "The stores collapsed, with no commit cited.",
+					},
+				],
+			}),
+		).toMatchObject({
+			status: "rejected",
+			code: "CREDIT_REALIZATION_INVALID",
+		});
+	});
+
+	test("an ineligible ledger claim id is unknown", () => {
+		const seed = binding({
+			items: [
+				{
+					...claim("ADJ", "1", 0),
+					architectureDelta: 0,
+					debtClaim: {
+						debtClaimId: "ADJ",
+						coupling: "adjacent",
+						targetPhase: "1",
+						minimalAlternativeEffortDelta: 0,
+						minimalAlternativeArchitectureDelta: 0,
+						before: "many",
+						after: "one",
+					},
+				},
+			],
+		});
+		expect(
+			reconcile({
+				binding: seed,
+				realizations: [realized("ADJ", -1, "partial")],
+			}),
+		).toMatchObject({ status: "rejected", code: "CREDIT_CLAIM_UNKNOWN" });
+	});
+
+	test("a waiver without a measurement grants no realized credit", () => {
+		const result = ok(
+			reconcile({
+				binding: binding({ items: [claim("DC1", "1", -3)] }),
+				realizations: [],
+				readiness: "ready",
+				humanDebtDecisions: [
+					{
+						kind: "waiver",
+						decisionId: "dec-waive",
+						creditClaimId: "DC1",
+						approvedMagnitude: 2,
+						active: true,
+					},
+				],
+			}),
+		);
+		expect(result.record.claims[0]).toMatchObject({
+			status: "waived",
+			effectiveApprovedMagnitude: 2,
+			realizedArchitectureDelta: null,
+			evidence: null,
+			approvedArchitectureDelta: -3,
+		});
+		expect(result.record.budget.realizedCredit).toBe(0);
+		expect(result.record.completionSatisfied).toBe(true);
+		expect(result.gateCauses).toEqual([]);
 	});
 });

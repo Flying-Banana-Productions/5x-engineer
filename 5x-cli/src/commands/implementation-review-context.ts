@@ -39,7 +39,10 @@ import {
 	isExcludedPath,
 	parseCodePatch,
 } from "../review-governance/code-diff.js";
-import { reconcileApprovedCredits } from "../review-governance/credit-reconciliation.js";
+import {
+	humanDebtDecisionsFromBinding,
+	reconcileApprovedCredits,
+} from "../review-governance/credit-reconciliation.js";
 import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
@@ -47,6 +50,7 @@ import {
 } from "../review-governance/implementation.js";
 import {
 	detectPlanDrift,
+	listCreditReconciliations,
 	listRecordedImplementationReviews,
 } from "../review-governance/implementation-state.js";
 import { prepareTextAmendmentGuard } from "../review-governance/plan-amendment.js";
@@ -595,10 +599,15 @@ export async function composeImplementationReviewerRecord(input: {
 	let attempts: ReturnType<
 		ReviewBudgetCommandContext["store"]["listImplementationCorrectionAttempts"]
 	>;
+	let priorReconciliations: ReturnType<typeof listCreditReconciliations>;
 	try {
 		attempts = input.ctx.store.listImplementationCorrectionAttempts(
 			input.runId,
 		);
+		priorReconciliations = listCreditReconciliations(
+			input.ctx.store,
+			input.runId,
+		).filter((record) => record.bindingId === binding.id);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return {
@@ -616,18 +625,26 @@ export async function composeImplementationReviewerRecord(input: {
 		realizations: claimObservations,
 		priorAssessments: priorObservations
 			.filter((observation) => observation.bindingId === binding.id)
-			.map((observation) => ({
-				observationId: observation.id,
-				reviewedCommit:
-					contextCommit.get(observation.contextId) ?? observation.createdAt,
-				claims: observation.claimObservations,
-				laterCodeChanged:
-					contextCommit.get(observation.contextId) !== stored.reviewedCommit,
-			})),
+			.flatMap((observation) => {
+				const reviewedCommit = contextCommit.get(observation.contextId);
+				if (!reviewedCommit) return [];
+				return [
+					{
+						observationId: observation.id,
+						reviewedCommit,
+						claims: observation.claimObservations,
+						laterCodeChanged: reviewedCommit !== stored.reviewedCommit,
+					},
+				];
+			}),
+		priorReconciliations,
 		correctionAttempts: attempts,
-		findingArchitectureDeltas: input.verdict.items.map(
-			(item) => item.architectureDelta ?? 0,
-		),
+		humanDebtDecisions: humanDebtDecisionsFromBinding(binding),
+		bindingEvidence: {
+			id: binding.id,
+			ledgerHash: binding.ledgerHash,
+			decisionsHash: binding.decisionsHash,
+		},
 		stepKey,
 	});
 	if (reconciled.status === "rejected") {
@@ -637,6 +654,7 @@ export async function composeImplementationReviewerRecord(input: {
 			message: reconciled.message,
 		};
 	}
+	reviewed.governance.diagnostics.push(...reconciled.diagnostics);
 	gateCauses.push(...reconciled.gateCauses);
 	if (route === "complete" && gateCauses.length > 0) {
 		route = "human_gate";

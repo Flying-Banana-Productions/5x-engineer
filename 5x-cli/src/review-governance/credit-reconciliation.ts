@@ -21,7 +21,10 @@ import {
 	isCompleteDebtClaimEvidence,
 	type ParsedWorkItem,
 } from "../review-budget/types.js";
-import type { PlanReviewRoute } from "./types.js";
+import type {
+	ImplementationDiagnostic,
+	PlanReviewRoute,
+} from "./types.js";
 
 export interface HumanDebtWaiver {
 	kind: "waiver";
@@ -58,6 +61,11 @@ export interface CreditReconciliationInput {
 	route: PlanReviewRoute;
 	realizations: readonly ImplementationClaimObservation[];
 	priorAssessments?: readonly PriorClaimAssessment[];
+	/**
+	 * Earlier reconciliation records. Past-phase claims keep the latest
+	 * settled row from their own phase.
+	 */
+	priorReconciliations?: readonly ImplementationCreditReconciliationPayload[];
 	correctionAttempts?: readonly ImplementationCorrectionAttemptPayload[];
 	humanDebtDecisions?: readonly HumanDebtDecision[];
 	bindingEvidence?: {
@@ -65,11 +73,6 @@ export interface CreditReconciliationInput {
 		ledgerHash: string;
 		decisionsHash: string;
 	};
-	/**
-	 * Implementation-finding architecture deltas. Recorded only to prove they
-	 * do not change W, R, P, or credit.
-	 */
-	findingArchitectureDeltas?: readonly number[];
 	id?: string;
 	observationId?: string;
 	stepKey?: ImplementationReviewStepKey;
@@ -93,6 +96,7 @@ export interface CreditReconciliationSuccess {
 	status: "reconciled";
 	record: ImplementationCreditReconciliationPayload;
 	gateCauses: ImplementationObservationGateCause[];
+	diagnostics: ImplementationDiagnostic[];
 	/** Plan-only runs never reach this result. */
 	dueClaimObligation: true;
 }
@@ -218,12 +222,6 @@ function carriedAssessment(
 		}
 		const claim = prior.claims.find((item) => item.creditClaimId === claimId);
 		if (!claim) continue;
-		if (
-			!prior.laterCodeChanged &&
-			prior.reviewedCommit === input.reviewedCommit
-		) {
-			return { assessment: prior, claim };
-		}
 		const proof = attempts.some((attempt) =>
 			proofCarries(attempt, prior, input.reviewedCommit, input.binding.id),
 		);
@@ -290,7 +288,6 @@ function validateRealization(
 	claim: ImplementationClaimObservation,
 	approved: ApprovedClaim,
 	effectiveMagnitude: number,
-	reviewedCommit: string,
 ): CreditReconciliationRejection | null {
 	const delta = claim.realizedArchitectureDelta;
 	if (!Number.isInteger(delta) || delta > 0) {
@@ -330,12 +327,94 @@ function validateRealization(
 			message: `Claim ${claim.creditClaimId} not_realized requires delta 0.`,
 		};
 	}
-	if (!claim.evidence.trim() || !claim.evidence.includes(reviewedCommit)) {
-		return {
-			status: "rejected",
-			code: "CREDIT_REALIZATION_INVALID",
-			message: `Claim ${claim.creditClaimId} evidence must reference reviewed commit ${reviewedCommit}.`,
-		};
+	return null;
+}
+
+/** At least a 7-hex prefix of the reviewed commit, or the full SHA. */
+function evidenceReferencesCommit(
+	evidence: string,
+	reviewedCommit: string,
+): boolean {
+	const text = evidence.toLowerCase();
+	const commit = reviewedCommit.toLowerCase();
+	if (!text.trim()) return false;
+	if (text.includes(commit)) return true;
+	if (!/^[0-9a-f]{40}$/.test(commit)) return false;
+	const tokens = text.match(/[0-9a-f]{7,40}/g) ?? [];
+	return tokens.some((token) => commit.startsWith(token));
+}
+
+function evidenceDiagnostic(
+	claimId: string,
+	reviewedCommit: string,
+): ImplementationDiagnostic {
+	return {
+		code: "CREDIT_EVIDENCE_UNRESOLVED",
+		severity: "info",
+		message: `Claim ${claimId} evidence must reference reviewed commit ${reviewedCommit}.`,
+	};
+}
+
+export function humanDebtDecisionsFromBinding(
+	binding: ImplementationBindingPayload,
+): HumanDebtDecision[] {
+	const decisions: HumanDebtDecision[] = [];
+	for (const entry of binding.effectiveDecisions) {
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		if (record.active !== true) continue;
+		if (typeof record.decisionId !== "string" || !record.decisionId) continue;
+		if (typeof record.creditClaimId !== "string" || !record.creditClaimId) {
+			continue;
+		}
+		if (record.kind === "waiver") {
+			if (typeof record.approvedMagnitude !== "number") continue;
+			decisions.push({
+				kind: "waiver",
+				decisionId: record.decisionId,
+				creditClaimId: record.creditClaimId,
+				approvedMagnitude: record.approvedMagnitude,
+				active: true,
+			});
+		}
+		if (
+			record.kind === "restoration" &&
+			typeof record.supersedesObservationId === "string" &&
+			record.supersedesObservationId
+		) {
+			decisions.push({
+				kind: "restoration",
+				decisionId: record.decisionId,
+				creditClaimId: record.creditClaimId,
+				supersedesObservationId: record.supersedesObservationId,
+				active: true,
+			});
+		}
+	}
+	return decisions;
+}
+
+function settledPastClaim(
+	input: CreditReconciliationInput,
+	claimId: string,
+	decisions: readonly HumanDebtDecision[],
+): ImplementationCreditClaimRecord | null {
+	const records = (input.priorReconciliations ?? []).filter(
+		(record) => record.bindingId === input.binding.id,
+	);
+	for (const record of [...records].reverse()) {
+		const entry = record.claims.find(
+			(item) => item.creditClaimId === claimId,
+		);
+		if (!entry || record.phase !== entry.phaseId) continue;
+		const observationIds = [record.observationId, entry.sourceObservationId].filter(
+			(id): id is string => typeof id === "string" && id.length > 0,
+		);
+		if (observationIds.some((id) => restored(decisions, id, claimId))) {
+			return null;
+		}
+		if (entry.status === "pending" || entry.status === "future") return null;
+		return entry;
 	}
 	return null;
 }
@@ -378,7 +457,6 @@ export function reconcileApprovedCredits(
 				"Binding evidence does not match the approved execution binding.",
 		};
 	}
-	void input.findingArchitectureDeltas;
 	const currentIndex = phaseIndex(input.binding.phaseMap, input.phase);
 	if (currentIndex < 0) {
 		return {
@@ -389,11 +467,6 @@ export function reconcileApprovedCredits(
 	}
 	const approved = approvedClaims(input.binding);
 	if (!Array.isArray(approved)) return approved;
-	const known = new Set(
-		input.binding.ledger.workItems.flatMap((item) =>
-			item.debtClaim ? [item.debtClaim.debtClaimId] : [],
-		),
-	);
 	const approvedById = new Map(
 		approved.map((claim) => [claim.creditClaimId, claim]),
 	);
@@ -407,15 +480,14 @@ export function reconcileApprovedCredits(
 			};
 		}
 		seen.add(realization.creditClaimId);
-		if (!known.has(realization.creditClaimId)) {
+		const claim = approvedById.get(realization.creditClaimId);
+		if (!claim) {
 			return {
 				status: "rejected",
 				code: "CREDIT_CLAIM_UNKNOWN",
 				message: `Credit realization ${realization.creditClaimId} is not an approved intrinsic claim.`,
 			};
 		}
-		const claim = approvedById.get(realization.creditClaimId);
-		if (!claim) continue;
 		const targetIndex = phaseIndex(input.binding.phaseMap, claim.phaseId);
 		if (targetIndex > currentIndex) {
 			return {
@@ -472,6 +544,7 @@ export function reconcileApprovedCredits(
 	};
 	let anyShortfall = false;
 	let materialMagnitude = false;
+	const diagnostics: ImplementationDiagnostic[] = [];
 
 	for (const claim of approved) {
 		const targetIndex = phaseIndex(input.binding.phaseMap, claim.phaseId);
@@ -497,6 +570,85 @@ export function reconcileApprovedCredits(
 			continue;
 		}
 
+		if (claim.phaseId !== input.phase) {
+			const settled = settledPastClaim(input, claim.creditClaimId, decisions);
+			if (!settled || settled.realizedArchitectureDelta === null) {
+				if (waiver || settled?.status === "waived") {
+					records.push({
+						creditClaimId: claim.creditClaimId,
+						phaseId: claim.phaseId,
+						status: "waived",
+						approvedArchitectureDelta: claim.approvedArchitectureDelta,
+						effectiveApprovedMagnitude: effectiveMagnitude,
+						realizedArchitectureDelta: null,
+						evidence: settled?.evidence ?? null,
+						assessedCommit: settled?.assessedCommit ?? null,
+						sourceObservationId: settled?.sourceObservationId ?? null,
+						carried: settled !== null,
+						waiverDecisionId:
+							waiver?.decisionId ?? settled?.waiverDecisionId ?? null,
+					});
+					continue;
+				}
+				pending.push(claim.creditClaimId);
+				records.push({
+					creditClaimId: claim.creditClaimId,
+					phaseId: claim.phaseId,
+					status: "pending",
+					approvedArchitectureDelta: claim.approvedArchitectureDelta,
+					effectiveApprovedMagnitude: effectiveMagnitude,
+					realizedArchitectureDelta: null,
+					evidence: null,
+					assessedCommit: null,
+					sourceObservationId: null,
+					carried: false,
+					waiverDecisionId: null,
+				});
+				continue;
+			}
+			const measured = Math.abs(settled.realizedArchitectureDelta);
+			const applied = Math.min(measured, effectiveMagnitude);
+			realizedN += applied;
+			const unrealized = effectiveMagnitude - applied;
+			if (unrealized > 0) {
+				anyShortfall = true;
+				if (
+					unrealized >= input.binding.thresholds.singleArchitectureReviewPoints
+				) {
+					materialMagnitude = true;
+				}
+				shortfalls.claimIds.push(claim.creditClaimId);
+				shortfalls.claims.push({
+					creditClaimId: claim.creditClaimId,
+					approvedArchitectureDelta: waiver
+						? -effectiveMagnitude
+						: claim.approvedArchitectureDelta,
+					realizedArchitectureDelta: settled.realizedArchitectureDelta,
+					evidence: settled.evidence ?? "",
+				});
+			}
+			const settledStatus =
+				settled.status === "realized" ||
+				settled.status === "partial" ||
+				settled.status === "not_realized"
+					? settled.status
+					: "not_realized";
+			records.push({
+				creditClaimId: claim.creditClaimId,
+				phaseId: claim.phaseId,
+				status: settledStatus,
+				approvedArchitectureDelta: claim.approvedArchitectureDelta,
+				effectiveApprovedMagnitude: effectiveMagnitude,
+				realizedArchitectureDelta: settled.realizedArchitectureDelta,
+				evidence: settled.evidence,
+				assessedCommit: settled.assessedCommit,
+				sourceObservationId: settled.sourceObservationId,
+				carried: true,
+				waiverDecisionId: waiver?.decisionId ?? settled.waiverDecisionId,
+			});
+			continue;
+		}
+
 		const fresh = input.realizations.find(
 			(item) => item.creditClaimId === claim.creditClaimId,
 		);
@@ -505,7 +657,6 @@ export function reconcileApprovedCredits(
 			: carriedAssessment(input, claim.creditClaimId);
 		const observation = fresh ?? carried?.claim ?? null;
 		if (waiver && !observation) {
-			realizedN += effectiveMagnitude;
 			records.push({
 				creditClaimId: claim.creditClaimId,
 				phaseId: claim.phaseId,
@@ -545,9 +696,34 @@ export function reconcileApprovedCredits(
 			observation,
 			claim,
 			fresh ? effectiveMagnitude : claim.magnitude,
-			evidenceCommit,
 		);
 		if (invalid) return invalid;
+		if (!evidenceReferencesCommit(observation.evidence, evidenceCommit)) {
+			const message = `Claim ${claim.creditClaimId} evidence must reference reviewed commit ${evidenceCommit}.`;
+			if (input.binding.mode === "enforced") {
+				return {
+					status: "rejected",
+					code: "CREDIT_REALIZATION_INVALID",
+					message,
+				};
+			}
+			diagnostics.push(evidenceDiagnostic(claim.creditClaimId, evidenceCommit));
+			pending.push(claim.creditClaimId);
+			records.push({
+				creditClaimId: claim.creditClaimId,
+				phaseId: claim.phaseId,
+				status: "pending",
+				approvedArchitectureDelta: claim.approvedArchitectureDelta,
+				effectiveApprovedMagnitude: effectiveMagnitude,
+				realizedArchitectureDelta: null,
+				evidence: null,
+				assessedCommit: null,
+				sourceObservationId: null,
+				carried: false,
+				waiverDecisionId: waiver?.decisionId ?? null,
+			});
+			continue;
+		}
 		const measured = Math.abs(observation.realizedArchitectureDelta);
 		const applied = Math.min(measured, effectiveMagnitude);
 		realizedN += applied;
@@ -637,6 +813,7 @@ export function reconcileApprovedCredits(
 		status: "reconciled",
 		dueClaimObligation: true,
 		gateCauses,
+		diagnostics,
 		record: {
 			kind: "implementation-credit-reconciliation",
 			version: 1,
@@ -649,8 +826,8 @@ export function reconcileApprovedCredits(
 			reviewedCommit: input.reviewedCommit,
 			claims: records,
 			pendingClaimIds: pending,
-			supersedesId:
-				input.supersedesId ?? restoration?.supersedesObservationId ?? null,
+			supersedesId: input.supersedesId ?? null,
+			supersedesObservationId: restoration?.supersedesObservationId ?? null,
 			budget: budgetSnapshot(derived),
 			creditUnrealized: anyShortfall,
 			material,

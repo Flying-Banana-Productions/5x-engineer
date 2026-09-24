@@ -20,11 +20,15 @@ import {
 	decodeImplementationReviewObservationPayload,
 	type ImplementationBindingPayload,
 	type ImplementationReviewContextPayload,
+	implementationCreditReconciliationKey,
 	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
-import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
+import {
+	hashPlanBytes,
+	recordCorrectionAttempt,
+} from "../../../src/review-governance/implementation-state.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
@@ -171,14 +175,7 @@ function defectVerdict() {
 				},
 			},
 		],
-		creditRealizations: [
-			{
-				creditClaimId: "DC0",
-				realization: "not_realized" as const,
-				realizedArchitectureDelta: -5,
-				evidence: "The second store is still on the path.",
-			},
-		],
+		creditRealizations: [],
 	};
 }
 
@@ -332,14 +329,7 @@ describe("implementation review observations", () => {
 		expect(protocol.pending.domain).toBe("implementation");
 		expect(protocol.pending.phase).toBe("1");
 		expect(protocol.pending.originalVerdict.items[0]?.id).toBe("I1");
-		expect(protocol.pending.claimObservations).toEqual([
-			{
-				creditClaimId: "DC0",
-				realization: "not_realized",
-				realizedArchitectureDelta: -5,
-				evidence: "The second store is still on the path.",
-			},
-		]);
+		expect(protocol.pending.claimObservations).toEqual([]);
 		expect(
 			protocol.pending.gateCauses.some(
 				(cause) => cause.kind === "inherited_budget",
@@ -1098,5 +1088,420 @@ The binding is unchanged.
 		expect(downgraded.pending.textGuard).toBeUndefined();
 		ctx.db.close();
 		broken.db.close();
+	});
+});
+
+describe("implementation credit reconciliation composition", () => {
+	const COMMIT = "b".repeat(40);
+	const NEXT = "d".repeat(40);
+
+	function creditBinding(mode: "advisory" | "enforced" = "enforced") {
+		const seedBinding = binding({ mode });
+		seedBinding.phaseMap = [
+			{ id: "1", heading: "Phase 1" },
+			{ id: "2", heading: "Phase 2" },
+		];
+		const item = seedBinding.ledger.workItems[0];
+		if (!item) throw new Error("missing work item");
+		item.architectureDelta = -3;
+		item.debtClaim = {
+			debtClaimId: "DC1",
+			coupling: "intrinsic",
+			targetPhase: "1",
+			minimalAlternativeEffortDelta: 0,
+			minimalAlternativeArchitectureDelta: 0,
+			before: "two stores",
+			after: "one binding",
+		};
+		seedBinding.debtTargets = [
+			{ claimId: "DC1", sourceLabel: "1", phaseId: "1" },
+		];
+		return seedBinding;
+	}
+
+	function phaseContext(phase: string, commit: string, id: string) {
+		return {
+			...contextPayload(),
+			id,
+			phase,
+			reviewedCommit: commit,
+		};
+	}
+
+	function phaseDiff(commit: string): CodeDiffContext {
+		return { ...diff, reviewedCommit: commit };
+	}
+
+	function realizedVerdict(commit: string) {
+		return {
+			readiness: "ready" as const,
+			items: [],
+			creditRealizations: [
+				{
+					creditClaimId: "DC1",
+					realization: "realized" as const,
+					realizedArchitectureDelta: -3,
+					evidence: `Post-state at ${commit} matches the approved shape.`,
+				},
+			],
+		};
+	}
+
+	test("composition persists reconciliation, downgrades completion, and matches invoke and protocol", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const seedBinding = creditBinding();
+		ctx.store.saveImplementationBinding(seedBinding, TEST_ORIGIN);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const verdict = realizedVerdict(COMMIT);
+		const protocol = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+			sessionId: "protocol-session",
+		});
+		const invoke = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+			sessionId: "invoke-session",
+		});
+		expect(protocol.status).toBe("applied");
+		expect(invoke.status).toBe("applied");
+		if (protocol.status !== "applied" || invoke.status !== "applied") return;
+		expect(protocol.reconciliation.claims).toEqual(invoke.reconciliation.claims);
+		expect(protocol.reconciliation.budget.realizedCredit).toBe(3);
+		expect(protocol.pending.route).toBe(invoke.pending.route);
+		expect(protocol.pending.route).toBe("complete");
+
+		const written = await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			protocol.pending,
+			ctx,
+			protocol.reconciliation,
+		);
+		expect(written.recorded).toBe(true);
+		const stepKey = { stepName: STEP, phase: "1", iteration: 1 };
+		expect(
+			ctx.recordStore.getLine(
+				"run1",
+				"budget",
+				implementationReviewObservationKey("run1", stepKey),
+			),
+		).toBeDefined();
+		expect(
+			ctx.recordStore.getLine(
+				"run1",
+				"budget",
+				implementationCreditReconciliationKey("run1", stepKey),
+			),
+		).toBeDefined();
+		const replay = await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			invoke.pending,
+			ctx,
+			invoke.reconciliation,
+		);
+		expect(replay.recorded).toBe(false);
+		expect(ctx.store.listImplementationCreditReconciliations("run1")).toHaveLength(
+			1,
+		);
+		expect(ctx.store.listImplementationReviews("run1")).toHaveLength(1);
+
+		const open = makeBudgetContext({ mode: "enforced" });
+		open.store.saveImplementationBinding(creditBinding(), TEST_ORIGIN);
+		open.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const blocked = await composeImplementationReviewerRecord({
+			ctx: open,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 2,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(blocked.status).toBe("applied");
+		if (blocked.status !== "applied") return;
+		expect(blocked.pending.route).toBe("human_gate");
+		expect(blocked.pending.gateCauses).toContainEqual({
+			kind: "credit_unreconciled",
+			claimIds: ["DC1"],
+		});
+		expect(
+			await composeImplementationReviewerRecord({
+				ctx: open,
+				runId: "run1",
+				stepName: STEP,
+				phase: "1",
+				iteration: 3,
+				verdict: {
+					readiness: "ready",
+					items: [],
+					creditRealizations: [
+						{
+							creditClaimId: "DC1",
+							realization: "realized",
+							realizedArchitectureDelta: -5,
+							evidence: `Post-state at ${COMMIT} matches the approved shape.`,
+						},
+					],
+				},
+				contextId: "ctx-1",
+				codeContext: phaseDiff(COMMIT),
+			}),
+		).toMatchObject({
+			status: "error",
+			code: "CREDIT_REALIZATION_INVALID",
+		});
+		ctx.db.close();
+		open.db.close();
+	});
+
+	test("a settled phase-1 claim lets phase 2 complete", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.saveImplementationBinding(creditBinding(), TEST_ORIGIN);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const verdict = realizedVerdict(COMMIT);
+		const first = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(first.status).toBe("applied");
+		if (first.status !== "applied") return;
+		await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			first.pending,
+			ctx,
+			first.reconciliation,
+		);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("2", NEXT, "ctx-2"),
+			TEST_ORIGIN,
+		);
+		const second = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "2",
+			iteration: 1,
+			verdict: readyVerdict(),
+			contextId: "ctx-2",
+			codeContext: phaseDiff(NEXT),
+		});
+		expect(second.status).toBe("applied");
+		if (second.status !== "applied") return;
+		expect(second.pending.route).toBe("complete");
+		expect(
+			second.pending.gateCauses.some(
+				(cause) => cause.kind === "credit_unreconciled",
+			),
+		).toBe(false);
+		expect(second.reconciliation.budget.realizedCredit).toBe(3);
+		expect(second.reconciliation.claims[0]?.status).toBe("realized");
+		ctx.db.close();
+	});
+
+	test("an eligible correction proof carries the same-phase claim", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.saveImplementationBinding(creditBinding(), TEST_ORIGIN);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const verdict = realizedVerdict(COMMIT);
+		const first = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict,
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(first.status).toBe("applied");
+		if (first.status !== "applied") return;
+		await recordImplementationReviewerStepWithObservation(
+			recordParams(verdict, 1),
+			first.pending,
+			ctx,
+			first.reconciliation,
+		);
+		const carried = first.pending.claimObservations;
+		recordCorrectionAttempt({
+			store: ctx.store,
+			origin: TEST_ORIGIN,
+			payload: {
+				kind: "implementation-correction-attempt",
+				version: 1,
+				id: "attempt-1",
+				runId: "run1",
+				observationId: first.pending.id,
+				phase: "1",
+				bindingId: "binding-1",
+				authorCommit: NEXT,
+				tree: "tree",
+				qualityConfigDigest: "sha256:quality",
+				executionDirectory: "/work",
+				outcome: "passed",
+				shortcutInvalidated: false,
+				reason: "passed",
+				qualityPassed: true,
+				qualitySkipped: false,
+				qualityTimedOut: false,
+				qualityResults: [],
+				architectureDelta: 0,
+				boundaryChanges: [],
+				changedPaths: ["src/fix.ts"],
+				inventoryClean: true,
+				boundaryUncertain: false,
+				sourceObservationId: first.pending.id,
+				assessedCommit: COMMIT,
+				destinationCommit: NEXT,
+				carriedClaims: carried,
+				qualityRerun: 1,
+				createdAt: "2026-09-24 00:00:01",
+			},
+		});
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", NEXT, "ctx-next"),
+			TEST_ORIGIN,
+		);
+		const second = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 2,
+			verdict: readyVerdict(),
+			contextId: "ctx-next",
+			codeContext: phaseDiff(NEXT),
+		});
+		expect(second.status).toBe("applied");
+		if (second.status !== "applied") return;
+		expect(second.reconciliation.claims[0]).toMatchObject({
+			status: "realized",
+			carried: true,
+			sourceObservationId: first.pending.id,
+		});
+		expect(second.pending.route).toBe("complete");
+		ctx.db.close();
+	});
+
+	test("advisory evidence stays diagnostic and a binding waiver changes the envelope", async () => {
+		const advisory = makeBudgetContext({ mode: "advisory" });
+		advisory.store.saveImplementationBinding(
+			creditBinding("advisory"),
+			TEST_ORIGIN,
+		);
+		advisory.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const missing = await composeImplementationReviewerRecord({
+			ctx: advisory,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict: {
+				readiness: "ready",
+				items: [],
+				creditRealizations: [
+					{
+						creditClaimId: "DC1",
+						realization: "realized",
+						realizedArchitectureDelta: -3,
+						evidence: "Collapsed, but the commit is not cited.",
+					},
+				],
+			},
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(missing.status).toBe("applied");
+		if (missing.status !== "applied") return;
+		expect(missing.pending.diagnostics).toContainEqual(
+			expect.objectContaining({ code: "CREDIT_EVIDENCE_UNRESOLVED" }),
+		);
+		expect(missing.reconciliation.claims[0]?.status).toBe("pending");
+		expect(missing.pending.route).toBe("human_gate");
+
+		const short = await composeImplementationReviewerRecord({
+			ctx: advisory,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 2,
+			verdict: realizedVerdict(COMMIT.slice(0, 7)),
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(short.status).toBe("applied");
+		if (short.status !== "applied") return;
+		expect(short.reconciliation.claims[0]?.status).toBe("realized");
+
+		const waived = makeBudgetContext({ mode: "enforced" });
+		const seedBinding = creditBinding();
+		seedBinding.effectiveDecisions = [
+			{
+				kind: "waiver",
+				decisionId: "dec-waive",
+				creditClaimId: "DC1",
+				approvedMagnitude: 2,
+				active: true,
+			},
+		];
+		waived.store.saveImplementationBinding(seedBinding, TEST_ORIGIN);
+		waived.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const envelope = await composeImplementationReviewerRecord({
+			ctx: waived,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		expect(envelope.status).toBe("applied");
+		if (envelope.status !== "applied") return;
+		expect(envelope.reconciliation.claims[0]).toMatchObject({
+			status: "waived",
+			effectiveApprovedMagnitude: 2,
+			realizedArchitectureDelta: null,
+		});
+		expect(envelope.reconciliation.budget.realizedCredit).toBe(0);
+		expect(envelope.pending.route).toBe("complete");
+		advisory.db.close();
+		waived.db.close();
 	});
 });
