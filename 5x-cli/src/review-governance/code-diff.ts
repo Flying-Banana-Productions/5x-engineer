@@ -187,6 +187,8 @@ function hunkBody(text: string): string {
 export function parseCodePatch(patch: string): {
 	hunks: ImplementationReviewHunk[];
 	binaryPaths: string[];
+	/** Paths added by `new file mode` or `--- /dev/null`, including empty and binary files. */
+	addedPaths: string[];
 } {
 	const lines = splitLinesKeepEol(patch);
 	const fileStarts: number[] = [];
@@ -196,6 +198,7 @@ export function parseCodePatch(patch: string): {
 	}
 	const hunks: ImplementationReviewHunk[] = [];
 	const binaryPaths: string[] = [];
+	const addedPaths: string[] = [];
 	for (let fileIndex = 0; fileIndex < fileStarts.length; fileIndex += 1) {
 		const start = fileStarts[fileIndex] as number;
 		const end = fileStarts[fileIndex + 1] ?? lines.length;
@@ -205,13 +208,21 @@ export function parseCodePatch(patch: string): {
 		let paths = parseDiffGitPaths(headerLine.text);
 		let binary = false;
 		let combined = false;
+		let added = false;
 		for (const line of section) {
 			if (line.text.startsWith("rename from "))
 				paths = { ...paths, oldPath: line.text.slice("rename from ".length) };
 			if (line.text.startsWith("rename to "))
 				paths = { ...paths, newPath: line.text.slice("rename to ".length) };
-			if (line.text === "--- /dev/null")
+			if (line.text.startsWith("new file mode ")) added = true;
+			if (line.text === "--- /dev/null") {
 				paths = { ...paths, oldPath: "/dev/null" };
+				added = true;
+			}
+			if (line.text.startsWith("Binary files /dev/null and ")) {
+				paths = { ...paths, oldPath: "/dev/null" };
+				added = true;
+			}
 			if (line.text === "+++ /dev/null")
 				paths = { ...paths, newPath: "/dev/null" };
 			if (
@@ -221,6 +232,21 @@ export function parseCodePatch(patch: string): {
 				binary = true;
 			}
 			if (line.text.startsWith("@@@")) combined = true;
+		}
+		if (
+			added &&
+			paths.newPath &&
+			paths.newPath !== "/dev/null" &&
+			paths.oldPath === "/dev/null"
+		) {
+			addedPaths.push(paths.newPath);
+		} else if (
+			added &&
+			paths.newPath &&
+			paths.newPath !== "/dev/null" &&
+			section.some((line) => line.text.startsWith("new file mode "))
+		) {
+			addedPaths.push(paths.newPath);
 		}
 		if (binary) {
 			const path =
@@ -249,7 +275,7 @@ export function parseCodePatch(patch: string): {
 			});
 		}
 	}
-	return { hunks, binaryPaths };
+	return { hunks, binaryPaths, addedPaths };
 }
 
 function literalExclude(path: string): string {

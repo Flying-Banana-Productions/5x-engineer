@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { composeImplementationReviewerRecord } from "../../../src/commands/implementation-review-context.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
@@ -30,10 +31,18 @@ import { runMigrations } from "../../../src/db/schema.js";
 import { createProvider } from "../../../src/providers/factory.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
+import { implementationReviewObservationKey } from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import {
+	capturePhaseAuthorAdmission,
+	prepareImplementationReviewContext,
+} from "../../../src/review-governance/implementation-state.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
 	seedPromptGovernanceContext,
+	TEST_ORIGIN,
 } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -1355,6 +1364,274 @@ describe("invoke implementation admission", () => {
 				),
 			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
 			expect(providerCalls).toBe(0);
+		} finally {
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	});
+});
+
+describe("invoke implementation review recording", () => {
+	function gitHead(dir: string): string {
+		const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		return result.stdout.toString().trim();
+	}
+
+	function verdict() {
+		return {
+			readiness: "ready" as const,
+			items: [],
+			nonblocking: [
+				{
+					id: "n1",
+					title: "Old note",
+					reason: "Left from before.",
+					scopeClass: "pre_existing" as const,
+				},
+			],
+		};
+	}
+
+	async function preparedContext(dir: string) {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.executionContext.effectiveWorkingDirectory = dir;
+		ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+		ctx.store.saveImplementationBinding(
+			{
+				kind: "implementation-binding",
+				version: 1,
+				id: "binding-1",
+				executionRunId: "run1",
+				sourceRunId: "source",
+				sourceSnapshotId: "snap",
+				sourceBaselineId: "base",
+				approvedPlanCommit: "c".repeat(40),
+				approvedPlanHash: "sha256:plan",
+				approvedPlanBytes: "# Plan\n",
+				b0: 2,
+				governingB: 2,
+				mode: "enforced",
+				thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+				ledger: {
+					estimateConfidence: "high",
+					workItems: [
+						{
+							id: "W1",
+							title: "Work",
+							effort: 2,
+							architectureDelta: 0,
+							debtClaim: null,
+							addresses: [],
+							rationale: "Required",
+							line: 1,
+						},
+					],
+					surface: {
+						subsystems: 1,
+						productionFiles: 1,
+						persistentOrExternalBoundaries: 0,
+					},
+				},
+				effectiveDecisions: [],
+				phaseMap: [{ id: "1", heading: "Phase 1" }],
+				debtTargets: [],
+				ledgerHash: "ledger",
+				decisionsHash: "decisions",
+				createdAt: "2026-01-01 00:00:00",
+			},
+			TEST_ORIGIN,
+		);
+		const head = gitHead(dir);
+		const captured = capturePhaseAuthorAdmission({
+			recordStore: ctx.recordStore,
+			origin: TEST_ORIGIN,
+			executionRunId: "run1",
+			bindingId: "binding-1",
+			phase: "1",
+			preAuthorCommit: head,
+		});
+		if (captured.status !== "captured") {
+			throw new Error(`pre-author capture ${captured.status}`);
+		}
+		const prepared = await prepareImplementationReviewContext({
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+			origin: TEST_ORIGIN,
+			executionRunId: "run1",
+			bindingId: "binding-1",
+			phase: "1",
+			excludedPaths: [],
+			workdir: dir,
+		});
+		if (prepared.status !== "ready") {
+			throw new Error(`${prepared.code}: ${prepared.message}`);
+		}
+		return { ctx, head, prepared };
+	}
+
+	test("invoke records the durable observation and rejects a pair collision", async () => {
+		const dir = makeTmpDir();
+		try {
+			for (const args of [
+				["init"],
+				["config", "user.email", "test@test.com"],
+				["config", "user.name", "Test"],
+			] as const) {
+				Bun.spawnSync(["git", ...args], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+			}
+			await initScaffold({ startDir: dir });
+			writeFileSync(join(dir, "plan.md"), "# Provider-visible plan\n");
+			const db = getDb(dir);
+			createRunV1(db, { id: "run1", planPath: join(dir, "plan.md") });
+			closeDb();
+			_resetForTest();
+			writeFileSync(
+				join(dir, "5x.toml"),
+				`[author]
+provider = "sample"
+model = "sample/test"
+
+[reviewer]
+provider = "sample"
+model = "sample/test"
+`,
+			);
+			Bun.spawnSync(["git", "add", "-A"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "init"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const { ctx, head, prepared } = await preparedContext(dir);
+			const logs: string[] = [];
+			const originalLog = console.log;
+			console.log = (message?: unknown) => {
+				logs.push(String(message));
+			};
+			try {
+				await invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-commit",
+						run: "run1",
+						phase: "1",
+						iteration: 1,
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`commit_hash=${head}`,
+							`review_path=${join(dir, "docs/development/reviews/review.md")}`,
+							`plan_path=${join(dir, "plan.md")}`,
+							`review_template_path=${join(dir, "template.md")}`,
+							"run_id=run1",
+						],
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => structuredProvider(verdict()),
+					},
+				);
+			} finally {
+				console.log = originalLog;
+			}
+			const envelope = JSON.parse(logs.at(-1) ?? "{}") as {
+				data?: {
+					result?: {
+						governance?: { route?: string; completionAuthorized?: boolean };
+					};
+				};
+			};
+			expect(envelope.data?.result?.governance?.route).toBe("complete");
+			expect(envelope.data?.result?.governance?.completionAuthorized).toBe(
+				true,
+			);
+			expect(ctx.store.listImplementationReviews("run1")).toHaveLength(1);
+			expect(
+				ctx.recordStore.listLines("run1", "steps").filter((line) => {
+					return (
+						(line.payload as { step_name?: string }).step_name ===
+						"reviewer:commit"
+					);
+				}),
+			).toHaveLength(1);
+
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 2,
+				verdict: verdict(),
+				contextId: prepared.context.id,
+				codeContext: prepared.diff,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
+					stepName: "reviewer:commit",
+					phase: "1",
+					iteration: 2,
+				}),
+				payload: {
+					...composed.pending,
+					completionAuthorized: false,
+					createdAt: "2026-01-01 00:00:00",
+				},
+				createdAt: "2026-01-01 00:00:00",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			await expect(
+				invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-commit",
+						run: "run1",
+						phase: "1",
+						iteration: 2,
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`commit_hash=${head}`,
+							`review_path=${join(dir, "docs/development/reviews/review.md")}`,
+							`plan_path=${join(dir, "plan.md")}`,
+							`review_template_path=${join(dir, "template.md")}`,
+							"run_id=run1",
+						],
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => structuredProvider(verdict()),
+					},
+				),
+			).rejects.toMatchObject({ code: "RECORD_PAIR_CORRUPT" });
+			ctx.db.close();
 		} finally {
 			closeDb();
 			_resetForTest();

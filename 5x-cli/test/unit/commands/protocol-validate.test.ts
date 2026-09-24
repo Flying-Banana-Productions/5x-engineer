@@ -14,6 +14,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { composeImplementationReviewerRecord } from "../../../src/commands/implementation-review-context.js";
+import { invokeAgent } from "../../../src/commands/invoke.handler.js";
 import {
 	isNumericPhaseRef,
 	protocolValidate,
@@ -21,10 +23,19 @@ import {
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
 import { runMigrations } from "../../../src/db/schema.js";
+import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
+import type { AgentProvider } from "../../../src/providers/types.js";
 import { CliError } from "../../../src/output.js";
+import { implementationReviewObservationKey } from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import {
+	capturePhaseAuthorAdmission,
+	prepareImplementationReviewContext,
+} from "../../../src/review-governance/implementation-state.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
+	TEST_ORIGIN,
 } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -2054,6 +2065,389 @@ describe("protocol validate reviewer — implementation contract", () => {
 			).rejects.toMatchObject({ code: "WORKTREE_MISSING" });
 		} finally {
 			cleanupDir(dir);
+		}
+	});
+});
+
+function implementationVerdict() {
+	return {
+		readiness: "ready" as const,
+		items: [],
+		nonblocking: [
+			{
+				id: "n1",
+				title: "Old note",
+				reason: "Left from before.",
+				scopeClass: "pre_existing" as const,
+			},
+		],
+	};
+}
+
+function implementationBinding() {
+	return {
+		kind: "implementation-binding" as const,
+		version: 1 as const,
+		id: "binding-1",
+		executionRunId: "run1",
+		sourceRunId: "source",
+		sourceSnapshotId: "snap",
+		sourceBaselineId: "base",
+		approvedPlanCommit: "c".repeat(40),
+		approvedPlanHash: "sha256:plan",
+		approvedPlanBytes: "# Plan\n",
+		b0: 2,
+		governingB: 2,
+		mode: "enforced" as const,
+		thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+		ledger: {
+			estimateConfidence: "high" as const,
+			workItems: [
+				{
+					id: "W1",
+					title: "Work",
+					effort: 2 as const,
+					architectureDelta: 0 as const,
+					debtClaim: null,
+					addresses: [],
+					rationale: "Required",
+					line: 1,
+				},
+			],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		},
+		effectiveDecisions: [],
+		phaseMap: [{ id: "1", heading: "Phase 1" }],
+		debtTargets: [],
+		ledgerHash: "ledger",
+		decisionsHash: "decisions",
+		createdAt: "2026-01-01 00:00:00",
+	};
+}
+
+function gitHead(dir: string): string {
+	const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+		cwd: dir,
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (result.exitCode !== 0) {
+		throw new Error(result.stderr.toString());
+	}
+	return result.stdout.toString().trim();
+}
+
+function verdictProvider(structured: unknown): AgentProvider {
+	const result = {
+		text: "structured response",
+		structured,
+		sessionId: "session-implementation",
+		tokens: { in: 0, out: 0 },
+		durationMs: 0,
+	};
+	const session = {
+		id: result.sessionId,
+		run: async () => result,
+		async *runStreamed() {
+			yield { type: "done" as const, result };
+		},
+	};
+	return {
+		startSession: async () => session,
+		resumeSession: async () => session,
+		close: async () => {},
+	};
+}
+
+describe("protocol and invoke implementation recording", () => {
+	test("both entry points persist the same observation and durable authorization", async () => {
+		const dir = makeTmpDir();
+		const inputDir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const head = gitHead(dir);
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			ctx.store.saveImplementationBinding(implementationBinding(), TEST_ORIGIN);
+			const captured = capturePhaseAuthorAdmission({
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				preAuthorCommit: head,
+			});
+			expect(captured.status).toBe("captured");
+			const prepared = await prepareImplementationReviewContext({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				excludedPaths: [],
+				workdir: dir,
+			});
+			expect(prepared.status).toBe("ready");
+			if (prepared.status !== "ready") return;
+			const verdict = implementationVerdict();
+			const input = writeInput(inputDir, verdict);
+			const logs: string[] = [];
+			const originalLog = console.log;
+			console.log = (message?: unknown) => {
+				logs.push(String(message));
+			};
+			try {
+				await protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					step: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+					reviewContext: prepared.context.id,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				});
+			} finally {
+				console.log = originalLog;
+			}
+			const pendingEnvelope = JSON.parse(logs.at(-1) ?? "{}") as {
+				ok?: boolean;
+				data?: {
+					result?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+						};
+					};
+				};
+			};
+			expect(pendingEnvelope.ok).toBe(true);
+			expect(pendingEnvelope.data?.result?.governance?.route).toBe("complete");
+			expect(
+				pendingEnvelope.data?.result?.governance?.completionAuthorized,
+			).toBe(false);
+			expect(
+				ctx.recordStore
+					.listLines("run1", "steps")
+					.some(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"reviewer:commit",
+					),
+			).toBe(false);
+
+			const recordLogs: string[] = [];
+			console.log = (message?: unknown) => {
+				recordLogs.push(String(message));
+			};
+			try {
+				await protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					record: true,
+					step: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+					reviewContext: prepared.context.id,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				});
+				await invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-commit",
+						run: "run1",
+						phase: "1",
+						iteration: 1,
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`commit_hash=${head}`,
+							`review_path=${join(dir, "review.md")}`,
+							`plan_path=${join(dir, "plan.md")}`,
+							`review_template_path=${join(dir, "template.md")}`,
+							"run_id=run1",
+						],
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => verdictProvider(verdict),
+					},
+				);
+			} finally {
+				console.log = originalLog;
+			}
+			const protocolRecord = JSON.parse(recordLogs[0] ?? "{}") as {
+				data?: {
+					result?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+							gateCauses?: unknown[];
+						};
+					};
+				};
+			};
+			const invokeEnvelope = JSON.parse(recordLogs.at(-1) ?? "{}") as {
+				data?: {
+					result?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+							gateCauses?: unknown[];
+						};
+					};
+				};
+			};
+
+			const steps = ctx.recordStore.listLines("run1", "steps").filter((line) => {
+				const name = (line.payload as { step_name?: string }).step_name;
+				return name === "reviewer:commit";
+			});
+			const observations = ctx.store.listImplementationReviews("run1");
+			expect(steps).toHaveLength(1);
+			expect(observations).toHaveLength(1);
+			const step = steps[0]?.payload as {
+				step_name?: string;
+				phase?: string;
+				iteration?: number;
+				result_json?: {
+					governance?: {
+						route?: string;
+						completionAuthorized?: boolean;
+						gateCauses?: unknown[];
+					};
+				};
+			};
+			expect(step.step_name).toBe("reviewer:commit");
+			expect(step.phase).toBe("1");
+			expect(step.iteration).toBe(1);
+			expect(protocolRecord.data?.result?.governance?.route).toBe("complete");
+			expect(protocolRecord.data?.result?.governance?.completionAuthorized).toBe(
+				true,
+			);
+			expect(invokeEnvelope.data?.result?.governance?.route).toBe(
+				protocolRecord.data?.result?.governance?.route,
+			);
+			expect(invokeEnvelope.data?.result?.governance?.completionAuthorized).toBe(
+				true,
+			);
+			expect(invokeEnvelope.data?.result?.governance?.gateCauses).toEqual(
+				protocolRecord.data?.result?.governance?.gateCauses,
+			);
+			expect(observations[0]?.route).toBe("complete");
+			expect(protocolRecord.data?.result?.governance?.gateCauses).toEqual(
+				observations[0]?.gateCauses,
+			);
+			expect(observations[0]?.stepKey).toEqual({
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 1,
+			});
+			expect(observations[0]?.completionAuthorized).toBe(true);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+			cleanupDir(inputDir);
+		}
+	});
+
+	test("a paired collision is an error envelope before success", async () => {
+		const dir = makeTmpDir();
+		const inputDir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const head = gitHead(dir);
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.store.saveImplementationBinding(implementationBinding(), TEST_ORIGIN);
+			capturePhaseAuthorAdmission({
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				preAuthorCommit: head,
+			});
+			const prepared = await prepareImplementationReviewContext({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				excludedPaths: [],
+				workdir: dir,
+			});
+			expect(prepared.status).toBe("ready");
+			if (prepared.status !== "ready") return;
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 1,
+				verdict: implementationVerdict(),
+				contextId: prepared.context.id,
+				codeContext: prepared.diff,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
+					stepName: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+				}),
+				payload: {
+					...composed.pending,
+					completionAuthorized: false,
+					createdAt: "2026-01-01 00:00:00",
+				},
+				createdAt: "2026-01-01 00:00:00",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: writeInput(inputDir, implementationVerdict()),
+					run: "run1",
+					record: true,
+					step: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+					reviewContext: prepared.context.id,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "RECORD_PAIR_CORRUPT" });
+			expect(
+				ctx.recordStore
+					.listLines("run1", "steps")
+					.some(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"reviewer:commit",
+					),
+			).toBe(false);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+			cleanupDir(inputDir);
 		}
 	});
 });

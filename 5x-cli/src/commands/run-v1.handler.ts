@@ -148,6 +148,7 @@ import {
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
+import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	ensureImplementationAdmission,
 	isImplementationAuthorAdmission,
@@ -2890,10 +2891,7 @@ export interface ImplementationActivityStep {
 
 function activityPhaseKey(phase: string | null): string | null {
 	if (!phase) return null;
-	const trimmed = phase.trim();
-	if (/^\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
-	const prefixed = trimmed.match(/^phase-(\d+(?:\.\d+)?)$/i);
-	return prefixed?.[1] ?? trimmed;
+	return canonicalPhaseId(phase);
 }
 
 /**

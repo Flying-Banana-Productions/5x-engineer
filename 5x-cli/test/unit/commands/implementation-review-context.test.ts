@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	addedPathsFromCodeContext,
 	composeImplementationReviewerRecord,
 	type PendingImplementationObservation,
 	recordImplementationReviewerStepWithObservation,
@@ -455,6 +456,40 @@ describe("implementation review observations", () => {
 		ctx.db.close();
 	});
 
+	test("a complete route with inherited budget becomes a human gate", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		seed(ctx, binding({ effort: 8, governingB: 1 }));
+		const composed = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: PHASE,
+			iteration: 1,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(composed.status).toBe("applied");
+		if (composed.status !== "applied") return;
+		expect(composed.pending.route).toBe("human_gate");
+		expect(composed.pending.nextAction).toBe("human_gate");
+		expect(
+			composed.pending.gateCauses.some(
+				(cause) => cause.kind === "inherited_budget",
+			),
+		).toBe(true);
+		expect(composed.pending.completionAuthorized).toBe(false);
+		const written = await recordImplementationReviewerStepWithObservation(
+			recordParams(readyVerdict(), 1),
+			composed.pending,
+			ctx,
+		);
+		expect(written.observation?.route).toBe("human_gate");
+		expect(written.observation?.nextAction).toBe("human_gate");
+		expect(written.completionAuthorized).toBe(false);
+		ctx.db.close();
+	});
+
 	test("duplicate explicit iteration returns the stored winner", async () => {
 		const ctx = makeBudgetContext({ mode: "enforced" });
 		seed(ctx, binding({ effort: 8, governingB: 1 }));
@@ -718,6 +753,228 @@ describe("implementation review observations", () => {
 			expect(line?.origin).toEqual(redacted);
 			expect(line?.origin?.recorder.actor).toBeUndefined();
 		}
+		ctx.db.close();
+	});
+
+	test("empty and binary additions come from patch headers", () => {
+		const patch = [
+			"diff --git a/src/empty.ts b/src/empty.ts",
+			"new file mode 100644",
+			"index 0000000..e69de29",
+			"--- /dev/null",
+			"+++ b/src/empty.ts",
+			"diff --git a/assets/logo.bin b/assets/logo.bin",
+			"new file mode 100644",
+			"index 0000000..abc123",
+			"GIT binary patch",
+			"literal 0",
+			"diff --git a/assets/old.bin b/assets/old.bin",
+			"index 1111111..2222222",
+			"GIT binary patch",
+			"literal 0",
+			"diff --git a/.5x/cache.bin b/.5x/cache.bin",
+			"new file mode 100644",
+			"index 0000000..abc123",
+			"Binary files /dev/null and b/.5x/cache.bin differ",
+			"",
+		].join("\n");
+		expect(
+			addedPathsFromCodeContext({
+				...diff,
+				patch,
+				hunks: [],
+				binaryPaths: ["assets/logo.bin", "assets/old.bin", ".5x/cache.bin"],
+			}),
+		).toEqual(["assets/logo.bin", "src/empty.ts"]);
+	});
+
+	test("a duplicate step without its observation is corrupt in enforced mode", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		seed(ctx, binding({ effort: 8, governingB: 1 }));
+		const { verdict, pending } = await composeDefect(ctx);
+		appendStep(ctx, STEP, 1, null);
+		await expect(
+			recordImplementationReviewerStepWithObservation(
+				recordParams(verdict, 1),
+				pending,
+				ctx,
+			),
+		).rejects.toMatchObject({ code: "RECORD_PAIR_CORRUPT" });
+		expect(ctx.store.listImplementationReviews("run1")).toHaveLength(0);
+		ctx.db.close();
+	});
+
+	test("plan amendments are phase-scoped and unique by finding fingerprint", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		seed(ctx, binding());
+		const planDefect = {
+			readiness: "not_ready" as const,
+			items: [
+				{
+					id: "P1",
+					title: "The bug requires a new store",
+					action: "auto_fix" as const,
+					reason: "The approved design cannot represent this write.",
+					priority: "P1" as const,
+					scopeClass: "plan_defect" as const,
+					effortDelta: 1,
+					architectureDelta: 0,
+					planImpact: { kind: "design" as const, locations: [] },
+				},
+			],
+		};
+		const first = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: PHASE,
+			iteration: 1,
+			verdict: planDefect,
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(first.status).toBe("applied");
+		if (first.status !== "applied") return;
+		expect(first.pending.telemetry.planAmendments).toBe(1);
+		expect(first.pending.route).toBe("human_gate");
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: implementationReviewObservationKey("run1", {
+				stepName: STEP,
+				phase: PHASE,
+				iteration: 1,
+			}),
+			payload: {
+				...first.pending,
+				completionAuthorized: false,
+				createdAt: "2026-01-01 00:00:00",
+			},
+			createdAt: "2026-01-01 00:00:00",
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		ctx.store.saveImplementationTextAmendment(
+			{
+				kind: "implementation-text-amendment",
+				version: 1,
+				id: "amend-phase",
+				bindingId: "binding-1",
+				executionRunId: "run1",
+				guardId: "guard-1",
+				sourceObservationId: first.pending.id,
+				parentLineageId: null,
+				beforeCommit: "a".repeat(40),
+				afterCommit: "b".repeat(40),
+				beforeBlobHash: "sha256:before",
+				afterBlobHash: "sha256:after",
+				authorizedPlanBytes: "# Plan\n",
+				createdAt: "2026-01-01 00:00:00",
+			},
+			TEST_ORIGIN,
+		);
+		ctx.store.saveImplementationTextAmendment(
+			{
+				kind: "implementation-text-amendment",
+				version: 1,
+				id: "amend-other-phase",
+				bindingId: "binding-1",
+				executionRunId: "run1",
+				guardId: "guard-2",
+				sourceObservationId: "other-phase-observation",
+				parentLineageId: null,
+				beforeCommit: "a".repeat(40),
+				afterCommit: "c".repeat(40),
+				beforeBlobHash: "sha256:before",
+				afterBlobHash: "sha256:after2",
+				authorizedPlanBytes: "# Plan\n",
+				createdAt: "2026-01-01 00:00:01",
+			},
+			TEST_ORIGIN,
+		);
+		const second = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: PHASE,
+			iteration: 2,
+			verdict: planDefect,
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(second.status).toBe("applied");
+		if (second.status !== "applied") return;
+		expect(second.pending.telemetry.planAmendments).toBe(1);
+		ctx.db.close();
+	});
+
+	test("a corrupt observation line is a typed compose error", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		seed(ctx, binding());
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: "budget:implementation-review:run1:corrupt",
+			payload: {
+				kind: "implementation-review",
+				version: 99,
+			},
+			createdAt: "2026-01-01 00:00:00",
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		const composed = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: PHASE,
+			iteration: 1,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(composed.status).toBe("error");
+		if (composed.status !== "error") return;
+		expect(composed.code).toBe("IMPLEMENTATION_REVIEW_RECORD_CORRUPT");
+		ctx.db.close();
+	});
+
+	test("activity telemetry uses the canonical phase id", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		seed(ctx, binding());
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "steps",
+			idempotencyKey: "step:run1:reviewer:earlier:Phase 1:1",
+			payload: {
+				step_name: "reviewer:earlier",
+				phase: "Phase 1",
+				iteration: 1,
+				result_json: {},
+				head_commit: "review-commit",
+				patch_id: null,
+				diff_summary: null,
+				duration_ms: null,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				model: null,
+			},
+			createdAt: "2026-01-01 00:00:00",
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		const composed = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "phase-1",
+			iteration: 2,
+			verdict: readyVerdict(),
+			contextId: "ctx-1",
+			codeContext: diff,
+		});
+		expect(composed.status).toBe("applied");
+		if (composed.status !== "applied") return;
+		expect(composed.pending.phase).toBe("1");
+		expect(composed.pending.telemetry.reviewCycles).toBe(2);
 		ctx.db.close();
 	});
 });

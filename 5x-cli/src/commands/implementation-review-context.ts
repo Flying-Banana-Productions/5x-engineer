@@ -27,11 +27,15 @@ import {
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
 	type ImplementationReviewTelemetry,
+	type ImplementationTextAmendmentPayload,
 	implementationReviewObservationKey,
 } from "../review-budget/record-lines.js";
 import type { BudgetAlert, BudgetBand } from "../review-budget/types.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
-import { isExcludedPath } from "../review-governance/code-diff.js";
+import {
+	isExcludedPath,
+	parseCodePatch,
+} from "../review-governance/code-diff.js";
 import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
@@ -106,18 +110,73 @@ function workflowPath(path: string, excludedPaths: readonly string[]): boolean {
 	);
 }
 
-/** New files in the prepared diff. Workflow artifacts are not code growth. */
+function considerAddedPath(
+	paths: Set<string>,
+	path: string | undefined,
+	excludedPaths: readonly string[],
+): void {
+	if (!path || path === "/dev/null") return;
+	const normalized = path.replaceAll("\\", "/");
+	if (workflowPath(normalized, excludedPaths)) return;
+	paths.add(normalized);
+}
+
+/**
+ * New files in the prepared diff. Headers cover empty files and binary
+ * additions that never produce a text hunk. Workflow artifacts are not
+ * code growth. Synthetic contexts without a `diff --git` patch still
+ * contribute hunks whose old side is `/dev/null`.
+ */
 export function addedPathsFromCodeContext(
 	codeContext: CodeDiffContext,
 ): string[] {
 	const paths = new Set<string>();
-	for (const hunk of codeContext.hunks) {
-		if (hunk.oldPath !== "/dev/null") continue;
-		if (!hunk.newPath || hunk.newPath === "/dev/null") continue;
-		if (workflowPath(hunk.newPath, codeContext.excludedPaths)) continue;
-		paths.add(hunk.newPath.replaceAll("\\", "/"));
+	const parsed = parseCodePatch(codeContext.patch);
+	const addedBinary = new Set(
+		parsed.addedPaths.filter((path) => parsed.binaryPaths.includes(path)),
+	);
+	for (const path of parsed.addedPaths) {
+		considerAddedPath(paths, path, codeContext.excludedPaths);
+	}
+	for (const path of codeContext.binaryPaths) {
+		if (!addedBinary.has(path) && !parsed.addedPaths.includes(path)) continue;
+		considerAddedPath(paths, path, codeContext.excludedPaths);
+	}
+	if (!codeContext.patch.includes("diff --git ")) {
+		for (const hunk of codeContext.hunks) {
+			if (hunk.oldPath !== "/dev/null") continue;
+			considerAddedPath(paths, hunk.newPath, codeContext.excludedPaths);
+		}
 	}
 	return [...paths].sort();
+}
+
+function planAmendmentCount(input: {
+	observations: readonly ImplementationReviewObservationPayload[];
+	amendments: readonly ImplementationTextAmendmentPayload[];
+	current: readonly ImplementationObservationGateCause[];
+}): number {
+	const byId = new Map(
+		input.observations.map((observation) => [observation.id, observation]),
+	);
+	const fingerprints = new Set<string>();
+	const addCauses = (
+		causes: readonly ImplementationObservationGateCause[],
+	) => {
+		for (const cause of causes) {
+			if (cause.kind === "plan_amendment") fingerprints.add(cause.fingerprint);
+		}
+	};
+	for (const observation of input.observations) {
+		addCauses(observation.gateCauses);
+	}
+	for (const amendment of input.amendments) {
+		const source = byId.get(amendment.sourceObservationId);
+		if (!source) continue;
+		addCauses(source.gateCauses);
+	}
+	addCauses(input.current);
+	return fingerprints.size;
 }
 
 function classCounts(
@@ -417,29 +476,35 @@ export async function composeImplementationReviewerRecord(input: {
 		band: inherited.budgetBand,
 		alerts: inherited.budgetAlerts,
 	});
-	const priorObservations = listRecordedImplementationReviews(
-		input.ctx.store,
-		input.runId,
-	).filter((observation) => observation.phase === phaseId);
+	let route = reviewed.governance.route;
+	let nextAction = reviewed.governance.nextAction;
+	if (route === "complete" && gateCauses.length > 0) {
+		route = "human_gate";
+		nextAction = "human_gate";
+	}
+	let priorObservations: ImplementationReviewObservationPayload[];
+	try {
+		priorObservations = listRecordedImplementationReviews(
+			input.ctx.store,
+			input.runId,
+		).filter((observation) => observation.phase === phaseId);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: `Implementation review history could not be read: ${message}`,
+		};
+	}
 	const amendments = input.ctx.store.listImplementationTextAmendments(
 		input.runId,
 		binding.id,
 	);
-	const amendedObservations = new Set(
-		amendments.map((amendment) => amendment.sourceObservationId),
-	);
-	const currentPlanAmendment = gateCauses.some(
-		(cause) => cause.kind === "plan_amendment",
-	);
-	const planAmendments =
-		amendments.length +
-		priorObservations.filter(
-			(observation) =>
-				observation.gateCauses.some(
-					(cause) => cause.kind === "plan_amendment",
-				) && !amendedObservations.has(observation.id),
-		).length +
-		(currentPlanAmendment ? 1 : 0);
+	const planAmendments = planAmendmentCount({
+		observations: priorObservations,
+		amendments,
+		current: gateCauses,
+	});
 	const activity = deriveImplementationActivityTelemetry({
 		steps: activitySteps(input.ctx, input.runId),
 		phase: phaseId,
@@ -475,8 +540,8 @@ export async function composeImplementationReviewerRecord(input: {
 		phase: phaseId,
 		originalVerdict: structuredClone(input.verdict),
 		outcomes: structuredClone(input.verdict.priorFindings ?? []),
-		route: reviewed.governance.route,
-		nextAction: reviewed.governance.nextAction,
+		route,
+		nextAction,
 		diagnostics: reviewed.governance.diagnostics,
 		claimObservations: (input.verdict.creditRealizations ?? []).map(
 			(realization) => ({
@@ -589,6 +654,15 @@ export async function recordImplementationReviewerStepWithObservation(
 		const observation = line
 			? persistedObservation(ctx, prepared.runId, stepKey)
 			: null;
+		if (line && !observation) {
+			const binding = ctx.store.getImplementationBinding(prepared.runId);
+			if (binding?.mode === "enforced") {
+				throw new RecordError(
+					"RECORD_PAIR_CORRUPT",
+					"Implementation review step exists without its coupled observation",
+				);
+			}
+		}
 		const after = computeRunSummary(ctx.db, prepared.runId);
 		return {
 			...dbResult,
