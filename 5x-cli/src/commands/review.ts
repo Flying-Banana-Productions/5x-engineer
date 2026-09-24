@@ -4,6 +4,7 @@ import { resolveDbContext } from "./context.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
 	bindApprovedImplementation,
+	finishImplementationCorrections,
 	type SubmitPlanReviewDecisionPayload,
 	showPlanReviewGate,
 	submitPlanReviewDecision,
@@ -207,6 +208,35 @@ export function registerReview(parent: Command) {
 			outputSuccess(
 				await bindApprovedImplementation(
 					{ executionRunId: runId, sourceRunId: opts.sourceRun },
+					{ context },
+				),
+			);
+		});
+
+	const corrections = review
+		.command("corrections")
+		.description(
+			"Finish an eligible implementation correction with fresh quality",
+		);
+	corrections
+		.command("finish")
+		.description(
+			"Run the full layered quality configuration for one recorded correction. No gate override or passed flag is accepted.",
+		)
+		.requiredOption("--run <id>", "Execution run id")
+		.requiredOption("--phase <p>", "Implementation phase id")
+		.requiredOption("--review <observation-id>", "Originating observation id")
+		.requiredOption("--commit <sha>", "Recorded author correction commit")
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await finishImplementationCorrections(
+					{
+						runId,
+						phase: opts.phase,
+						observationId: opts.review,
+						commit: opts.commit,
+					},
 					{ context },
 				),
 			);

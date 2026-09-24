@@ -4,6 +4,7 @@ import {
 	decodeBudgetSnapshotPayload,
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
+	decodeImplementationCorrectionAttemptPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
@@ -220,7 +221,8 @@ export function reindexReviewBudget(
 			kind === "implementation-compatibility" ||
 			kind === "implementation-text-amendment" ||
 			kind === "implementation-review-context" ||
-			kind === "implementation-review"
+			kind === "implementation-review" ||
+			kind === "implementation-correction-attempt"
 		) {
 			try {
 				if (kind === "implementation-binding") {
@@ -231,6 +233,8 @@ export function reindexReviewBudget(
 					decodeImplementationTextAmendmentPayload(line.payload);
 				} else if (kind === "implementation-review-context") {
 					decodeImplementationReviewContextPayload(line.payload);
+				} else if (kind === "implementation-correction-attempt") {
+					decodeImplementationCorrectionAttemptPayload(line.payload);
 				} else {
 					decodeImplementationReviewObservationPayload(line.payload);
 				}

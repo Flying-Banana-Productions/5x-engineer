@@ -29,7 +29,8 @@ export type BudgetRecordKind =
 	| "implementation-compatibility"
 	| "implementation-text-amendment"
 	| "implementation-review-context"
-	| "implementation-review";
+	| "implementation-review"
+	| "implementation-correction-attempt";
 export type CaptureKind = "initial" | "opt_in";
 
 export interface BudgetBaselinePayload {
@@ -1196,6 +1197,212 @@ export function decodeImplementationReviewObservationPayload(
 		...(value.textGuard === undefined
 			? {}
 			: { textGuard: decodeTextGuard(value.textGuard) }),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+export type CorrectionAttemptOutcome = "passed" | "failed" | "invalidated";
+
+export interface CorrectionQualityGateResult {
+	command: string;
+	passed: boolean;
+	durationMs: number;
+	timedOut: boolean;
+}
+
+/**
+ * One CLI quality attempt for an eligible implementation correction.
+ * A passing line is proof only when `shortcutInvalidated` is false and the
+ * inventory fields are the explicit zero-delta proof. It is not a plan snapshot.
+ */
+export interface ImplementationCorrectionAttemptPayload {
+	kind: "implementation-correction-attempt";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	runId: string;
+	observationId: string;
+	phase: string;
+	bindingId: string;
+	authorCommit: string;
+	tree: string;
+	qualityConfigDigest: string;
+	executionDirectory: string;
+	outcome: CorrectionAttemptOutcome;
+	shortcutInvalidated: boolean;
+	reason: string;
+	qualityPassed: boolean;
+	qualitySkipped: boolean;
+	qualityTimedOut: boolean;
+	qualityResults: CorrectionQualityGateResult[];
+	architectureDelta: number;
+	boundaryChanges: BoundaryChangeLabel[];
+	changedPaths: string[];
+	inventoryClean: boolean;
+	boundaryUncertain: boolean;
+	sourceObservationId: string;
+	assessedCommit: string;
+	destinationCommit: string;
+	carriedClaims: ImplementationClaimObservation[];
+	qualityRerun: number;
+	createdAt: string;
+}
+
+export function implementationCorrectionAttemptKey(
+	runId: string,
+	attemptId: string,
+): string {
+	return `budget:implementation-correction-attempt:${runId}:${attemptId}`;
+}
+
+const CORRECTION_OUTCOMES = new Set<CorrectionAttemptOutcome>([
+	"passed",
+	"failed",
+	"invalidated",
+]);
+
+const CORRECTION_ATTEMPT_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"observationId",
+	"phase",
+	"bindingId",
+	"authorCommit",
+	"tree",
+	"qualityConfigDigest",
+	"executionDirectory",
+	"outcome",
+	"shortcutInvalidated",
+	"reason",
+	"qualityPassed",
+	"qualitySkipped",
+	"qualityTimedOut",
+	"qualityResults",
+	"architectureDelta",
+	"boundaryChanges",
+	"changedPaths",
+	"inventoryClean",
+	"boundaryUncertain",
+	"sourceObservationId",
+	"assessedCommit",
+	"destinationCommit",
+	"carriedClaims",
+	"qualityRerun",
+	"createdAt",
+]);
+
+export function encodeImplementationCorrectionAttemptPayload(
+	payload: ImplementationCorrectionAttemptPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationCorrectionAttemptPayload(
+	raw: unknown,
+): ImplementationCorrectionAttemptPayload {
+	const value = object(raw, "implementation correction attempt");
+	rejectUnknownKeys(
+		value,
+		CORRECTION_ATTEMPT_KEYS,
+		"implementation correction attempt",
+	);
+	if (value.kind !== "implementation-correction-attempt") {
+		throw new TypeError("invalid implementation correction attempt kind");
+	}
+	versionField(value.version);
+	if (!CORRECTION_OUTCOMES.has(value.outcome as CorrectionAttemptOutcome)) {
+		throw new TypeError("implementation correction outcome is invalid");
+	}
+	if (!Array.isArray(value.qualityResults)) {
+		throw new TypeError("qualityResults must be an array");
+	}
+	if (!Array.isArray(value.boundaryChanges)) {
+		throw new TypeError("boundaryChanges must be an array");
+	}
+	if (!Array.isArray(value.changedPaths)) {
+		throw new TypeError("changedPaths must be an array");
+	}
+	return {
+		kind: "implementation-correction-attempt",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		observationId: stringField(value.observationId, "observationId"),
+		phase: stringField(value.phase, "phase"),
+		bindingId: stringField(value.bindingId, "bindingId"),
+		authorCommit: stringField(value.authorCommit, "authorCommit"),
+		tree: stringField(value.tree, "tree"),
+		qualityConfigDigest: stringField(
+			value.qualityConfigDigest,
+			"qualityConfigDigest",
+		),
+		executionDirectory: stringField(
+			value.executionDirectory,
+			"executionDirectory",
+		),
+		outcome: value.outcome as CorrectionAttemptOutcome,
+		shortcutInvalidated: booleanField(
+			value.shortcutInvalidated,
+			"shortcutInvalidated",
+		),
+		reason: stringField(value.reason, "reason", true),
+		qualityPassed: booleanField(value.qualityPassed, "qualityPassed"),
+		qualitySkipped: booleanField(value.qualitySkipped, "qualitySkipped"),
+		qualityTimedOut: booleanField(value.qualityTimedOut, "qualityTimedOut"),
+		qualityResults: value.qualityResults.map((entry, index) => {
+			const result = object(entry, `qualityResults[${index}]`);
+			rejectUnknownKeys(
+				result,
+				new Set(["command", "passed", "durationMs", "timedOut"]),
+				`qualityResults[${index}]`,
+			);
+			return {
+				command: stringField(
+					result.command,
+					`qualityResults[${index}].command`,
+				),
+				passed: booleanField(result.passed, `qualityResults[${index}].passed`),
+				durationMs: nonNegativeInteger(
+					result.durationMs,
+					`qualityResults[${index}].durationMs`,
+				),
+				timedOut: booleanField(
+					result.timedOut,
+					`qualityResults[${index}].timedOut`,
+				),
+			};
+		}),
+		architectureDelta: integerField(
+			value.architectureDelta,
+			"architectureDelta",
+		),
+		boundaryChanges: value.boundaryChanges.map((entry, index) => {
+			const label = stringField(entry, `boundaryChanges[${index}]`);
+			if (!BOUNDARY_LABELS.has(label as BoundaryChangeLabel)) {
+				throw new TypeError(`boundaryChanges[${index}] is invalid`);
+			}
+			return label as BoundaryChangeLabel;
+		}),
+		changedPaths: value.changedPaths.map((entry, index) =>
+			stringField(entry, `changedPaths[${index}]`),
+		),
+		inventoryClean: booleanField(value.inventoryClean, "inventoryClean"),
+		boundaryUncertain: booleanField(
+			value.boundaryUncertain,
+			"boundaryUncertain",
+		),
+		sourceObservationId: stringField(
+			value.sourceObservationId,
+			"sourceObservationId",
+		),
+		assessedCommit: stringField(value.assessedCommit, "assessedCommit"),
+		destinationCommit: stringField(
+			value.destinationCommit,
+			"destinationCommit",
+		),
+		carriedClaims: decodeClaimObservations(value.carriedClaims),
+		qualityRerun: nonNegativeInteger(value.qualityRerun, "qualityRerun"),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }

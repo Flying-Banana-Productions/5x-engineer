@@ -32,6 +32,7 @@ import {
 	type ImplementationBindingPayload,
 	type ImplementationCompatibilityPayload,
 	type ImplementationCompatibilityReason,
+	type ImplementationCorrectionAttemptPayload,
 	type ImplementationDebtTarget,
 	type ImplementationPhaseMapping,
 	type ImplementationReviewContextPayload,
@@ -2113,4 +2114,23 @@ export function listRecordedImplementationReviews(
 	runId: string,
 ): ImplementationReviewObservationPayload[] {
 	return store.listImplementationReviews(runId);
+}
+
+export function listCorrectionAttempts(
+	store: Pick<ReviewBudgetStore, "listImplementationCorrectionAttempts">,
+	runId: string,
+	observationId?: string,
+): ImplementationCorrectionAttemptPayload[] {
+	return store.listImplementationCorrectionAttempts(runId, observationId);
+}
+
+export function recordCorrectionAttempt(input: {
+	store: Pick<ReviewBudgetStore, "saveImplementationCorrectionAttempt">;
+	payload: ImplementationCorrectionAttemptPayload;
+	origin: RecordOrigin;
+}): { created: boolean; payload: ImplementationCorrectionAttemptPayload } {
+	return input.store.saveImplementationCorrectionAttempt(
+		input.payload,
+		input.origin,
+	);
 }

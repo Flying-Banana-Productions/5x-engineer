@@ -6,6 +6,7 @@ import {
 	decodeBudgetSnapshotPayload,
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
+	decodeImplementationCorrectionAttemptPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
@@ -13,16 +14,19 @@ import {
 	encodeBudgetSnapshotPayload,
 	encodeImplementationBindingPayload,
 	encodeImplementationCompatibilityPayload,
+	encodeImplementationCorrectionAttemptPayload,
 	encodeImplementationReviewContextPayload,
 	encodeImplementationTextAmendmentPayload,
 	type ImplementationBindingPayload,
 	type ImplementationCompatibilityPayload,
+	type ImplementationCorrectionAttemptPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
 	type ImplementationTextAmendmentPayload,
 	implementationBindingKey,
 	implementationCompatibilityKey,
+	implementationCorrectionAttemptKey,
 	implementationReviewContextKey,
 	implementationReviewObservationKey,
 	implementationTextAmendmentKey,
@@ -176,6 +180,14 @@ export interface ReviewBudgetStore {
 		runId: string,
 		idempotencyKey: string,
 	): ImplementationReviewObservationPayload | null;
+	listImplementationCorrectionAttempts(
+		runId: string,
+		observationId?: string,
+	): ImplementationCorrectionAttemptPayload[];
+	saveImplementationCorrectionAttempt(
+		payload: ImplementationCorrectionAttemptPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationCorrectionAttemptPayload };
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -586,6 +598,50 @@ export function createReviewBudgetStore(
 			const line = recordStore.getLine(runId, "budget", idempotencyKey);
 			if (!line) return null;
 			return decodeImplementationReviewObservationPayload(line.payload);
+		},
+
+		listImplementationCorrectionAttempts(runId, observationId) {
+			const attempts: ImplementationCorrectionAttemptPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-correction-attempt"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationCorrectionAttemptPayload(
+					line.payload,
+				);
+				if (
+					observationId === undefined ||
+					decoded.observationId === observationId
+				) {
+					attempts.push(decoded);
+				}
+			}
+			return attempts;
+		},
+
+		saveImplementationCorrectionAttempt(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.runId,
+				stream: "budget",
+				idempotencyKey: implementationCorrectionAttemptKey(
+					payload.runId,
+					payload.id,
+				),
+				payload: encodeImplementationCorrectionAttemptPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationCorrectionAttemptPayload(
+					result.line.payload,
+				),
+			};
 		},
 	};
 }

@@ -10,10 +10,12 @@ import { completeRun, getRunV1 } from "../db/operations-v1.js";
 import { CliError } from "../output.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
+import { workdirCodeDiffGit } from "../review-governance/code-diff.js";
 import {
 	decodeReviewDecisionPayload,
 	encodeReviewDecisionPayload,
 } from "../review-governance/codec.js";
+import { finishImplementationCorrection } from "../review-governance/corrections.js";
 import {
 	classifyDecisionAcceptance,
 	createReviewDecision,
@@ -22,7 +24,10 @@ import {
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
-import { ensureImplementationAdmission } from "../review-governance/implementation-state.js";
+import {
+	ensureImplementationAdmission,
+	planRepoPath,
+} from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
@@ -38,6 +43,7 @@ import type {
 	ReviewDecisionRoute,
 	ReviewGateCause,
 } from "../review-governance/types.js";
+import { resolveQualityTarget, runQualityCore } from "./quality-v1.handler.js";
 import type { ReviewBudgetCommandContext } from "./review-budget-context.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
@@ -882,4 +888,78 @@ export async function bindApprovedImplementation(
 		"IMPLEMENTATION_PLAN_UNAPPROVED",
 		"Implementation bind did not establish an approved execution binding",
 	);
+}
+
+/** `5x review corrections finish`. Runs the full quality configuration. */
+export async function finishImplementationCorrections(
+	input: {
+		runId: string;
+		phase: string;
+		observationId: string;
+		commit: string;
+	},
+	deps: { context: ReviewBudgetCommandContext },
+): Promise<Awaited<ReturnType<typeof finishImplementationCorrection>>> {
+	const ctx = deps.context;
+	const target = await resolveQualityTarget({
+		run: input.runId,
+		db: ctx.db,
+		startDir: ctx.executionContext.effectiveWorkingDirectory,
+	});
+	const repoRoot = ctx.executionContext.effectiveWorkingDirectory;
+	const result = await finishImplementationCorrection({
+		runId: input.runId,
+		phase: input.phase,
+		observationId: input.observationId,
+		commit: input.commit,
+		store: ctx.store,
+		recordStore: ctx.recordStore,
+		origin: ctx.originFor({ kind: "system", role: "cli" }),
+		executionDirectory: target.projectRoot,
+		planRepoPath: planRepoPath(ctx.executionContext.run.plan_path, repoRoot),
+		gates: target.qualityGates,
+		skipQualityGates: target.skipQualityGates,
+		git: workdirCodeDiffGit(repoRoot),
+		runQuality: async () => {
+			const quality = await runQualityCore({
+				run: input.runId,
+				phase: input.phase,
+				db: ctx.db,
+				startDir: repoRoot,
+				record: false,
+			});
+			return {
+				passed: quality.passed,
+				...(quality.skipped ? { skipped: true } : {}),
+				workdir: quality.workdir,
+				results: quality.results.flatMap((entry) => {
+					if (!entry || typeof entry !== "object") return [];
+					const row = entry as {
+						command?: unknown;
+						passed?: unknown;
+						duration_ms?: unknown;
+						output?: unknown;
+					};
+					return [
+						{
+							...(typeof row.command === "string"
+								? { command: row.command }
+								: {}),
+							...(typeof row.passed === "boolean"
+								? { passed: row.passed }
+								: {}),
+							...(typeof row.duration_ms === "number"
+								? { duration_ms: row.duration_ms }
+								: {}),
+							...(typeof row.output === "string" ? { output: row.output } : {}),
+						},
+					];
+				}),
+			};
+		},
+	});
+	if (result.status === "error") {
+		throw new CliError(result.code, result.message);
+	}
+	return result;
 }

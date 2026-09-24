@@ -113,10 +113,22 @@ async function autoRecord(
 // Handler
 // ---------------------------------------------------------------------------
 
-export async function runQualityCore(
+export interface QualityTarget {
+	projectRoot: string;
+	qualityGates: string[];
+	skipQualityGates: boolean;
+	runId: string | undefined;
+	controlPlaneRoot: string | undefined;
+	stateDir: string;
+}
+
+/**
+ * Resolve the full layered quality configuration for a run. Correction
+ * attempts bind this digest. Callers cannot select a gate subset here.
+ */
+export async function resolveQualityTarget(
 	params: QualityParams = {},
-	warn: (...args: unknown[]) => void = console.error,
-): Promise<QualityCoreResult> {
+): Promise<QualityTarget> {
 	// -----------------------------------------------------------------------
 	// Phase 3a: When --run is present, resolve control-plane root and run
 	// execution context to determine effective workdir and plan path for
@@ -233,6 +245,25 @@ export async function runQualityCore(
 		skipQualityGates = ctx.config.skipQualityGates;
 	}
 
+	return {
+		projectRoot,
+		qualityGates,
+		skipQualityGates,
+		runId: params.run,
+		controlPlaneRoot,
+		stateDir,
+	};
+}
+
+export async function runQualityCore(
+	params: QualityParams = {},
+	warn: (...args: unknown[]) => void = console.error,
+): Promise<QualityCoreResult> {
+	const target = await resolveQualityTarget(params);
+	const { projectRoot, qualityGates, skipQualityGates } = target;
+	const controlPlaneRoot = target.controlPlaneRoot;
+	const stateDir = target.stateDir;
+
 	if (skipQualityGates && qualityGates.length === 0) {
 		// Intentional skip of empty gates — no warning, output includes skipped: true
 		return {
@@ -256,7 +287,7 @@ export async function runQualityCore(
 	}
 
 	// Use a temporary run context for logging purposes
-	const runId = params.run ?? `quality-${Date.now()}`;
+	const runId = target.runId ?? `quality-${Date.now()}`;
 	// Phase 3a: re-anchor log path to controlPlaneRoot/stateDir
 	const logBase = controlPlaneRoot ?? projectRoot;
 	const logDir = join(logBase, stateDir, "logs", runId);

@@ -118,6 +118,18 @@ function qualityPayloadSucceeded(raw: string): boolean {
 	return parsed.passed === true || parsed.skipped === true;
 }
 
+/**
+ * Pre-review `phase finish` resumes only a `quality:check` step payload.
+ * Implementation correction attempts are a different record and are not proof.
+ */
+export function isPreReviewQualityCache(
+	stepName: string,
+	raw: string,
+): boolean {
+	if (!stepName.startsWith("quality:")) return false;
+	return qualityPayloadSucceeded(raw);
+}
+
 function failForward(
 	steps: PhaseFinishStep[],
 	failing: PhaseFinishStep["name"],
@@ -207,7 +219,10 @@ export async function phaseFinishCore(
 		phase: params.phase,
 		iteration: params.iteration,
 	});
-	if (existingQuality && qualityPayloadSucceeded(existingQuality.result_json)) {
+	if (
+		existingQuality &&
+		isPreReviewQualityCache(qualityStepName, existingQuality.result_json)
+	) {
 		steps[0] = {
 			name: "quality",
 			status: "completed",
