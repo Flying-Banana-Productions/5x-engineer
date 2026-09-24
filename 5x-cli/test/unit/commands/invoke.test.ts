@@ -31,12 +31,17 @@ import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { createProvider } from "../../../src/providers/factory.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
-import { implementationReviewObservationKey } from "../../../src/review-budget/record-lines.js";
+import {
+	encodeImplementationReviewObservationPayload,
+	implementationReviewObservationKey,
+} from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import {
 	capturePhaseAuthorAdmission,
+	hashPlanBytes,
 	prepareImplementationReviewContext,
 } from "../../../src/review-governance/implementation-state.js";
+import { prepareTextAmendmentGuard } from "../../../src/review-governance/plan-amendment.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 import {
 	makeBudgetContext,
@@ -1638,4 +1643,369 @@ model = "sample/test"
 			cleanupDir(dir);
 		}
 	});
+});
+
+describe("invoke author text-amendment admission", () => {
+	const approved = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+## Design Decisions
+
+Keep the approved ledger.
+
+## Phase 1: Bind
+
+Bind execution to the approved plan.
+
+- [ ] Complete the phase
+
+## Acceptance
+
+The binding is unchanged.
+`;
+	const outOfSpan = approved.replace(
+		"Keep the approved ledger.",
+		"Keep another ledger.",
+	);
+
+	function stableStringify(value: unknown): string {
+		if (Array.isArray(value))
+			return `[${value.map(stableStringify).join(",")}]`;
+		if (value && typeof value === "object") {
+			return `{${Object.entries(value as Record<string, unknown>)
+				.filter(([, item]) => item !== undefined)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+				.join(",")}}`;
+		}
+		return JSON.stringify(value);
+	}
+
+	function git(dir: string, args: string[]): void {
+		const result = Bun.spawnSync(["git", ...args], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) {
+			throw new Error(
+				result.stderr.toString() || `git ${args.join(" ")} failed`,
+			);
+		}
+	}
+
+	function gitHead(dir: string): string {
+		const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		return result.stdout.toString().trim();
+	}
+
+	async function setupAuthorInvoke(dir: string) {
+		for (const args of [
+			["init"],
+			["config", "user.email", "test@test.com"],
+			["config", "user.name", "Test"],
+		] as const) {
+			git(dir, [...args]);
+		}
+		await initScaffold({ startDir: dir });
+		const planPath = join(dir, "plan.md");
+		writeFileSync(planPath, approved);
+		writeFileSync(
+			join(dir, "5x.toml"),
+			`[author]
+provider = "sample"
+model = "sample/test"
+`,
+		);
+		const db = getDb(dir);
+		createRunV1(db, { id: "run1", planPath });
+		closeDb();
+		_resetForTest();
+		git(dir, ["add", "-A"]);
+		git(dir, ["commit", "-m", "approved plan"]);
+
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const ledger = {
+			estimateConfidence: "high" as const,
+			workItems: [
+				{
+					id: "W1",
+					title: "Bind",
+					effort: 2 as const,
+					architectureDelta: 0 as const,
+					debtClaim: null,
+					addresses: [],
+					rationale: "Required",
+					line: 1,
+				},
+			],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		};
+		const binding = {
+			kind: "implementation-binding" as const,
+			version: 1 as const,
+			id: "binding-1",
+			executionRunId: "run1",
+			sourceRunId: "source",
+			sourceSnapshotId: "snap",
+			sourceBaselineId: "base",
+			approvedPlanCommit: "c".repeat(40),
+			approvedPlanBytes: approved,
+			approvedPlanHash: hashPlanBytes(approved),
+			b0: 2,
+			governingB: 2,
+			mode: "enforced" as const,
+			thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+			ledger,
+			effectiveDecisions: [],
+			phaseMap: [{ id: "1", heading: "Phase 1: Bind" }],
+			debtTargets: [],
+			ledgerHash: hashPlanBytes(stableStringify(ledger)),
+			decisionsHash: hashPlanBytes(stableStringify([])),
+			createdAt: "2026-01-01 00:00:00",
+		};
+		ctx.store.saveImplementationBinding(binding, TEST_ORIGIN);
+		const stale = "Bind execution to the approved plan.";
+		const staleAt = Buffer.from(approved, "utf8").indexOf(Buffer.from(stale));
+		const prepared = prepareTextAmendmentGuard({
+			id: "guard-1",
+			anchorBytes: approved,
+			anchorCommit: "a".repeat(40),
+			parentLineageId: null,
+			allowedSpans: [
+				{
+					itemId: "R1",
+					heading: "Phase 1: Bind",
+					staleText: stale,
+					start: staleAt,
+					end: staleAt + Buffer.byteLength(stale),
+				},
+			],
+		});
+		if (!prepared.ok) throw new Error(prepared.message);
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: implementationReviewObservationKey("run1", {
+				stepName: "reviewer:review",
+				phase: "1",
+				iteration: 0,
+			}),
+			payload: encodeImplementationReviewObservationPayload({
+				kind: "implementation-review",
+				version: 1,
+				id: "obs-1",
+				runId: "run1",
+				stepKey: {
+					stepName: "reviewer:review",
+					phase: "1",
+					iteration: 0,
+				},
+				bindingId: binding.id,
+				contextId: "ctx-1",
+				domain: "implementation",
+				phase: "1",
+				originalVerdict: {
+					readiness: "not_ready",
+					items: [
+						{
+							id: "R1",
+							title: "Stale wording",
+							action: "auto_fix",
+							reason: "The sentence is stale.",
+							scopeClass: "plan_defect",
+							priority: "P2",
+							effortDelta: 0,
+							architectureDelta: 0,
+							planImpact: {
+								kind: "text_only",
+								locations: [
+									{
+										heading: "Phase 1: Bind",
+										staleText: stale,
+									},
+								],
+							},
+						},
+					],
+				},
+				outcomes: [],
+				route: "author_revision",
+				nextAction: "author_revision",
+				diagnostics: [],
+				claimObservations: [],
+				gateCauses: [],
+				telemetry: {
+					reviewCycles: 1,
+					fixCycles: 0,
+					reviewOriginatedCommits: 0,
+					qualityReruns: 0,
+					classCounts: {
+						implementation_defect: 0,
+						plan_defect: 1,
+						scope_expansion: 0,
+						pre_existing: 0,
+					},
+					planAmendments: 0,
+					addedPaths: [],
+					boundaryInventory: [],
+					effortVariance: 0,
+					architectureVariance: 0,
+				},
+				budgetInvariant: { W: 2, R: 0, B: 2, D: 0 },
+				completionAuthorized: false,
+				textGuard: prepared.guard,
+				createdAt: "2026-09-23 00:00:01",
+			}),
+			createdAt: "2026-09-23 00:00:01",
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		ctx.executionContext.controlPlaneRoot = dir;
+		ctx.executionContext.effectiveWorkingDirectory = dir;
+		ctx.executionContext.effectivePlanPath = planPath;
+		ctx.executionContext.planPathInWorktreeExists = true;
+		ctx.executionContext.run.plan_path = planPath;
+		return { ctx, planPath };
+	}
+
+	function providerThatCommitsOutOfSpan(
+		dir: string,
+		planPath: string,
+		includeCommit: boolean,
+	): AgentProvider {
+		let authorCommit = "";
+		const result = {
+			text: "structured response",
+			structured: {
+				result: "needs_human" as const,
+				reason: "amendment",
+				...(includeCommit ? { commit: "" } : {}),
+			},
+			sessionId: "session-author-amendment",
+			tokens: { in: 0, out: 0 },
+			durationMs: 0,
+		};
+		const session = {
+			id: result.sessionId,
+			run: async () => {
+				writeFileSync(planPath, outOfSpan);
+				git(dir, ["add", "plan.md"]);
+				git(dir, ["commit", "-m", "out of span"]);
+				authorCommit = gitHead(dir);
+				writeFileSync(planPath, approved);
+				git(dir, ["add", "plan.md"]);
+				git(dir, ["commit", "-m", "restore approved"]);
+				writeFileSync(planPath, outOfSpan);
+				result.structured = {
+					result: "needs_human",
+					reason: "amendment",
+					...(includeCommit ? { commit: authorCommit } : {}),
+				};
+				return result;
+			},
+			async *runStreamed() {
+				yield { type: "done" as const, result: await session.run() };
+			},
+		};
+		return {
+			startSession: async () => session,
+			resumeSession: async () => session,
+			close: async () => {},
+		};
+	}
+
+	test("uses the author result commit and surfaces a typed amendment failure", async () => {
+		const dir = makeTmpDir();
+		const { ctx, planPath } = await setupAuthorInvoke(dir);
+		try {
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run1",
+						phase: "1",
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`plan_path=${planPath}`,
+							"phase_number=1",
+							"user_notes=x",
+							"run_id=run1",
+						],
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () =>
+							providerThatCommitsOutOfSpan(dir, planPath, true),
+					},
+				),
+			).rejects.toMatchObject({ code: "PLAN_AMENDMENT_OUT_OF_SPAN" });
+			expect(
+				ctx.store.listImplementationTextAmendments("run1", "binding-1"),
+			).toHaveLength(0);
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	}, 30000);
+
+	test("falls back to HEAD when the author result omits commit", async () => {
+		const dir = makeTmpDir();
+		const { ctx, planPath } = await setupAuthorInvoke(dir);
+		try {
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run1",
+						phase: "1",
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`plan_path=${planPath}`,
+							"phase_number=1",
+							"user_notes=x",
+							"run_id=run1",
+						],
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () =>
+							providerThatCommitsOutOfSpan(dir, planPath, false),
+					},
+				),
+			).rejects.toMatchObject({ code: "PLAN_AMENDMENT_DIRTY" });
+		} finally {
+			ctx.db.close();
+			closeDb();
+			_resetForTest();
+			cleanupDir(dir);
+		}
+	}, 30000);
 });

@@ -11,14 +11,16 @@
 import { createHash } from "node:crypto";
 import type { PlanImpactKind } from "../protocol.js";
 import type { ParsedDeliveryBudget } from "../review-budget/types.js";
+import {
+	PLAN_CHECKBOX_LINE,
+	type PlanHeadingSpan,
+	type PlanMarkdownLine,
+	PROTECTED_PLAN_SECTION_TITLES,
+	planHeadingSpans,
+	planMarkdownLines,
+	protectedPlanByteRanges,
+} from "./plan-markdown.js";
 import type { ResolvedPlanImpactSpan } from "./types.js";
-
-const PROTECTED_SECTION_TITLES = new Set([
-	"design decisions",
-	"acceptance",
-	"scope",
-	"not in scope",
-]);
 
 export interface TextAmendmentGuard {
 	id: string;
@@ -53,21 +55,6 @@ export interface PlanAmendmentFailure {
 	message: string;
 }
 
-interface MarkdownLine {
-	raw: string;
-	text: string;
-	start: number;
-	end: number;
-}
-
-interface HeadingSpan {
-	level: number;
-	text: string;
-	lineStart: number;
-	lineEnd: number;
-	sectionEnd: number;
-}
-
 function hashBytes(bytes: string): string {
 	return `sha256:${createHash("sha256").update(bytes, "utf8").digest("hex")}`;
 }
@@ -89,76 +76,10 @@ export function planDefectBlocksShortcut(
 	return items.some((item) => item.scopeClass === "plan_defect");
 }
 
-function markdownLines(markdown: string): MarkdownLine[] {
-	const rawLines = markdown.split("\n");
-	const lines: MarkdownLine[] = [];
-	let offset = 0;
-	for (let index = 0; index < rawLines.length; index++) {
-		const raw = rawLines[index] ?? "";
-		const start = offset;
-		const hasNewline = index < rawLines.length - 1;
-		offset += raw.length + (hasNewline ? 1 : 0);
-		lines.push({
-			raw,
-			text: raw.replace(/\r$/, ""),
-			start,
-			end: offset,
-		});
-	}
-	return lines;
-}
-
-function fenceMarker(line: string): string | null {
-	return line.match(/^[ \t]{0,3}(`{3,}|~{3,})/)?.[1] ?? null;
-}
-
-function headingSpans(markdown: string): HeadingSpan[] {
-	const lines = markdownLines(markdown);
-	const headings: Array<Omit<HeadingSpan, "sectionEnd">> = [];
-	let activeFence: string | null = null;
-	for (const line of lines) {
-		const marker = fenceMarker(line.text);
-		if (activeFence) {
-			if (
-				marker !== null &&
-				marker[0] === activeFence[0] &&
-				marker.length >= activeFence.length &&
-				line.text.slice(line.text.indexOf(marker) + marker.length).trim()
-					.length === 0
-			) {
-				activeFence = null;
-			}
-			continue;
-		}
-		if (marker) {
-			activeFence = marker;
-			continue;
-		}
-		const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line.text);
-		if (!match?.[1] || !match[2]) continue;
-		headings.push({
-			level: match[1].length,
-			text: match[2].trim(),
-			lineStart: line.start,
-			lineEnd: line.end,
-		});
-	}
-	return headings.map((heading, index) => {
-		let sectionEnd = markdown.length;
-		for (const later of headings.slice(index + 1)) {
-			if (later.level <= heading.level) {
-				sectionEnd = later.lineStart;
-				break;
-			}
-		}
-		return { ...heading, sectionEnd };
-	});
-}
-
 function budgetHeading(
 	markdown: string,
-): { ok: true; heading: HeadingSpan } | PlanAmendmentFailure {
-	const matches = headingSpans(markdown).filter(
+): { ok: true; heading: PlanHeadingSpan } | PlanAmendmentFailure {
+	const matches = planHeadingSpans(markdown).filter(
 		(heading) => heading.text.toLowerCase() === "delivery budget",
 	);
 	if (matches.length === 0) {
@@ -196,13 +117,13 @@ export function extractBudgetTableBytes(
 ): { ok: true; tableBytes: string } | PlanAmendmentFailure {
 	const budget = budgetHeading(markdown);
 	if (!budget.ok) return budget;
-	const lines = markdownLines(markdown).filter(
+	const lines = planMarkdownLines(markdown).filter(
 		(line) =>
 			line.start >= budget.heading.lineStart &&
 			line.start < budget.heading.sectionEnd,
 	);
-	const blocks: MarkdownLine[][] = [];
-	let current: MarkdownLine[] = [];
+	const blocks: PlanMarkdownLine[][] = [];
+	let current: PlanMarkdownLine[] = [];
 	for (const line of lines) {
 		if (/^\s*\|/.test(line.text)) {
 			current.push(line);
@@ -264,63 +185,24 @@ function checkboxIdentity(line: string): string {
 
 /** Phase headings, checklist identities, and protected section bytes. */
 export function structuralSignature(markdown: string): string {
-	const headings = headingSpans(markdown);
+	const headings = planHeadingSpans(markdown);
 	const parts: string[] = [];
 	for (const heading of headings) {
 		if (/^phase\s+\d/i.test(heading.text)) {
 			parts.push(`phase:${markdown.slice(heading.lineStart, heading.lineEnd)}`);
 		}
-		if (PROTECTED_SECTION_TITLES.has(heading.text.toLowerCase())) {
+		if (PROTECTED_PLAN_SECTION_TITLES.has(heading.text.toLowerCase())) {
 			parts.push(
 				`section:${heading.text.toLowerCase()}:${markdown.slice(heading.lineStart, heading.sectionEnd)}`,
 			);
 		}
 	}
-	for (const line of markdownLines(markdown)) {
-		if (/^\s*(?:[-*+]|\d+\.)\s+\[[ xX]\]/.test(line.text)) {
+	for (const line of planMarkdownLines(markdown)) {
+		if (PLAN_CHECKBOX_LINE.test(line.text)) {
 			parts.push(`check:${checkboxIdentity(line.raw)}`);
 		}
 	}
 	return hashBytes(parts.join("\n"));
-}
-
-function protectedByteRanges(markdown: string): Array<{
-	start: number;
-	end: number;
-}> {
-	const encoder = new TextEncoder();
-	const ranges: Array<{ start: number; end: number }> = [];
-	const headings = headingSpans(markdown);
-	const budget = headings.find(
-		(heading) => heading.text.toLowerCase() === "delivery budget",
-	);
-	for (const heading of headings) {
-		if (/^phase\s+\d/i.test(heading.text)) {
-			ranges.push({ start: heading.lineStart, end: heading.lineEnd });
-		}
-		if (PROTECTED_SECTION_TITLES.has(heading.text.toLowerCase())) {
-			ranges.push({ start: heading.lineStart, end: heading.sectionEnd });
-		}
-	}
-	for (const line of markdownLines(markdown)) {
-		if (
-			budget &&
-			line.start >= budget.lineStart &&
-			line.start < budget.sectionEnd &&
-			/^\s*\|/.test(line.text)
-		) {
-			ranges.push({ start: line.start, end: line.end });
-		}
-		const checkbox = /^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]/.exec(line.text);
-		if (!checkbox?.[1]) continue;
-		const markerStart = line.start + checkbox[1].length;
-		ranges.push({ start: line.start, end: markerStart });
-		ranges.push({ start: markerStart + 3, end: line.end });
-	}
-	return ranges.map((range) => ({
-		start: encoder.encode(markdown.slice(0, range.start)).length,
-		end: encoder.encode(markdown.slice(0, range.end)).length,
-	}));
 }
 
 function rangesOverlap(
@@ -429,7 +311,7 @@ export function prepareTextAmendmentGuard(input: {
 	}
 	const table = extractBudgetTableBytes(input.anchorBytes);
 	if (!table.ok) return table;
-	const protectedRanges = protectedByteRanges(input.anchorBytes);
+	const protectedRanges = protectedPlanByteRanges(input.anchorBytes);
 	for (const span of input.allowedSpans) {
 		if (protectedRanges.some((range) => rangesOverlap(span, range))) {
 			return {
@@ -484,7 +366,7 @@ export function verifyGuardedPlanBytes(input: {
 		"utf8",
 	);
 	const committed = Buffer.from(normalizeCheckboxMarkers(after), "utf8");
-	const protectedRanges = protectedByteRanges(input.guard.anchorBytes);
+	const protectedRanges = protectedPlanByteRanges(input.guard.anchorBytes);
 	for (const span of input.guard.allowedSpans) {
 		if (protectedRanges.some((range) => rangesOverlap(span, range))) {
 			return {

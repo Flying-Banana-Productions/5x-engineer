@@ -31,6 +31,7 @@ import {
 	planDefectBlocksShortcut,
 	planImpactDisposition,
 } from "./plan-amendment.js";
+import { planHeadingSpans, protectedPlanCharRanges } from "./plan-markdown.js";
 import type {
 	ImplementationDiagnostic,
 	ImplementationDiagnosticCode,
@@ -41,13 +42,6 @@ import type {
 	ResolvedPlanImpactSpan,
 	ReviewDomain,
 } from "./types.js";
-
-const PROTECTED_SECTION_HEADINGS = new Set([
-	"design decisions",
-	"acceptance",
-	"scope",
-	"not in scope",
-]);
 
 export interface ImplementationValidationInput {
 	verdict: ReviewerVerdict;
@@ -97,20 +91,6 @@ export interface ImplementationValidationResult {
 	spans: ResolvedPlanImpactSpan[];
 	exemptionAuthorized: boolean;
 	governance: ImplementationGovernanceResult | null;
-}
-
-interface MarkdownLine {
-	text: string;
-	start: number;
-	end: number;
-}
-
-interface HeadingSpan {
-	level: number;
-	text: string;
-	lineStart: number;
-	lineEnd: number;
-	sectionEnd: number;
 }
 
 export function canonicalPhaseId(phase: string): string | null {
@@ -169,127 +149,11 @@ function byteOffset(text: string, charIndex: number): number {
 	return Buffer.byteLength(text.slice(0, charIndex), "utf8");
 }
 
-function markdownLines(markdown: string): MarkdownLine[] {
-	const rawLines = markdown.split("\n");
-	const lines: MarkdownLine[] = [];
-	let offset = 0;
-	for (let index = 0; index < rawLines.length; index++) {
-		const raw = rawLines[index] ?? "";
-		const start = offset;
-		const hasNewline = index < rawLines.length - 1;
-		offset += raw.length + (hasNewline ? 1 : 0);
-		lines.push({
-			text: raw.replace(/\r$/, ""),
-			start,
-			end: offset,
-		});
-	}
-	return lines;
-}
-
-function fenceMarker(line: string): string | null {
-	return line.match(/^[ \t]{0,3}(`{3,}|~{3,})/)?.[1] ?? null;
-}
-
-function headingSpans(markdown: string): HeadingSpan[] {
-	const lines = markdownLines(markdown);
-	const headings: Array<Omit<HeadingSpan, "sectionEnd">> = [];
-	let activeFence: string | null = null;
-	for (const line of lines) {
-		const marker = fenceMarker(line.text);
-		if (activeFence) {
-			if (
-				marker !== null &&
-				marker[0] === activeFence[0] &&
-				marker.length >= activeFence.length &&
-				line.text.slice(line.text.indexOf(marker) + marker.length).trim()
-					.length === 0
-			) {
-				activeFence = null;
-			}
-			continue;
-		}
-		if (marker) {
-			activeFence = marker;
-			continue;
-		}
-		const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line.text);
-		if (!match?.[1] || !match[2]) continue;
-		headings.push({
-			level: match[1].length,
-			text: match[2].trim(),
-			lineStart: line.start,
-			lineEnd: line.end,
-		});
-	}
-	return headings.map((heading, index) => {
-		let sectionEnd = markdown.length;
-		for (const later of headings.slice(index + 1)) {
-			if (later.level <= heading.level) {
-				sectionEnd = later.lineStart;
-				break;
-			}
-		}
-		return { ...heading, sectionEnd };
-	});
-}
-
 function rangesOverlap(
 	left: { start: number; end: number },
 	right: { start: number; end: number },
 ): boolean {
 	return left.start < right.end && right.start < left.end;
-}
-
-function protectedCharRanges(markdown: string): Array<{
-	start: number;
-	end: number;
-}> {
-	const lines = markdownLines(markdown);
-	const headings = headingSpans(markdown);
-	const ranges: Array<{ start: number; end: number }> = [];
-	for (const heading of headings) {
-		ranges.push({ start: heading.lineStart, end: heading.lineEnd });
-		if (PROTECTED_SECTION_HEADINGS.has(heading.text.toLowerCase())) {
-			ranges.push({ start: heading.lineStart, end: heading.sectionEnd });
-		}
-	}
-	const budget = headings.find((heading) => heading.text === "Delivery Budget");
-	let activeFence: string | null = null;
-	for (const line of lines) {
-		const marker = fenceMarker(line.text);
-		if (activeFence) {
-			if (
-				marker !== null &&
-				marker[0] === activeFence[0] &&
-				marker.length >= activeFence.length &&
-				line.text.slice(line.text.indexOf(marker) + marker.length).trim()
-					.length === 0
-			) {
-				activeFence = null;
-			}
-			continue;
-		}
-		if (marker) {
-			activeFence = marker;
-			continue;
-		}
-		if (/^#{2,3}\s+Phase\s+\d/.test(line.text)) {
-			ranges.push({ start: line.start, end: line.end });
-		}
-		if (/^\s*(?:[-*+]|\d+\.)\s+\[[ xX]\]/.test(line.text)) {
-			ranges.push({ start: line.start, end: line.end });
-		}
-		if (
-			budget &&
-			line.start >= budget.lineStart &&
-			line.start < budget.sectionEnd &&
-			/^\s*\|/.test(line.text)
-		) {
-			ranges.push({ start: line.start, end: line.end });
-		}
-	}
-	return ranges;
 }
 
 function occurrences(haystack: string, needle: string): number[] {
@@ -341,8 +205,8 @@ export function resolvePlanImpactSpans(input: {
 		}
 		seen.add(key);
 	}
-	const headings = headingSpans(input.anchorText);
-	const protectedRanges = protectedCharRanges(input.anchorText);
+	const headings = planHeadingSpans(input.anchorText);
+	const protectedRanges = protectedPlanCharRanges(input.anchorText);
 	const spans: Array<
 		ResolvedPlanImpactSpan & { charStart: number; charEnd: number }
 	> = [];
