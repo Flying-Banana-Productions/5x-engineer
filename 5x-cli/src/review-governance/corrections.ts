@@ -284,7 +284,7 @@ export function assessCorrectionInventory(input: {
 		inventoryClean,
 		boundaryUncertain: uncertain,
 		boundaryChanges,
-		architectureDelta: inventoryClean ? 0 : 0,
+		architectureDelta: 0,
 		confined,
 	};
 }
@@ -352,13 +352,63 @@ export function phaseIdsMatch(left: string, right: string): boolean {
 	return a !== null && a === b;
 }
 
+function authorCommitsOf(payload: Partial<StepRecordPayload>): string[] {
+	const commits: string[] = [];
+	if (typeof payload.head_commit === "string")
+		commits.push(payload.head_commit);
+	const result =
+		payload.result_json &&
+		typeof payload.result_json === "object" &&
+		!Array.isArray(payload.result_json)
+			? (payload.result_json as { commit?: unknown })
+			: null;
+	if (typeof result?.commit === "string") commits.push(result.commit);
+	return commits;
+}
+
+function isObservationReviewerStep(
+	payload: Partial<StepRecordPayload>,
+	observation: Pick<
+		ImplementationReviewObservationPayload,
+		"phase" | "stepKey"
+	>,
+): boolean {
+	if (payload.step_name !== observation.stepKey.stepName) return false;
+	if (
+		typeof payload.phase !== "string" ||
+		!phaseIdsMatch(payload.phase, observation.phase)
+	) {
+		return false;
+	}
+	if (observation.stepKey.iteration === null) return true;
+	return payload.iteration === observation.stepKey.iteration;
+}
+
+/**
+ * Accept only an author step for this commit recorded after the observation's
+ * reviewer step. Line order wins when that step is present; otherwise the
+ * author line must be strictly newer than the observation.
+ */
 export function authorRecordedCommit(input: {
 	recordStore: RecordStore;
 	runId: string;
 	phase: string;
 	commit: string;
+	observation: Pick<
+		ImplementationReviewObservationPayload,
+		"createdAt" | "phase" | "stepKey"
+	>;
 }): boolean {
-	for (const line of input.recordStore.listLines(input.runId, "steps")) {
+	const lines = input.recordStore.listLines(input.runId, "steps");
+	const reviewerIndex = lines.findIndex((line) =>
+		isObservationReviewerStep(
+			line.payload as Partial<StepRecordPayload>,
+			input.observation,
+		),
+	);
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		if (!line) continue;
 		const payload = line.payload as Partial<StepRecordPayload>;
 		if (
 			typeof payload.step_name !== "string" ||
@@ -372,17 +422,12 @@ export function authorRecordedCommit(input: {
 		) {
 			continue;
 		}
-		const result =
-			payload.result_json &&
-			typeof payload.result_json === "object" &&
-			!Array.isArray(payload.result_json)
-				? (payload.result_json as { commit?: unknown; result?: unknown })
-				: null;
-		const resultCommit =
-			typeof result?.commit === "string" ? result.commit : null;
-		if (payload.head_commit === input.commit || resultCommit === input.commit) {
-			return true;
+		if (!authorCommitsOf(payload).includes(input.commit)) continue;
+		if (reviewerIndex >= 0) {
+			if (index > reviewerIndex) return true;
+			continue;
 		}
+		if (line.createdAt > input.observation.createdAt) return true;
 	}
 	return false;
 }
@@ -476,7 +521,8 @@ function proofFrom(input: {
 		input.inventory.inventoryClean &&
 		!input.inventory.boundaryUncertain &&
 		input.inventory.boundaryChanges.length === 0 &&
-		input.inventory.architectureDelta === 0
+		input.inventory.architectureDelta === 0 &&
+		input.inventory.changedPaths.length > 0
 	);
 }
 
@@ -543,12 +589,39 @@ export async function finishImplementationCorrection(
 			reason: eligibility.reason,
 		};
 	}
+	let bindingMode: string | null = null;
+	try {
+		bindingMode =
+			input.store.getImplementationBinding(input.runId)?.mode ?? null;
+	} catch (error) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+	const durableShortcut =
+		observation.route === "author_revision" &&
+		observation.gateCauses.length === 0 &&
+		!observation.diagnostics.some(
+			(diagnostic) => diagnostic.severity === "error",
+		) &&
+		bindingMode === "enforced";
+	if (!durableShortcut) {
+		return {
+			status: "ordinary",
+			route: observation.route,
+			nextAction: observation.nextAction,
+			reason: "not_shortcut_candidate",
+		};
+	}
 	if (
 		!authorRecordedCommit({
 			recordStore: input.recordStore,
 			runId: input.runId,
 			phase: input.phase,
 			commit: input.commit,
+			observation,
 		})
 	) {
 		return {
@@ -572,7 +645,17 @@ export async function finishImplementationCorrection(
 	let tree: string;
 	try {
 		const resolved = await resolveCodeCommit(input.git, input.commit);
+		const reviewed = await resolveCodeCommit(input.git, context.reviewedCommit);
 		head = await resolveCodeCommit(input.git, "HEAD");
+		if (resolved === reviewed) {
+			return {
+				status: "reentry",
+				route: "author_revision",
+				nextAction: "author_revision",
+				reason: "unchanged_commit",
+				attempt: null,
+			};
+		}
 		if (head !== resolved) {
 			return {
 				status: "reentry",
@@ -582,7 +665,7 @@ export async function finishImplementationCorrection(
 				attempt: null,
 			};
 		}
-		if (!(await isCodeAncestor(input.git, context.reviewedCommit, resolved))) {
+		if (!(await isCodeAncestor(input.git, reviewed, resolved))) {
 			return {
 				status: "error",
 				code: "CORRECTION_COMMIT_NOT_DESCENDANT",
@@ -643,7 +726,8 @@ export async function finishImplementationCorrection(
 		same.inventoryClean &&
 		!same.boundaryUncertain &&
 		same.boundaryChanges.length === 0 &&
-		same.architectureDelta === 0
+		same.architectureDelta === 0 &&
+		same.changedPaths.length > 0
 	) {
 		return {
 			status: "complete",
@@ -685,13 +769,19 @@ export async function finishImplementationCorrection(
 			};
 		}
 	}
+	if (quality && quality.skipped !== true && quality.results.length === 0) {
+		return {
+			status: "reentry",
+			route: "author_revision",
+			nextAction: "author_revision",
+			reason: "quality_incomplete",
+			attempt: null,
+		};
+	}
 	const timedOut = (quality?.results ?? []).some((result) =>
 		gateTimedOut(result),
 	);
-	const skippedGate =
-		emptyConfig ||
-		quality?.skipped === true ||
-		(quality?.results ?? []).length === 0;
+	const skippedGate = emptyConfig || quality?.skipped === true;
 	const workdirMatches =
 		!quality || quality.workdir === input.executionDirectory;
 	let inventory: CorrectionInventory;
@@ -728,6 +818,7 @@ export async function finishImplementationCorrection(
 			confined: false,
 		};
 	}
+	const emptyInventory = !dirtyAfter && inventory.changedPaths.length === 0;
 	const passed =
 		quality?.passed === true &&
 		!timedOut &&
@@ -740,6 +831,7 @@ export async function finishImplementationCorrection(
 		timedOut ||
 		skippedGate ||
 		!workdirMatches ||
+		emptyInventory ||
 		!inventory.inventoryClean ||
 		inventory.boundaryUncertain ||
 		inventory.boundaryChanges.length > 0;
@@ -758,20 +850,25 @@ export async function finishImplementationCorrection(
 	});
 	const reason = dirtyAfter
 		? "dirty_tree"
-		: !workdirMatches
-			? "wrong_workdir"
-			: skippedGate
-				? "quality_skipped"
-				: timedOut
-					? "quality_timeout"
-					: quality?.passed !== true
-						? "quality_failed"
-						: !inventory.inventoryClean || inventory.boundaryUncertain
-							? "boundary_uncertain"
-							: latched
-								? "shortcut_invalidated"
-								: "passed";
-	const qualityFailure = !passed || timedOut || skippedGate || emptyConfig;
+		: emptyInventory
+			? "empty_inventory"
+			: !workdirMatches
+				? "wrong_workdir"
+				: skippedGate
+					? "quality_skipped"
+					: timedOut
+						? "quality_timeout"
+						: quality?.passed !== true
+							? "quality_failed"
+							: !inventory.inventoryClean || inventory.boundaryUncertain
+								? "boundary_uncertain"
+								: latched
+									? "shortcut_invalidated"
+									: "passed";
+	const qualityFailure =
+		!dirtyAfter &&
+		!emptyInventory &&
+		(!passed || timedOut || skippedGate || emptyConfig);
 	const attempt = stamp(input, {
 		runId: input.runId,
 		observationId: observation.id,
@@ -781,7 +878,13 @@ export async function finishImplementationCorrection(
 		tree,
 		qualityConfigDigest: digest,
 		executionDirectory: input.executionDirectory,
-		outcome: proof ? "passed" : qualityFailure ? "failed" : "invalidated",
+		outcome: proof
+			? "passed"
+			: dirtyAfter || emptyInventory
+				? "invalidated"
+				: qualityFailure
+					? "failed"
+					: "invalidated",
 		shortcutInvalidated: invalidate,
 		reason,
 		qualityPassed: quality?.passed === true,

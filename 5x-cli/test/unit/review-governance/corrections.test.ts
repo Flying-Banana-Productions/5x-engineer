@@ -11,11 +11,13 @@ import { createReviewBudgetStore } from "../../../src/control-plane/review-budge
 import type { ReviewerVerdict } from "../../../src/protocol.js";
 import {
 	encodeImplementationReviewObservationPayload,
+	type ImplementationBindingPayload,
 	type ImplementationClaimObservation,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import type { CodeDiffGit } from "../../../src/review-governance/code-diff.js";
 import {
 	assessCorrectionInventory,
@@ -198,7 +200,61 @@ function fakeGit(options?: {
 	};
 }
 
-function setup(obs = observation(), ctx = context()) {
+function binding(
+	mode: ImplementationBindingPayload["mode"] = "enforced",
+): ImplementationBindingPayload {
+	return {
+		kind: "implementation-binding",
+		version: 1,
+		id: "bind-1",
+		executionRunId: RUN,
+		sourceRunId: "source",
+		sourceSnapshotId: "snap",
+		sourceBaselineId: "base",
+		approvedPlanCommit: "c".repeat(40),
+		approvedPlanHash: "sha256:plan",
+		approvedPlanBytes: "# Plan\n",
+		b0: 5,
+		governingB: 5,
+		mode,
+		thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+		ledger: {
+			estimateConfidence: "high",
+			workItems: [
+				{
+					id: "W1",
+					title: "Work",
+					effort: 2,
+					architectureDelta: 0,
+					debtClaim: null,
+					addresses: [],
+					rationale: "Required",
+					line: 1,
+				},
+			],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		},
+		effectiveDecisions: [],
+		phaseMap: [{ id: "6", heading: "Phase 6" }],
+		debtTargets: [],
+		ledgerHash: "ledger",
+		decisionsHash: "decisions",
+		createdAt: "2026-09-23 00:00:00",
+	};
+}
+
+function setup(
+	obs = observation(),
+	ctx = context(),
+	options?: {
+		mode?: ImplementationBindingPayload["mode"];
+		authorFirst?: boolean;
+	},
+) {
 	const recordStore = createMemoryRecordStore();
 	recordStore.putRun({
 		id: RUN,
@@ -213,6 +269,35 @@ function setup(obs = observation(), ctx = context()) {
 		creator: ORIGIN.recorder,
 	});
 	const store = createReviewBudgetStore(recordStore);
+	store.saveImplementationBinding(binding(options?.mode ?? "enforced"), ORIGIN);
+	const reviewerStep = () => {
+		recordStore.append({
+			runId: RUN,
+			stream: "steps",
+			idempotencyKey: stepIdempotencyKey({
+				runId: RUN,
+				stepName: obs.stepKey.stepName,
+				phase: "6",
+				iteration: obs.stepKey.iteration ?? 0,
+			}),
+			payload: {
+				step_name: obs.stepKey.stepName,
+				phase: "6",
+				iteration: obs.stepKey.iteration ?? 0,
+				result_json: { result: "complete" },
+				head_commit: REVIEWED,
+				patch_id: null,
+				diff_summary: null,
+				duration_ms: null,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				model: null,
+			},
+			createdAt: obs.createdAt,
+			...recordedEnvelope(ORIGIN),
+		});
+	};
 	recordStore.append({
 		runId: RUN,
 		stream: "budget",
@@ -250,8 +335,16 @@ function setup(obs = observation(), ctx = context()) {
 			...recordedEnvelope(ORIGIN),
 		});
 	};
-	recordAuthor(COMMIT, 1);
-	recordAuthor(OTHER, 2);
+	if (options?.authorFirst) {
+		recordAuthor(COMMIT, 1);
+		recordAuthor(OTHER, 2);
+		reviewerStep();
+	} else {
+		reviewerStep();
+		recordAuthor(COMMIT, 1);
+		recordAuthor(OTHER, 2);
+		recordAuthor(REVIEWED, 3);
+	}
 	recordStore.append({
 		runId: RUN,
 		stream: "steps",
@@ -368,6 +461,7 @@ describe("correction inventory and claim carry-forward", () => {
 		});
 		expect(schema.boundaryChanges).toContain("schema");
 		expect(schema.inventoryClean).toBe(false);
+		expect(schema.architectureDelta).toBe(0);
 		const extra = assessCorrectionInventory({
 			changedPaths: ["src/other.ts"],
 			reviewedPaths: ["src/fix.ts"],
@@ -580,6 +674,8 @@ describe("finishImplementationCorrection", () => {
 			quality?: () => Promise<CorrectionQualityResult>;
 			code?: string;
 			reason?: string;
+			paths?: string;
+			noAttempt?: boolean;
 		}> = [
 			{
 				name: "timeout",
@@ -606,6 +702,21 @@ describe("finishImplementationCorrection", () => {
 			},
 			{ name: "dirty-before", dirtyAt: 1, code: "CORRECTION_DIRTY_TREE" },
 			{ name: "dirty-after", dirtyAt: 2, reason: "dirty_tree" },
+			{
+				name: "empty-results",
+				quality: async () => ({
+					passed: true,
+					results: [],
+					workdir: "/repo",
+				}),
+				reason: "quality_incomplete",
+				noAttempt: true,
+			},
+			{
+				name: "empty-inventory",
+				paths: "",
+				reason: "empty_inventory",
+			},
 		];
 		for (const entry of cases) {
 			const { store, recordStore } = setup(
@@ -625,17 +736,36 @@ describe("finishImplementationCorrection", () => {
 				planRepoPath: "docs/plan.md",
 				gates: entry.gates ?? ["bun test"],
 				skipQualityGates: entry.skip === true,
-				git: fakeGit({ dirtyAt: entry.dirtyAt }),
+				git: fakeGit({
+					dirtyAt: entry.dirtyAt,
+					...(entry.paths !== undefined ? { paths: entry.paths } : {}),
+				}),
 				runQuality: entry.quality ?? (async () => passingQuality()),
 			});
-			if (entry.code) {
-				expect(result.status).toBe("error");
-				if (result.status === "error") expect(result.code).toBe(entry.code);
+			if (entry.code || entry.noAttempt) {
+				if (entry.code) {
+					expect(result.status).toBe("error");
+					if (result.status === "error") expect(result.code).toBe(entry.code);
+				} else {
+					expect(result.status).toBe("reentry");
+					if (result.status === "reentry") {
+						expect(result.reason).toBe(entry.reason ?? "");
+						expect(result.attempt).toBeNull();
+					}
+				}
 				expect(store.listImplementationCorrectionAttempts(RUN)).toHaveLength(0);
 			} else {
 				expect(result.status).toBe("reentry");
 				if (result.status === "reentry") {
 					expect(result.reason).toBe(entry.reason ?? "");
+					if (entry.name === "dirty-after") {
+						expect(result.attempt?.outcome).toBe("invalidated");
+						expect(result.attempt?.qualityPassed).toBe(true);
+					}
+					if (entry.name === "empty-inventory") {
+						expect(result.attempt?.outcome).toBe("invalidated");
+						expect(result.attempt?.carriedClaims).toEqual([]);
+					}
 				}
 			}
 		}
@@ -711,6 +841,173 @@ describe("finishImplementationCorrection", () => {
 		if (result.status === "reentry") {
 			expect(result.reason).toBe("boundary_uncertain");
 			expect(result.attempt?.carriedClaims).toEqual([]);
+		}
+	});
+
+	test("the reviewed commit itself is not a correction proof", async () => {
+		const { store, recordStore } = setup();
+		let calls = 0;
+		const result = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-1",
+			commit: REVIEWED,
+			store,
+			recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit({ head: REVIEWED }),
+			runQuality: async () => {
+				calls += 1;
+				return passingQuality();
+			},
+		});
+		expect(result.status).toBe("reentry");
+		if (result.status === "reentry") {
+			expect(result.reason).toBe("unchanged_commit");
+			expect(result.attempt).toBeNull();
+		}
+		expect(calls).toBe(0);
+		expect(store.listImplementationCorrectionAttempts(RUN)).toHaveLength(0);
+	});
+
+	test("an author step recorded before the review is not the correction", async () => {
+		const { store, recordStore } = setup(observation(), context(), {
+			authorFirst: true,
+		});
+		const result = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-1",
+			commit: COMMIT,
+			store,
+			recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit(),
+			runQuality: async () => passingQuality(),
+		});
+		expect(result.status).toBe("error");
+		if (result.status === "error") {
+			expect(result.code).toBe("CORRECTION_AUTHOR_COMMIT_NOT_RECORDED");
+		}
+	});
+
+	test("a one-P2 verdict on a human gate or with gate causes stays ordinary", async () => {
+		const human = setup(
+			observation({
+				id: "obs-human",
+				route: "human_gate",
+				nextAction: "human_gate",
+			}),
+		);
+		const gated = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-human",
+			commit: COMMIT,
+			store: human.store,
+			recordStore: human.recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit(),
+			runQuality: async () => passingQuality(),
+		});
+		expect(gated.status).toBe("ordinary");
+		if (gated.status === "ordinary") {
+			expect(gated.route).toBe("human_gate");
+			expect(gated.nextAction).toBe("human_gate");
+		}
+		const caused = setup(
+			observation({
+				id: "obs-cause",
+				gateCauses: [
+					{
+						kind: "inherited_budget",
+						band: "over_effective",
+						alerts: ["credit_unrealized"],
+					},
+				],
+			}),
+		);
+		const blocked = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-cause",
+			commit: COMMIT,
+			store: caused.store,
+			recordStore: caused.recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit(),
+			runQuality: async () => passingQuality(),
+		});
+		expect(blocked.status).toBe("ordinary");
+		if (blocked.status === "ordinary") {
+			expect(blocked.route).toBe("author_revision");
+			expect(blocked.reason).toBe("not_shortcut_candidate");
+		}
+		const advisory = setup(observation({ id: "obs-advisory" }), context(), {
+			mode: "advisory",
+		});
+		const advisoryResult = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-advisory",
+			commit: COMMIT,
+			store: advisory.store,
+			recordStore: advisory.recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit(),
+			runQuality: async () => passingQuality(),
+		});
+		expect(advisoryResult.status).toBe("ordinary");
+		const diagnosed = setup(
+			observation({
+				id: "obs-error",
+				diagnostics: [
+					{
+						code: "PRIOR_FINDING_OMITTED",
+						severity: "error",
+						message: "A prior finding was omitted.",
+					},
+				],
+			}),
+		);
+		const diagnosedResult = await finishImplementationCorrection({
+			runId: RUN,
+			phase: "6",
+			observationId: "obs-error",
+			commit: COMMIT,
+			store: diagnosed.store,
+			recordStore: diagnosed.recordStore,
+			origin: ORIGIN,
+			executionDirectory: "/repo",
+			planRepoPath: "docs/plan.md",
+			gates: ["bun test"],
+			skipQualityGates: false,
+			git: fakeGit(),
+			runQuality: async () => passingQuality(),
+		});
+		expect(diagnosedResult.status).toBe("ordinary");
+		if (diagnosedResult.status === "ordinary") {
+			expect(diagnosedResult.reason).toBe("not_shortcut_candidate");
 		}
 	});
 });

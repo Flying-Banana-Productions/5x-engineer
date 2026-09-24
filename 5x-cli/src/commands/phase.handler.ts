@@ -119,8 +119,10 @@ function qualityPayloadSucceeded(raw: string): boolean {
 }
 
 /**
- * Pre-review `phase finish` resumes only a `quality:check` step payload.
- * Implementation correction attempts are a different record and are not proof.
+ * `phase finish` resumes a succeeded step whose name starts with `quality:`.
+ * `phaseFinishCore` always passes a `quality:` name, so this check does not
+ * filter other step kinds at that call site. Correction attempts are a
+ * separate record and are not read as proof.
  */
 export function isPreReviewQualityCache(
 	stepName: string,
