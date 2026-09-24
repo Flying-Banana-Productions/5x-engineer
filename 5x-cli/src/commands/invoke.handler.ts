@@ -67,8 +67,11 @@ import {
 } from "../review-governance/code-diff.js";
 import {
 	appendPlanReviewPromptContext,
+	buildImplementationReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
+	formatImplementationAuthorContext,
+	formatImplementationReviewerContext,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
 import {
@@ -194,6 +197,10 @@ interface InvokeResult {
 	worktree_plan_path?: string;
 	/** Prepared code-review context. Invoke keeps this and does not ask the agent to echo it. */
 	review_context_id?: string;
+	binding_id?: string;
+	source_run_id?: string;
+	pinned_mode?: "advisory" | "enforced";
+	pre_author_commit?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +458,16 @@ export async function invokeAgent(
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	let reviewDiffAppend: string | null = null;
 	let implementationReviewContextId: string | undefined;
+	let preparedReviewContext: {
+		id: string;
+		baseCommit: string;
+		reviewedCommit: string;
+		excludedPaths: string[];
+	} | null = null;
+	let preAuthorCommit: string | null = null;
+	let boundId: string | undefined;
+	let boundSourceRunId: string | undefined;
+	let boundMode: "advisory" | "enforced" | undefined;
 	if (
 		wantContinued &&
 		runDb &&
@@ -616,6 +633,12 @@ export async function invokeAgent(
 				if (captured.status === "error") {
 					outputError(captured.code, captured.message);
 				}
+				if (captured.status === "captured" || captured.status === "reused") {
+					preAuthorCommit = captured.admission.preAuthorCommit;
+					boundId = admission.binding.id;
+					boundSourceRunId = admission.binding.sourceRunId;
+					boundMode = admission.binding.mode;
+				}
 				if (captured.status !== "skipped") {
 					try {
 						await recordStepInternal(
@@ -770,11 +793,41 @@ export async function invokeAgent(
 				outputError(prepared.code, prepared.message);
 			}
 			implementationReviewContextId = prepared.context.id;
+			preparedReviewContext = prepared.context;
+			boundId = binding.id;
+			boundSourceRunId = binding.sourceRunId;
+			boundMode = binding.mode;
 			codeDiffAppend = formatCodeReviewDiff({
 				contextId: prepared.context.id,
 				diff: prepared.diff,
 				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
 			});
+		}
+	}
+	if (
+		params.run &&
+		budgetContext &&
+		(isCommitReviewTemplate(resolved.selectedTemplateName) ||
+			isImplementationAuthorTemplate(resolved.selectedTemplateName))
+	) {
+		const implementationContext = buildImplementationReviewPromptContext({
+			runId: params.run,
+			phase: params.phase ?? mergedVars.phase_number ?? "",
+			store: budgetContext.store,
+			recordStore: budgetContext.recordStore,
+			reviewContext: preparedReviewContext,
+			workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+			sessionId: params.newSession ? "new" : params.session,
+		});
+		if (implementationContext) {
+			governanceAppend = isImplementationAuthorTemplate(
+				resolved.selectedTemplateName,
+			)
+				? formatImplementationAuthorContext(implementationContext)
+				: formatImplementationReviewerContext(implementationContext);
+			boundId = implementationContext.bindingId;
+			boundSourceRunId = implementationContext.sourceRunId;
+			boundMode = implementationContext.mode;
 		}
 	}
 	const renderedPrompt = appendPlanReviewPromptContext({
@@ -1332,6 +1385,10 @@ export async function invokeAgent(
 		...(implementationReviewContextId
 			? { review_context_id: implementationReviewContextId }
 			: {}),
+		...(boundId ? { binding_id: boundId } : {}),
+		...(boundSourceRunId ? { source_run_id: boundSourceRunId } : {}),
+		...(boundMode ? { pinned_mode: boundMode } : {}),
+		...(preAuthorCommit ? { pre_author_commit: preAuthorCommit } : {}),
 	};
 
 	outputSuccess(output);

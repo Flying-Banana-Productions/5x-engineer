@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit
 description: Review implementation commits
-version: 4
+version: 5
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -19,9 +19,9 @@ You are a Staff Engineer reviewing the implementation work at commit `{{commit_h
 
 ## Instructions
 
-1. Examine the changes introduced at commit `{{commit_hash}}` and any subsequent commits.
-2. Read the implementation plan at `{{plan_path}}` for context on what was intended.
-3. Review from a Staff Engineer perspective.
+1. Examine the changes introduced at commit `{{commit_hash}}` and any subsequent commits in the exact reviewed range.
+2. Read the implementation plan at `{{plan_path}}` for the approved phase scope.
+3. Perform one exhaustive material pass. Report every blocking finding now; do not intentionally defer a known finding to a later review round.
 4. Write your review to `{{review_path}}`.
 
 ### Review Perspective
@@ -49,6 +49,21 @@ If `{{review_path}}` already exists (prior review of this same implementation ph
 If `{{review_path}}` does not exist, create a new review document. Look for a review template at `{{review_template_path}}` and follow its structure.
 
 **Important:** Only write to `{{review_path}}`. Do not write to or append to any other review files (e.g. plan review files).
+
+### Implementation finding classes
+
+Classify every structured item with exactly one `scopeClass`. Source-of-correction precedence wins over the symptom: a code bug that requires changed approved behavior is `plan_defect`.
+
+- **`implementation_defect`**: ordinary defect inside approved work. Link every item to approved `planWorkItemIds`. New blockers need exact file-qualified hunk evidence (`introducedBy`: the `diff --git` line plus the complete `@@` hunk) and a causal explanation.
+- **`plan_defect`**: the approved plan text, design, or budget is wrong. `planImpact` is an object, never a string: `{ "kind": "text_only" | "design" | "budget", "locations": [{ "heading": "...", "staleText": "..." }] }`. `text_only` locations must be nonempty. Each `staleText` must occur exactly once under its unique heading in the supplied approved text. Missing or ambiguous matches route to a human; do not guess a replacement. `design` and `budget` may use `"locations": []` and always route to a human.
+- **`scope_expansion`**: new API, schema, dependency, subsystem, or structural plan change. Never automatic, even when `action` is `auto_fix`.
+- **`pre_existing`**: ordinary pre-existing notes belong in the Markdown **Nonblocking follow-ups** section, not `items[]`. Critical pre-existing safety stays in `items[]` with `lateDiscovery: "critical_safety"` and `lateDiscoveryEvidence`, and routes to a human. That safety exception bypasses the hunk requirement.
+
+Do not create new credit. Effort is a nonnegative integer and architecture delta is a signed integer; neither mints plan credit. Follow-ups in Markdown are not author work.
+
+Read the appended `Implementation-review governance context` on this initial pass and on a fresh session. It carries the binding, source run, approved work-item IDs, phase scope, full-diff retrieval command, required prior outcomes, due claims, deferred or accepted-risk decisions (title, rationale, decision ID, approved scope), and human debt waivers. Assess the effective approved post-state.
+
+In pinned `enforced` mode the evidence requirements are strict. In pinned `advisory` mode provide the same evidence; violations are diagnostics. Mode off and runs without a binding keep the v1 contract and omit implementation-only fields.
 
 ### Issue Classification
 
@@ -114,10 +129,14 @@ The structured verdict (readiness assessment and review items) is captured separ
 When your review is complete, produce your structured verdict by running:
 
     5x protocol emit reviewer --no-ready \
-      --item '{"title":"...","action":"auto_fix","reason":"..."}' \
+      --item '{"id":"I1","title":"Missing null check","action":"auto_fix","reason":"The helper already guards this case.","priority":"P2","scopeClass":"implementation_defect","planWorkItemIds":["W1"],"effortDelta":1,"architectureDelta":0,"boundaryChanges":[],"mechanicalExplanation":"Restore the existing null check.","failure":"Null input throws before the phase result is recorded.","lowestCostCorrection":"Add the same guard used by the adjacent helper.","introducedBy":{"path":"src/example.ts","header":"@@ -1,1 +1,2 @@","text":"diff --git a/src/example.ts b/src/example.ts\n@@ -1,1 +1,2 @@\n-return value\n+return value ?? fallback\n"}}' \
+      --item '{"id":"I2","title":"Stale phase wording","action":"auto_fix","reason":"The approved sentence no longer matches the phase.","priority":"P2","scopeClass":"plan_defect","planImpact":{"kind":"text_only","locations":[{"heading":"Phase 1: Approved execution binding","staleText":"exact unique sentence from the approved plan under that heading"}]},"effortDelta":0,"architectureDelta":0,"failure":"The author follows superseded wording.","lowestCostCorrection":"Replace that one approved sentence."}' \
+      --credit-realization '{"creditClaimId":"DC1","realization":"realized","realizedArchitectureDelta":-1,"evidence":"The approved after-state is present at the reviewed commit."}' \
       --summary "..."
 
+`planImpact` is that object. A missing or ambiguous `staleText` match is a human route, not a guessed string. Do not emit `baselineAssessment`, `creditAssessments`, or `creditClaim`.
 Use `--ready` or `--no-ready`. Items imply corrections (`--ready` + items → `ready_with_corrections`).
+Pass `--review-context` with the id from the implementation governance context when the verdict is recorded.
 Include the command's JSON output verbatim as your structured result.
 Do not wrap it in markdown fences.
 The output is raw canonical JSON — do not wrap or modify it.

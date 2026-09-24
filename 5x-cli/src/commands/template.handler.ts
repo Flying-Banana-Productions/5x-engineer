@@ -24,8 +24,11 @@ import {
 } from "../review-governance/code-diff.js";
 import {
 	appendPlanReviewPromptContext,
+	buildImplementationReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
+	formatImplementationAuthorContext,
+	formatImplementationReviewerContext,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
@@ -103,6 +106,10 @@ export interface TemplateRenderOutput {
 	plan_path?: string;
 	worktree_root?: string;
 	review_context_id?: string;
+	binding_id?: string;
+	source_run_id?: string;
+	pinned_mode?: "advisory" | "enforced";
+	pre_author_commit?: string;
 }
 
 export interface TemplateRenderDeps {
@@ -119,7 +126,7 @@ async function capturePreAuthorHead(input: {
 	phase: string | undefined;
 	bindingId: string;
 	context: ReviewBudgetCommandContext;
-}): Promise<void> {
+}): Promise<string | null> {
 	const phase = canonicalPhaseId(input.phase ?? "");
 	if (!phase || phase === "plan") {
 		outputError(
@@ -150,7 +157,7 @@ async function capturePreAuthorHead(input: {
 	if (captured.status === "error") {
 		outputError(captured.code, captured.message);
 	}
-	if (captured.status === "skipped") return;
+	if (captured.status === "skipped") return null;
 	try {
 		await recordStepInternal(
 			{
@@ -169,6 +176,7 @@ async function capturePreAuthorHead(input: {
 		}
 		throw error;
 	}
+	return captured.admission.preAuthorCommit;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +352,10 @@ export async function templateRender(
 			: null;
 	}
 
+	let preAuthorCommit: string | null = null;
+	let boundSourceRunId: string | undefined;
+	let boundMode: "advisory" | "enforced" | undefined;
+	let boundId: string | undefined;
 	if (
 		params.run &&
 		resolvedPlanPath &&
@@ -414,12 +426,15 @@ export async function templateRender(
 						);
 					}
 				}
-				await capturePreAuthorHead({
+				preAuthorCommit = await capturePreAuthorHead({
 					runId: params.run,
 					phase: explicitVars.phase_number ?? mergedVars.phase_number,
 					bindingId: admission.binding.id,
 					context: renderBudgetContext,
 				});
+				boundId = admission.binding.id;
+				boundSourceRunId = admission.binding.sourceRunId;
+				boundMode = admission.binding.mode;
 			}
 		}
 	}
@@ -524,12 +539,11 @@ export async function templateRender(
 	// Post-render: append the review diff block (continued plan reviews only),
 	// then the ## Context block when --run resolves a worktree.
 	// -----------------------------------------------------------------------
-	prompt = appendPlanReviewPromptContext({
-		prompt,
-		diffAppend: reviewDiffAppend,
-		governanceAppend,
-	});
 	let reviewContextId: string | undefined;
+	let preparedReviewContext: ReturnType<
+		ReviewBudgetCommandContext["store"]["getImplementationReviewContext"]
+	> = null;
+	let codeDiffAppend = "";
 	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
 		try {
 			renderBudgetContext ??= await (
@@ -579,13 +593,53 @@ export async function templateRender(
 				outputError(prepared.code, prepared.message);
 			}
 			reviewContextId = prepared.context.id;
-			prompt += formatCodeReviewDiff({
+			preparedReviewContext = prepared.context;
+			boundId = binding.id;
+			boundSourceRunId = binding.sourceRunId;
+			boundMode = binding.mode;
+			codeDiffAppend = formatCodeReviewDiff({
 				contextId: prepared.context.id,
 				diff: prepared.diff,
 				workdir,
 			});
 		}
 	}
+	const implementationPhase =
+		explicitVars.phase_number ??
+		mergedVars.phase_number ??
+		resolved.variables.phase_number ??
+		"";
+	if (
+		params.run &&
+		renderBudgetContext &&
+		(isCommitReviewTemplate(resolved.selectedTemplateName) ||
+			isImplementationAuthorTemplate(resolved.selectedTemplateName))
+	) {
+		const implementationContext = buildImplementationReviewPromptContext({
+			runId: params.run,
+			phase: implementationPhase,
+			store: renderBudgetContext.store,
+			recordStore: renderBudgetContext.recordStore,
+			reviewContext: preparedReviewContext,
+			workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
+			sessionId: params.newSession ? "new" : params.session,
+		});
+		if (implementationContext) {
+			governanceAppend = isImplementationAuthorTemplate(
+				resolved.selectedTemplateName,
+			)
+				? formatImplementationAuthorContext(implementationContext)
+				: formatImplementationReviewerContext(implementationContext);
+			boundId = implementationContext.bindingId;
+			boundSourceRunId = implementationContext.sourceRunId;
+			boundMode = implementationContext.mode;
+		}
+	}
+	prompt = appendPlanReviewPromptContext({
+		prompt: prompt + codeDiffAppend,
+		diffAppend: reviewDiffAppend,
+		governanceAppend,
+	});
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;
 	}
@@ -619,6 +673,10 @@ export async function templateRender(
 			? { worktree_root: resolvedWorktreeRoot }
 			: {}),
 		...(reviewContextId ? { review_context_id: reviewContextId } : {}),
+		...(boundId ? { binding_id: boundId } : {}),
+		...(boundSourceRunId ? { source_run_id: boundSourceRunId } : {}),
+		...(boundMode ? { pinned_mode: boundMode } : {}),
+		...(preAuthorCommit ? { pre_author_commit: preAuthorCommit } : {}),
 	};
 
 	outputSuccess(output);

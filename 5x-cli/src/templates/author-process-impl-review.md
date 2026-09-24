@@ -1,7 +1,7 @@
 ---
 name: author-process-impl-review
 description: Fix implementation issues from code review
-version: 2
+version: 3
 variables: [review_path, plan_path, user_notes, run_id]
 step_name: "author:fix-review"
 variable_defaults:
@@ -21,10 +21,10 @@ You are fixing implementation issues identified in a code review for `{{plan_pat
 1. Read the review document at `{{review_path}}`.
 2. If the review has addendums, focus on the **latest addendum** — it contains the most recent feedback. Do a quick sanity check that prior review items are already addressed, but your primary task is the latest addendum.
 3. Read the implementation plan at `{{plan_path}}` for context on what was intended.
-4. Address all actionable feedback items:
-   - **P0 blockers**: Must be resolved.
-   - **P1 items**: Should be resolved.
-   - **P2 items**: Address if straightforward; note any deferred items.
+4. When an `Admitted implementation work` section is appended, implement only those admitted findings and governing decisions. Do not treat the rest of the review Markdown as a work list. Without that section, use the latest addendum's actionable items and still do not invent scope.
+   - **P0 blockers** in the admitted list: Must be resolved.
+   - **P1 items** in the admitted list: Should be resolved.
+   - **P2 items** in the admitted list: Address if they are admitted; do not pull in extra cleanup.
 
 ### Working Directory
 
@@ -40,7 +40,10 @@ This is a **code implementation** task. You are fixing issues in the source code
 - Write or update tests to cover the fixes.
 - Run all tests and ensure they pass.
 - Update the implementation plan checklist items (`[x]`) only if your fixes complete previously incomplete items.
-- Do **not** make structural changes to the plan document (phase descriptions, design decisions, etc.) — that is a separate workflow.
+- Do **not** make structural changes to the plan document (phase descriptions, design decisions, budget table bytes, or new scope). That requires an approved amendment workflow.
+- Guarded nonstructural text synchronization is allowed only inside the supplied text guard spans, plus checkbox toggles.
+- Do not implement deferred or accepted-risk findings, nonblocking Markdown follow-ups, or scope expansion.
+- When the admitted section says this pass is a final correction, change only the eligible item. Do not clean up unrelated code, tests, docs, or plan structure.
 
 ### Quality Checks
 
