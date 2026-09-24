@@ -218,3 +218,35 @@ The Phase 4 review raised the same parity gap for the reviewer path. Recommendat
 
 - **Phase 5 (W5) completion:** ✅ — Every P0/P1 from the original review and every P2 from both prior addenda are now resolved and verified. Only a new, unconfirmed, preventive P2 suggestion remains.
 - **Ready for next phase:** ✅ — No P0/P1 items remain, the full suite is green at full scale, and the specific flake reported last time is confirmed fixed by direct repro.
+
+---
+
+## Addendum (2026-09-23, fourth) — remaining process-wide DB usages removed
+
+**Reviewed:** `5b24822df03ff77b61e4830d9cf9587beb8387ea` (one commit since `d049a5b44d61cf41b9a8db3649e460ef4bbe344b`: "Isolate remaining invoke admission and review-recording tests from the process-wide database (phase 5 review addendum 3, P2.4).", explicitly named after the P2.4 item from the third addendum.)
+
+**Local verification:** `bun run typecheck`: clean. `bun run lint`: clean (425 files). `bun test --concurrent` (full suite, single clean run): 3721 pass, 0 fail — same count as before, test-only diff. Targeted stress-testing:
+- `bun test --concurrent test/unit/commands/invoke.test.ts` alone: 5/5 clean runs.
+- The broader six-target mix from the third addendum (`invoke.test.ts`, `protocol.test.ts`, `protocol-validate.test.ts`, `review-governance/`, `implementation-review-context.test.ts`, `test/unit/db`): 34 total runs across three batches, 33 clean, 1 timeout (details below — not a DB-closing race, and not caused by this diff).
+
+### What's addressed (✅)
+
+- **P2.4 ("two other `invoke.test.ts` describe blocks still use `closeDb()`/`_resetForTest()`") — fixed.** Both remaining call sites are converted to the same `openPrivateControlPlaneDb`/`deps.db` pattern verified in the prior addendum:
+  - `describe("invoke implementation admission", ...)`: the `_resetForTest()` at the top of the test and the manual `new Database(...)` + `runMigrations` + immediate `db.close()` (which meant `invokeAgent` fell through to the process-wide singleton) are replaced by `db = openPrivateControlPlaneDb(dir)`, kept open and passed via `deps.db` to `invokeAgent`, and closed in `finally`. The redundant `mkdirSync(join(dir, ".5x"), ...)` is also removed since `openPrivateControlPlaneDb` already creates the state directory.
+  - `describe("invoke implementation review recording", ...)`: the `getDb(dir)` / `closeDb()` / `_resetForTest()` sequence around `createRunV1` is replaced by opening the private DB *before* `initScaffold({ startDir: dir })` (same "create the file first" trick verified in the prior addendum — `initScaffold` skips its own `getDb()`/`closeDb()` call when `.5x/5x.db` already exists), and `db` is threaded through `deps` to both `invokeAgent` calls in the test, closed once in `finally`.
+  - `grep -n "closeDb\|_resetForTest\|getDb("` against `test/unit/commands/invoke.test.ts` now returns **zero matches** — the file no longer touches the process-wide singleton anywhere. Confirmed by direct inspection.
+  - I re-ran the exact stress configuration that surfaced P2.4 as a *theoretical* risk (I had not reproduced a failure there before this fix, so there's no "before" repro to compare against) — 5/5 clean runs of the file alone, consistent with the fix being complete and correct.
+
+### New observations in this revision
+
+- **One unrelated timeout observed during stress-testing, not caused by this diff.** Across 34 runs of the broader six-target concurrent mix, one run produced `(fail) protocol and invoke implementation recording > both entry points persist the same observation and durable authorization [5001.15ms] ^ this test timed out after 5000ms`. I traced this: the failing test lives in `test/unit/commands/protocol-validate.test.ts`, a file **not touched by either of the last two reviewed commits** (`cd13523`, `5b24822`), and the failure has no `RangeError: Cannot use a closed database` signature — it's a plain timeout, most likely resource contention from my own aggressive back-to-back stress-testing (30+ consecutive `bun test --concurrent` invocations in a short window on one machine) rather than a code defect. `git log` confirms this test file was last touched by `e405580`, two revisions before the current review chain even started addressing test isolation. I'm not raising this as a finding — it didn't reproduce in 33 of 34 runs, it's outside the diff under review, and a single clean full-suite run (not artificially loaded) passed 3721/3721.
+- No new defects found in the reviewed diff itself. The change is test-only, mechanical, and exactly matches the pattern already validated twice in prior addenda.
+
+### Still open
+
+- None. Both items from the third addendum are resolved: P2.4 is fixed and verified; there is no unconfirmed residual risk remaining in `invoke.test.ts` since every process-wide DB usage in the file has been removed.
+
+### Updated readiness
+
+- **Phase 5 (W5) completion:** ✅ — All P0/P1 items across the original review and all four addenda are resolved. No open items of any priority remain from this review chain.
+- **Ready for next phase:** ✅ — Full suite green at full scale (3721/3721), lint and typecheck clean, and the test-isolation work explicitly requested across the last three addenda is now complete and verified with zero remaining `closeDb()`/`_resetForTest()`/`getDb()` call sites in `invoke.test.ts`.
