@@ -1713,10 +1713,7 @@ export function decodeImplementationCreditReconciliationPayload(
 		supersedesObservationId:
 			value.supersedesObservationId == null
 				? null
-				: stringField(
-						value.supersedesObservationId,
-						"supersedesObservationId",
-					),
+				: stringField(value.supersedesObservationId, "supersedesObservationId"),
 		budget: decodeCreditBudget(value.budget),
 		creditUnrealized: booleanField(value.creditUnrealized, "creditUnrealized"),
 		material: booleanField(value.material, "material"),

@@ -21,10 +21,7 @@ import {
 	isCompleteDebtClaimEvidence,
 	type ParsedWorkItem,
 } from "../review-budget/types.js";
-import type {
-	ImplementationDiagnostic,
-	PlanReviewRoute,
-} from "./types.js";
+import type { ImplementationDiagnostic, PlanReviewRoute } from "./types.js";
 
 export interface HumanDebtWaiver {
 	kind: "waiver";
@@ -403,13 +400,12 @@ function settledPastClaim(
 		(record) => record.bindingId === input.binding.id,
 	);
 	for (const record of [...records].reverse()) {
-		const entry = record.claims.find(
-			(item) => item.creditClaimId === claimId,
-		);
+		const entry = record.claims.find((item) => item.creditClaimId === claimId);
 		if (!entry || record.phase !== entry.phaseId) continue;
-		const observationIds = [record.observationId, entry.sourceObservationId].filter(
-			(id): id is string => typeof id === "string" && id.length > 0,
-		);
+		const observationIds = [
+			record.observationId,
+			entry.sourceObservationId,
+		].filter((id): id is string => typeof id === "string" && id.length > 0);
 		if (observationIds.some((id) => restored(decisions, id, claimId))) {
 			return null;
 		}

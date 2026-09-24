@@ -1181,7 +1181,9 @@ describe("implementation credit reconciliation composition", () => {
 		expect(protocol.status).toBe("applied");
 		expect(invoke.status).toBe("applied");
 		if (protocol.status !== "applied" || invoke.status !== "applied") return;
-		expect(protocol.reconciliation.claims).toEqual(invoke.reconciliation.claims);
+		expect(protocol.reconciliation.claims).toEqual(
+			invoke.reconciliation.claims,
+		);
 		expect(protocol.reconciliation.budget.realizedCredit).toBe(3);
 		expect(protocol.pending.route).toBe(invoke.pending.route);
 		expect(protocol.pending.route).toBe("complete");
@@ -1215,9 +1217,9 @@ describe("implementation credit reconciliation composition", () => {
 			invoke.reconciliation,
 		);
 		expect(replay.recorded).toBe(false);
-		expect(ctx.store.listImplementationCreditReconciliations("run1")).toHaveLength(
-			1,
-		);
+		expect(
+			ctx.store.listImplementationCreditReconciliations("run1"),
+		).toHaveLength(1);
 		expect(ctx.store.listImplementationReviews("run1")).toHaveLength(1);
 
 		const open = makeBudgetContext({ mode: "enforced" });

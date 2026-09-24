@@ -698,9 +698,7 @@ describe("approved credit reconciliation", () => {
 	test("a short commit prefix is evidence and a missing reference is advisory", () => {
 		const short = ok(
 			reconcile({
-				realizations: [
-					realized("DC1", -3, "realized", COMMIT.slice(0, 7)),
-				],
+				realizations: [realized("DC1", -3, "realized", COMMIT.slice(0, 7))],
 			}),
 		);
 		expect(short.record.claims[0]?.status).toBe("realized");
