@@ -386,7 +386,8 @@ export function evaluateImplementationBoundary(
 			"The text-amendment lineage is unverified. Checkbox-only matches still use the approved bytes.",
 		);
 	}
-	const headUnresolved = input.intent !== "advance" && input.headCommit === null;
+	const headUnresolved =
+		input.intent !== "advance" && input.headCommit === null;
 	if (headUnresolved) {
 		diagnostics.push(
 			"HEAD could not be resolved; completion freshness cannot be verified.",

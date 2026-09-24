@@ -144,15 +144,15 @@ import type {
 	ReviewBudgetMode,
 } from "../review-budget/types.js";
 import {
-	type GoverningReviewState,
-	listGovernanceDecisions,
-	type ReviewDecisionPayload,
-} from "../review-governance/decisions.js";
-import {
 	changedCodePaths,
 	isCodeAncestor,
 	workdirCodeDiffGit,
 } from "../review-governance/code-diff.js";
+import {
+	type GoverningReviewState,
+	listGovernanceDecisions,
+	type ReviewDecisionPayload,
+} from "../review-governance/decisions.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	evaluateStoredImplementationBoundary,
@@ -3102,7 +3102,7 @@ async function equivalentReviewedCommits(input: {
 			? binding.phaseMap.at(-1)?.id
 			: (canonicalPhaseId(input.phase ?? "") ?? input.phase);
 	if (!phaseId) return [];
-	let reviewedCommits: string[] = [];
+	const reviewedCommits: string[] = [];
 	let excludedPaths: string[] = [];
 	try {
 		const observation = [...input.store.listImplementationReviews(input.runId)]
@@ -3336,11 +3336,13 @@ export async function recordStepInternal(
 	) {
 		const phaseId = canonicalPhaseId(params.phase) ?? params.phase;
 		const steps = getSteps(db, params.run);
-		const existing = [...steps].reverse().find(
-			(step) =>
-				step.step_name === "phase:complete" &&
-				(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId,
-		);
+		const existing = [...steps]
+			.reverse()
+			.find(
+				(step) =>
+					step.step_name === "phase:complete" &&
+					(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId,
+			);
 		const reopened =
 			existing !== undefined &&
 			steps.some(
@@ -3349,8 +3351,7 @@ export async function recordStepInternal(
 					(step.step_name === "run:reopen" ||
 						((step.step_name.startsWith("author:") ||
 							step.step_name.startsWith("reviewer:")) &&
-							(canonicalPhaseId(step.phase ?? "") ?? step.phase) ===
-								phaseId)),
+							(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId)),
 			);
 		if (existing && !reopened) {
 			const after = computeRunSummary(db, params.run);

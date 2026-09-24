@@ -11,10 +11,6 @@ import {
 	RecordError,
 	recordStepInternal,
 } from "../../../src/commands/run-v1.handler.js";
-import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
-import type { ImplementationBindingPayload } from "../../../src/review-budget/record-lines.js";
-import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
-import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { FiveXConfigSchema } from "../../../src/config.js";
 import type {
 	RecordOrigin,
@@ -26,6 +22,7 @@ import {
 	recordedEnvelope,
 	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
+import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
 import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
 import {
 	completeRun,
@@ -33,6 +30,9 @@ import {
 	getRunV1,
 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
+import type { ImplementationBindingPayload } from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 
 const INSTALLATION_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -407,7 +407,8 @@ describe("recordStepInternal dual-write", () => {
 		);
 		expect(first.recorded).toBe(true);
 		expect(second.recorded).toBe(true);
-		expect(second.iteration).toBe(first.iteration + 1);
+		expect(first.iteration).toEqual(expect.any(Number));
+		expect(second.iteration).toBe((first.iteration ?? 0) + 1);
 	});
 
 	test("a bound duplicate completion returns the original until reopen or new same-phase work", async () => {

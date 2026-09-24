@@ -420,9 +420,10 @@ describe("implementation completion boundaries", () => {
 				"--result",
 				JSON.stringify({ phase: "1" }),
 			]);
-			expect(completed.exitCode, `${completed.stdout}\n${completed.stderr}`).toBe(
-				0,
-			);
+			expect(
+				completed.exitCode,
+				`${completed.stdout}\n${completed.stderr}`,
+			).toBe(0);
 			writeFileSync(join(dir, "src", "a.ts"), "export const a = 2;\n");
 			const later = await cli(dir, [
 				"commit",

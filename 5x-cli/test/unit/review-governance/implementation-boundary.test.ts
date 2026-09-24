@@ -405,24 +405,28 @@ describe("evaluateImplementationBoundary", () => {
 			headCommit: next,
 		});
 		expect(drifted.status).toBe("deny");
-		expect(drifted.readiness.phases.find((phase) => phase.phase === "2")?.reviewed).toBe(
-			false,
-		);
+		expect(
+			drifted.readiness.phases.find((phase) => phase.phase === "2")?.reviewed,
+		).toBe(false);
 	});
 
 	test("unresolved HEAD denies enforced completion and stays advisory", () => {
 		const missing = input({ headCommit: null });
 		expect(missing.status).toBe("deny");
-		expect(missing.diagnostics.join("\n")).toContain("HEAD could not be resolved");
+		expect(missing.diagnostics.join("\n")).toContain(
+			"HEAD could not be resolved",
+		);
 		const advisory = input({
 			binding: binding("advisory"),
 			headCommit: null,
 		});
 		expect(advisory.status).toBe("allow");
-		expect(advisory.diagnostics.join("\n")).toContain("HEAD could not be resolved");
-		expect(input({ intent: "advance", phase: "1", headCommit: null }).status).toBe(
-			"allow",
+		expect(advisory.diagnostics.join("\n")).toContain(
+			"HEAD could not be resolved",
 		);
+		expect(
+			input({ intent: "advance", phase: "1", headCommit: null }).status,
+		).toBe("allow");
 	});
 
 	test("a zero-claim phase completes from the review alone", () => {
