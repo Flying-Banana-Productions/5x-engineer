@@ -187,7 +187,7 @@ describe("plan-only review diff evidence", () => {
 		},
 		// Five commits plus endpoint enumeration spawn many git processes; the
 		// concurrent full suite can saturate process startup on CI.
-		{ timeout: 30000 },
+		{ timeout: 60000 },
 	);
 
 	test(
