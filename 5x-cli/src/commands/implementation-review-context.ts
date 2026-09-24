@@ -41,7 +41,11 @@ import {
 	readImplementationCodeClosure,
 	validateImplementationReview,
 } from "../review-governance/implementation.js";
-import { listRecordedImplementationReviews } from "../review-governance/implementation-state.js";
+import {
+	detectPlanDrift,
+	listRecordedImplementationReviews,
+} from "../review-governance/implementation-state.js";
+import { prepareTextAmendmentGuard } from "../review-governance/plan-amendment.js";
 import type {
 	ImplementationDiagnostic,
 	ImplementationNextAction,
@@ -466,16 +470,66 @@ export async function composeImplementationReviewerRecord(input: {
 			},
 		]),
 	);
+	const textAmendments = input.ctx.store.listImplementationTextAmendments(
+		input.runId,
+		binding.id,
+	);
+	const anchor = detectPlanDrift({
+		approvedPlanBytes: binding.approvedPlanBytes,
+		approvedPlanHash: binding.approvedPlanHash,
+		amendments: textAmendments,
+		currentPlanBytes: binding.approvedPlanBytes,
+	});
+	let exemptionAuthorized = reviewed.governance.exemptionAuthorized;
+	let textGuard: PendingImplementationObservation["textGuard"];
+	if (exemptionAuthorized && reviewed.spans.length > 0) {
+		if (textAmendments.length > 0 && !anchor.chainValid) {
+			exemptionAuthorized = false;
+			reviewed.governance.diagnostics.push({
+				code: "PLAN_IMPACT_NOT_AUTHORIZED",
+				severity: "error",
+				message:
+					"The text-amendment lineage is unverified. A text guard cannot be snapshotted.",
+			});
+		} else {
+			const parent = anchor.chainValid ? textAmendments.at(-1) : undefined;
+			const preparedGuard = prepareTextAmendmentGuard({
+				id: createReviewBudgetId(),
+				anchorBytes: anchor.authorizedBytes,
+				anchorCommit: parent?.afterCommit ?? binding.approvedPlanCommit,
+				parentLineageId: parent?.id ?? null,
+				allowedSpans: reviewed.spans,
+			});
+			if (!preparedGuard.ok) {
+				exemptionAuthorized = false;
+				reviewed.governance.diagnostics.push({
+					code: "PLAN_IMPACT_NOT_AUTHORIZED",
+					severity: "error",
+					message: preparedGuard.message,
+				});
+			} else {
+				textGuard = preparedGuard.guard;
+			}
+		}
+	}
 	const gateCauses = gateCausesFor({
 		items: input.verdict.items,
 		identities,
-		exemptionAuthorized: reviewed.governance.exemptionAuthorized,
+		exemptionAuthorized,
 		inheritedRequiresHuman: inherited.requiresHuman,
 		band: inherited.budgetBand,
 		alerts: inherited.budgetAlerts,
 	});
 	let route = reviewed.governance.route;
 	let nextAction = reviewed.governance.nextAction;
+	if (
+		reviewed.governance.exemptionAuthorized &&
+		!exemptionAuthorized &&
+		nextAction === "author_revision"
+	) {
+		route = "human_gate";
+		nextAction = "plan_amendment";
+	}
 	if (route === "complete" && gateCauses.length > 0) {
 		route = "human_gate";
 		nextAction = "human_gate";
@@ -494,13 +548,9 @@ export async function composeImplementationReviewerRecord(input: {
 			message: `Implementation review history could not be read: ${message}`,
 		};
 	}
-	const amendments = input.ctx.store.listImplementationTextAmendments(
-		input.runId,
-		binding.id,
-	);
 	const planAmendments = planAmendmentCount({
 		observations: priorObservations,
-		amendments,
+		amendments: textAmendments,
 		current: gateCauses,
 	});
 	const activity = deriveImplementationActivityTelemetry({
@@ -553,6 +603,7 @@ export async function composeImplementationReviewerRecord(input: {
 		telemetry,
 		budgetInvariant,
 		completionAuthorized: false,
+		...(textGuard ? { textGuard } : {}),
 	};
 	return {
 		status: "applied",

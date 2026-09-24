@@ -65,6 +65,11 @@ import {
 	type ReviewDecisionPayload,
 	validateReviewDecision,
 } from "./decisions.js";
+import {
+	evaluateSupersedingLedger,
+	verifyGuardedPlanBytes,
+	worktreeMatchesCommit,
+} from "./plan-amendment.js";
 import { routeAfterDecision } from "./routing.js";
 import { createReviewGovernanceStore } from "./store.js";
 import type { PlanReviewRoute, ReviewDecisionRoute } from "./types.js";
@@ -1234,6 +1239,217 @@ export function recordVerifiedTextAmendment(input: {
 		input.origin,
 	);
 	return { status: "ok", amendment: saved.payload };
+}
+
+export type AuthorTextAmendmentResult =
+	| { status: "not_applicable" }
+	| { status: "unchanged" }
+	| { status: "verified"; amendment: ImplementationTextAmendmentPayload }
+	| {
+			status: "failed";
+			code: string;
+			message: string;
+			blocking: boolean;
+	  };
+
+/**
+ * Verify the guard snapshotted on the latest same-phase observation against
+ * the author's committed plan blob. Success appends text-amendment lineage
+ * and does not change the binding's approved hash.
+ */
+export function verifyAuthorTextAmendment(input: {
+	store: ReviewBudgetStore;
+	binding: ImplementationBindingPayload;
+	origin: RecordOrigin;
+	phase: string;
+	committedPlanBytes: Buffer | null;
+	worktreePlanBytes: Buffer | null;
+	afterCommit: string;
+}): AuthorTextAmendmentResult {
+	const blocking = input.binding.mode === "enforced";
+	const phaseId = numericPhaseId(input.phase);
+	if (!phaseId) return { status: "not_applicable" };
+	let observations: ImplementationReviewObservationPayload[];
+	try {
+		observations = input.store
+			.listImplementationReviews(input.binding.executionRunId)
+			.filter((observation) => observation.phase === phaseId);
+	} catch (error) {
+		return {
+			status: "failed",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message:
+				error instanceof Error
+					? error.message
+					: "Implementation review history could not be read",
+			blocking,
+		};
+	}
+	const latest = observations.at(-1);
+	if (!latest?.textGuard) {
+		const textOnly = latest?.originalVerdict.items.some(
+			(item) =>
+				item.scopeClass === "plan_defect" &&
+				item.planImpact?.kind === "text_only",
+		);
+		if (textOnly && latest?.nextAction === "author_revision") {
+			return {
+				status: "failed",
+				code: "PLAN_AMENDMENT_GUARD_MISSING",
+				message:
+					"The text-only correction has no durable guard, so the exemption cannot be consumed.",
+				blocking,
+			};
+		}
+		return { status: "not_applicable" };
+	}
+	const loaded = loadAmendments(
+		input.store,
+		input.binding.executionRunId,
+		input.binding.id,
+	);
+	if (!loaded.ok) {
+		return {
+			status: "failed",
+			code: "PLAN_AMENDMENT_LINEAGE",
+			message: "Existing text-amendment lineage could not be read",
+			blocking,
+		};
+	}
+	const replay = replayTextAmendments({
+		approvedPlanBytes: input.binding.approvedPlanBytes,
+		approvedPlanHash: input.binding.approvedPlanHash,
+		amendments: loaded.amendments,
+	});
+	if (!replay.chainValid) {
+		return {
+			status: "failed",
+			code: "PLAN_AMENDMENT_LINEAGE",
+			message:
+				"Refusing to consume a guard against an unverified text-amendment chain",
+			blocking,
+		};
+	}
+	const parent = loaded.amendments.at(-1);
+	const guard = latest.textGuard;
+	if (
+		guard.parentLineageId !== (parent?.id ?? null) ||
+		guard.anchorBlobHash !== replay.authorizedHash
+	) {
+		return {
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			message:
+				"The text guard does not match the current authorized lineage. A new review is required.",
+			blocking,
+		};
+	}
+	const clean = worktreeMatchesCommit({
+		worktree: input.worktreePlanBytes,
+		committed: input.committedPlanBytes,
+	});
+	if (!clean.ok) {
+		return { status: "failed", ...clean, blocking };
+	}
+	if (!input.committedPlanBytes) {
+		return {
+			status: "failed",
+			code: "PLAN_AMENDMENT_DIRTY",
+			message: "The committed plan blob is unavailable.",
+			blocking,
+		};
+	}
+	const verified = verifyGuardedPlanBytes({
+		guard,
+		committed: input.committedPlanBytes,
+	});
+	if (!verified.ok) {
+		return { status: "failed", ...verified, blocking };
+	}
+	if (
+		normalizeCheckboxState(verified.authorizedPlanBytes) ===
+		normalizeCheckboxState(guard.anchorBytes)
+	) {
+		return { status: "unchanged" };
+	}
+	const recorded = recordVerifiedTextAmendment({
+		store: input.store,
+		binding: input.binding,
+		origin: input.origin,
+		guardId: guard.id,
+		sourceObservationId: latest.id,
+		beforeCommit: guard.anchorCommit,
+		afterCommit: input.afterCommit,
+		authorizedPlanBytes: verified.authorizedPlanBytes,
+	});
+	if (recorded.status !== "ok") {
+		return {
+			status: "failed",
+			code: recorded.code,
+			message: recorded.message,
+			blocking,
+		};
+	}
+	return { status: "verified", amendment: recorded.amendment };
+}
+
+/** Author admission reads the committed blob. The worktree copy must match it. */
+export async function admitAuthorTextAmendmentFromGit(input: {
+	store: ReviewBudgetStore;
+	binding: ImplementationBindingPayload;
+	origin: RecordOrigin;
+	phase: string;
+	workdir: string;
+	planPath: string;
+	repoRoot?: string;
+	worktreePlanBytes: Buffer | null;
+}): Promise<AuthorTextAmendmentResult> {
+	let afterCommit: string;
+	try {
+		afterCommit = await readHeadCommit(workdirCodeDiffGit(input.workdir));
+	} catch (error) {
+		return {
+			status: "failed",
+			code: error instanceof CodeDiffError ? error.code : "CODE_DIFF_GIT_ERROR",
+			message: error instanceof Error ? error.message : String(error),
+			blocking: input.binding.mode === "enforced",
+		};
+	}
+	const committed = await showPlanAtCommit(
+		input.workdir,
+		afterCommit,
+		input.planPath,
+		input.repoRoot ? { repoRoot: input.repoRoot } : undefined,
+	);
+	return verifyAuthorTextAmendment({
+		store: input.store,
+		binding: input.binding,
+		origin: input.origin,
+		phase: input.phase,
+		committedPlanBytes:
+			committed === null ? null : Buffer.from(committed, "utf8"),
+		worktreePlanBytes: input.worktreePlanBytes,
+		afterCommit,
+	});
+}
+
+export function assessSupersedingApproval(input: {
+	binding: ImplementationBindingPayload;
+	proposedLedger: ParsedDeliveryBudget;
+	proposedSourceSnapshotId: string;
+	proposedPlanBytes: string;
+	liveMarkdown?: string;
+}): { ok: true } | { ok: false; code: string; message: string } {
+	return evaluateSupersedingLedger({
+		approved: input.binding.ledger,
+		proposed: input.proposedLedger,
+		sameSourceSnapshot:
+			input.proposedSourceSnapshotId === input.binding.sourceSnapshotId,
+		liveMarkdownMatchesProposal:
+			input.liveMarkdown !== undefined &&
+			input.liveMarkdown === input.proposedPlanBytes &&
+			input.proposedSourceSnapshotId === input.binding.sourceSnapshotId,
+	});
 }
 
 /** Durable step that freezes pre-delegation HEAD for one binding and phase. */

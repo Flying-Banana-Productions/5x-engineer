@@ -1,4 +1,5 @@
 import type { BoundaryChangeLabel, ReviewerVerdict } from "../protocol.js";
+import type { TextAmendmentGuard } from "../review-governance/plan-amendment.js";
 import type {
 	ClosureDiagnostic,
 	ImplementationDiagnostic,
@@ -708,6 +709,11 @@ export interface ImplementationReviewObservationPayload {
 	 * gate cause remains. A pre-write copy is not authorization.
 	 */
 	completionAuthorized: boolean;
+	/**
+	 * Snapshotted before author delegation when text_only spans are authorized.
+	 * Absent for design, budget, and ambiguous text-only routes.
+	 */
+	textGuard?: TextAmendmentGuard;
 	createdAt: string;
 }
 
@@ -774,6 +780,7 @@ const OBSERVATION_KEYS = new Set([
 	"telemetry",
 	"budgetInvariant",
 	"completionAuthorized",
+	"textGuard",
 	"createdAt",
 ]);
 
@@ -1062,6 +1069,74 @@ function decodeBudgetInvariant(raw: unknown): ImplementationBudgetInvariant {
 	};
 }
 
+function decodeTextGuard(raw: unknown): TextAmendmentGuard {
+	const value = object(raw, "textGuard");
+	rejectUnknownKeys(
+		value,
+		new Set([
+			"id",
+			"anchorCommit",
+			"anchorBlobHash",
+			"parentLineageId",
+			"tableBytes",
+			"allowedSpans",
+			"structuralSignature",
+			"anchorBytes",
+		]),
+		"textGuard",
+	);
+	if (!Array.isArray(value.allowedSpans)) {
+		throw new TypeError("textGuard.allowedSpans must be an array");
+	}
+	const parent = value.parentLineageId;
+	return {
+		id: stringField(value.id, "textGuard.id"),
+		anchorCommit: stringField(value.anchorCommit, "textGuard.anchorCommit"),
+		anchorBlobHash: stringField(
+			value.anchorBlobHash,
+			"textGuard.anchorBlobHash",
+		),
+		parentLineageId:
+			parent === null ? null : stringField(parent, "textGuard.parentLineageId"),
+		tableBytes: stringField(value.tableBytes, "textGuard.tableBytes", true),
+		allowedSpans: value.allowedSpans.map((entry, index) => {
+			const span = object(entry, `textGuard.allowedSpans[${index}]`);
+			rejectUnknownKeys(
+				span,
+				new Set(["itemId", "heading", "staleText", "start", "end"]),
+				`textGuard.allowedSpans[${index}]`,
+			);
+			return {
+				itemId: stringField(
+					span.itemId,
+					`textGuard.allowedSpans[${index}].itemId`,
+				),
+				heading: stringField(
+					span.heading,
+					`textGuard.allowedSpans[${index}].heading`,
+				),
+				staleText: stringField(
+					span.staleText,
+					`textGuard.allowedSpans[${index}].staleText`,
+				),
+				start: nonNegativeInteger(
+					span.start,
+					`textGuard.allowedSpans[${index}].start`,
+				),
+				end: nonNegativeInteger(
+					span.end,
+					`textGuard.allowedSpans[${index}].end`,
+				),
+			};
+		}),
+		structuralSignature: stringField(
+			value.structuralSignature,
+			"textGuard.structuralSignature",
+		),
+		anchorBytes: stringField(value.anchorBytes, "textGuard.anchorBytes", true),
+	};
+}
+
 export function encodeImplementationReviewObservationPayload(
 	payload: ImplementationReviewObservationPayload,
 ): unknown {
@@ -1118,6 +1193,9 @@ export function decodeImplementationReviewObservationPayload(
 			value.completionAuthorized,
 			"completionAuthorized",
 		),
+		...(value.textGuard === undefined
+			? {}
+			: { textGuard: decodeTextGuard(value.textGuard) }),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }

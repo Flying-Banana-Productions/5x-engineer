@@ -29,7 +29,10 @@ import {
 	verdictUsesImplementationContract,
 	verdictUsesPlanContract,
 } from "../review-governance/implementation.js";
-import { verifyImplementationReviewContext } from "../review-governance/implementation-state.js";
+import {
+	admitAuthorTextAmendmentFromGit,
+	verifyImplementationReviewContext,
+} from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
@@ -852,6 +855,52 @@ export async function protocolValidate(
 		const checklist = evaluatePhaseChecklist(params);
 		if (!checklist.ok) {
 			outputError(checklist.code, checklist.message);
+		}
+	}
+
+	if (role === "author" && params.record && params.run && recordStepName) {
+		const authorPhase = resolvedPhase ?? params.phase;
+		if (authorPhase && authorPhase !== "plan") {
+			try {
+				const contextFactory =
+					params.createReviewBudgetContext ?? createReviewBudgetContext;
+				const authorContext = await contextFactory(
+					{ runId: params.run, startDir: params.startDir },
+					warn,
+				);
+				const authorBinding = authorContext.store.getImplementationBinding(
+					params.run,
+				);
+				if (authorBinding) {
+					const planPath = authorContext.executionContext.run.plan_path;
+					const readPath =
+						authorContext.executionContext.planPathInWorktreeExists &&
+						existsSync(authorContext.executionContext.effectivePlanPath)
+							? authorContext.executionContext.effectivePlanPath
+							: planPath;
+					const worktreePlanBytes = existsSync(readPath)
+						? readFileSync(readPath)
+						: null;
+					const admitted = await admitAuthorTextAmendmentFromGit({
+						store: authorContext.store,
+						binding: authorBinding,
+						origin: authorContext.originFor(performer),
+						phase: authorPhase,
+						workdir: authorContext.executionContext.effectiveWorkingDirectory,
+						planPath,
+						repoRoot: authorContext.executionContext.controlPlaneRoot,
+						worktreePlanBytes,
+					});
+					if (admitted.status === "failed") {
+						if (admitted.blocking) {
+							outputError(admitted.code, admitted.message);
+						}
+						warn(`${admitted.code}: ${admitted.message}`);
+					}
+				}
+			} catch {
+				// A run with no execution binding keeps ordinary author recording.
+			}
 		}
 	}
 

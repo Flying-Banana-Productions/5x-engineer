@@ -27,6 +27,10 @@ import {
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { detectPlanDrift } from "./implementation-state.js";
+import {
+	planDefectBlocksShortcut,
+	planImpactDisposition,
+} from "./plan-amendment.js";
 import type {
 	ImplementationDiagnostic,
 	ImplementationDiagnosticCode,
@@ -570,9 +574,11 @@ function classify(input: {
 		}
 		if (item.scopeClass === "plan_defect") {
 			actionable.push(item);
-			const kind = item.planImpact?.kind;
-			const textOnlyAuthorized = kind === "text_only" && input.spansAuthorized;
-			if (!textOnlyAuthorized) {
+			const disposition = planImpactDisposition({
+				kind: item.planImpact?.kind,
+				spansAuthorized: input.spansAuthorized,
+			});
+			if (disposition === "plan_amendment") {
 				planAmendment = true;
 				alwaysHuman = true;
 			} else {
@@ -648,6 +654,7 @@ function classify(input: {
 	);
 	const shortcutCandidate =
 		input.mode === "enforced" &&
+		!planDefectBlocksShortcut(input.verdict.items) &&
 		!planAmendment &&
 		!alwaysHuman &&
 		!enforcedHuman &&

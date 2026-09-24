@@ -17,7 +17,7 @@
  * the run row surfaced once — not a check in this file.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -76,6 +76,7 @@ import {
 	verdictUsesImplementationContract,
 } from "../review-governance/implementation.js";
 import {
+	admitAuthorTextAmendmentFromGit,
 	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
 	isImplementationAuthorTemplate,
@@ -1228,6 +1229,43 @@ export async function invokeAgent(
 				...(structured as Record<string, unknown>),
 				governance: implementationGovernanceDecoration(pendingImplementation),
 			};
+		}
+	}
+
+	if (role === "author" && params.record && budgetContext && params.run) {
+		const authorPhase = canonicalPhaseId(
+			params.phase ?? variables.phase_number ?? "",
+		);
+		const authorBinding = budgetContext.store.getImplementationBinding(
+			params.run,
+		);
+		if (authorBinding && authorPhase && authorPhase !== "plan") {
+			const planPath = budgetContext.executionContext.run.plan_path;
+			const readPath =
+				resolvedPlanPath && existsSync(resolvedPlanPath)
+					? resolvedPlanPath
+					: planPath;
+			const worktreePlanBytes = existsSync(readPath)
+				? readFileSync(readPath)
+				: null;
+			const admitted = await admitAuthorTextAmendmentFromGit({
+				store: budgetContext.store,
+				binding: authorBinding,
+				origin: budgetContext.originFor({
+					kind: "agent",
+					role,
+					provider: providerName,
+				}),
+				phase: authorPhase,
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+				planPath,
+				repoRoot: budgetContext.executionContext.controlPlaneRoot,
+				worktreePlanBytes,
+			});
+			if (admitted.status === "failed") {
+				if (admitted.blocking) outputError(admitted.code, admitted.message);
+				warn(`${admitted.code}: ${admitted.message}`);
+			}
 		}
 	}
 
