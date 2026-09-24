@@ -154,3 +154,32 @@ All Phase 6 checklist items previously marked "Done, except P1.1" / "Partial" ar
 ### Updated readiness
 
 **Ready with corrections.** No P0/P1 items remain. The single residual P2 (crash-after-save restart test) is a nice-to-have documentation/coverage gap with an already-established test pattern to follow, not a design or correctness question. Phase 7 can proceed to rely on the Phase 6 correction proof.
+
+---
+
+## Addendum 2 — Re-review at `d3b4fc98b496e33b099a8b1010a2f3f06c75368a`
+
+**Review type:** `d3b4fc98b496e33b099a8b1010a2f3f06c75368a` (one commit since `9468b8db7042bbde7f916867fd07b2e835bab1e2`)
+**Scope of change:** `test/unit/review-governance/corrections.test.ts` only — one new test added (test count 15 → 16, confirmed by diff and by `grep -c '^\ttest('`). No production code changed.
+**Local verification:** `bunx tsc --noEmit` passed. `bun test test/unit/review-governance/corrections.test.ts` — 16 pass, 0 fail, 94 expect() calls. `bun test test/unit/review-governance/ test/unit/commands/review-corrections-finish.test.ts test/unit/commands/phase-finish.test.ts test/unit/commands/review-decision.test.ts test/unit/commands/quality-v1.test.ts` — 181 pass, 0 fail (no regressions).
+
+### Summary
+
+This revision adds exactly the test recommended in the prior addendum: `"a durably saved passing attempt resumes after a crash without rerunning quality"`. It constructs an `ImplementationCorrectionAttemptPayload` with `outcome: "passed"` directly via `store.saveImplementationCorrectionAttempt` (bypassing `finishImplementationCorrection` entirely, simulating a process that saved the attempt and then crashed before returning), using an identity (`authorCommit`, `tree`, `qualityConfigDigest`, `executionDirectory`) that matches what a subsequent `finishImplementationCorrection` call with the same `commit`/`gates`/`skipQualityGates`/`executionDirectory` will compute. It then calls `finishImplementationCorrection` and asserts `status: "complete"`, `resumed: true`, `attempt.id` equal to the pre-saved fixture's ID, `carriedClaims` equal to the original claims, `calls === 0` (the injected `runQuality` spy was never invoked), and exactly one attempt record on the store (no duplicate write). This is precisely the "resume without rerunning quality" contract the resumption branch in `finishImplementationCorrection` is supposed to provide, and the test now exercises it from a cold-store starting state rather than only via a live two-call sequence.
+
+### Prior findings — disposition
+
+| ID | Status | Evidence |
+|---|---|---|
+| P1.1 — no-op correction at the reviewed commit produces a passing proof | **Addressed** (unchanged since last addendum) | No production code changed in this revision; the fix from `6dd19ee` remains in place and passing. |
+| P1.2 — `finish` ignores the observation's durable route, gate causes and closure outcome | **Addressed** (unchanged since last addendum) | No production code changed in this revision; the fix from `6dd19ee` remains in place and passing. |
+| P2.1 — add a unit test for a mid-request crash after the attempt is durably saved | **Addressed** | The new test matches the recommended shape exactly: a fixture attempt is saved directly through the store (not through `finishImplementationCorrection`), then a fresh call with matching identity is asserted to resume (`resumed: true`) with zero `runQuality` invocations and no new attempt record. This closes the last open item from the prior addendum. |
+| P2.2 — minor cleanups (dead ternary, no-op cache predicate, dirty-after outcome label, zero-results latch) | **Addressed** (unchanged since last addendum) | No production code changed in this revision; the fixes from `6dd19ee` remain in place and passing. |
+
+### New issues introduced by this revision
+
+None. The change is additive test-only code with no production-path modifications. The new fixture's field values (`tree: TREE`, `qualityConfigDigest` computed from the same `qualityConfigDigest()` helper used by production code, `changedPaths: ["src/fix.ts"]` matching the default `fakeGit()` diff) are consistent with the existing test file's shared constants (`COMMIT`, `TREE`, `REVIEWED`, `CLAIMS`), so the test is not accidentally passing for the wrong reason (e.g., an identity mismatch that would silently fall through to a fresh quality run) — `calls === 0` is asserted explicitly and would fail if the identity didn't match.
+
+### Updated readiness
+
+**Ready with corrections → all P2 items now closed; no outstanding items remain.** No P0/P1 items remain, and the sole residual P2 from the previous addendum is now resolved. Phase 6 is complete and its correction-proof contract is fully covered end-to-end (pure-core unit tests, a real-git layered-config handler test, and now a cold-start resume test). Phase 7 can rely on this proof without further Phase 6 corrections outstanding.
