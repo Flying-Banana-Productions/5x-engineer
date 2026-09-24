@@ -14,8 +14,10 @@ export type AbandonReason =
 	| "non-interactive"
 	| "run-terminal";
 
+import type { ImplementationObservationGateCause } from "../review-budget/record-lines.js";
 import type {
 	FindingIdentity,
+	ImplementationDecisionChoice,
 	ReviewDecisionChoice,
 	ReviewGateCause,
 } from "../review-governance/types.js";
@@ -23,14 +25,37 @@ import type {
 export const REVIEW_GATE_PROMPT_CONTEXT_VERSION = 1 as const;
 
 /** Structured notification metadata. The prompt answer is never authoritative. */
-export interface ReviewGatePromptContext {
-	type: "plan_review_gate";
-	gateId: string;
-	snapshotId: string;
-	causes: ReviewGateCause[];
-	eligibleFindings: FindingIdentity[];
-	allowedChoices: ReviewDecisionChoice[];
-	requiredFieldsByChoice: Record<ReviewDecisionChoice, string[]>;
+export type ReviewGatePromptContext =
+	| {
+			type: "plan_review_gate";
+			gateId: string;
+			snapshotId: string;
+			causes: ReviewGateCause[];
+			eligibleFindings: FindingIdentity[];
+			allowedChoices: ReviewDecisionChoice[];
+			requiredFieldsByChoice: Record<ReviewDecisionChoice, string[]>;
+	  }
+	| {
+			type: "implementation_review_gate";
+			gateId: string;
+			observationId: string;
+			bindingId: string;
+			phase: string;
+			causes: ImplementationObservationGateCause[];
+			eligibleFindings: FindingIdentity[];
+			allowedChoices: ImplementationDecisionChoice[];
+			requiredFieldsByChoice: Record<ImplementationDecisionChoice, string[]>;
+			ledgerHash: string;
+			decisionsHash: string;
+	  };
+
+export function isReviewGatePromptContext(
+	context: { type?: string; gateId?: string } | null | undefined,
+): context is ReviewGatePromptContext {
+	return (
+		context?.type === "plan_review_gate" ||
+		context?.type === "implementation_review_gate"
+	);
 }
 
 export interface PromptRecord {

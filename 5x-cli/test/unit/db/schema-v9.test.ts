@@ -6,7 +6,7 @@ test("v9 adds governance projections and versioned prompt context", () => {
 	const db = new Database(":memory:");
 	try {
 		runMigrations(db);
-		expect(getSchemaVersion(db)).toBe(10);
+		expect(getSchemaVersion(db)).toBe(11);
 		const tables = db
 			.query("SELECT name FROM sqlite_master WHERE type='table'")
 			.all() as Array<{ name: string }>;

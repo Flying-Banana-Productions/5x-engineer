@@ -6,26 +6,43 @@ import type {
 } from "../control-plane/index.js";
 import type { PromptStore } from "../control-plane/store.js";
 import {
+	isReviewGatePromptContext,
 	REVIEW_GATE_PROMPT_CONTEXT_VERSION,
 	type ReviewGatePromptContext,
 } from "../control-plane/types.js";
-import { decodeBudgetSnapshotPayload } from "../review-budget/record-lines.js";
 import {
+	decodeBudgetSnapshotPayload,
+	decodeImplementationReviewObservationPayload,
+	type ImplementationObservationGateCause,
+	type ImplementationReviewObservationPayload,
+} from "../review-budget/record-lines.js";
+import {
+	decodeImplementationDecisionPayload,
 	decodeReviewDecisionPayload,
+	encodeImplementationDecisionPayload,
 	encodeReviewDecisionPayload,
 } from "./codec.js";
 import {
 	applyDecisionCauseCoverage,
+	applyImplementationDecisionCauseCoverage,
 	classifyDecisionAcceptance,
 	deriveGateId,
 	foldGoverningReviewState,
 	type GoverningReviewState,
 	governanceCorrectionKey,
 	governanceDecisionKey,
+	type ImplementationDecisionPayload,
+	implementationDecisionNextAction,
 	listGovernanceDecisions,
+	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
-import type { ReviewDecisionRoute, ReviewGateCause } from "./types.js";
+import type {
+	ImplementationDecisionChoice,
+	ImplementationNextAction,
+	ReviewDecisionRoute,
+	ReviewGateCause,
+} from "./types.js";
 
 export interface DerivedReviewGate {
 	gateId: string;
@@ -91,7 +108,7 @@ export function reviewGatePromptContext(input: {
 	gate: DerivedReviewGate;
 	baselineReestimatePending?: boolean;
 	eligibleFindings?: readonly { findingId: string; fingerprint: string }[];
-}): ReviewGatePromptContext {
+}): Extract<ReviewGatePromptContext, { type: "plan_review_gate" }> {
 	const causeFindings = unique(
 		input.gate.causes.flatMap((cause) =>
 			"finding" in cause
@@ -162,6 +179,28 @@ export function ensureReviewGatePrompt(input: {
 	});
 }
 
+export function ensureImplementationGatePrompt(input: {
+	promptStore: PromptStore;
+	gate: DerivedImplementationGate;
+	ledgerHash: string;
+	decisionsHash: string;
+}): ReturnType<PromptStore["createPrompt"]> {
+	const existing = input.promptStore
+		.listOpenPrompts(input.gate.runId)
+		.find((prompt) => prompt.context?.gateId === input.gate.gateId);
+	if (existing) return existing;
+	const context = implementationGatePromptContext(input);
+	return input.promptStore.createPrompt({
+		runId: input.gate.runId,
+		kind: "choose",
+		message: `Implementation review requires a governance decision for gate ${input.gate.gateId}`,
+		options: context.allowedChoices,
+		defaultValue: null,
+		contextVersion: REVIEW_GATE_PROMPT_CONTEXT_VERSION,
+		context,
+	});
+}
+
 export function resolveGatePromptProjection(
 	promptStore: PromptStore,
 	runId: string,
@@ -189,16 +228,19 @@ export function repairReviewGatePrompts(
 	let repaired = 0;
 	for (const prompt of promptStore.listOpenPrompts(runId)) {
 		const context = prompt.context;
-		if (context?.type !== "plan_review_gate") continue;
+		if (!isReviewGatePromptContext(context)) continue;
 		const line = recordStore.getLine(
 			runId,
 			"decisions",
 			governanceDecisionKey(context.gateId),
 		);
 		if (!line) continue;
-		let decision: ReviewDecisionPayload;
+		let decision: ReviewDecisionPayload | ImplementationDecisionPayload;
 		try {
-			decision = decodeReviewDecisionPayload(line.payload);
+			decision =
+				context.type === "implementation_review_gate"
+					? decodeImplementationDecisionPayload(line.payload)
+					: decodeReviewDecisionPayload(line.payload);
 		} catch {
 			continue;
 		}
@@ -248,12 +290,46 @@ export class ReviewGovernanceStoreError extends Error {
 	}
 }
 
+export interface DerivedImplementationGate {
+	domain: "implementation";
+	gateId: string;
+	runId: string;
+	observationId: string;
+	bindingId: string;
+	phase: string;
+	ledgerHash: string;
+	decisionsHash: string;
+	causes: ImplementationObservationGateCause[];
+	resolved: boolean;
+}
+
+export interface ResolveImplementationGateResult {
+	created: boolean;
+	decision: ImplementationDecisionPayload;
+	semanticRetry?: boolean;
+	route: ReviewDecisionRoute;
+	nextAction: ImplementationNextAction | "aborted";
+	successorGateId?: string;
+}
+
 export interface ReviewGovernanceStore {
 	getDecision(runId: string, decisionId: string): ReviewDecisionPayload | null;
 	listDecisions(runId: string): ReviewDecisionPayload[];
 	deriveOpenGate(runId: string): DerivedReviewGate | null;
 	resolveGate(input: ResolveReviewGateInput): ResolveReviewGateResult;
 	deriveGoverningState(runId: string, b0: number): GoverningReviewState;
+	deriveOpenImplementationGate(
+		runId: string,
+		phase: string,
+	): DerivedImplementationGate | null;
+	resolveImplementationGate(input: {
+		runId: string;
+		decision: ImplementationDecisionPayload;
+		humanStep: StepRecordPayload;
+		origin: RecordOrigin;
+		ledgerHash: string;
+		decisionsHash: string;
+	}): ResolveImplementationGateResult;
 }
 
 function routeForChoice(
@@ -415,5 +491,264 @@ export function createReviewGovernanceStore(
 				budget: recordStore.listLines(runId, "budget"),
 			});
 		},
+		deriveOpenImplementationGate(runId, phase) {
+			return deriveOpenImplementationGate(recordStore, runId, phase);
+		},
+		resolveImplementationGate(input) {
+			if (input.humanStep.step_name !== "human:review-governance")
+				throw new TypeError("human governance step has the wrong step name");
+			if (
+				input.decision.ledgerHash !== input.ledgerHash ||
+				input.decision.decisionsHash !== input.decisionsHash
+			)
+				throw new TypeError(
+					"implementation decision fingerprint does not match the binding",
+				);
+			const result = input.humanStep.result_json;
+			if (
+				!result ||
+				typeof result !== "object" ||
+				(result as { decisionId?: unknown }).decisionId !==
+					input.decision.decisionId ||
+				(result as { gateId?: unknown }).gateId !== input.decision.gateId
+			)
+				throw new TypeError(
+					"human governance step must be stamped with decisionId and gateId",
+				);
+			const decisionKey = input.decision.supersedesDecisionId
+				? governanceCorrectionKey(input.decision.decisionId)
+				: governanceDecisionKey(input.decision.gateId);
+			const ops: AppendOp[] = [
+				{
+					runId: input.runId,
+					stream: "steps",
+					idempotencyKey: `step:${input.runId}:human:review-governance:${input.humanStep.phase ?? ""}:${input.humanStep.iteration}`,
+					payload: structuredClone(input.humanStep),
+					createdAt: input.decision.createdAt,
+					schemaVersion: 1,
+					provenance: "recorded",
+					origin: input.origin,
+				},
+				{
+					runId: input.runId,
+					stream: "decisions",
+					idempotencyKey: decisionKey,
+					payload: encodeImplementationDecisionPayload(input.decision),
+					createdAt: input.decision.createdAt,
+					schemaVersion: 1,
+					provenance: "recorded",
+					origin: input.origin,
+				},
+			];
+			const appended = recordStore.atomicAppendIfAllNew(ops);
+			const stored = appended.created
+				? input.decision
+				: (() => {
+						const winnerLine = recordStore.getLine(
+							input.runId,
+							"decisions",
+							decisionKey,
+						);
+						if (!winnerLine) {
+							if (
+								appended.duplicates.some((duplicate) => duplicate.index === 0)
+							)
+								throw new ReviewGovernanceStoreError(
+									"REVIEW_GATE_STEP_CONFLICT",
+									"human governance step identity already exists for a different decision",
+								);
+							throw new ReviewGovernanceStoreError(
+								"REVIEW_GATE_DECISION_CONFLICT",
+								"governance decision batch conflicted without a readable winner",
+							);
+						}
+						return decodeImplementationDecisionPayload(winnerLine.payload);
+					})();
+			const successor = deriveOpenImplementationGate(
+				recordStore,
+				input.runId,
+				input.decision.phase,
+			);
+			const uncovered =
+				successor && successor.gateId !== stored.gateId
+					? successor.causes.length
+					: 0;
+			const nextAction = implementationDecisionNextAction(
+				stored.choice,
+				uncovered,
+			);
+			const route: ReviewDecisionRoute =
+				nextAction === "aborted"
+					? "aborted"
+					: nextAction === "plan_amendment" || nextAction === "author_revision"
+						? "author_revision"
+						: nextAction === "human_gate"
+							? "human_gate"
+							: "complete";
+			return {
+				created: appended.created,
+				decision: stored,
+				...(appended.created
+					? {}
+					: {
+							semanticRetry:
+								stored.decisionIntentHash === input.decision.decisionIntentHash,
+						}),
+				route,
+				nextAction,
+				...(successor && successor.gateId !== stored.gateId
+					? { successorGateId: successor.gateId }
+					: {}),
+			};
+		},
 	};
+}
+
+function implementationObservations(
+	recordStore: RecordStore,
+	runId: string,
+): ImplementationReviewObservationPayload[] {
+	return recordStore.listLines(runId, "budget").flatMap((line) => {
+		try {
+			return [decodeImplementationReviewObservationPayload(line.payload)];
+		} catch {
+			return [];
+		}
+	});
+}
+
+export function deriveOpenImplementationGate(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+): DerivedImplementationGate | null {
+	const observations = implementationObservations(recordStore, runId).filter(
+		(observation) => observation.phase === phase,
+	);
+	const latest = observations.at(-1);
+	if (!latest || latest.gateCauses.length === 0) return null;
+	const decisions = listImplementationDecisions(recordStore, runId).decisions;
+	let causes = latest.gateCauses;
+	let predecessorGateId: string | undefined;
+	while (causes.length > 0) {
+		const gateId = deriveGateId({
+			runId,
+			snapshotId: latest.id,
+			causes,
+			...(predecessorGateId ? { predecessorGateId } : {}),
+			domain: "implementation",
+			phase,
+			bindingId: latest.bindingId,
+			observationId: latest.id,
+		});
+		const decision = decisions.find(
+			(candidate) =>
+				candidate.gateId === gateId &&
+				recordStore.getLine(runId, "decisions", governanceDecisionKey(gateId)),
+		);
+		if (!decision) {
+			return {
+				domain: "implementation",
+				gateId,
+				runId,
+				observationId: latest.id,
+				bindingId: latest.bindingId,
+				phase,
+				ledgerHash: "",
+				decisionsHash: "",
+				causes,
+				resolved: false,
+			};
+		}
+		const next = applyImplementationDecisionCauseCoverage(causes, decision);
+		if (next.length === 0) return null;
+		if (next.length === causes.length) {
+			return {
+				domain: "implementation",
+				gateId,
+				runId,
+				observationId: latest.id,
+				bindingId: latest.bindingId,
+				phase,
+				ledgerHash: "",
+				decisionsHash: "",
+				causes,
+				resolved: false,
+			};
+		}
+		causes = next;
+		predecessorGateId = gateId;
+	}
+	return null;
+}
+
+export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
+	ImplementationDecisionChoice,
+	string[]
+> = {
+	authorize_amendment: ["rationale", "findingRefs"],
+	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
+	restore_simplification: [
+		"rationale",
+		"claimAdjustments",
+		"supersedesObservationId",
+	],
+	approve_higher_burden: ["rationale", "claimAdjustments"],
+	reduce_scope: ["rationale", "claimAdjustments"],
+	abort: ["rationale"],
+};
+
+export function implementationGatePromptContext(input: {
+	gate: DerivedImplementationGate;
+	ledgerHash: string;
+	decisionsHash: string;
+}): ReviewGatePromptContext {
+	const eligibleFindings = input.gate.causes.flatMap((cause) =>
+		"findingId" in cause
+			? [{ findingId: cause.findingId, fingerprint: cause.fingerprint }]
+			: [],
+	);
+	return {
+		type: "implementation_review_gate",
+		gateId: input.gate.gateId,
+		observationId: input.gate.observationId,
+		bindingId: input.gate.bindingId,
+		phase: input.gate.phase,
+		causes: structuredClone(input.gate.causes),
+		eligibleFindings,
+		allowedChoices: allowedImplementationChoices(input.gate.causes),
+		requiredFieldsByChoice: structuredClone(
+			IMPLEMENTATION_DECISION_REQUIRED_FIELDS,
+		),
+		ledgerHash: input.ledgerHash,
+		decisionsHash: input.decisionsHash,
+	};
+}
+
+export function allowedImplementationChoices(
+	causes: readonly ImplementationObservationGateCause[],
+): ImplementationDecisionChoice[] {
+	const choices: ImplementationDecisionChoice[] = [];
+	for (const cause of causes) {
+		if (cause.kind === "plan_amendment") choices.push("authorize_amendment");
+		if (
+			cause.kind === "semantic_human" ||
+			cause.kind === "critical_safety" ||
+			cause.kind === "plan_amendment"
+		)
+			choices.push("defer_accept_risk");
+		if (
+			cause.kind === "credit_shortfall" ||
+			cause.kind === "inherited_budget"
+		) {
+			choices.push(
+				"restore_simplification",
+				"approve_higher_burden",
+				"reduce_scope",
+			);
+		}
+		if (cause.kind === "credit_unreconciled") choices.push("reduce_scope");
+	}
+	choices.push("abort");
+	return [...new Set(choices)];
 }

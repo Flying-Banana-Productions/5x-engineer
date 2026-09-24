@@ -6,8 +6,8 @@ import {
 	bindApprovedImplementation,
 	finishImplementationCorrections,
 	type SubmitPlanReviewDecisionPayload,
-	showPlanReviewGate,
-	submitPlanReviewDecision,
+	showReviewGate,
+	submitReviewDecision,
 } from "./review-decision.handler.js";
 import { requireAmbientRunId } from "./run-identity.js";
 
@@ -56,6 +56,7 @@ const JSON_FIELDS = new Set([
 	"approvedItemIds",
 	"approvedWorkItemIds",
 	"snapshotId",
+	"claimAdjustments",
 ]);
 
 export function registerReview(parent: Command) {
@@ -71,9 +72,12 @@ export function registerReview(parent: Command) {
 			"Show causes, allowed choices, required fields, and eligible finding identities",
 		)
 		.option("--run <id>", "Run id (otherwise ambient run resolution is used)")
+		.option("--phase <p>", "Implementation phase id")
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);
-			outputSuccess(await showPlanReviewGate(runId, { context }));
+			outputSuccess(
+				await showReviewGate(runId, { context }, { phase: opts.phase }),
+			);
 		});
 
 	review
@@ -123,6 +127,9 @@ export function registerReview(parent: Command) {
 			const jsonArg = scalar(opts.inputJson, "--input-json");
 			let payload: SubmitPlanReviewDecisionPayload;
 			let findingIds: string[] = [];
+			let claimAdjustments:
+				| Parameters<typeof submitReviewDecision>[0]["claimAdjustments"]
+				| undefined;
 			if (jsonArg !== undefined) {
 				const flagFields = [
 					opts.choice,
@@ -158,6 +165,13 @@ export function registerReview(parent: Command) {
 						`--input-json contains CLI-owned or unknown fields: ${unknown.join(", ")}`,
 					);
 				payload = raw as SubmitPlanReviewDecisionPayload;
+				claimAdjustments = (
+					raw as {
+						claimAdjustments?: NonNullable<
+							Parameters<typeof submitReviewDecision>[0]["claimAdjustments"]
+						>;
+					}
+				).claimAdjustments;
 			} else {
 				const choice = scalar(opts.choice, "--choice");
 				const rationale = scalar(opts.rationale, "--rationale");
@@ -186,8 +200,14 @@ export function registerReview(parent: Command) {
 				findingIds = opts.finding;
 			}
 			outputSuccess(
-				await submitPlanReviewDecision(
-					{ runId, gateId: opts.gate, payload, findingIds },
+				await submitReviewDecision(
+					{
+						runId,
+						gateId: opts.gate,
+						payload,
+						findingIds,
+						...(claimAdjustments ? { claimAdjustments } : {}),
+					},
 					{ context },
 				),
 			);

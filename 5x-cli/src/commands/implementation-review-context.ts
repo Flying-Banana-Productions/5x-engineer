@@ -43,6 +43,7 @@ import {
 	humanDebtDecisionsFromBinding,
 	reconcileApprovedCredits,
 } from "../review-governance/credit-reconciliation.js";
+import { bindingEvidenceFromImplementationDecisions } from "../review-governance/decisions.js";
 import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
@@ -640,10 +641,11 @@ export async function composeImplementationReviewerRecord(input: {
 		priorReconciliations,
 		correctionAttempts: attempts,
 		humanDebtDecisions: humanDebtDecisionsFromBinding(binding),
-		// Observations and pre-author steps record bindingId only, not
-		// ledger or decisions hashes. There is no independent fingerprint
-		// to compare, so omit bindingEvidence. Phase 8 decision records
-		// must carry those hashes and pass them into reconciliation.
+		bindingEvidence: bindingEvidenceFromImplementationDecisions({
+			recordStore: input.ctx.recordStore,
+			runId: input.runId,
+			bindingId: binding.id,
+		}),
 		stepKey,
 	});
 	if (reconciled.status === "rejected") {

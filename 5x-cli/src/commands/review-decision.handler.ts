@@ -12,15 +12,21 @@ import type { ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
 import { workdirCodeDiffGit } from "../review-governance/code-diff.js";
 import {
+	decodeImplementationDecisionPayload,
 	decodeReviewDecisionPayload,
+	encodeImplementationDecisionPayload,
 	encodeReviewDecisionPayload,
 } from "../review-governance/codec.js";
 import { finishImplementationCorrection } from "../review-governance/corrections.js";
 import {
+	assertImplementationDecisionScope,
 	classifyDecisionAcceptance,
+	createImplementationDecision,
 	createReviewDecision,
 	foldGoverningReviewState,
 	governanceDecisionKey,
+	type ImplementationDecisionPayload,
+	implementationDecisionNextAction,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
@@ -31,7 +37,10 @@ import {
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
+	allowedImplementationChoices,
 	createReviewGovernanceStore,
+	deriveOpenImplementationGate,
+	ensureImplementationGatePrompt,
 	ensureReviewGatePrompt,
 	repairReviewGatePrompts,
 	resolveGatePromptProjection,
@@ -39,6 +48,7 @@ import {
 } from "../review-governance/store.js";
 import type {
 	FindingIdentity,
+	ImplementationDecisionChoice,
 	ReviewDecisionChoice,
 	ReviewDecisionRoute,
 	ReviewGateCause,
@@ -962,4 +972,308 @@ export async function finishImplementationCorrections(
 		throw new CliError(result.code, result.message);
 	}
 	return result;
+}
+
+export async function showReviewGate(
+	runId: string,
+	deps: ReviewDecisionDeps = {},
+	options: { phase?: string } = {},
+) {
+	if (!options.phase) return showPlanReviewGate(runId, deps);
+	return showImplementationReviewGate(runId, options.phase, deps);
+}
+
+export async function submitReviewDecision(
+	input: SubmitPlanReviewDecisionInput & {
+		phase?: string;
+		claimAdjustments?: ImplementationDecisionPayload["claimAdjustments"];
+	},
+	deps: ReviewDecisionDeps = {},
+) {
+	const ctx =
+		deps.context ??
+		(await (deps.createContext ?? createReviewBudgetContext)(
+			{ runId: input.runId },
+			deps.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		));
+	const gate = findImplementationGate(
+		ctx,
+		input.runId,
+		input.gateId,
+		input.phase,
+	);
+	if (!gate) return submitPlanReviewDecision(input, { ...deps, context: ctx });
+	return submitImplementationReviewDecision(
+		{ ...input, phase: gate.phase },
+		{ ...deps, context: ctx },
+	);
+}
+
+async function showImplementationReviewGate(
+	runId: string,
+	phase: string,
+	deps: ReviewDecisionDeps,
+) {
+	const ctx =
+		deps.context ??
+		(await (deps.createContext ?? createReviewBudgetContext)(
+			{ runId },
+			deps.warn ?? ((message) => console.error(`Warning: ${message}`)),
+		));
+	const promptStore =
+		deps.promptStore ?? createSqlitePromptStore(ctx.db as Database);
+	const binding = ctx.store.getImplementationBinding(runId);
+	if (!binding)
+		fail("IMPLEMENTATION_BINDING_MISSING", "implementation binding is missing");
+	repairReviewGatePrompts(ctx.recordStore, promptStore, runId);
+	const gate = deriveOpenImplementationGate(ctx.recordStore, runId, phase);
+	if (!gate)
+		return { open: false as const, domain: "implementation" as const, phase };
+	const prompt = ensureImplementationGatePrompt({
+		promptStore,
+		gate,
+		ledgerHash: binding.ledgerHash,
+		decisionsHash: binding.decisionsHash,
+	});
+	const context = prompt.context;
+	return {
+		open: true as const,
+		domain: "implementation" as const,
+		gate,
+		promptId: prompt.id,
+		...context,
+		exampleCommand: `5x review decide --gate ${gate.gateId} --choice <choice> --rationale '<text>'`,
+	};
+}
+
+function findImplementationGate(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	gateId: string,
+	phase?: string,
+) {
+	const phases = phase
+		? [phase]
+		: [
+				...new Set(
+					ctx.store
+						.listImplementationReviews(runId)
+						.map((observation) => observation.phase),
+				),
+			];
+	for (const candidate of phases) {
+		const gate = deriveOpenImplementationGate(
+			ctx.recordStore,
+			runId,
+			candidate,
+		);
+		if (gate?.gateId === gateId) return gate;
+	}
+	return null;
+}
+
+async function submitImplementationReviewDecision(
+	input: SubmitPlanReviewDecisionInput & {
+		phase: string;
+		claimAdjustments?: ImplementationDecisionPayload["claimAdjustments"];
+	},
+	deps: ReviewDecisionDeps,
+) {
+	const ctx = deps.context;
+	if (!ctx) fail("NO_CONTROL_PLANE", "review context is missing");
+	const promptStore =
+		deps.promptStore ?? createSqlitePromptStore(ctx.db as Database);
+	const binding = ctx.store.getImplementationBinding(input.runId);
+	if (!binding)
+		fail("IMPLEMENTATION_BINDING_MISSING", "implementation binding is missing");
+	const gate = findImplementationGate(
+		ctx,
+		input.runId,
+		input.gateId,
+		input.phase,
+	);
+	if (!gate)
+		fail(
+			"REVIEW_GATE_NOT_OPEN",
+			`Review gate ${input.gateId} is not the current open gate`,
+		);
+	const choice = input.payload.choice as ImplementationDecisionChoice;
+	const allowed = allowedImplementationChoices(gate.causes);
+	if (!allowed.includes(choice))
+		fail("REVIEW_DECISION_INVALID", `${choice} is not allowed for this gate`);
+	const claimIds = new Set(binding.debtTargets.map((target) => target.claimId));
+	const originals = new Map(
+		binding.ledger.workItems.flatMap((item) =>
+			item.debtClaim
+				? [[item.debtClaim.debtClaimId, item.architectureDelta] as const]
+				: [],
+		),
+	);
+	const findingRefs =
+		input.payload.findingRefs ??
+		(input.findingIds ?? []).flatMap((findingId) => {
+			const cause = gate.causes.find(
+				(candidate) =>
+					"findingId" in candidate && candidate.findingId === findingId,
+			);
+			return cause && "fingerprint" in cause
+				? [{ findingId: cause.findingId, fingerprint: cause.fingerprint }]
+				: [];
+		});
+	const gateClaimIds = new Set(
+		gate.causes.flatMap((cause) =>
+			cause.kind === "credit_shortfall" || cause.kind === "credit_unreconciled"
+				? cause.claimIds
+				: [],
+		),
+	);
+	let decision: ImplementationDecisionPayload;
+	try {
+		decision = createImplementationDecision({
+			gateId: gate.gateId,
+			observationId: gate.observationId,
+			bindingId: binding.id,
+			phase: gate.phase,
+			choice,
+			findingRefs,
+			rationale: input.payload.rationale,
+			evidence: input.payload.evidence ?? [],
+			claimAdjustments: input.claimAdjustments ?? [],
+			ledgerHash: binding.ledgerHash,
+			decisionsHash: binding.decisionsHash,
+			createdAt: deps.now?.() ?? new Date().toISOString(),
+		});
+		assertImplementationDecisionScope({
+			decision,
+			allowedClaimIds: claimIds,
+			originalDeltas: originals,
+			gateClaimIds,
+		});
+	} catch (error) {
+		fail(
+			"REVIEW_DECISION_INVALID",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+	const run = getRunV1(ctx.db, input.runId);
+	if (!run) fail("RUN_NOT_FOUND", `Run ${input.runId} not found`);
+	let admitted: Awaited<ReturnType<typeof prepareRecordStepAppend>>;
+	try {
+		admitted = await prepareRecordStepAppend(
+			{
+				run: input.runId,
+				stepName: "human:review-governance",
+				phase: gate.phase,
+				result: JSON.stringify({
+					decisionId: decision.decisionId,
+					gateId: decision.gateId,
+					choice: decision.choice,
+				}),
+				performer: input.performer ?? { kind: "human", role: "operator" },
+			},
+			ctx,
+		);
+	} catch (error) {
+		if (error instanceof RecordError)
+			throw new CliError(error.code, error.message, error.detail);
+		throw error;
+	}
+	if (admitted.outcome === "duplicate")
+		fail(
+			"REVIEW_GATE_STEP_CONFLICT",
+			"human governance step identity already exists",
+		);
+	const written = await finalizeAndWritePreparedStep(
+		admitted.prepared,
+		{
+			db: ctx.db,
+			config: ctx.config,
+			recordStore: ctx.recordStore,
+			originFor: ctx.originFor,
+			run,
+		},
+		{
+			mode: "paired-all-new",
+			extraOps: (_finalized, envelope) => [
+				{
+					runId: input.runId,
+					stream: "decisions",
+					idempotencyKey: governanceDecisionKey(gate.gateId),
+					payload: encodeImplementationDecisionPayload(decision),
+					createdAt: decision.createdAt,
+					...envelope,
+				},
+			],
+		},
+	);
+	const stored =
+		written.outcome === "coupled-key-exists"
+			? decodeImplementationDecisionPayload(written.line.payload)
+			: decision;
+	if (
+		written.outcome === "coupled-key-exists" &&
+		stored.decisionIntentHash !== decision.decisionIntentHash
+	)
+		fail(
+			"REVIEW_GATE_ALREADY_RESOLVED",
+			"review gate was resolved by a different decision",
+			{ decision: stored },
+		);
+	const acceptance = classifyDecisionAcceptance({
+		decision: stored,
+		steps: ctx.recordStore.listLines(input.runId, "steps"),
+		budget: ctx.recordStore.listLines(input.runId, "budget"),
+	});
+	if (!acceptance.accepted)
+		fail(
+			"REVIEW_GATE_STALE",
+			acceptance.diagnostic ?? "review gate decision is stale",
+		);
+	resolveGatePromptProjection(
+		promptStore,
+		input.runId,
+		stored.gateId,
+		stored.decisionId,
+	);
+	const successor = deriveOpenImplementationGate(
+		ctx.recordStore,
+		input.runId,
+		gate.phase,
+	);
+	const nextAction = implementationDecisionNextAction(
+		stored.choice,
+		successor && successor.gateId !== stored.gateId
+			? successor.causes.length
+			: 0,
+	);
+	if (successor && successor.gateId !== stored.gateId)
+		ensureImplementationGatePrompt({
+			promptStore,
+			gate: successor,
+			ledgerHash: binding.ledgerHash,
+			decisionsHash: binding.decisionsHash,
+		});
+	const route =
+		nextAction === "aborted"
+			? "aborted"
+			: nextAction === "human_gate"
+				? "human_gate"
+				: nextAction === "complete"
+					? "complete"
+					: "author_revision";
+	if (route === "aborted" && getRunV1(ctx.db, input.runId)?.status === "active")
+		await (deps.abortRun ?? defaultAbort)({
+			runId: input.runId,
+			rationale: stored.rationale,
+			context: ctx,
+		});
+	return {
+		decision: stored,
+		created: written.outcome !== "coupled-key-exists",
+		route,
+		nextAction,
+		...(successor && successor.gateId !== stored.gateId
+			? { successorGateId: successor.gateId }
+			: {}),
+	};
 }

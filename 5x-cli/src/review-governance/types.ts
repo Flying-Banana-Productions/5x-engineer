@@ -287,6 +287,15 @@ export type ImplementationNextAction =
 	| "human_gate"
 	| "complete";
 
+/** Human choices for an implementation gate. Plan choices stay on the plan payload. */
+export type ImplementationDecisionChoice =
+	| "authorize_amendment"
+	| "defer_accept_risk"
+	| "restore_simplification"
+	| "approve_higher_burden"
+	| "reduce_scope"
+	| "abort";
+
 export interface ResolvedPlanImpactSpan {
 	itemId: string;
 	heading: string;

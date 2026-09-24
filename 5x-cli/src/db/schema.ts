@@ -595,6 +595,56 @@ const migrations: Migration[] = [
 			`);
 		},
 	},
+	{
+		version: 11,
+		description:
+			"Project implementation bindings, observations, and domain-aware gates",
+		up(db) {
+			db.exec(`
+				ALTER TABLE review_decision_index ADD COLUMN domain TEXT NOT NULL DEFAULT 'plan';
+				ALTER TABLE review_decision_index ADD COLUMN phase TEXT;
+				ALTER TABLE review_decision_index ADD COLUMN binding_id TEXT;
+				ALTER TABLE review_decision_index ADD COLUMN observation_id TEXT;
+
+				ALTER TABLE review_gate_index ADD COLUMN domain TEXT NOT NULL DEFAULT 'plan';
+				ALTER TABLE review_gate_index ADD COLUMN phase TEXT;
+				ALTER TABLE review_gate_index ADD COLUMN binding_id TEXT;
+				ALTER TABLE review_gate_index ADD COLUMN observation_id TEXT;
+
+				CREATE TABLE implementation_binding_index (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					record_seq INTEGER NOT NULL,
+					source_run_id TEXT NOT NULL,
+					approved_plan_commit TEXT NOT NULL,
+					ledger_hash TEXT NOT NULL,
+					decisions_hash TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					origin_json TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
+				CREATE INDEX idx_implementation_bindings_run
+					ON implementation_binding_index(run_id, record_seq);
+
+				CREATE TABLE implementation_observation_index (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					record_seq INTEGER NOT NULL,
+					binding_id TEXT NOT NULL,
+					phase TEXT NOT NULL,
+					route TEXT NOT NULL,
+					next_action TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					origin_json TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
+				CREATE INDEX idx_implementation_observations_run
+					ON implementation_observation_index(run_id, phase, record_seq);
+			`);
+		},
+	},
 ];
 
 /**
