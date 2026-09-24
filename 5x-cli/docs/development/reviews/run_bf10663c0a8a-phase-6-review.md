@@ -115,3 +115,42 @@ Add one handler test with a temporary git repository and a layered `5x.toml`, fo
 ## Phase readiness
 
 Phase 7 reconciliation will treat this proof as the only authority for carrying claims forward. Fix P1.1 and P1.2 before Phase 7 relies on it. Both fixes are local to `corrections.ts` and its tests.
+
+---
+
+## Addendum — Re-review at `6dd19ee242abeceac287de62a691f1ab8b6ceb84`
+
+**Review type:** `6dd19ee242abeceac287de62a691f1ab8b6ceb84` (one commit since `1694fbcba5099e41b22de195fc70116b04d86798`)
+**Scope of change:** `src/review-governance/corrections.ts`, `src/commands/phase.handler.ts` (doc comment only), new `test/unit/commands/review-corrections-finish.test.ts`, and expanded `test/unit/review-governance/corrections.test.ts`
+**Local verification:** `bunx tsc --noEmit` passed. `bun test test/unit/review-governance/corrections.test.ts test/unit/commands/review-corrections-finish.test.ts` — 16 pass, 0 fail, 96 expect() calls. `bun test test/unit/commands/phase-finish.test.ts` — 14 pass, 0 fail. `bun test test/unit/review-governance/ test/unit/commands/review-decision.test.ts test/unit/commands/quality-v1.test.ts` — 165 pass, 0 fail (no regressions).
+
+### Summary
+
+This revision closes both P1 findings from the prior review with targeted, minimal changes plus direct unit-test coverage for each, and also resolves the P2 items raised previously (dead ternary, misleading doc comment, dirty-after mislabeling, zero-results latch). One P2 item (broader handler-level coverage) is now substantially addressed with a new real-git, layered-config handler test; a narrow slice of it (a crash occurring *after* the attempt is durably saved) remains uncovered and is restated below as a smaller residual item.
+
+**Readiness:** Ready with corrections — only a P2 test-coverage gap remains, and it is mechanical.
+
+### Prior findings — disposition
+
+| ID | Status | Evidence |
+|---|---|---|
+| P1.1 — no-op correction at the reviewed commit produces a passing proof | **Addressed** | `finishImplementationCorrection` now resolves `context.reviewedCommit` and rejects `resolved === reviewed` with `reason: "unchanged_commit"` before running quality (`corrections.ts`). Independently, `assessCorrectionInventory`'s `changedPaths.length === 0` case is now treated as `emptyInventory`, which both blocks `proofFrom` and forces `outcome: "invalidated"` even if quality passed — a second, defense-in-depth guard against an empty diff slipping through by a different code path. `authorRecordedCommit` now also requires the matched author step to be recorded strictly after the observation's own reviewer step (by line order when the reviewer step is found, else by `createdAt`), closing the "author step recorded before the review" gap. All three sub-cases have direct new tests: `"the reviewed commit itself is not a correction proof"`, `"an author step recorded before the review is not the correction"`, and the `empty-inventory` case in the timeout/skip/dirty test matrix — all passing. |
+| P1.2 — `finish` ignores the observation's durable route, gate causes and closure outcome | **Addressed** | `finishImplementationCorrection` now reads the run's `ImplementationBindingPayload.mode` and requires `observation.route === "author_revision" && observation.gateCauses.length === 0 && no error-severity diagnostics && bindingMode === "enforced"` (`durableShortcut`) before treating the observation as shortcut-eligible; otherwise it returns `status: "ordinary"` with the observation's own recorded `route`/`nextAction` and `reason: "not_shortcut_candidate"`. This is layered on top of (not a replacement for) the existing `evaluateImplementationCorrectionEligibility` check on `originalVerdict`, so it correctly catches cases the verdict-only check can't see: closure-forced `human_gate`, non-empty `gateCauses`, advisory-mode bindings, and error-severity diagnostics. New test `"a one-P2 verdict on a human gate or with gate causes stays ordinary"` exercises all four sub-cases (human-gate route, gate causes, advisory mode, error diagnostic) and the new handler-level test (`review-corrections-finish.test.ts`) exercises the same guard end-to-end through `finishImplementationCorrections` with a real `enforced`-mode binding. |
+| P2.1 — no handler-level or real-git test for `review corrections finish` | **Partially addressed** | New `test/unit/commands/review-corrections-finish.test.ts` spins up a real git repo, a layered `5x.toml` (root + `packages/api` subproject), makes a genuine reviewed commit followed by a genuine correction commit, and calls `finishImplementationCorrections` through the same code path the CLI adapter uses. It asserts the layered execution directory is picked up (`attempt.executionDirectory` resolves to the subproject, and `qualityResults` reflects the subproject's gate, not the root's), asserts resume behavior on a second identical call (`resumed: true`), and asserts `CliError` is thrown for a missing observation. This covers the adapter pairing, layering, and CliError-mapping gaps called out previously. It does **not** yet cover a crash/process-exit occurring *after* `saveImplementationCorrectionAttempt` succeeds but before the CLI returns — i.e., resuming a call whose attempt was durably persisted mid-request. That specific restart case is still only implicitly covered by the "same identity resumes" test, which exercises a clean two-call sequence rather than an interrupted one. Not blocking; a good next unit test to add is a saved `"passed"` attempt fixture (constructed directly via `store.saveImplementationCorrectionAttempt`) followed by a `finishImplementationCorrection` call with matching identity, asserting `resumed: true` without invoking `runQuality` a second time — this is already effectively what `"a fresh passing suite carries claims and a later identical call resumes"` in `corrections.test.ts` does, so this gap is smaller than originally scoped and mostly a documentation nit rather than a real coverage hole. |
+| P2.2 — minor cleanups (dead ternary, no-op cache predicate, dirty-after outcome label, zero-results latch) | **Addressed** | `architectureDelta: inventoryClean ? 0 : 0` is now `architectureDelta: 0`. `isPreReviewQualityCache`'s doc comment was rewritten to accurately state it doesn't filter step kinds at its current call site, rather than overstating protection. The dirty-after case now produces `outcome: "invalidated"` (not `"failed"`) with `qualityPassed: true` preserved, asserted directly by the updated test. Zero-results-with-a-non-empty-gate-list no longer latches as `"quality_skipped"`; it now short-circuits to a `reentry` with `reason: "quality_incomplete"` and persists **no** attempt at all (`noAttempt: true` in the test matrix, verifying `store.listImplementationCorrectionAttempts(RUN)).toHaveLength(0)`), matching the plan's "missing results... reruns the full suite; it never guesses success" requirement more faithfully than the original "skip and latch" behavior. |
+
+### New issues introduced by this revision
+
+None found. The `authorRecordedCommit` reviewer-step matching (`isObservationReviewerStep`) falls back to `iteration === null` meaning "match any iteration," which is consistent with the wildcard convention used elsewhere for `ImplementationReviewStepKey.iteration` (e.g. `implementationReviewObservationKey`'s `stepKey.iteration ?? ""`), so this is not a new inconsistency. The redundant `resolveCodeCommit(input.git, context.reviewedCommit)` call (in addition to the existing use of `context.reviewedCommit` later for `changedCodePaths`) is a harmless extra git round-trip, not a correctness issue.
+
+### Updated plan compliance
+
+All Phase 6 checklist items previously marked "Done, except P1.1" / "Partial" are now fully satisfied:
+
+- Attempt identity, clean tree before/after, only a CLI proof resumes — **Done**, no-op commit and empty-inventory gaps closed.
+- Inventory compared with the finding and scope — **Done**, durable route/gate-causes/diagnostics/binding-mode now honored in addition to the reviewed-hunk-path comparison.
+- Persist failed/passed attempts, latch, rerun after crash — **Done**, zero-results case now reruns rather than latching.
+
+### Updated readiness
+
+**Ready with corrections.** No P0/P1 items remain. The single residual P2 (crash-after-save restart test) is a nice-to-have documentation/coverage gap with an already-established test pattern to follow, not a design or correctness question. Phase 7 can proceed to rely on the Phase 6 correction proof.
