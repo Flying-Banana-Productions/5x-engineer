@@ -77,3 +77,28 @@ Phase 11 is the final phase. The run-state presentation, exports, and docs meet 
 
 - The archived path evaluates `headCommit` from `projectRoot`, while the local path uses the run's effective working directory. For worktree-hosted archived runs, plan-drift readiness can differ from the local view. This is read-only and does not affect advancement; consider resolving the HEAD of the recorded worktree when it is available.
 - `openImplementationGate` runs one gate derivation per phase in the phase map. That is fine at current plan sizes, but a single-pass derivation would scale better for dashboard polling.
+
+---
+
+## Addendum — Closure review at `3044133531eea373a46544ec69fc65e43efcd6e0`
+
+**Review type:** `8d43a294de41253bcea23e01ac5d1cb57e375e1a..3044133531eea373a46544ec69fc65e43efcd6e0`
+**Scope:** Closure review of the two P2 findings from the prior addendum. One commit: `3044133` "Correct implementation bind docs and cover archived run-state presentation."
+**Local verification:** `bun test test/unit/commands/implementation-run-state.test.ts test/unit/commands/run-state-review-budget-wiring.test.ts` — 17 pass, 0 fail, 75 expect() calls.
+
+### Prior finding disposition
+
+**P2.1 — 101 doc says explicit `bind` is required before first admission: Addressed.**
+`docs/v1/101-cli-primitives.md` now reads: "A binding is required before the first implementation admission when the plan has a Delivery Budget and the resolved mode is not `off`. Admission auto-binds a unique approved source. Zero or multiple approved sources return `IMPLEMENTATION_APPROVAL_REQUIRED`; `5x review implementation bind --source-run` resolves that case." This matches `ensureImplementationAdmission`'s behavior exactly (auto-bind on a unique candidate; explicit `bind --source-run` only for the zero/multiple case) and removes the earlier self-contradiction.
+
+**P2.2 — Archived run-state presentation path and text formatter untested: Addressed.**
+- `test/unit/commands/implementation-run-state.test.ts` adds a `formatStateText` unit case exporting and using `formatStateText`/`ImplementationGovernanceState`/`ImplementationGovernanceClaimView`. It asserts the separate credit line (`gross_effort=... realized=... positive_burden=...`), the `not_physically_realized` tag on both `waived` and `not_realized` claims, and its absence on a `realized` claim — directly covering the invariant the plan requires ("never describe waived/not-realized credit as physically realized").
+- `test/unit/commands/run-state-review-budget-wiring.test.ts` adds "archived run state presents implementation governance for a bound execution": it saves an implementation binding via the review-budget store, deletes the local `runs` row, calls `run state --plan`, and asserts `implementation_governance.domain`/`binding` is populated with no warnings — covering the previously-untested archived git-record path in `runV1State`.
+
+Both suites pass (17/17). No gaps remain in the two P2 items as scoped.
+
+### New issues introduced by this revision
+
+None. The diff is limited to one doc sentence and two additive test cases; no production code paths changed.
+
+**Readiness:** Ready — both P2 corrections landed cleanly with passing tests and no new findings.
