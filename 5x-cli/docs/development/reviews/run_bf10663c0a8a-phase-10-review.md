@@ -103,3 +103,33 @@ Template selection is session-based (`wantContinued` in both handlers). The cont
 - The advisory-mode paragraph in Step 4 doesn't say which branch applies; state explicitly that advisory runs use the legacy readiness route below.
 - Step 5's max-iteration escalation points to Step 5a, which in enforced mode redirects to Step 5b. If there is no open typed gate, `review gate show` has nothing to show. Consider stating the enforced escalation path explicitly.
 - The invoke handler resolves the context phase from `params.phase ?? mergedVars.phase_number`; render also falls back to `resolved.variables.phase_number`. The sources are equivalent in current skill usage but could diverge for direct callers.
+
+---
+
+## Addendum — Closure review at `cf885e14ff814152d95159fe158e9c1248d2c632`
+
+**Scope:** `99e5ba0bb8c21aa3ef3f99801c6bc82926458726..cf885e14ff814152d95159fe158e9c1248d2c632` (single commit `cf885e1`).
+**Governance context:** review context `ca591bac-2c42-4171-9620-fdfe0646aa51`, binding `b6177755-f899-4c4e-b94a-c70431fecf13`, advisory mode, closure review.
+**Local verification:** `bun test test/unit/skills/implementation-review-governance.test.ts` — 10 pass, 242 assertions; `bunx tsc --noEmit` clean; manually re-ran the corrected `5x protocol emit reviewer` `introducedBy` example — validates cleanly.
+
+### Prior finding disposition
+
+| ID | Status | Evidence |
+|---|---|---|
+| P1.1 | **addressed** | `templates/reviewer-commit.md` now shows `introducedBy: {commitRange, diffHunk, explanation}`. Re-ran the example verbatim through `5x protocol emit reviewer` — it validates. New test `"the reviewer introducedBy example passes protocol emit"` extracts the rendered `--item` args and asserts the emitted verdict's `introducedBy` matches exactly. |
+| P1.2 | **addressed** | `SKILL.tmpl.md` now captures `VALIDATED=$(echo "$RESULT" \| 5x protocol validate reviewer ...)` in the native branch and Step 4 reads `ROUTE_JSON="$VALIDATED"` (native) vs `ROUTE_JSON="$RESULT"` (invoke), with `READINESS`/`ITEM_COUNT` also sourced from `$VALIDATED` in native mode. The role-branch test now asserts the native branch contains `VALIDATED=` and the jq reads target `$VALIDATED`/`$ROUTE_JSON`, and that the invoke branch does not declare `VALIDATED=`. |
+| P1.3 | **addressed** | `context.ts` now appends a `CLOSURE_RULES` block to `formatImplementationReviewerContext` whenever `context.reviewKind === "closure"`, independent of session/template selection, and the skill sentence was corrected to say fresh sessions still get the closure rules when `Review kind: closure`. New test `"a fresh session closure review carries prior-outcome rules"` builds a closure context via `sessionId: "new"` and asserts the rendered context contains `--prior-finding`, `partially_addressed`, `introducedBy`, `priorDecisionId`, `newEvidence`, and "Do not perform another exhaustive material pass." |
+| P1.4 | **addressed** | `buildImplementationReviewPromptContext` now computes `deferredFindingIds` from active `defer_accept_risk` decisions scoped to `decision.phase === phaseId` (the `ImplementationDecisionPayload.phase` field is always present — confirmed in `decisions.ts`) and excludes those IDs from `actionableFindings`. The skipped-list renderer (`skippedFinding`) now shows the finding ID plus title, so the two lists correlate. New test `"accepted defer_accept_risk findings are not admitted author work"` builds a full observation + accepted decision fixture and asserts the deferred finding is excluded from `actionableFindings` and appears only in the skipped list as `I-defer (Accepted latency, decision <id>)`. |
+| P2.1 | **addressed** | `SKILL.tmpl.md` Step 5's result handling now has an explicit final-correction branch: on `complete`, if Step 4 routed `final_corrections`, run `review corrections finish` and branch on its outcome instead of unconditionally looping back to review. The role-branch test asserts the exact wording is present. |
+| P2.2 | **addressed** | Replaced the tautological byte-parity test with a full handler-level test (`"implementation handler prompt parity"`) that spins up a real temp git repo + SQLite DB, seeds a real binding, and calls the actual `templateRender` and `invokeAgent` handlers for all four templates (`author-next-phase`, `author-process-impl-review`, `reviewer-commit`, `reviewer-commit-continued`), asserting the appended governance-context slice is byte-identical between native and invoke prompts and that `binding_id`/`source_run_id`/`pinned_mode`/`pre_author_commit` are present and correct in both envelopes. |
+
+All six required prior-finding outcomes are `addressed`; none remain `partially_addressed` or `still_open`.
+
+### New issues in this revision
+
+None found. The diff is narrowly scoped to the six fixes above plus their direct test coverage; I checked the `decision.phase` field is a required, always-populated property on `ImplementationDecisionPayload` (not an optional/legacy field that could be absent for older decisions), so the new phase-scoping filter in P1.4's fix does not silently drop findings for decisions that predate the `phase` field — there is no such predates-the-field case since `phase` has always been required on this payload kind. I also re-read the corrected Step 4/Step 5 skill sections end-to-end for consistency and found no remaining contradiction between the two.
+
+### Readiness
+
+**ready** — all required prior findings are addressed with direct, executed verification (not just prose changes), no new issues were introduced, and the full local test/typecheck run is clean.
+
