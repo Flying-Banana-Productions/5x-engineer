@@ -182,3 +182,39 @@ The Phase 4 review raised the same parity gap for the reviewer path. Recommendat
 
 - **Phase 5 (W5) completion:** ✅ — All P0/P1 items from the original review and both P2 carry-forwards from the first addendum are now resolved. Only a newly-surfaced, pre-existing, non-blocking P2 test-isolation item remains.
 - **Ready for next phase:** ✅ — No P0/P1 items remain and the full suite is green at full scale. The one open P2 is mechanical, pre-existing, and doesn't affect current CI.
+
+---
+
+## Addendum (2026-09-23, third) — plan-read-state test isolation fix verified
+
+**Reviewed:** `cd13523dac48745e1cc3c13b976d59bb11fd57e0` (one commit since `35d3275557ff9df4a9f8ef8f5c54c64bf23e1d51`: "Isolate plan-read-state invoke tests from the process-wide database.", explicitly addressing the P2 item from the second addendum.)
+
+**Local verification:** `bun run typecheck`: clean. `bun run lint`: clean (425 files). `bun test --concurrent` (full suite): 3721 pass, 0 fail (same count as before — this commit only fixes test isolation, adds no new tests). I specifically re-ran the repro that previously failed 3/3 times before this fix:
+- `bun test --concurrent test/unit/commands/invoke.test.ts` alone: **7 runs, 0 failures** (previously failed 2 tests, 3/3 times, before this fix).
+- The exact four-file subset from the prior addendum (`invoke.test.ts`, `protocol-validate.test.ts`, `review-governance/`, `implementation-review-context.test.ts`): **2 runs, 0 failures** (previously failed 2/2 times).
+- A broader six-target mix (adding `protocol.test.ts` and `test/unit/db`) to probe for scheduling-dependent flakes: **3 runs, 0 failures**.
+
+### What's addressed (✅)
+
+- **P2.3 ("pre-existing `closeDb()`/`_resetForTest()` races in `invoke.test.ts`'s older plan-read-state test blocks") — fixed.** The `describe("invoke reviewer — plan read state", ...)` block (the exact block I traced the `RangeError: Cannot use a closed database` failures to, and confirmed predated this revision via a throwaway worktree at `d0e02df`) now:
+  - Hoists `openPrivateControlPlaneDb` (previously local to the newer "invoke author text-amendment admission" block) to module scope and reuses it here, opening a private on-disk SQLite file per test instead of touching the process-wide `getDb()` singleton.
+  - `setupBudgetInvoke` now opens that private DB *before* calling `initScaffold({ startDir: dir })`. I traced `initScaffold`'s DB step (`src/commands/init.handler.ts`, the `.5x/5x.db` existence check) and confirmed it only calls `getDb()`/`closeDb()` when the DB file doesn't already exist — since the private DB file now exists first, `initScaffold` takes the "already exists" branch and never touches the process-wide connection. This is the correct fix, not a workaround.
+  - `templateRender` (`src/commands/template.handler.ts`) gained the same `deps?.db` injection point already added to `invokeAgent` in the prior revision, since one test in this block (`"invoke and template handlers append byte-identical reviewer governance context"`) calls `templateRender` directly and needed the same isolation.
+  - Every test in the block now threads `db` through `deps` to `invokeAgent`/`templateRender`/`invokeWithBudgetContext` and closes it in `finally`, replacing every `closeDb()`/`_resetForTest()` call in that block.
+  - I confirmed by direct repro (see above) that the specific failure mode I reported is gone: 7/7 clean runs of the file in isolation where it previously failed reliably.
+
+### New observations in this revision
+
+- **Scope was precisely targeted, and it worked.** The commit message names exactly the addendum that raised the issue and fixes exactly the two failing tests I identified, without touching unrelated code. No scope creep, no unrelated refactors.
+- **Residual, unconfirmed risk (not the same finding, logging separately):** two other `describe` blocks in `invoke.test.ts` — `"invoke implementation admission"` (~line 1349) and `"invoke implementation review recording"` (~line 1427-1694) — still call `closeDb()`/`_resetForTest()` on the process-wide singleton and were not touched by this fix. In principle these could exhibit the same class of race under some other `--concurrent` scheduling/interleaving, the same way the "plan read state" block only failed under specific subset combinations and passed clean in a full-suite run. I deliberately stress-tested this (7 isolated runs of the whole file, 2 runs of the originally-failing four-file subset, 3 runs of a broader six-target mix) and could not reproduce any failure in these two blocks. Given I have no concrete repro (unlike P2.3, which I reproduced 3/3 before verifying the fix), I'm not raising this as a confirmed defect — only as a forward-looking P2 suggestion to apply the same `openPrivateControlPlaneDb` pattern there for consistency and to close off the theoretical risk, not because I observed a failure.
+- No new defects found. No other files changed in this commit besides the two described above and the run's own step log.
+
+### Still open
+
+- **P2 (new, unconfirmed/preventive):** `"invoke implementation admission"` and `"invoke implementation review recording"` in `invoke.test.ts` still use `closeDb()`/`_resetForTest()` on the process-wide singleton. No failure reproduced despite active stress-testing across 12 runs in varied configurations; flagged for consistency with the now-established `openPrivateControlPlaneDb` pattern, not as a confirmed race. `action: auto_fix`.
+- No items remain open from the second addendum. The one P2 raised there (P2.3) is resolved and verified by direct repro.
+
+### Updated readiness
+
+- **Phase 5 (W5) completion:** ✅ — Every P0/P1 from the original review and every P2 from both prior addenda are now resolved and verified. Only a new, unconfirmed, preventive P2 suggestion remains.
+- **Ready for next phase:** ✅ — No P0/P1 items remain, the full suite is green at full scale, and the specific flake reported last time is confirmed fixed by direct repro.
