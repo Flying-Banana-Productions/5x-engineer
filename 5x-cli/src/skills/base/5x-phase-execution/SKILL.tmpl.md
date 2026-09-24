@@ -185,8 +185,11 @@ perform mandatory first-admission binding and capture pre-author HEAD.
   Never continue that failure as v1.
 - A fresh session (`--new-session`) still receives the same implementation
   governance context as continuation (`--continue-native` or `--session`).
-  Continuation selects the closure template. `--new-session` selects the
-  initial template. Neither path drops binding, claims, or decisions.
+  `--new-session` selects the initial template; continuation selects the
+  closure template. When that context says `Review kind: closure`, follow
+  its closure rules (one `priorFindings` outcome per required ID via
+  `--prior-finding`) even on the initial template. Neither path drops
+  binding, claims, or decisions.
 
 ```bash
 INIT=$(5x run init --plan $PLAN_PATH --worktree)
@@ -396,10 +399,10 @@ PINNED_MODE=$(echo "$RENDERED" | jq -r '.data.pinned_mode // empty')
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
         [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
-echo "$RESULT" | 5x protocol validate reviewer \
+VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
   --record --step $STEP --phase $PHASE \
   --iteration $REVIEW_ITERATIONS \
-  ${REVIEW_CONTEXT_ID:+--review-context "$REVIEW_CONTEXT_ID"}
+  ${REVIEW_CONTEXT_ID:+--review-context "$REVIEW_CONTEXT_ID"})
 ```
 {{else}}
 Delegate to the reviewer via `5x invoke`:
@@ -457,9 +460,17 @@ Read the recorded governance fields. Do not recompute them from reviewer prose
 or from local `$REVIEW_ITERATIONS`.
 
 ```bash
-GOVERNANCE_ROUTE=$(echo "$RESULT" | jq -r '.data.result.governance.route // empty')
-OBSERVATION_ID=$(echo "$RESULT" | jq -r '.data.result.governance.observationId // empty')
-NEXT_ACTION=$(echo "$RESULT" | jq -r '.data.result.governance.nextAction // empty')
+{{#if reviewer_native}}
+# Native mode: governance, readiness, and items live on the validate envelope.
+ROUTE_JSON="$VALIDATED"
+READINESS=$(echo "$VALIDATED" | jq -r '.data.result.readiness // empty')
+ITEM_COUNT=$(echo "$VALIDATED" | jq -r '.data.result.items | length')
+{{else}}
+ROUTE_JSON="$RESULT"
+{{/if}}
+GOVERNANCE_ROUTE=$(echo "$ROUTE_JSON" | jq -r '.data.result.governance.route // empty')
+OBSERVATION_ID=$(echo "$ROUTE_JSON" | jq -r '.data.result.governance.observationId // empty')
+NEXT_ACTION=$(echo "$ROUTE_JSON" | jq -r '.data.result.governance.nextAction // empty')
 ```
 
 When `PINNED_MODE` is `enforced`, that route is the only branch:
@@ -528,8 +539,13 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 {{/if}}
 
 Check the result:
-- `result: "complete"` — update $COMMIT, loop back to Step 2
-  (quality gates must pass again after changes).
+- `result: "complete"` — update $COMMIT. When Step 4 routed
+  `final_corrections`, do not loop back to review. Run
+  `5x review corrections finish --run $FIVEX_RUN --phase $PHASE --review $OBSERVATION_ID --commit $COMMIT`.
+  A passing finish goes to Step 6. Any invalidation returns to Step 2
+  (quality) and then Step 3 (reviewer re-entry). A later pass does not
+  restore the shortcut. Otherwise loop back to Step 2 (quality gates must
+  pass again after changes), then Step 3.
 - `result: "needs_human"` — go to Step 5a (Escalate).
 - `result: "failed"` — go to Step 5a (Escalate).
 
