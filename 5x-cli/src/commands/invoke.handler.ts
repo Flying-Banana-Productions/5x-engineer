@@ -399,13 +399,35 @@ export async function invokeAgent(
 	// support --continue-native (that's for the native-subagent path).
 	// Scalar vars (commits) merge into mergedVars; the multi-line diff is
 	// appended to the rendered prompt after rendering.
-	const wantContinued = params.session && !params.newSession;
 	const invocationWorkdir = params.workdir
 		? resolve(params.workdir)
 		: (effectiveWorkdir ?? projectRoot);
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	const warn =
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
+	let reviewKind: "initial" | "closure" | undefined;
+	if (
+		params.run &&
+		params.template.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		try {
+			budgetContext = await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: invocationWorkdir }, warn);
+			reviewKind = buildPlanReviewPromptContext({
+				runId: params.run,
+				configuredMode: config.reviewBudget.mode,
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+			})?.reviewKind;
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+	}
+	const wantContinued =
+		reviewKind === "closure" ||
+		((params.session || params.template.endsWith("-continued")) &&
+			!params.newSession);
 	let reviewDiffAppend: string | null = null;
 	if (
 		wantContinued &&
@@ -420,7 +442,7 @@ export async function invokeAgent(
 		let priorReview: PriorReviewIdentity | undefined;
 		if (isPlanReviewTemplate(params.template)) {
 			try {
-				budgetContext = await (
+				budgetContext ??= await (
 					deps?.createReviewBudgetContext ?? createReviewBudgetContext
 				)({ runId: params.run, startDir: invocationWorkdir }, warn);
 				priorReview = latestPlanReviewIdentity(budgetContext, params.run);
@@ -451,6 +473,7 @@ export async function invokeAgent(
 	const effectiveSession = params.newSession ? undefined : params.session;
 	const resolved = resolveAndRenderTemplate({
 		templateName: params.template,
+		reviewKind,
 		session: effectiveSession,
 		newSession: params.newSession,
 		explicitVars: mergedVars,
@@ -480,13 +503,10 @@ export async function invokeAgent(
 		typeof roleConfig?.provider === "string" ? roleConfig.provider : "opencode";
 	let optInCapturedBeforeInvoke = false;
 
-	// Fail closed before provider/session creation so an unbudgeted initial
-	// plan review spends no tokens. Continued templates remain v1-compatible.
+	// Fail before provider/session creation on malformed active plan budgets.
 	if (
 		role === "reviewer" &&
-		(resolved.selectedTemplateName === "reviewer-plan" ||
-			(params.optInBudgetBaseline &&
-				isPlanReviewTemplate(resolved.selectedTemplateName))) &&
+		isPlanReviewTemplate(resolved.selectedTemplateName) &&
 		params.run &&
 		resolvedPlanPath
 	) {
@@ -524,6 +544,7 @@ export async function invokeAgent(
 						runId: params.run,
 						planMarkdown,
 						optIn: params.optInBudgetBaseline ?? false,
+						capture: resolved.selectedTemplateName === "reviewer-plan",
 						performer: {
 							kind: "agent",
 							role: "reviewer",
@@ -533,7 +554,7 @@ export async function invokeAgent(
 					})
 				: ({ status: "skipped", reason: "off" } as const);
 		if (ensured.status === "error") {
-			outputError(ensured.code, ensured.message);
+			outputError(ensured.code, ensured.message, ensured.detail);
 		}
 		optInCapturedBeforeInvoke =
 			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";

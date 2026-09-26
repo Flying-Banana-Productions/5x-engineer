@@ -604,7 +604,13 @@ describe("protocol validate reviewer — active review budget", () => {
 					startDir: dir,
 					createReviewBudgetContext: async () => ctx,
 				}),
-			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
+			).rejects.toMatchObject({
+				code: "PLAN_REPAIR_REQUIRED",
+				detail: {
+					reviewRoute: "author_revision",
+					diagnostic: { code: "BUDGET_SECTION_MISSING" },
+				},
+			});
 			expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(0);
 		} finally {
 			ctx.db.close();

@@ -7,6 +7,10 @@
 
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
+import {
+	AuthorStatusSchema,
+	ReviewerVerdictSchema,
+} from "../../../src/protocol.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -51,6 +55,31 @@ async function run5x(
 // ---------------------------------------------------------------------------
 
 describe("5x protocol emit reviewer (integration)", () => {
+	test(
+		"ships complete offline schemas and discoverable closure evidence help",
+		async () => {
+			for (const [role, schema] of [
+				["author", AuthorStatusSchema],
+				["reviewer", ReviewerVerdictSchema],
+			] as const) {
+				const result = await run5x(["protocol", "schema", role]);
+				expect(result.exitCode).toBe(0);
+				expect(JSON.parse(result.stdout)).toEqual(schema);
+			}
+			const help = await run5x(["protocol", "emit", "reviewer", "--help"]);
+			expect(help.exitCode).toBe(0);
+			for (const field of Object.keys(
+				ReviewerVerdictSchema.properties.items.items.properties,
+			)) {
+				expect(help.stdout).toContain(field);
+			}
+			expect(help.stdout).toContain("Closure example");
+			expect(help.stdout).toContain("5x protocol schema reviewer");
+			expect(help.stdout).not.toContain("https://github.com/5x-ai/5x-cli");
+		},
+		{ timeout: 15000 },
+	);
+
 	test(
 		"e2e: --ready emits raw canonical JSON (not envelope)",
 		async () => {

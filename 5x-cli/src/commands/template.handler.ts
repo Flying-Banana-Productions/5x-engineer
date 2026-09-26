@@ -213,13 +213,39 @@ export async function templateRender(
 	// Scalar vars (commits) merge into template vars; the multi-line diff
 	// is appended post-render (declared variables must be safe scalars).
 	// -----------------------------------------------------------------------
-	const wantContinued =
-		(params.session || params.continueNative) && !params.newSession;
 	let mergedVars = explicitVars;
 	let reviewDiffAppend: string | null = null;
 	let renderBudgetContext: ReviewBudgetCommandContext | undefined;
 	const warn =
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
+	let reviewKind: "initial" | "closure" | undefined;
+	if (
+		params.run &&
+		params.template.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		try {
+			renderBudgetContext = await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)(
+				{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
+				warn,
+			);
+			reviewKind = buildPlanReviewPromptContext({
+				runId: params.run,
+				configuredMode: config.reviewBudget.mode,
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+			})?.reviewKind;
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+	}
+	const wantContinued =
+		reviewKind === "closure" ||
+		((params.session ||
+			params.continueNative ||
+			params.template.endsWith("-continued")) &&
+			!params.newSession);
 	if (
 		wantContinued &&
 		runDb &&
@@ -233,7 +259,7 @@ export async function templateRender(
 		let priorReview: PriorReviewIdentity | undefined;
 		if (isPlanReviewTemplate(params.template)) {
 			try {
-				renderBudgetContext = await (
+				renderBudgetContext ??= await (
 					deps?.createReviewBudgetContext ?? createReviewBudgetContext
 				)(
 					{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
@@ -270,6 +296,7 @@ export async function templateRender(
 	const effectiveSession = params.newSession ? undefined : params.session;
 	const resolved = resolveAndRenderTemplate({
 		templateName: params.template,
+		reviewKind,
 		session: effectiveSession,
 		newSession: params.newSession,
 		continueNative: params.continueNative,
@@ -285,13 +312,13 @@ export async function templateRender(
 		worktreeRoot: resolvedWorktreeRoot ?? undefined,
 	});
 
-	// Capture B0 before an initial plan reviewer can be invoked. Continued
-	// templates intentionally preserve v1 compatibility and never opt in.
+	// Validate every active ledger before review; capture B0 only for initial reviews.
 	if (
-		resolved.selectedTemplateName === "reviewer-plan" &&
+		resolved.selectedTemplateName.replace(/-continued$/, "") ===
+			"reviewer-plan" &&
 		params.run &&
 		resolvedPlanPath &&
-		config.reviewBudget.mode !== "off"
+		(config.reviewBudget.mode !== "off" || reviewKind !== undefined)
 	) {
 		try {
 			renderBudgetContext ??= await (
@@ -323,11 +350,12 @@ export async function templateRender(
 			runId: params.run,
 			planMarkdown,
 			optIn: false,
+			capture: resolved.selectedTemplateName === "reviewer-plan",
 			performer: { kind: "system", role: "cli" },
 			warn,
 		});
 		if (ensured.status === "error") {
-			outputError(ensured.code, ensured.message);
+			outputError(ensured.code, ensured.message, ensured.detail);
 		}
 	}
 	let prompt = resolved.prompt;

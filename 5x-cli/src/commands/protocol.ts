@@ -9,6 +9,8 @@
  */
 
 import type { Command } from "@commander-js/extra-typings";
+import { AuthorStatusSchema, ReviewerVerdictSchema } from "../protocol.js";
+import { REVIEWER_PROTOCOL_HELP } from "../protocol-help.js";
 import { intArg } from "../utils/parse-args.js";
 import { protocolValidate } from "./protocol.handler.js";
 import {
@@ -29,6 +31,18 @@ export function registerProtocol(parent: Command) {
 			"Validate JSON output from author and reviewer agents against the 5x protocol\n" +
 				"schemas. Optionally record validated results as run steps.",
 		);
+
+	const schema = protocol
+		.command("schema")
+		.summary("Print a bundled protocol JSON Schema (offline, raw JSON)");
+	for (const [role, value] of [
+		["author", AuthorStatusSchema],
+		["reviewer", ReviewerVerdictSchema],
+	] as const) {
+		schema.command(role).action(() => {
+			console.log(JSON.stringify(value, null, 2));
+		});
+	}
 
 	const validate = protocol
 		.command("validate")
@@ -105,6 +119,7 @@ export function registerProtocol(parent: Command) {
 		.description(
 			"Validate a JSON object against the ReviewerVerdict protocol schema.",
 		)
+		.addHelpText("after", REVIEWER_PROTOCOL_HELP)
 		.option(
 			"-i, --input <path>",
 			"Path to input JSON file (default: read from stdin)",
@@ -162,6 +177,7 @@ export function registerProtocol(parent: Command) {
 	emit
 		.command("reviewer")
 		.summary("Emit a ReviewerVerdict structured result")
+		.addHelpText("after", REVIEWER_PROTOCOL_HELP)
 		.description(
 			"Produce a canonical ReviewerVerdict JSON object from flags.\n" +
 				"Use --ready or --no-ready to set the readiness assessment.\n" +

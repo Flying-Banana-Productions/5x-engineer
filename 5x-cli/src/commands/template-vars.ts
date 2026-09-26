@@ -493,6 +493,8 @@ export async function resolveReviewDelta(
 
 export interface ResolveAndRenderOptions {
 	templateName: string;
+	/** Durable review kind takes precedence over session continuity. */
+	reviewKind?: "initial" | "closure";
 	session?: string;
 	newSession?: boolean;
 	/**
@@ -555,6 +557,15 @@ export function resolveAndRenderTemplate(
 		} catch {
 			// No continued variant — use the full template
 		}
+	}
+	if (
+		opts.reviewKind &&
+		requestedName.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		templateName =
+			opts.reviewKind === "closure"
+				? "reviewer-plan-continued"
+				: "reviewer-plan";
 	}
 
 	const warnings: string[] = [];

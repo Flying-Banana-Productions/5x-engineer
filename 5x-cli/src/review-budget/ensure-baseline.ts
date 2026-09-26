@@ -12,7 +12,7 @@ export type EnsurePlanReviewBaselineResult =
 			status: "captured";
 			baseline: NonNullable<ReturnType<ReviewBudgetStore["getBaseline"]>>;
 	  }
-	| { status: "error"; code: string; message: string };
+	| { status: "error"; code: string; message: string; detail?: unknown };
 
 export function ensurePlanReviewBaseline(input: {
 	runId: string;

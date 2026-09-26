@@ -233,15 +233,33 @@ export const ReviewerVerdictSchema = {
 					lowestCostCorrection: { type: "string" },
 					introducedBy: {
 						type: "object",
+						description:
+							"Revision-causal closure finding: exact plan-only diff evidence. Mutually exclusive with lateDiscovery.",
 						properties: {
-							commitRange: { type: "string" },
-							diffHunk: { type: "string" },
-							explanation: { type: "string" },
+							commitRange: {
+								type: "string",
+								description:
+									"Previous recorded review SHA..current plan SHA; literal hashes or unique prefixes, not symbolic refs.",
+							},
+							diffHunk: {
+								type: "string",
+								description:
+									"One complete exact plan-only git diff hunk: @@ header, context and changed lines, newline-separated; no file headers.",
+							},
+							explanation: {
+								type: "string",
+								description:
+									"Explain how the cited revision introduced the failure.",
+							},
 						},
 						required: ["commitRange", "diffHunk", "explanation"],
 					},
 					lateDiscovery: { type: "string", enum: ["critical_safety"] },
-					lateDiscoveryEvidence: { type: "string" },
+					lateDiscoveryEvidence: {
+						type: "string",
+						description:
+							"Concrete security, data-loss, or correctness threat for lateDiscovery critical_safety; acceptance_required or risk_reduction scope, human_required action.",
+					},
 					priorDecisionId: { type: "string" },
 					newEvidence: { type: "string" },
 					requiresReviewerVerification: { type: "boolean" },

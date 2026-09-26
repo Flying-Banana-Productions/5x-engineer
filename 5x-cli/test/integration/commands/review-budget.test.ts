@@ -403,41 +403,46 @@ describe("review-budget CLI integration", () => {
 	test(
 		"preserves the v1 emit/validate contract and rejects reviewer aggregates",
 		async () => {
-			const emitted = await run5x(process.cwd(), [
-				"protocol",
-				"emit",
-				"reviewer",
-				"--ready",
-			]);
-			expect(emitted.exitCode).toBe(0);
-			expect(JSON.parse(emitted.stdout)).toEqual({
-				readiness: "ready",
-				items: [],
-			});
-			const validated = await run5x(
-				process.cwd(),
-				["protocol", "validate", "reviewer"],
-				emitted.stdout,
-			);
-			expect(validated.exitCode).toBe(0);
-			expect(
-				(JSON.parse(validated.stdout) as { data: { result: unknown } }).data
-					.result,
-			).toEqual({ readiness: "ready", items: [] });
-
-			const aggregate = await run5x(
-				process.cwd(),
-				["protocol", "validate", "reviewer"],
-				JSON.stringify({
+			const dir = tempDir();
+			try {
+				const emitted = await run5x(dir, [
+					"protocol",
+					"emit",
+					"reviewer",
+					"--ready",
+				]);
+				expect(emitted.exitCode).toBe(0);
+				expect(JSON.parse(emitted.stdout)).toEqual({
 					readiness: "ready",
 					items: [],
-					budgetBand: "within_standard",
-				}),
-			);
-			expect(aggregate.exitCode).not.toBe(0);
-			expect(JSON.parse(aggregate.stdout).error.code).toBe(
-				"INVALID_STRUCTURED_OUTPUT",
-			);
+				});
+				const validated = await run5x(
+					dir,
+					["protocol", "validate", "reviewer"],
+					emitted.stdout,
+				);
+				expect(validated.exitCode).toBe(0);
+				expect(
+					(JSON.parse(validated.stdout) as { data: { result: unknown } }).data
+						.result,
+				).toEqual({ readiness: "ready", items: [] });
+
+				const aggregate = await run5x(
+					dir,
+					["protocol", "validate", "reviewer"],
+					JSON.stringify({
+						readiness: "ready",
+						items: [],
+						budgetBand: "within_standard",
+					}),
+				);
+				expect(aggregate.exitCode).not.toBe(0);
+				expect(JSON.parse(aggregate.stdout).error.code).toBe(
+					"INVALID_STRUCTURED_OUTPUT",
+				);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
 		},
 		{ timeout: 30000 },
 	);
@@ -560,7 +565,7 @@ describe("review-budget CLI integration", () => {
 				);
 				expect(malformed.exitCode).not.toBe(0);
 				expect(JSON.parse(malformed.stdout).error.code).toBe(
-					"BUDGET_SECTION_MISSING",
+					"PLAN_REPAIR_REQUIRED",
 				);
 				expect(budgetStore(ctx.dir).getBaseline(ctx.runId)?.b0).toBe(2);
 				expect(lines(ctx.dir, ctx.runId, "budget")).toHaveLength(2);
@@ -576,6 +581,10 @@ describe("review-budget CLI integration", () => {
 		async () => {
 			for (const [plan, code] of [
 				[NO_BUDGET, "BUDGET_SECTION_MISSING"],
+				[
+					VALID_BUDGET.replace("| 2 | 0 |", "| 4 | 0 |"),
+					"BUDGET_INVALID_EFFORT",
+				],
 				[NEGATIVE_WITHOUT_EVIDENCE, "BUDGET_DEBT_CLAIM_EVIDENCE_MISSING"],
 			] as const) {
 				const ctx = await setup(plan);
@@ -588,11 +597,96 @@ describe("review-budget CLI integration", () => {
 						ctx.runId,
 					]);
 					expect(rendered.exitCode).not.toBe(0);
-					expect(JSON.parse(rendered.stdout).error.code).toBe(code);
+					expect(JSON.parse(rendered.stdout).error).toMatchObject({
+						code: "PLAN_REPAIR_REQUIRED",
+						detail: { reviewRoute: "author_revision", diagnostic: { code } },
+					});
 					expect(lines(ctx.dir, ctx.runId, "budget")).toHaveLength(0);
 				} finally {
 					rmSync(ctx.dir, { recursive: true, force: true });
 				}
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"gates malformed closure plans before render/invoke, preserves baseline, and resumes after author repair",
+		async () => {
+			const ctx = await setup(VALID_BUDGET, "enforced");
+			try {
+				const recordArgs = [
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					ctx.runId,
+					"--record",
+					"--step",
+					"reviewer:plan",
+					"--phase",
+					"plan",
+					"--iteration",
+				];
+				const initial = await run5x(
+					ctx.dir,
+					[...recordArgs, "0"],
+					INITIAL_VERDICT,
+				);
+				expect(initial.exitCode).toBe(0);
+				const before = lines(ctx.dir, ctx.runId, "budget");
+				writeFileSync(
+					ctx.planPath,
+					VALID_BUDGET.replace("| 2 | 0 |", "| 4 | 0 |"),
+				);
+				// Pinned enforcement must also govern preflight after a config change.
+				writeFileSync(
+					join(ctx.dir, "5x.toml"),
+					'[reviewBudget]\nmode = "off"\n',
+				);
+				for (const args of [
+					["template", "render", "reviewer-plan", "--new-session"],
+					["template", "render", "reviewer-plan", "--continue-native"],
+					["template", "render", "reviewer-plan-continued", "--new-session"],
+					["invoke", "reviewer", "reviewer-plan", "--new-session"],
+					["invoke", "reviewer", "reviewer-plan-continued", "--new-session"],
+				]) {
+					const result = await run5x(ctx.dir, [...args, "--run", ctx.runId]);
+					expect(result.exitCode).not.toBe(0);
+					expect(JSON.parse(result.stdout).error).toMatchObject({
+						code: "PLAN_REPAIR_REQUIRED",
+						detail: {
+							reviewRoute: "author_revision",
+							diagnostic: { code: "BUDGET_INVALID_EFFORT" },
+						},
+					});
+				}
+				const record = await run5x(ctx.dir, [...recordArgs, "1"], V1_VERDICT);
+				expect(JSON.parse(record.stdout).error.code).toBe(
+					"PLAN_REPAIR_REQUIRED",
+				);
+				expect(lines(ctx.dir, ctx.runId, "budget")).toEqual(before);
+				expect(lines(ctx.dir, ctx.runId, "steps")).toHaveLength(1);
+				writeFileSync(ctx.planPath, VALID_BUDGET);
+				const rendered = await run5x(ctx.dir, [
+					"template",
+					"render",
+					"reviewer-plan",
+					"--new-session",
+					"--run",
+					ctx.runId,
+				]);
+				expect(rendered.exitCode).toBe(0);
+				const data = JSON.parse(rendered.stdout).data;
+				expect(data.selected_template).toBe("reviewer-plan-continued");
+				expect(data.prompt).toContain("Review kind: closure");
+				expect(data.prompt).toContain("## Plan Diff Since Last Review");
+				expect(data.prompt).not.toContain("this is the initial budget review");
+				const closure = await run5x(ctx.dir, [...recordArgs, "1"], V1_VERDICT);
+				expect(closure.exitCode).toBe(0);
+				expect(budgetStore(ctx.dir).getBaseline(ctx.runId)?.b0).toBe(2);
+			} finally {
+				rmSync(ctx.dir, { recursive: true, force: true });
 			}
 		},
 		{ timeout: 30000 },
