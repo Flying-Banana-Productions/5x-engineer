@@ -32,6 +32,9 @@ source of truth for the corresponding GitHub Release.
   escalation, or exit, so review commits and verdict/gate records no longer
   leave `steps.jsonl` / `decisions.jsonl` dirty. Commit envelopes gain an
   additive `committed` field. Run `5x harness sync` to pick up the skill change.
+- **Stale worktree mappings** — `plan list`, `plan phases`, `records index`, and
+  `run state --plan` no longer fail with `ENOENT: posix_spawn 'git'` when a plan
+  is still mapped to a removed worktree directory.
 
 ## 2.0
 
