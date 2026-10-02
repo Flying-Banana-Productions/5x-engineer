@@ -129,7 +129,7 @@ import {
 	formatAttributionLines,
 } from "../records/attribution.js";
 import { resolveRecordPerformer } from "../records/origin.js";
-import { resolveRecordsRoot } from "../records/paths.js";
+import { localRecordPlanPath, resolveRecordsRoot } from "../records/paths.js";
 import {
 	envelopeFromProgress,
 	fetchFiveXWithWarnings,
@@ -2422,6 +2422,7 @@ function summaryFromGitSteps(
 
 export async function loadGitRecordForPlan(opts: {
 	workdir: string;
+	planPath: string;
 	commit: string | null;
 	recordsRelPath: string;
 	slug: string;
@@ -2553,7 +2554,14 @@ export async function loadGitRecordForPlan(opts: {
 		}
 	}
 	return {
-		summary: win.summary,
+		summary: {
+			...win.summary,
+			plan_path: localRecordPlanPath(
+				win.summary.plan_path,
+				opts.workdir,
+				opts.planPath,
+			),
+		},
 		steps,
 		stepLines,
 		budgetLines,
@@ -2637,10 +2645,14 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 		if (!run) {
 			const gitRecord = await loadGitRecordForPlan({
 				workdir: projectRoot,
+				planPath,
 				commit: resolved.commit,
 				recordsRelPath,
 				slug: planSlugFromPath(rel),
 				worktreePath: mapped?.worktree_path ?? null,
+			}).catch((err: unknown) => {
+				if (err instanceof RecordStoreError) outputError(err.code, err.message);
+				throw err;
 			});
 			if (!gitRecord) {
 				outputError("RUN_NOT_FOUND", "Run not found");

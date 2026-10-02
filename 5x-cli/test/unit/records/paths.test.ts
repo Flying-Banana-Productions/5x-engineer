@@ -7,7 +7,45 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RECORDS_ROOT_OUTSIDE_REPO } from "../../../src/config.js";
-import { resolveRecordsRoot } from "../../../src/records/paths.js";
+import {
+	localRecordPlanPath,
+	recordPlanPath,
+	resolveRecordsRoot,
+} from "../../../src/records/paths.js";
+
+describe("portable record plan paths", () => {
+	test("absolute local identity becomes repo-relative and round-trips in another clone", () => {
+		const root = makeTmp("5x-plan-path-");
+		try {
+			const rel = "docs/development/plans/alpha.md";
+			expect(recordPlanPath(join(root, rel), root)).toBe(rel);
+			expect(recordPlanPath("docs\\development\\plans\\alpha.md", root)).toBe(
+				rel,
+			);
+			expect(localRecordPlanPath(rel, root)).toBe(join(root, rel));
+			for (const legacy of [
+				"/home/another-user/old-repo/alpha.md",
+				"C:\\Users\\another-user\\repo\\alpha.md",
+			]) {
+				expect(localRecordPlanPath(legacy, root, rel)).toBe(join(root, rel));
+				expect(() => localRecordPlanPath(legacy, root)).toThrow("unambiguous");
+			}
+			for (const invalid of [
+				"../alpha.md",
+				"docs/../../alpha.md",
+				"..\\alpha.md",
+				".",
+			]) {
+				expect(() => recordPlanPath(invalid, root)).toThrow("repo-relative");
+			}
+			expect(() => recordPlanPath("/outside/alpha.md", root)).toThrow(
+				"outside",
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 function makeTmp(prefix: string): string {
 	const dir = mkdtempSync(join(tmpdir(), prefix));

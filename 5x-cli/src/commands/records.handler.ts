@@ -8,6 +8,7 @@
 
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { RecordStoreError } from "../control-plane/record-types.js";
 import { outputError, outputSuccess } from "../output.js";
 import {
 	type BackfillResult,
@@ -99,6 +100,7 @@ export async function recordsIndex(
 		if (err instanceof RecordsIndexError) {
 			outputError(err.code, err.message, err.detail);
 		}
+		if (err instanceof RecordStoreError) outputError(err.code, err.message);
 		throw err;
 	}
 }
@@ -132,6 +134,7 @@ export async function recordsBackfill(
 		if (err instanceof RecordsBackfillError) {
 			outputError(err.code, err.message, err.detail);
 		}
+		if (err instanceof RecordStoreError) outputError(err.code, err.message);
 		throw err;
 	}
 }

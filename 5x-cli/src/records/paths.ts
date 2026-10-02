@@ -7,12 +7,67 @@
  * the canonical repo-relative path is re-rooted under `effectiveWorkdir`.
  */
 
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, posix, resolve, win32 } from "node:path";
 import {
 	RECORDS_ROOT_OUTSIDE_REPO,
 	recordsRootOutsideRepoMessage,
 } from "../config.js";
+import { RecordStoreError } from "../control-plane/record-types.js";
 import { realpathExisting, relativePathUnder } from "../paths.js";
+
+function isHostAbsolute(path: string): boolean {
+	return isAbsolute(path) || win32.isAbsolute(path);
+}
+
+/** Durable plan identity: a POSIX path beneath the control-plane root. */
+export function recordPlanPath(
+	planPath: string,
+	controlPlaneRoot: string,
+): string {
+	const rel = isHostAbsolute(planPath)
+		? relativePathUnder(planPath, controlPlaneRoot)
+		: planPath;
+	if (rel === null || (isHostAbsolute(planPath) && !isAbsolute(planPath))) {
+		throw new RecordStoreError(
+			"RECORD_PLAN_PATH_INVALID",
+			"Plan path is outside the control-plane root",
+		);
+	}
+	const normalized = posix.normalize(rel.replace(/\\/g, "/"));
+	if (
+		normalized === "." ||
+		normalized === ".." ||
+		normalized.startsWith("../") ||
+		isHostAbsolute(normalized)
+	) {
+		throw new RecordStoreError(
+			"RECORD_PLAN_PATH_INVALID",
+			"Record plan path must be repo-relative and remain inside the repository",
+		);
+	}
+	return normalized;
+}
+
+/** Legacy absolute records use an independently discovered plan, never a host-prefix guess. */
+export function localRecordPlanPath(
+	planPath: string,
+	controlPlaneRoot: string,
+	discoveredPlanPath?: string,
+): string {
+	if (isHostAbsolute(planPath)) {
+		if (!discoveredPlanPath) {
+			throw new RecordStoreError(
+				"RECORD_PLAN_PATH_AMBIGUOUS",
+				"Legacy absolute record requires an unambiguous local plan association",
+			);
+		}
+		return resolve(
+			controlPlaneRoot,
+			recordPlanPath(discoveredPlanPath, controlPlaneRoot),
+		);
+	}
+	return resolve(controlPlaneRoot, recordPlanPath(planPath, controlPlaneRoot));
+}
 
 export interface ResolvedRecordsRoot {
 	/** POSIX path relative to the checkout / worktree root. */

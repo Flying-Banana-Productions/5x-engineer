@@ -351,6 +351,7 @@ describe("run state review-budget wiring", () => {
 			appendHumanReview(ctx);
 			const loaded = await loadGitRecordForPlan({
 				workdir: ctx.root,
+				planPath: ctx.planPath,
 				commit: null,
 				recordsRelPath: "records",
 				slug: planSlugFromPath(ctx.planPath),
@@ -436,6 +437,7 @@ describe("run state review-budget wiring", () => {
 			);
 			const loaded = await loadGitRecordForPlan({
 				workdir: ctx.root,
+				planPath: ctx.planPath,
 				commit: null,
 				recordsRelPath: "records",
 				slug,

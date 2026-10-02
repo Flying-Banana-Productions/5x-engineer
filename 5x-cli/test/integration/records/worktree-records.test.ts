@@ -149,6 +149,7 @@ describe("worktree records", () => {
 					unknown
 				>;
 				expect(runDoc.format_version).toBe(1);
+				expect(runDoc.plan_path).toBe("docs/development/test-plan.md");
 				const creator = runDoc.creator as { installation_id: string };
 				expect(creator.installation_id).toMatch(
 					/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,

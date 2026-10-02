@@ -169,6 +169,7 @@ export async function createRecordContext(opts: {
 
 	const recordStore = createWorkingTreeRecordStore({
 		recordsRoot: resolved.recordsAbsPath,
+		controlPlaneRoot,
 	});
 
 	const identity = loadOrCreateInstallationIdentity({ homeDir: homedir() });

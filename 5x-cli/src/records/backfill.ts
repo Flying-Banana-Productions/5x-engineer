@@ -57,7 +57,11 @@ import {
 } from "../git.js";
 import { planSlugFromPath, realpathExisting } from "../paths.js";
 import { version } from "../version.js";
-import { resolveRecordsRoot } from "./paths.js";
+import {
+	localRecordPlanPath,
+	recordPlanPath,
+	resolveRecordsRoot,
+} from "./paths.js";
 
 const EXPORTER_PERFORMER: RecordPerformer = {
 	kind: "system",
@@ -546,6 +550,26 @@ function isRecordedSummary(summary: RunRecordSummary): boolean {
 	return summary.backfilled !== true && summary.creator !== null;
 }
 
+/** Compare legacy summaries by this run's known local identity without rewriting history. */
+function normalizeSnapshotPlan(
+	snapshot: ExistingSnapshot,
+	prepared: PreparedRun,
+	workdir: string,
+): void {
+	if (!snapshot.summary) return;
+	snapshot.summary = {
+		...snapshot.summary,
+		plan_path: recordPlanPath(
+			localRecordPlanPath(
+				snapshot.summary.plan_path,
+				workdir,
+				prepared.run.plan_path,
+			),
+			workdir,
+		),
+	};
+}
+
 function summariesEquivalent(
 	existing: RunRecordSummary,
 	next: RunRecordSummary,
@@ -661,6 +685,7 @@ async function existingSnapshot(opts: {
 		if (existsSync(resolved.recordsAbsPath)) {
 			const store = createWorkingTreeRecordStore({
 				recordsRoot: resolved.recordsAbsPath,
+				controlPlaneRoot: opts.controlPlaneRoot,
 			});
 			return snapshotFromStore(store, opts.runId);
 		}
@@ -843,7 +868,10 @@ export async function backfillRecords(
 		prepared.push({
 			run,
 			slug,
-			summary: buildSummary(run, steps, materializer),
+			summary: {
+				...buildSummary(run, steps, materializer),
+				plan_path: recordPlanPath(run.plan_path, workdir),
+			},
 			stepOps,
 			decisionOps,
 			files,
@@ -866,6 +894,7 @@ export async function backfillRecords(
 				config,
 				controlPlaneRoot: workdir,
 			});
+			normalizeSnapshotPlan(existing, item, workdir);
 			const classified = classifyDryRun(item, existing);
 			mappings.push({
 				run_id: item.run.id,
@@ -905,6 +934,7 @@ export async function backfillRecords(
 			});
 			const store = createWorkingTreeRecordStore({
 				recordsRoot: resolved.recordsAbsPath,
+				controlPlaneRoot: workdir,
 			});
 			const filesToCommit = new Set<string>();
 			for (const item of group.items) {
@@ -920,6 +950,7 @@ export async function backfillRecords(
 					existing.summary = fromGit.summary;
 					for (const [k, v] of fromGit.lines) existing.lines.set(k, v);
 				}
+				normalizeSnapshotPlan(existing, item, workdir);
 				const applied = applyPrepared(store, item, existing, materializer);
 				mappings.push({
 					run_id: item.run.id,
