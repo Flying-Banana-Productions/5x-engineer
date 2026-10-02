@@ -962,6 +962,8 @@ Export historical SQLite runs into the record format.
 
 `--dry-run` prints the mapping without `git add`, file writes, or commits. A second real run is a no-op when the target is already clean (`created: false`, no new commit). Active runs are exported unsealed (`status: active`, `backfilled: true`, no `sealer`).
 
+**Hooks:** backfill commits contain record files only and are created with `git commit --no-verify`, so repo `pre-commit` / `commit-msg` hooks do not run. Temporary target worktrees are not initialized (`worktree.postCreate` is not run).
+
 ### Origin, identity, and privacy
 
 - **Identity file:** user-scope `identity.json` (Unix: `$XDG_CONFIG_HOME/5x` or `~/.config/5x`; Windows: `%APPDATA%/5x`; tests/CI: `FIVEX_CONFIG_HOME`). Never under the repository, `paths.records`, or project `.5x/`. `installation_id` is a random UUID v4 correlator for one CLI install, not a person. Corrupt files fail closed (`IDENTITY_CORRUPT`).

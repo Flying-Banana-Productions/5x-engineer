@@ -54,7 +54,6 @@ import {
 	listWorktrees,
 	removeWorktree,
 	revParseCommit,
-	runWorktreeSetupCommand,
 } from "../git.js";
 import { planSlugFromPath, realpathExisting } from "../paths.js";
 import { version } from "../version.js";
@@ -633,15 +632,13 @@ async function ensureTargetWorktree(
 	workdir: string,
 	target: ResolvedTarget,
 	temps: string[],
-	postCreateHook?: string,
 ): Promise<string> {
 	if (target.worktree) return target.worktree;
 	const path = mkdtempSync(join(tmpdir(), "5x-backfill-wt-"));
 	temps.push(path);
+	// No `worktree.postCreate` here: the temp worktree only receives a
+	// records-only commit made with `--no-verify`, so it needs no setup.
 	await addWorktreeForBranch(workdir, path, target.branch, target.startPoint);
-	if (postCreateHook) {
-		await runWorktreeSetupCommand(path, postCreateHook);
-	}
 	return path;
 }
 
@@ -900,7 +897,6 @@ export async function backfillRecords(
 				workdir,
 				group.target,
 				temps,
-				config.worktree.postCreate,
 			);
 			const resolved = resolveRecordsRoot({
 				recordsConfigAbs: config.paths.records,
@@ -948,7 +944,12 @@ export async function backfillRecords(
 			const dirty = await hasUncommittedChanges(writeRoot);
 			let created = false;
 			if (dirty && existingFiles.length > 0) {
-				await commitFiles(writeRoot, existingFiles, message);
+				// Records-only commit: repo hooks (typecheck, lint, tests) validate
+				// code this commit does not touch, and the target worktree may be
+				// a bare temp checkout with no dependencies installed.
+				await commitFiles(writeRoot, existingFiles, message, {
+					noVerify: true,
+				});
 				created = true;
 			}
 			commits.push({
