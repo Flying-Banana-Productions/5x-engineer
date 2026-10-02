@@ -520,12 +520,15 @@ export async function submitPlanReviewDecision(
 	if (!baseline)
 		fail("BUDGET_BASELINE_MISSING", "review budget baseline is missing");
 	const governance = createReviewGovernanceStore(ctx.recordStore, promptStore);
-	const alreadyResolved = ctx.recordStore.getLine(
-		input.runId,
-		"decisions",
-		governanceDecisionKey(input.gateId),
-	);
-	if (alreadyResolved) {
+	// Re-checked after each racy read below: a concurrent process may resolve the
+	// gate between our decision lookup and gate derivation / step admission.
+	const resolveAgainstWinner = () => {
+		const alreadyResolved = ctx.recordStore.getLine(
+			input.runId,
+			"decisions",
+			governanceDecisionKey(input.gateId),
+		);
+		if (!alreadyResolved) return null;
 		const winner = decodeReviewDecisionPayload(alreadyResolved.payload);
 		const state = governingStateBeforeWinner(
 			ctx,
@@ -583,15 +586,20 @@ export async function submitPlanReviewDecision(
 			created: false,
 			abortRun: deps.abortRun,
 		});
-	}
+	};
+	const resolved = resolveAgainstWinner();
+	if (resolved) return resolved;
 	if (run.status !== "active")
 		fail("RUN_NOT_ACTIVE", `Run ${input.runId} is ${run.status}`);
 	const gate = governance.deriveOpenGate(input.runId);
-	if (!gate || gate.gateId !== input.gateId)
+	if (!gate || gate.gateId !== input.gateId) {
+		const raced = resolveAgainstWinner();
+		if (raced) return raced;
 		fail(
 			"REVIEW_GATE_NOT_OPEN",
 			`Review gate ${input.gateId} is not the current open gate`,
 		);
+	}
 	const governing = governance.deriveGoverningState(input.runId, baseline.b0);
 	const eligible = eligibleFindingMap(
 		ctx,
@@ -638,8 +646,11 @@ export async function submitPlanReviewDecision(
 			ctx,
 		);
 	} catch (error) {
-		if (error instanceof RecordError)
+		if (error instanceof RecordError) {
+			const raced = resolveAgainstWinner();
+			if (raced) return raced;
 			throw new CliError(error.code, error.message, error.detail);
+		}
 		throw error;
 	}
 	if (admitted.outcome === "duplicate")

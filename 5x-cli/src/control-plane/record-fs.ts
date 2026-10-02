@@ -1053,7 +1053,13 @@ class WorkingTreeRecordStore implements RecordStore {
 				started_at: new Date().toISOString(),
 			};
 			writeFileSync(temp, `${JSON.stringify(doc)}\n`);
-			this.fsyncFile(temp);
+			try {
+				this.fsyncFile(temp);
+			} catch (err) {
+				// A concurrent acquirer's cleanupLockTemps may sweep our temp.
+				if (isErrno(err, "ENOENT")) continue;
+				throw err;
+			}
 			fire("after-lock-temp-written");
 
 			try {
