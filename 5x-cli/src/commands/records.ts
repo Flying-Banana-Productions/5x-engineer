@@ -24,7 +24,9 @@ export function registerRecords(parent: Command): void {
 		.summary("Rebuild the SQLite index from git records")
 		.description(
 			"Materialize `runs` / `steps` from the resolved git record. Origin is not\n" +
-				"copied into SQLite. Newer local-only SQLite steps are kept.",
+				"copied into SQLite. Repo-relative plan paths resolve against this checkout;\n" +
+				"legacy absolute paths use the discovered local plan. Re-indexing repairs\n" +
+				"previously imported paths. Newer local-only SQLite steps are kept.",
 		)
 		.option("--plan <slug>", "Limit indexing to one plan slug")
 		.addHelpText(

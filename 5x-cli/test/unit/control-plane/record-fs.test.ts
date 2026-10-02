@@ -73,6 +73,31 @@ function v1Summary(
 	};
 }
 
+test("production store writes portable plan paths on creation and seal in a separate worktree", () => {
+	const controlPlaneRoot = makeRoot();
+	const recordsRoot = makeRoot();
+	const store = createWorkingTreeRecordStore({ recordsRoot, controlPlaneRoot });
+	const summary = v1Summary("run_portable", {
+		plan_path: join(controlPlaneRoot, PLAN_PATH),
+	});
+	store.putRun(summary);
+	expect(store.getRun(summary.id)?.plan_path).toBe(PLAN_PATH);
+	expect(summary.plan_path).toBe(join(controlPlaneRoot, PLAN_PATH));
+	store.putRun({
+		...summary,
+		status: "completed",
+		sealed_at: FIXED_NOW,
+		sealer: ORIGIN.recorder,
+	});
+	const text = readFileSync(
+		join(runDir(recordsRoot, summary.id), "run.json"),
+		"utf8",
+	);
+	expect(JSON.parse(text).plan_path).toBe(PLAN_PATH);
+	expect(text).not.toContain(controlPlaneRoot);
+	expect(store.getRun(summary.id)?.creator).toEqual(summary.creator);
+});
+
 function stepPayload(name: string) {
 	return {
 		step_name: name,

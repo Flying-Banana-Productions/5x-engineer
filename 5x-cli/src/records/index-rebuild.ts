@@ -33,12 +33,13 @@ import {
 	getSteps,
 	recordStep,
 	type StepRow,
+	updateRunPlanPath,
 } from "../db/operations-v1.js";
 import { parseRunTimestamp } from "../db/timestamps.js";
 import { gitLsTreePaths, gitShowFile } from "../git.js";
 import { isPathUnder, planSlugFromPath, relativePathUnder } from "../paths.js";
 import { reindexReviewGovernance } from "../review-governance/sqlite-index.js";
-import { resolveRecordsRoot } from "./paths.js";
+import { localRecordPlanPath, resolveRecordsRoot } from "./paths.js";
 import {
 	type ProgressSession,
 	type ProgressSource,
@@ -200,6 +201,7 @@ function findSqliteStep(
 function upsertRunFromSummary(
 	db: Database,
 	summary: RunRecordSummary,
+	planPath: string,
 ): boolean {
 	const existing = getRunV1(db, summary.id);
 	const terminal =
@@ -209,17 +211,22 @@ function upsertRunFromSummary(
 	if (!existing) {
 		createRunV1(db, {
 			id: summary.id,
-			planPath: summary.plan_path,
+			planPath,
 			configJson: stringifyConfigJson(summary.config_json),
 		});
 		if (terminal) completeRun(db, summary.id, terminal);
 		return true;
 	}
+	let changed = false;
+	if (existing.plan_path !== planPath) {
+		updateRunPlanPath(db, summary.id, planPath);
+		changed = true;
+	}
 	if (terminal && existing.status !== terminal) {
 		completeRun(db, summary.id, terminal);
 		return true;
 	}
-	return false;
+	return changed;
 }
 
 function insertStepFromLine(db: Database, line: RecordLine): boolean {
@@ -475,6 +482,15 @@ export async function collectRecordIndexSnapshot(opts: {
 			planPath: entry.rel,
 			git,
 		});
+		if (
+			loaded.length > 0 &&
+			entries.filter((candidate) => candidate.slug === entry.slug).length > 1
+		) {
+			throw new RecordsIndexError(
+				"RECORD_PLAN_PATH_AMBIGUOUS",
+				`Multiple plans share record slug ${entry.slug}; cannot associate run records safely`,
+			);
+		}
 		runs.push(...loaded);
 	}
 
@@ -522,9 +538,19 @@ export async function rebuildRecordsIndex(opts: {
 	let runs_upserted = 0;
 	let steps_upserted = 0;
 	let steps_skipped_newer_local = 0;
+	// Validate every path before changing SQLite, including legacy associations.
+	const localRuns = snapshot.runs.map((run) => ({
+		run,
+		planPath: localRecordPlanPath(
+			run.summary.plan_path,
+			opts.workdir,
+			run.planPath,
+		),
+	}));
 
-	for (const run of snapshot.runs) {
-		if (upsertRunFromSummary(opts.db, run.summary)) runs_upserted += 1;
+	for (const { run, planPath } of localRuns) {
+		if (upsertRunFromSummary(opts.db, run.summary, planPath))
+			runs_upserted += 1;
 		const recordKeys = new Set<string>();
 		for (const line of run.steps) {
 			const payload = parseStepPayload(line.payload);

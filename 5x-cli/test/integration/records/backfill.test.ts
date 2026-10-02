@@ -235,6 +235,7 @@ describe("records backfill (integration)", () => {
 			);
 			expect(existsSync(runJson)).toBe(true);
 			const summary = parseRunJson(readFileSync(runJson, "utf-8"));
+			expect(summary.plan_path).toBe("docs/development/alpha.md");
 			expect(summary.creator).toBeNull();
 			expect(summary.sealer).toBeNull();
 			expect(summary.materializer?.recorder.installation_id).toBe(exporterId);
@@ -274,6 +275,28 @@ describe("records backfill (integration)", () => {
 			expect(secondData.mappings[0]?.lines.every((l) => !l.created)).toBe(true);
 			expect(secondData.commits[0]?.created).toBe(false);
 			expect(git(["rev-parse", "HEAD"], dir)).toBe(head);
+			// A pre-portability export remains semantically identical on repeat backfill.
+			writeFileSync(
+				runJson,
+				`${JSON.stringify({ ...summary, plan_path: planPath }, null, 2)}\n`,
+			);
+			git(["add", "-A"], dir);
+			git(["commit", "-m", "legacy absolute summary"], dir);
+			const legacyHead = git(["rev-parse", "HEAD"], dir);
+			for (const args of [
+				["records", "backfill", "--dry-run"],
+				["records", "backfill"],
+			]) {
+				const legacy = run5x(dir, args, env);
+				expect(legacy.exitCode).toBe(0);
+				const legacyData = parseEnvelope(legacy.stdout)
+					.data as typeof secondData;
+				expect(legacyData.mappings[0]?.disagreements).toEqual([]);
+				expect(legacyData.mappings[0]?.lines.every((l) => !l.created)).toBe(
+					true,
+				);
+				expect(git(["rev-parse", "HEAD"], dir)).toBe(legacyHead);
+			}
 
 			const state = run5x(dir, ["run", "state", "--run", "run_int"], env);
 			expect(state.exitCode).toBe(0);

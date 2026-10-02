@@ -66,6 +66,7 @@ export interface StepRecordPayload {
 
 export interface RunRecordSummary {
 	id: string;
+	/** POSIX path relative to the control-plane root. Readers also accept legacy absolute paths. */
 	plan_path: string;
 	config_json: unknown | null;
 	created_at: string;

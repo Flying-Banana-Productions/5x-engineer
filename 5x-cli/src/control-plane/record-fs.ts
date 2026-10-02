@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { planSlugFromPath } from "../paths.js";
+import { recordPlanPath } from "../records/paths.js";
 import {
 	decodeJsonlFile,
 	encodeJsonlFile,
@@ -68,6 +69,8 @@ export type TxnEvent =
 
 export interface WorkingTreeRecordStoreOptions {
 	recordsRoot: string;
+	/** Production writers normalize plan identity against the main checkout, not the worktree. */
+	controlPlaneRoot?: string;
 	now?: () => string;
 	/** Test-only; not re-exported from the public barrel. Default: real file/dir fsync. */
 	fsyncFile?: (path: string) => void;
@@ -573,6 +576,7 @@ export function runDirHasTxnArtifacts(runDir: string): boolean {
 
 class WorkingTreeRecordStore implements RecordStore {
 	private readonly recordsRoot: string;
+	private readonly controlPlaneRoot?: string;
 	private readonly now: () => string;
 	private readonly fsyncFileFn: (path: string) => void;
 	private readonly fsyncDirFn: (dir: string) => void;
@@ -583,6 +587,7 @@ class WorkingTreeRecordStore implements RecordStore {
 
 	constructor(opts: WorkingTreeRecordStoreOptions) {
 		this.recordsRoot = resolve(opts.recordsRoot);
+		this.controlPlaneRoot = opts.controlPlaneRoot;
 		this.now = opts.now ?? utcNow;
 		this.fsyncFileFn = opts.fsyncFile ?? defaultFsyncFile;
 		this.fsyncDirFn = opts.fsyncDir ?? defaultFsyncDir;
@@ -605,6 +610,12 @@ class WorkingTreeRecordStore implements RecordStore {
 	}
 
 	putRun(summary: RunRecordSummary): void {
+		if (this.controlPlaneRoot) {
+			summary = {
+				...summary,
+				plan_path: recordPlanPath(summary.plan_path, this.controlPlaneRoot),
+			};
+		}
 		const runDir = runDirForSummary(this.recordsRoot, summary);
 		mkdirDurable(runDir, (d) => this.fsyncDir(d));
 		let acquired = false;

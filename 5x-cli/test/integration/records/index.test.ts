@@ -80,7 +80,7 @@ function run5x(cwd: string, args: string[]): CmdResult {
 
 function seedCommittedRecords(
 	dir: string,
-	opts?: { backfill?: boolean },
+	opts?: { backfill?: boolean; planPath?: string },
 ): void {
 	mkdirSync(join(dir, "docs", "development", "runs", "alpha", "run_a"), {
 		recursive: true,
@@ -91,7 +91,7 @@ function seedCommittedRecords(
 	);
 	const summary: Record<string, unknown> = {
 		id: "run_a",
-		plan_path: "docs/development/alpha.md",
+		plan_path: opts?.planPath ?? "docs/development/alpha.md",
 		config_json: null,
 		created_at: "2026-09-01 12:00:00",
 		sealed_at: opts?.backfill ? "2026-09-01 13:00:00" : null,
@@ -160,9 +160,50 @@ function seedCommittedRecords(
 }
 
 describe("5x records index (integration)", () => {
-	test(
-		"fresh clone materializes runs/steps modulo ids and local columns",
-		() => {
+	test.each(["ambiguous", "escaping"])(
+		"rejects %s plan identities before importing runs",
+		(kind) => {
+			const dir = makeTmpDir("5x-idx-invalid");
+			try {
+				initRepo(dir);
+				seedCommittedRecords(dir, {
+					planPath:
+						kind === "escaping"
+							? "../outside.md"
+							: "/old/repo/docs/development/alpha.md",
+				});
+				if (kind === "ambiguous") {
+					mkdirSync(join(dir, "docs/development/other"), { recursive: true });
+					writeFileSync(
+						join(dir, "docs/development/other/alpha.md"),
+						"# Other Alpha\n",
+					);
+					git(["add", "-A"], dir);
+					git(["commit", "-m", "duplicate slug"], dir);
+				}
+				const indexed = run5x(dir, ["records", "index"]);
+				expect(indexed.exitCode).toBe(1);
+				expect(JSON.parse(indexed.stdout).error.code).toBe(
+					kind === "ambiguous"
+						? "RECORD_PLAN_PATH_AMBIGUOUS"
+						: "RECORD_PLAN_PATH_INVALID",
+				);
+				const db = new Database(join(dir, ".5x", "5x.db"), { readonly: true });
+				expect(getRunV1(db, "run_a")).toBeNull();
+				db.close();
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+	test.each([
+		"docs/development/alpha.md",
+		"/home/original-user/old-repo/docs/development/alpha.md",
+		"C:\\Users\\original-user\\repo\\docs\\development\\alpha.md",
+	])(
+		"fresh clone materializes local runs/steps from %s and repairs stale imported paths",
+		(planPath) => {
 			const origin = makeTmpDir("5x-idx-origin");
 			const clone = join(
 				tmpdir(),
@@ -170,10 +211,20 @@ describe("5x records index (integration)", () => {
 			);
 			try {
 				initRepo(origin);
-				seedCommittedRecords(origin);
+				seedCommittedRecords(origin, { planPath });
 				git(["clone", origin, clone], tmpdir());
 				git(["config", "user.email", "test@test.com"], clone);
 				git(["config", "user.name", "Test"], clone);
+				const state = run5x(clone, [
+					"run",
+					"state",
+					"--plan",
+					"docs/development/alpha.md",
+				]);
+				expect(state.exitCode).toBe(0);
+				expect(JSON.parse(state.stdout).data.run.plan_path).toBe(
+					join(clone, "docs/development/alpha.md"),
+				);
 
 				const result = run5x(clone, ["records", "index"]);
 				expect(result.exitCode).toBe(0);
@@ -196,6 +247,7 @@ describe("5x records index (integration)", () => {
 				const run = getRunV1(db, "run_a");
 				expect(run).not.toBeNull();
 				expect(run?.status).toBe("active");
+				expect(run?.plan_path).toBe(join(clone, "docs/development/alpha.md"));
 				const steps = getSteps(db, "run_a");
 				expect(steps).toHaveLength(1);
 				expect(steps[0]?.step_name).toBe("author:impl");
@@ -212,6 +264,22 @@ describe("5x records index (integration)", () => {
 					(steps[0] as unknown as Record<string, unknown>).origin,
 				).toBeUndefined();
 				db.close();
+				const writable = new Database(join(clone, ".5x", "5x.db"));
+				writable
+					.query("UPDATE runs SET plan_path = ? WHERE id = 'run_a'")
+					.run("/old/clone/docs/development/alpha.md");
+				writable.close();
+				const repaired = run5x(clone, ["records", "index"]);
+				expect(repaired.exitCode).toBe(0);
+				expect(JSON.parse(repaired.stdout).data.runs_upserted).toBe(1);
+				const repairedDb = new Database(join(clone, ".5x", "5x.db"), {
+					readonly: true,
+				});
+				expect(getRunV1(repairedDb, "run_a")?.plan_path).toBe(
+					join(clone, "docs/development/alpha.md"),
+				);
+				expect(getSteps(repairedDb, "run_a")).toHaveLength(1);
+				repairedDb.close();
 
 				const second = run5x(clone, ["records", "index"]);
 				expect(second.exitCode).toBe(0);
