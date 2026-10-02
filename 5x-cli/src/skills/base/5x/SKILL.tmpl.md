@@ -103,6 +103,22 @@ How you collect the response:
    terminals). Pass `--default` to provide a fallback for non-interactive
    environments.
 
+### Checkpoint run records before handing off
+
+Every recording command (`5x run record`, any `--record` step,
+`5x phase finish`, and `5x commit` itself) appends to the run's git-tracked
+records, so they are dirty again right after each one.
+That is expected mid-loop — the next `5x commit` sweeps them in. Before you
+**stop or wait on the human** with the run still active (any human gate,
+escalation, or exit), commit them so the worktree is left clean:
+
+    5x commit --no-record -m "5x: checkpoint run records"
+
+It commits only the active run's records, appends no step, and is a
+successful no-op (`committed: false`) when they are already committed.
+`5x run complete` seals and commits the records itself — no checkpoint is
+needed before it.
+
 {{#if any_native}}
 ### Native harness (orchestrator with a chat or question UI)
 

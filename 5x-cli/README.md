@@ -400,6 +400,7 @@ All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": f
 ```bash
 5x commit --run <id> -m <message> (--files <paths...> | --all-files) [--phase <p>]
 5x commit --run <id> -m <message> (--files <paths...> | --all-files) --no-record
+5x commit --run <id> -m <message> --no-record        # active run records only
 ```
 
 Normal commits append a `git:commit` event to the active run's tracked journal,
@@ -408,6 +409,12 @@ Use `--no-record` to checkpoint those run artifacts without recursively adding
 another event. For safety, `--no-record` rejects a staged commit containing
 anything outside the active run's records directory. A successful artifact-only
 checkpoint leaves the worktree clean when no other changes are present.
+
+`--no-record` with neither `--files` nor `--all-files` is the records-only
+checkpoint: it stages and commits just the active run's records directory
+(other staged or dirty files are left untouched) and succeeds with
+`committed: false` when the records are already committed. The bundled skills
+run it before every human gate, escalation, or exit that leaves a run active.
 
 **Windows notes:**
 - In PowerShell, prefer `--result @path/to/result.json` or `Get-Content result.json -Raw | 5x run record ... --result -` over inline JSON.

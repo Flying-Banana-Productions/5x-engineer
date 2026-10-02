@@ -404,6 +404,11 @@ Loop back to Step 1.
 
 ### Step 4A: Enforced human gate
 
+Before waiting on the human, checkpoint the run records (see the `5x`
+foundation skill — **Checkpoint run records before handing off**):
+
+    5x commit --no-record -m "5x: checkpoint run records"
+
 Run `5x review gate show`, set `$GATE_ID` from `.data.gateId`, and present its notification, stable gate ID, causes,
 `allowedChoices`, eligible finding IDs/fingerprints, and
 `requiredFieldsByChoice` to the human. Do not answer the notification with
@@ -459,6 +464,10 @@ For each `human_required` review item (and any ambiguous context in
 $REASON), draft a concrete recommendation for how the author should resolve
 it. Present these recommendations to the human along with the escalation
 reason — do not ask the human to write guidance from scratch.
+
+Checkpoint the run records before waiting on the human:
+
+    5x commit --no-record -m "5x: checkpoint run records"
 
 {{#if any_native}}
 Present the situation to the human using your **native UI** (multiple choice + freeform where needed). Match the semantics of:
