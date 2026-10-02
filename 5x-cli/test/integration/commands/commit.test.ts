@@ -748,4 +748,100 @@ describe("5x commit (integration)", () => {
 		},
 		{ timeout: 30000 },
 	);
+
+	test(
+		"--no-record alone leaves records clean after a review commit, verdict record, and human gate",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const runId = await initRun(dir, planPath);
+				const checkpoint = () =>
+					run5x(dir, [
+						"commit",
+						"--run",
+						runId,
+						"-m",
+						"5x: checkpoint run records",
+						"--no-record",
+					]);
+
+				// Reviewer commits its review, then the verdict is recorded.
+				writeFileSync(join(dir, "review.md"), "# Review\n");
+				const reviewCommit = await run5x(dir, [
+					"commit",
+					"--run",
+					runId,
+					"-m",
+					"review: phase 1",
+					"--files",
+					"review.md",
+					"--phase",
+					"1",
+				]);
+				expect(reviewCommit.exitCode).toBe(0);
+				const verdict = await run5x(dir, [
+					"run",
+					"record",
+					"reviewer:commit",
+					"--run",
+					runId,
+					"--phase",
+					"1",
+					"--result",
+					'{"readiness":"ready","items":[]}',
+				]);
+				expect(verdict.exitCode).toBe(0);
+				expect(git(["status", "--porcelain"], dir)).toContain("steps.jsonl");
+
+				const afterReview = await checkpoint();
+				expect(afterReview.exitCode).toBe(0);
+				expect(parseJson(afterReview.stdout).data).toMatchObject({
+					committed: true,
+					recorded: false,
+				});
+				expect(git(["status", "--porcelain"], dir)).toBe("");
+
+				// Human gate dirties the records again; checkpoint is repeatable.
+				const gate = await run5x(dir, [
+					"run",
+					"record",
+					"human:gate",
+					"--run",
+					runId,
+					"--phase",
+					"1",
+					"--result",
+					'{"choice":"override"}',
+				]);
+				expect(gate.exitCode).toBe(0);
+				expect(git(["status", "--porcelain"], dir)).not.toBe("");
+				expect((await checkpoint()).exitCode).toBe(0);
+				expect(git(["status", "--porcelain"], dir)).toBe("");
+
+				// Already clean: success, no new commit.
+				const head = git(["rev-parse", "HEAD"], dir);
+				const noop = await checkpoint();
+				expect(noop.exitCode).toBe(0);
+				expect(parseJson(noop.stdout).data).toMatchObject({
+					committed: false,
+					hash: null,
+				});
+				expect(git(["rev-parse", "HEAD"], dir)).toBe(head);
+
+				const stateResult = await run5x(dir, ["run", "state", "--run", runId]);
+				const steps = (
+					parseJson(stateResult.stdout).data as {
+						steps: Array<Record<string, unknown>>;
+					}
+				).steps;
+				expect(steps.filter((s) => s.step_name === "git:commit")).toHaveLength(
+					1,
+				);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 60000 },
+	);
 });

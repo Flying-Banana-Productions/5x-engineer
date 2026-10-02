@@ -671,8 +671,11 @@ export async function submitPlanReviewDecision(
 			ctx,
 		);
 	} catch (error) {
-		if (error instanceof RecordError)
+		if (error instanceof RecordError) {
+			const raced = readDecision();
+			if (raced) return acceptStoredWinner(raced);
 			throw new CliError(error.code, error.message, error.detail);
+		}
 		throw error;
 	}
 	if (admitted.outcome === "duplicate")

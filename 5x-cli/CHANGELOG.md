@@ -31,6 +31,19 @@ source of truth for the corresponding GitHub Release.
 - **Run artifact checkpoints** — `5x commit --no-record` can commit only the
   active run's tracked artifacts without recursively appending another
   `git:commit` event, allowing a clean mid-run checkpoint.
+- **Clean records at human gates and exits** — `5x commit --no-record` with no
+  `--files`/`--all-files` now commits only the active run's records and is a
+  successful no-op (`committed: false`) when they are already committed. The
+  phase-execution and plan-review skills checkpoint before every human gate,
+  escalation, or exit, so review commits and verdict/gate records no longer
+  leave `steps.jsonl` / `decisions.jsonl` dirty. Commit envelopes gain an
+  additive `committed` field. Run `5x harness sync` to pick up the skill change.
+- **Truncated JSON on pipes** — output larger than the pipe buffer (~64 KiB,
+  e.g. `5x doctor | jq`) was cut off. CLI stdout is now written synchronously
+  and losslessly, including on error exits and with slow readers.
+- **Stale worktree mappings** — `plan list`, `plan phases`, `records index`, and
+  `run state --plan` no longer fail with `ENOENT: posix_spawn 'git'` when a plan
+  is still mapped to a removed worktree directory.
 
 ## 2.0
 

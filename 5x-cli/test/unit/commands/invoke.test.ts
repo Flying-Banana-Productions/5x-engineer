@@ -300,7 +300,13 @@ ${structured}
 						throw new Error("provider must not be created before preflight");
 					},
 				),
-			).rejects.toMatchObject({ code: "BUDGET_SECTION_MISSING" });
+			).rejects.toMatchObject({
+				code: "PLAN_REPAIR_REQUIRED",
+				detail: {
+					reviewRoute: "author_revision",
+					diagnostic: { code: "BUDGET_SECTION_MISSING" },
+				},
+			});
 			expect(providerCreations).toBe(0);
 		} finally {
 			db?.close();
@@ -519,6 +525,10 @@ ${structured}
 				return prompt.slice(start, contextStart < 0 ? undefined : contextStart);
 			};
 			expect(contextBlock(invokePrompt)).toBe(contextBlock(nativePrompt));
+			for (const prompt of [invokePrompt, nativePrompt]) {
+				expect(prompt).toContain("Do **not** emit `baselineAssessment`");
+				expect(prompt).not.toContain("this is the initial budget review");
+			}
 			expect(contextBlock(invokePrompt)).toContain(
 				"Required prior-finding outcome IDs: P1.open",
 			);

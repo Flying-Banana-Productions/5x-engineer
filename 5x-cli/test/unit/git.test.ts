@@ -325,6 +325,31 @@ describe("commitFiles", () => {
 		);
 	});
 
+	test("passes --no-verify when noVerify is set", async () => {
+		const hash = "a1b2c3d4e5f6".repeat(4).slice(0, 40);
+		mockGit(
+			[cmd("add", "--"), ok("")],
+			[cmd("commit", "--only", "--no-verify", "-m"), ok("")],
+			[cmd("rev-parse", "HEAD"), ok(hash)],
+		);
+		const result = await commitFiles("/r", ["file.txt"], "test commit", {
+			noVerify: true,
+		});
+		expect(result.commit).toBe(hash);
+		expect(execGitSpy).toHaveBeenCalledWith(
+			[
+				"commit",
+				"--only",
+				"--no-verify",
+				"-m",
+				"test commit",
+				"--",
+				"file.txt",
+			],
+			"/r",
+		);
+	});
+
 	test("throws on empty file list", async () => {
 		await expect(commitFiles("/r", [], "msg")).rejects.toThrow(
 			"No files provided",

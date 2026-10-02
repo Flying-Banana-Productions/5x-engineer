@@ -4,7 +4,8 @@
  * `5x commit --run <id> -m <msg> [--files <paths...> | --all-files] [--phase <p>] [--no-record] [--dry-run]`
  *
  * Atomically stages files, creates a git commit, and records a `git:commit`
- * step in the run's step journal. Business logic lives in commit.handler.ts.
+ * step in the run's step journal. `--no-record` alone checkpoints only the
+ * active run's records. Business logic lives in commit.handler.ts.
  */
 
 import type { Command } from "@commander-js/extra-typings";
@@ -17,7 +18,9 @@ export function registerCommit(parent: Command) {
 		.summary("Create a tracked git commit for a run")
 		.description(
 			"Stage files, create a git commit, and record it as a `git:commit` step\n" +
-				"in the run journal. Either --files or --all-files is required.",
+				"in the run journal. Either --files or --all-files is required,\n" +
+				"except with --no-record alone, which commits only the active run's\n" +
+				"records (a no-op when they are already committed).",
 		)
 		.option("-r, --run <id>", AMBIENT_RUN_OPTION_HELP)
 		.requiredOption("-m, --message <msg>", "Commit message")
@@ -26,7 +29,7 @@ export function registerCommit(parent: Command) {
 		.option("--phase <phase>", "Phase identifier for the step")
 		.option(
 			"--no-record",
-			"Do not append git:commit (run-artifact-only checkpoints)",
+			"Do not append git:commit (run-artifact-only checkpoints); alone, stages only the active run's records",
 		)
 		.option("--dry-run", "Preview what would happen without side effects")
 		.addHelpText(
@@ -36,7 +39,7 @@ export function registerCommit(parent: Command) {
 				'  $ 5x commit --run abc123 -m "implement feature" --all-files\n' +
 				'  $ 5x commit --run abc123 -m "fix bug" --files src/foo.ts src/bar.ts\n' +
 				'  $ 5x commit --run abc123 -m "test" --all-files --dry-run\n' +
-				'  $ 5x commit --run abc123 -m "checkpoint run records" --all-files --no-record',
+				'  $ 5x commit -m "5x: checkpoint run records" --no-record  # active run records only',
 		)
 		.action(async (opts) => {
 			// Mutual exclusion validation
@@ -47,7 +50,7 @@ export function registerCommit(parent: Command) {
 					"--files and --all-files are mutually exclusive. Provide one or the other.",
 				);
 			}
-			if (!opts.files && !opts.allFiles) {
+			if (!opts.files && !opts.allFiles && opts.record) {
 				const { outputError } = await import("../output.js");
 				outputError(
 					"INVALID_ARGS",

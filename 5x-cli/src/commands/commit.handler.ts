@@ -10,7 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { posix } from "node:path";
+import { join, posix } from "node:path";
 import { outputError, outputSuccess } from "../output.js";
 import { planSlugFromPath } from "../paths.js";
 import { validateRunId } from "../run-id.js";
@@ -43,11 +43,16 @@ export interface CommitParams {
 // ---------------------------------------------------------------------------
 
 function formatCommitText(data: {
-	hash: string;
-	short_hash: string;
+	committed: boolean;
+	hash: string | null;
+	short_hash: string | null;
 	message: string;
 	files: string[];
 }): void {
+	if (!data.committed) {
+		console.log("No run record changes to checkpoint");
+		return;
+	}
 	console.log(
 		`[${data.short_hash}] ${data.message} (${data.files.length} files)`,
 	);
@@ -82,7 +87,11 @@ export async function runCommit(params: CommitParams): Promise<void> {
 			"--files and --all-files are mutually exclusive. Provide one or the other.",
 		);
 	}
-	if (!params.files && !params.allFiles) {
+	// `--no-record` alone is the records-only checkpoint: it stages just the
+	// active run's records directory.
+	const recordsOnly =
+		Boolean(params.noRecord) && !params.files && !params.allFiles;
+	if (!params.files && !params.allFiles && !recordsOnly) {
 		outputError("INVALID_ARGS", "Either --files or --all-files is required.");
 	}
 
@@ -155,6 +164,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 
 	let recordsRelPath: string | undefined;
 	let activeRunRecordsRelPath: string | undefined;
+	let activeRunRecordsExist = false;
 	try {
 		const recordCtx = await createRecordContext({
 			runId,
@@ -163,10 +173,14 @@ export async function runCommit(params: CommitParams): Promise<void> {
 		if (existsSync(recordCtx.recordsAbsPath)) {
 			recordsRelPath = recordCtx.recordsRelPath;
 		}
+		const planSlug = planSlugFromPath(ctx.run.plan_path);
 		activeRunRecordsRelPath = posix.join(
 			recordCtx.recordsRelPath,
-			planSlugFromPath(ctx.run.plan_path),
+			planSlug,
 			runId,
+		);
+		activeRunRecordsExist = existsSync(
+			join(recordCtx.recordsAbsPath, planSlug, runId),
 		);
 	} catch (err) {
 		if (err instanceof RecordContextError) {
@@ -184,24 +198,22 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	const recordsStagePath = params.noRecord
 		? activeRunRecordsRelPath
 		: recordsRelPath;
-	const addRecords = params.files && recordsStagePath ? [recordsStagePath] : [];
+	const addRecords =
+		recordsStagePath && (params.files || (recordsOnly && activeRunRecordsExist))
+			? [recordsStagePath]
+			: [];
+	const stagePaths = [...(params.files ?? []), ...addRecords];
 
 	// 4. Dry-run mode
 	if (params.dryRun) {
-		let dryRunArgs: string[];
-		if (params.allFiles) {
-			dryRunArgs = ["add", "-A", "--dry-run"];
-		} else {
-			dryRunArgs = [
-				"add",
-				"--dry-run",
-				"--",
-				...(params.files ?? []),
-				...addRecords,
-			];
-		}
+		const dryRunArgs = params.allFiles
+			? ["add", "-A", "--dry-run"]
+			: ["add", "--dry-run", "--", ...stagePaths];
 
-		const dryResult = await subprocess.execGit(dryRunArgs, workdir);
+		const dryResult =
+			params.allFiles || stagePaths.length > 0
+				? await subprocess.execGit(dryRunArgs, workdir)
+				: { exitCode: 0, stdout: "", stderr: "" };
 
 		// Fail if git add --dry-run returned a non-zero exit code (invalid
 		// pathspecs, permission errors, etc.) — mirroring the real staging path.
@@ -236,27 +248,35 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	}
 
 	// 5. Stage files
-	let stageArgs: string[];
-	if (params.allFiles) {
-		stageArgs = ["add", "-A"];
-	} else {
-		stageArgs = ["add", "--", ...(params.files ?? []), ...addRecords];
-	}
-
-	const stageResult = await subprocess.execGit(stageArgs, workdir);
-	if (stageResult.exitCode !== 0) {
-		outputError(
-			"COMMIT_FAILED",
-			`git add failed: ${stageResult.stderr || stageResult.stdout}`,
-		);
+	if (params.allFiles || stagePaths.length > 0) {
+		const stageArgs = params.allFiles
+			? ["add", "-A"]
+			: ["add", "--", ...stagePaths];
+		const stageResult = await subprocess.execGit(stageArgs, workdir);
+		if (stageResult.exitCode !== 0) {
+			outputError(
+				"COMMIT_FAILED",
+				`git add failed: ${stageResult.stderr || stageResult.stdout}`,
+			);
+		}
 	}
 
 	// A no-record commit is the escape hatch for materializing the active run's
 	// journal without recursively appending another git:commit line. Keep it
 	// narrow so implementation commits cannot silently bypass run tracking.
 	if (params.noRecord) {
+		// A records-only checkpoint looks at (and below, commits) just the run's
+		// records path, so unrelated pre-staged files neither block nor leak in.
 		const stagedResult = await subprocess.execGit(
-			["diff", "--cached", "--name-only", "-z"],
+			[
+				"diff",
+				"--cached",
+				"--name-only",
+				"-z",
+				...(recordsOnly && activeRunRecordsRelPath
+					? ["--", activeRunRecordsRelPath]
+					: []),
+			],
 			workdir,
 		);
 		if (stagedResult.exitCode !== 0) {
@@ -268,10 +288,12 @@ export async function runCommit(params: CommitParams): Promise<void> {
 
 		const stagedFiles = stagedResult.stdout.split("\0").filter(Boolean);
 		const allowedPrefix = `${activeRunRecordsRelPath}/`;
-		const disallowedFiles = stagedFiles.filter(
-			(file) =>
-				file !== activeRunRecordsRelPath && !file.startsWith(allowedPrefix),
-		);
+		const disallowedFiles = recordsOnly
+			? []
+			: stagedFiles.filter(
+					(file) =>
+						file !== activeRunRecordsRelPath && !file.startsWith(allowedPrefix),
+				);
 		if (disallowedFiles.length > 0) {
 			outputError(
 				"INVALID_ARGS",
@@ -282,12 +304,40 @@ export async function runCommit(params: CommitParams): Promise<void> {
 				},
 			);
 		}
+
+		// Checkpoints are idempotent: already-committed records are a no-op,
+		// not a "nothing to commit" failure.
+		if (stagedFiles.length === 0) {
+			outputSuccess(
+				{
+					committed: false,
+					hash: null,
+					short_hash: null,
+					message: params.message,
+					files: [],
+					run_id: runId,
+					step_id: null,
+					recorded: false,
+				},
+				formatCommitText,
+			);
+			return;
+		}
 	}
 
 	// 6. Commit — fires hooks (pre-commit, commit-msg). Fail-early: no step
 	//    recorded if commit fails.
 	const commitResult = await subprocess.execGit(
-		["commit", "-m", params.message],
+		recordsOnly && activeRunRecordsRelPath
+			? [
+					"commit",
+					"--only",
+					"-m",
+					params.message,
+					"--",
+					activeRunRecordsRelPath,
+				]
+			: ["commit", "-m", params.message],
 		workdir,
 	);
 
@@ -340,6 +390,7 @@ export async function runCommit(params: CommitParams): Promise<void> {
 	// 9. Output success
 	outputSuccess(
 		{
+			committed: true,
 			hash,
 			short_hash,
 			message: params.message,

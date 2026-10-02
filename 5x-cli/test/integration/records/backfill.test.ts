@@ -320,17 +320,18 @@ describe("records backfill (integration)", () => {
 	});
 
 	test(
-		"runs postCreate before committing in a temporary target worktree",
+		"commits records without running repo hooks or postCreate in a temporary target worktree",
 		() => {
-			const dir = makeTmpDir("5x-bf-post-create");
+			const dir = makeTmpDir("5x-bf-no-verify");
 			const configHome = makeTmpDir("5x-bf-id");
 			try {
 				const { planPath } = initRepo(dir);
 				git(["checkout", "-b", "5x/alpha"], dir);
 				git(["checkout", "main"], dir);
+				const postCreateMarker = join(configHome, "post-create-ran");
 				writeFileSync(
 					join(dir, "5x.toml"),
-					'[worktree]\npostCreate = "touch .backfill-worktree-ready"\n',
+					`[worktree]\npostCreate = "touch '${postCreateMarker}'"\n`,
 				);
 				git(["add", "5x.toml"], dir);
 				git(["commit", "-m", "configure worktree setup"], dir);
@@ -340,14 +341,11 @@ describe("records backfill (integration)", () => {
 					git(["rev-parse", "--git-path", "hooks"], dir),
 				);
 				const hookPath = join(hooksDir, "pre-commit");
-				writeFileSync(
-					hookPath,
-					"#!/bin/sh\ntest -f .backfill-worktree-ready\n",
-				);
+				writeFileSync(hookPath, "#!/bin/sh\nexit 1\n");
 				chmodSync(hookPath, 0o755);
 
 				seedHistorical(dir, {
-					runId: "run_post_create",
+					runId: "run_no_verify",
 					planPath,
 					status: "completed",
 					steps: [{ name: "author:impl", phase: "1", iteration: 1 }],
@@ -359,8 +357,9 @@ describe("records backfill (integration)", () => {
 				expect(result.exitCode).toBe(0);
 				expect(parseEnvelope(result.stdout).ok).toBe(true);
 				expect(git(["log", "-1", "--format=%s", "5x/alpha"], dir)).toBe(
-					"5x: backfill records for run_post_create",
+					"5x: backfill records for run_no_verify",
 				);
+				expect(existsSync(postCreateMarker)).toBe(false);
 			} finally {
 				cleanupDir(dir);
 				cleanupDir(configHome);

@@ -103,6 +103,20 @@ describe("templateRender review-budget dependencies", () => {
 				{ template, run: "run1", workdir: dir, ...extra },
 				{
 					createReviewBudgetContext: async () => ctx,
+					readPlan: () => `## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Work | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+`,
 					onRenderedPrompt: (prompt) => prompts.set(template, prompt),
 				},
 			);
@@ -114,6 +128,9 @@ describe("templateRender review-budget dependencies", () => {
 			for (const name of ["reviewer-plan", "reviewer-plan-continued"]) {
 				const prompt = prompts.get(name) ?? "";
 				expect(prompt).toContain("## Plan-review governance context");
+				expect(prompt).toContain("Review kind: closure");
+				expect(prompt).toContain("Do **not** emit `baselineAssessment`");
+				expect(prompt).not.toContain("this is the initial budget review");
 				expect(prompt).toContain("Required prior-finding outcome IDs: P1.open");
 				expect(prompt).toContain("P1.deferred (sha256:deferred)");
 				expect(prompt).not.toContain(

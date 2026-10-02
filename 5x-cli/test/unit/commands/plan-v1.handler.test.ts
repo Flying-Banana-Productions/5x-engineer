@@ -336,6 +336,22 @@ describe("planList handler", () => {
 		});
 	});
 
+	test("stale mapping to a removed worktree falls back to the root checkout", async () => {
+		await withProject(async (ctx) => {
+			mkdirSync(ctx.plansDir, { recursive: true });
+			writeFileSync(
+				join(ctx.plansDir, "gone.plan.md"),
+				`# Root\n\n## Phase 1: One\n\n- [x] root\n`,
+			);
+			const canon = canonicalizePlanPath(join(ctx.plansDir, "gone.plan.md"));
+			insertPlanRow(ctx.db, canon, join(ctx.root, "removed-worktree"));
+
+			const { plans } = await listPlans(ctx);
+			expect(plans.map((p) => p.title)).toEqual(["Root"]);
+			expect(plans[0]?.status).toBe("complete");
+		});
+	});
+
 	test("read failure warns without a ghost row and other files still list", async () => {
 		await withProject(async (ctx) => {
 			mkdirSync(ctx.plansDir, { recursive: true });

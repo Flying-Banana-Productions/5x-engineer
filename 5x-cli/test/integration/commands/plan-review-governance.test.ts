@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { buildPlanReviewDiffContext } from "../../../src/review-governance/plan-diff.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -132,6 +133,7 @@ describe("plan-review governance lifecycle", () => {
 				expect(JSON.parse(initial.stdout).data.result.governance.route).toBe(
 					"author_revision",
 				);
+				const previousReviewCommit = git(dir, "rev-parse", "HEAD");
 
 				writeFileSync(
 					planPath,
@@ -139,6 +141,66 @@ describe("plan-review governance lifecycle", () => {
 				);
 				git(dir, "add", planPath);
 				git(dir, "commit", "-m", "address finding");
+				const delta = await buildPlanReviewDiffContext({
+					workdir: dir,
+					planPath,
+					previousReviewCommit,
+				});
+				const newFinding = { ...finding, id: "R11" };
+				const validateArgs = [
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					runId,
+					"--phase",
+					"plan",
+					"--iteration",
+					"1",
+				];
+				const missingEvidence = await cli(dir, validateArgs, {
+					readiness: "not_ready",
+					items: [newFinding],
+					priorFindings: [{ id: "P0.1", status: "addressed" }],
+				});
+				expect(missingEvidence.exitCode).not.toBe(0);
+				const error = JSON.parse(missingEvidence.stdout).error;
+				expect(error.code).toBe("NEW_FINDING_EVIDENCE_REQUIRED");
+				const diagnostic = error.detail.diagnostics.find(
+					(entry: { code: string }) => entry.code === error.code,
+				);
+				for (const field of [
+					"introducedBy",
+					"commitRange",
+					"diffHunk",
+					"explanation",
+					"lateDiscovery",
+					"lateDiscoveryEvidence",
+				]) {
+					expect(diagnostic.remediation).toContain(field);
+				}
+				for (const evidence of [
+					{
+						introducedBy: {
+							commitRange: `${delta.previousReviewCommit}..${delta.currentPlanCommit}`,
+							diffHunk: delta.hunks[0]?.text,
+							explanation: "This revision introduces the recovery requirement.",
+						},
+					},
+					{
+						lateDiscovery: "critical_safety",
+						lateDiscoveryEvidence:
+							"The recovery path can cause data loss by overwriting committed records.",
+						action: "human_required",
+					},
+				]) {
+					const accepted = await cli(dir, validateArgs, {
+						readiness: "not_ready",
+						items: [{ ...newFinding, ...evidence }],
+						priorFindings: [{ id: "P0.1", status: "addressed" }],
+					});
+					expect(accepted.exitCode).toBe(0);
+				}
 				const closure = await cli(
 					dir,
 					[

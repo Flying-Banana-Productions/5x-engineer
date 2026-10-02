@@ -336,6 +336,113 @@ describe("runCommit", () => {
 	);
 
 	test(
+		"--no-record alone commits only the active run records, leaving other changes untouched",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				const runRecordsDir = join(
+					ctx.tmp,
+					"docs",
+					"development",
+					"runs",
+					"plan",
+					runId,
+				);
+				mkdirSync(runRecordsDir, { recursive: true });
+				writeFileSync(join(runRecordsDir, "steps.jsonl"), '{"step":"one"}\n');
+				// Unrelated work: one pre-staged file, one untracked file.
+				writeFileSync(join(ctx.tmp, "staged.ts"), "export const s = 1;\n");
+				writeFileSync(join(ctx.tmp, "untracked.ts"), "export const u = 1;\n");
+				Bun.spawnSync(["git", "add", "--", "staged.ts"], {
+					cwd: ctx.tmp,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "ignore",
+					stderr: "ignore",
+				});
+
+				await runCommit({
+					run: runId,
+					message: "5x: checkpoint run records",
+					noRecord: true,
+					startDir: ctx.tmp,
+					dbContext: ctx.dbContext,
+				});
+
+				const committed = Bun.spawnSync(
+					["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+					{
+						cwd: ctx.tmp,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					},
+				);
+				expect(committed.stdout.toString().trim()).toBe(
+					`docs/development/runs/plan/${runId}/steps.jsonl`,
+				);
+				const status = Bun.spawnSync(["git", "status", "--porcelain"], {
+					cwd: ctx.tmp,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				expect(status.stdout.toString()).toBe(
+					"A  staged.ts\n?? untracked.ts\n",
+				);
+				expect(getSteps(ctx.db, runId)).toHaveLength(0);
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--no-record is a successful no-op when run records are already committed",
+		async () => {
+			const spy = spyOn(console, "log").mockImplementation(() => {});
+			const ctx = setup();
+			try {
+				const runId = createTestRun(ctx.db, ctx.planPath);
+				const head = () =>
+					Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+						cwd: ctx.tmp,
+						env: cleanGitEnv(),
+						stdin: "ignore",
+						stdout: "pipe",
+						stderr: "pipe",
+					})
+						.stdout.toString()
+						.trim();
+				const before = head();
+
+				// No records directory yet, then nothing dirty with --all-files.
+				for (const allFiles of [undefined, true]) {
+					await runCommit({
+						run: runId,
+						message: "5x: checkpoint run records",
+						allFiles,
+						noRecord: true,
+						startDir: ctx.tmp,
+						dbContext: ctx.dbContext,
+					});
+				}
+				expect(head()).toBe(before);
+			} finally {
+				spy.mockRestore();
+				teardown(ctx);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"--dry-run with --all-files creates no commit and records no step",
 		async () => {
 			const spy = spyOn(console, "log").mockImplementation(() => {});

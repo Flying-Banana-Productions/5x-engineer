@@ -1829,8 +1829,11 @@ describe("5x template render", () => {
 				expect(parseJson(failed.stdout)).toMatchObject({
 					ok: false,
 					error: {
-						code: "BUDGET_SECTION_MISSING",
-						message: expect.stringContaining("author preflight"),
+						code: "PLAN_REPAIR_REQUIRED",
+						detail: {
+							reviewRoute: "author_revision",
+							diagnostic: { code: "BUDGET_SECTION_MISSING" },
+						},
 					},
 				});
 				insertStep(dir, runId, "reviewer:review", "plan");

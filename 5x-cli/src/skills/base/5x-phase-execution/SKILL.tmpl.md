@@ -43,6 +43,11 @@ timeout handling.
 - Generic `human:gate` and approve-override are not an enforced bypass.
   Enforced gates use `5x review decide`
 - Phase count should not change during a run — if it does, flag to human
+- Run records are dirty again after every recording command (including the
+  reviewer's `5x commit` and the verdict record). Before any human gate,
+  escalation, or exit that leaves the run active, checkpoint them with
+  `5x commit --no-record -m "5x: checkpoint run records"` (see the `5x`
+  foundation skill — **Checkpoint run records before handing off**)
 - `run init --worktree` automatically skips the dirty-worktree check
   (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
   if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`
@@ -72,6 +77,7 @@ worktree mapping, or `.5x/current-run` already identifies the run. Pass
 - `5x quality run [--record]` — granular quality gates (recovery; auto-resolves worktree when a run is mapped)
 - `5x plan phases <path>` — get phase list and status
 - `5x commit -m <msg> --all-files|--files <list>` — stage, commit, and record in the run journal
+- `5x commit --no-record -m <msg>` — checkpoint only the active run's records (no `git:commit` step; no-op when clean)
 - `5x diff` — inspect changes in mapped worktree
 - `5x diff --since <ref>` — inspect changes (without run context)
 - `5x worktree create --plan <path>` — create isolated worktree (prefer `run init --worktree` instead)
@@ -569,6 +575,11 @@ $REASON), draft a concrete recommendation for how the author should resolve
 it. Present these recommendations to the human along with the escalation
 reason — do not ask the human to write guidance from scratch.
 
+Checkpoint the run records before waiting on the human (the review commit
+and verdict record left them dirty):
+
+    5x commit --no-record -m "5x: checkpoint run records"
+
 {{#if any_native}}
 Present the situation using your **native UI** (options: continue-with-guidance, approve-override, abort).  
 Include your per-item recommendations in the presentation.
@@ -629,13 +640,19 @@ PHASE_STATUS=$(5x plan phases $PLAN_PATH | jq -r ".phases[] | select(.number == 
 
 If `PHASE_STATUS` is not `true`:
 1. Record the mismatch: `5x run record "phase:checklist_mismatch" --run $RUN --phase $PHASE --result '{"phase":"$PHASE","reason":"checklist_not_updated"}'`
-2. Escalate to the human immediately — do NOT proceed with phase:complete
+2. Checkpoint the run records: `5x commit --no-record -m "5x: checkpoint run records"`
+3. Escalate to the human immediately — do NOT proceed with phase:complete
 
 If `PHASE_STATUS` is `true`, record phase completion:
 
     5x run record "phase:complete" --phase $PHASE --result '{"phase":"$PHASE"}'
 
-If this is NOT the last phase, confirm with the human:
+If this is NOT the last phase, checkpoint the run records so the worktree
+is clean while the human decides (and stays clean on **exit**):
+
+    5x commit --no-record -m "5x: checkpoint run records"
+
+Then confirm with the human:
 {{#if any_native}}
 Using your **native UI**, ask whether to **continue** to the next phase, **exit** (leave run active), or **abort**.  
 **CLI equivalent (fallback):**  
@@ -672,6 +689,10 @@ Report to the human: all phases implemented and reviewed.
 - A new commit must exist (different from previous $COMMIT)
 - The diff between old and new commit should address the review items
 - The author should not have reverted previous work
+
+### Before any human gate, escalation, or exit with the run active:
+- `git status --porcelain` in the run's worktree shows no changes under the
+  run records directory (checkpoint with `5x commit --no-record` if it does)
 
 ### Phase boundary:
 - `5x plan phases` is a checklist report. Checked boxes alone are not enough for enforced implementation advancement. Read `implementation_governance` from `5x run state`; it is ready only when the phase is reviewed, due claims are reconciled, and no material gate is open.

@@ -22,23 +22,32 @@ the instructions in that prompt exactly. When you have completed your review,
 output **only** the `ReviewerVerdict` JSON object as your final message — no
 prose before or after it.
 
-The JSON must conform to this schema:
+Run `5x protocol emit reviewer` and return its raw canonical JSON verbatim.
+Use `5x protocol schema reviewer` for the complete offline JSON Schema and
+`5x protocol emit reviewer --help` for item fields and closure evidence examples.
+The canonical shape is:
 
 ```json
 {
-  "verdict": "approved" | "rejected" | "escalate",
-  "summary": "<brief summary of findings>",
-  "issues": [
+  "readiness": "ready_with_corrections",
+  "items": [
     {
-      "severity": "critical" | "major" | "minor",
-      "description": "<issue description>",
-      "location": "<file:line or area if known>"
+      "id": "R1",
+      "title": "Correct the documented behavior",
+      "action": "auto_fix",
+      "reason": "The plan contradicts the existing implementation"
     }
-  ]
+  ],
+  "summary": "A mechanical correction is required."
 }
 ```
 
-- `verdict: "approved"` — work meets the acceptance criteria; no blocking issues.
-- `verdict: "rejected"` — blocking issues found; the author must address them.
-- `verdict: "escalate"` — the decision requires human judgment; explain why in `summary`.
-- `issues` may be an empty array when approving with no observations.
+- `readiness`: `ready`, `ready_with_corrections`, or `not_ready`.
+- Items use `action: "auto_fix"` for mechanical corrections or `human_required`
+  for decisions requiring human judgment. `ready` has an empty `items` array.
+- For active-budget plan reviews, follow the rendered governance context:
+  include complete per-item budget and failure evidence, an initial-only
+  `baselineAssessment`, applicable `creditAssessments`, and closure-only
+  `priorFindings` plus evidence for new findings. Preserve all these fields.
+- Never translate canonical output into legacy `verdict`/`issues` fields,
+  summarize it into a different response shape, or add CLI-derived aggregates.

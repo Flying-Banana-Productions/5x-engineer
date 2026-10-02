@@ -187,6 +187,8 @@ export interface ClosureDiagnostic {
 	itemId?: string;
 	findingId?: string;
 	decisionId?: string;
+	/** Offline remediation for evidence contract errors. */
+	remediation?: string;
 }
 
 export interface ClosureValidationResult {

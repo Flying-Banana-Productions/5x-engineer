@@ -49,6 +49,7 @@ test/
 │   └── *.test.ts          # bin-pretty, lock, pipe
 ├── helpers/               # shared by both tiers
 │   ├── clean-env.ts       # cleanGitEnv() — sanitized env for spawns
+│   ├── large-stdout-helper.ts
 │   ├── pipe-read-helper.ts
 │   └── watch-error-harness.ts
 └── setup.ts               # preload: silences console.log/warn, deletes GIT_DIR

@@ -262,11 +262,13 @@ export async function listChangedFiles(workdir: string): Promise<string[]> {
 /**
  * Commit specific files (relative paths) with a fixed message.
  * Uses `git commit --only` so pre-staged unrelated paths are not included.
+ * `noVerify` skips pre-commit / commit-msg hooks.
  */
 export async function commitFiles(
 	workdir: string,
 	files: string[],
 	message: string,
+	opts: { noVerify?: boolean } = {},
 ): Promise<GitCommitResult> {
 	if (files.length === 0) {
 		throw new Error("No files provided for commit");
@@ -280,7 +282,15 @@ export async function commitFiles(
 	// `--only` commits the listed paths from a temporary index so
 	// caller-pre-staged unrelated files are not published.
 	const commitResult = await run(
-		["commit", "--only", "-m", message, "--", ...files],
+		[
+			"commit",
+			"--only",
+			...(opts.noVerify ? ["--no-verify"] : []),
+			"-m",
+			message,
+			"--",
+			...files,
+		],
 		workdir,
 	);
 	if (commitResult.exitCode !== 0) {

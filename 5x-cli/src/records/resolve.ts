@@ -379,6 +379,8 @@ export async function prepareProgressSession(opts: {
 		unix: number | null;
 	}> = [];
 	for (const wt of opts.worktreePaths ?? []) {
+		// A stale mapping can name a removed worktree; spawning git there throws.
+		if (!existsSync(wt)) continue;
 		const sha = await revParseCommit(wt, "HEAD");
 		if (!sha) continue;
 		worktreeHeads.push({ path: wt, sha, unix: null });

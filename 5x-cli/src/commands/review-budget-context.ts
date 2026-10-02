@@ -31,6 +31,7 @@ import {
 	type EnsurePlanReviewBaselineResult,
 	ensurePlanReviewBaseline,
 } from "../review-budget/ensure-baseline.js";
+import { planReviewRepairGate } from "../review-budget/plan-repair.js";
 import {
 	encodeBudgetSnapshotPayload,
 	snapshotIdempotencyKey,
@@ -235,6 +236,15 @@ export async function composePlanReviewerRecord(input: {
 }): Promise<ComposePlanReviewerRecordResult> {
 	const baseline = input.ctx.store.getBaseline(input.runId);
 	const mode = baseline?.mode ?? input.ctx.config.reviewBudget.mode;
+	if (
+		mode !== "off" &&
+		(baseline ||
+			input.optInBaseline ||
+			!hasPriorPlanReviewerStep(input.ctx, input.runId))
+	) {
+		const repair = planReviewRepairGate(input.planMarkdown);
+		if (repair) return repair;
+	}
 	const snapshotsBefore = baseline
 		? input.ctx.store.listSnapshots(input.runId)
 		: [];
@@ -358,13 +368,26 @@ export function ensurePlanReviewBaselineForContext(input: {
 	optIn: boolean;
 	performer: RecordPerformer;
 	warn: (message: string) => void;
+	/** Continued v1-compatible reviews must not implicitly capture a baseline. */
+	capture?: boolean;
 }): EnsurePlanReviewBaselineResult {
+	const baseline = input.ctx.store.getBaseline(input.runId);
+	const mode = baseline?.mode ?? input.ctx.config.reviewBudget.mode;
+	if (mode === "off") return { status: "skipped", reason: "off" };
+	const hasPrior = hasPriorPlanReviewerStep(input.ctx, input.runId);
+	if (baseline || input.optIn || (input.capture !== false && !hasPrior)) {
+		const repair = planReviewRepairGate(input.planMarkdown);
+		if (repair) return repair;
+	}
+	if (input.capture === false && !input.optIn) {
+		return { status: "skipped", reason: baseline ? "already" : "v1_compat" };
+	}
 	return ensurePlanReviewBaseline({
 		runId: input.runId,
 		planMarkdown: input.planMarkdown,
-		config: input.ctx.config.reviewBudget,
+		config: { ...input.ctx.config.reviewBudget, mode },
 		store: input.ctx.store,
-		hasPriorPlanReviewerStep: hasPriorPlanReviewerStep(input.ctx, input.runId),
+		hasPriorPlanReviewerStep: hasPrior,
 		optIn: input.optIn,
 		origin: input.ctx.originFor(input.performer),
 		warn: input.warn,

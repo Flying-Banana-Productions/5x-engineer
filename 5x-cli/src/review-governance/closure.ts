@@ -1,4 +1,5 @@
 import type { ReviewerVerdict } from "../protocol.js";
+import { CLOSURE_EVIDENCE_HELP } from "../protocol-help.js";
 import { isReviewerFindingCreditEligible } from "../review-budget/arithmetic.js";
 import {
 	isArchitectureDelta,
@@ -32,7 +33,10 @@ function nonEmpty(value: unknown): value is string {
 function diagnostic(
 	code: ClosureDiagnostic["code"],
 	message: string,
-	context: Pick<ClosureDiagnostic, "itemId" | "findingId" | "decisionId"> = {},
+	context: Pick<
+		ClosureDiagnostic,
+		"itemId" | "findingId" | "decisionId" | "remediation"
+	> = {},
 	severity: ClosureDiagnostic["severity"] = "error",
 ): ClosureDiagnostic {
 	return { code, severity, message, ...context };
@@ -570,7 +574,7 @@ export function validateClosureReview(input: {
 					diagnostic(
 						"NEW_FINDING_EVIDENCE_REQUIRED",
 						`New closure finding '${item.id}' requires an introducing plan hunk or critical-safety evidence.`,
-						{ itemId: item.id },
+						{ itemId: item.id, remediation: CLOSURE_EVIDENCE_HELP },
 					),
 				);
 			}

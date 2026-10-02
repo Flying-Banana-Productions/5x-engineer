@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 8
+version: 9
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:plan"
 variable_defaults:
@@ -57,8 +57,15 @@ findings must be absent from `items[]`.
 5. Write your updated assessment as a new **Addendum** section appended to `{{review_path}}`. Do not modify existing review content.
 6. Re-check every plan-row `Addresses` value against still-open findings. Reuse each prior finding's stable ID when it remains partially addressed or open; assign a new ID only to a revision-causal finding, and never recycle or renumber IDs.
 
-Follow the same issue classification and strict final-correction definition from
-the initial prompt. Every repeated or new item still requires its item-level
+This prompt is self-contained: a fresh reviewer session is still a closure review
+when the durable governance context says closure. Classify mechanically derivable
+corrections as `auto_fix`; use `human_required` only for genuine judgment or scope
+decisions. Emit `ready` with no items, `ready_with_corrections` for mechanical
+corrections, or `not_ready` for fundamental blockers. The enforced final-correction
+shortcut requires at most one point of combined remaining effort, zero architecture
+delta on every item, no reviewer verification, no critical-safety or prior-decision
+exception, and a forecast within the effective ceiling; the CLI derives the route.
+Every repeated or new item still requires its item-level
 scope/effort/architecture/confidence, concrete `failure`, and
 `lowestCostCorrection`.
 
@@ -107,3 +114,6 @@ Write your updated review to `{{review_path}}` and commit the file:
     5x commit --run {{run_id}} --phase plan --files {{review_path}} -m "docs: update plan review for <plan name>"
 
 Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready`, complete `--item` flags, and `--credit-assessment` only for new/changed claims. When governance context is present, add one repeatable `--prior-finding '{"id":"P1.1","status":"addressed"}'` for each ID in `Required prior-finding outcome IDs`, and limit `--item` flags to partial/open or valid new blockers. Without governance context, omit every `--prior-finding` and use the broad v1 item contract. Never pass `--baseline-assessment` on a continued review. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.
+
+For complete field shapes and closure examples, use `5x protocol emit reviewer --help`
+or `5x protocol schema reviewer`; both are available offline.

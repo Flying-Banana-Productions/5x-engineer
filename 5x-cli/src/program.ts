@@ -27,7 +27,8 @@ export function createProgram(): Command {
 				"run watch streams NDJSON or human-readable output.\n\n" +
 				"Exit codes: 0=success, 1=error, 2=not found, 3=non-interactive,\n" +
 				"4=locked, 5=dirty, 6=limit, 7=invalid output.\n\n" +
-				"Documentation: https://github.com/5x-ai/5x-cli\n" +
+				"Offline protocol documentation: 5x protocol emit reviewer --help\n" +
+				"Bundled JSON Schemas: 5x protocol schema author|reviewer\n" +
 				"Configuration: 5x.toml in project root",
 		);
 

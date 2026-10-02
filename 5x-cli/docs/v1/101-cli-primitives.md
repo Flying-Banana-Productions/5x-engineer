@@ -150,7 +150,7 @@ The `worktree_path` and `worktree_plan_path` fields are present when the run is 
 
 - Checks for an existing active run for this plan. If found, returns it instead of creating a new one (idempotent).
 - Acquires a file-based plan lock under the control-plane root's state directory (`<controlPlaneRoot>/<stateDir>/locks/<hash>.lock`). If the plan is already locked by a live process, returns an error with `code: "PLAN_LOCKED"` and the existing lock info (`pid`, `startedAt`). Stale locks (dead PID) are automatically stolen.
-- Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0. Uncommitted changes under `paths.records` are exempt — they are expected between `run record` and `5x commit` / seal.
+- Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0. Uncommitted changes under `paths.records` are exempt — they are expected between `run record` and `5x commit` / seal. Skills clear them before human gates and exits with the records-only checkpoint `5x commit --no-record -m <msg>` (no `git:commit` step; `committed: false` no-op when already clean).
 - Canonicalizes the plan path for DB identity (worktree-safe). **Validates that the plan path is under `controlPlaneRoot`** — external plans are rejected with `PLAN_OUTSIDE_CONTROL_PLANE`.
 - Validates that the plan path resolves inside the configured `paths.plans` directory. The file itself may be created later by the author workflow.
 - When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path.
@@ -974,6 +974,8 @@ Export historical SQLite runs into the record format.
 **Backfill origin honesty:** exported JSONL lines have `provenance: "backfilled"`, `origin: null`, and a separate `materializer` for this installation's exporter (`performer.kind: "system"`, `role: "exporter"`). `run.json` `creator` is `null`; terminal runs also have `sealer: null`. The exporter is **not** the original origin or the run's creator/sealer. Text and JSON output identify the exporter as `exported_by` only. A DB row that disagrees with an existing `provenance: "recorded"` line is reported (`recorded-vs-backfill`) and never overwritten.
 
 `--dry-run` prints the mapping without `git add`, file writes, or commits. A second real run is a no-op when the target is already clean (`created: false`, no new commit). Active runs are exported unsealed (`status: active`, `backfilled: true`, no `sealer`).
+
+**Hooks:** backfill commits contain record files only and are created with `git commit --no-verify`, so repo `pre-commit` / `commit-msg` hooks do not run. Temporary target worktrees are not initialized (`worktree.postCreate` is not run).
 
 ### Origin, identity, and privacy
 
