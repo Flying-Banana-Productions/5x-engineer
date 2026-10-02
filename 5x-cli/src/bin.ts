@@ -29,6 +29,10 @@ import {
 	setPrettyPrint,
 } from "./output.js";
 import { createProgram } from "./program.js";
+import { installLosslessConsoleLog } from "./utils/stdout.js";
+
+// Large envelopes must survive pipes and `process.exit()` (see utils/stdout).
+installLosslessConsoleLog();
 
 // ---------------------------------------------------------------------------
 // Global --pretty / --no-pretty flags (pre-parse argv strip)
