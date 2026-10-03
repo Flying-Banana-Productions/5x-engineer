@@ -23,6 +23,7 @@ import {
 	gitLsTreePaths,
 	gitRevListParents,
 	gitShowFile,
+	isAncestor,
 	listFiveXRefs,
 	listRefTips,
 	listRemotes,
@@ -512,7 +513,6 @@ async function rankCandidates(
 	planSlug: string,
 	plansBranch?: string | null,
 	checkoutCandidates: RankedCandidate[] = [],
-	relPlanPath?: string | null,
 ): Promise<RankedCandidate[]> {
 	const ranked = [...checkoutCandidates];
 
@@ -541,28 +541,27 @@ async function rankCandidates(
 			a.source.label.localeCompare(b.source.label)
 		);
 	});
-	// A merged checkout/ref is authoritative even when git log attributes the
-	// last progress change to one of its parents.
+	// Tip ancestry precedes progress ties and content comparison. An ancestor
+	// snapshot cannot conflict with a descendant checkout's uncommitted edits.
 	const tipSurvivors: RankedCandidate[] = [];
-	const snapshots = new Map<string, string | null>();
-	const snapshot = async (sha: string) => {
-		if (!relPlanPath) return null;
-		if (!snapshots.has(sha))
-			snapshots.set(
-				sha,
-				await readMarkdownAtCommit(session.workdir, sha, relPlanPath),
+	const ancestry = new Map<string, boolean>();
+	const ancestor = async (older: string, newer: string) => {
+		if (older === newer) return false;
+		const key = `${older}\0${newer}`;
+		if (!ancestry.has(key)) {
+			ancestry.set(
+				key,
+				session.parents.has(older) && session.parents.has(newer)
+					? isAncestorInGraph(session.parents, older, newer)
+					: await isAncestor(session.workdir, older, newer),
 			);
-		return snapshots.get(sha);
+		}
+		return ancestry.get(key) as boolean;
 	};
 	for (const a of ranked) {
 		let superseded = false;
 		for (const b of ranked) {
-			if (!isAncestorInGraph(session.parents, a.tipSha, b.tipSha)) continue;
-			if (
-				a.commit !== b.commit ||
-				b.checkoutPath ||
-				(await snapshot(a.tipSha)) !== (await snapshot(b.tipSha))
-			) {
+			if (await ancestor(a.tipSha, b.tipSha)) {
 				superseded = true;
 				break;
 			}
@@ -829,7 +828,6 @@ export async function resolvePlanProgress(opts: {
 		opts.planSlug,
 		opts.plansBranch,
 		checkoutCandidates,
-		relPlanPath,
 	);
 
 	if (survivors.length === 0) {

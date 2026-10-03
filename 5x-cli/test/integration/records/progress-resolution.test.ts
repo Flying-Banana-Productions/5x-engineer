@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { gitLogNameOnly } from "../../../src/git.js";
 import {
 	parseLogNameOnly,
+	prepareProgressSession,
 	resolvePlanProgress,
 } from "../../../src/records/resolve.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
@@ -154,6 +155,142 @@ async function listedPlans(dir: string, args: string[] = []) {
 }
 
 describe("progress resolution", () => {
+	test.each(["root", "mapped"] as const)(
+		"stale ancestor refs cannot conflict with %s checkout edits sharing their progress commit",
+		async (checkout) => {
+			const dir = makeTmpDir("5x-prog-stale-ancestor");
+			try {
+				initRepo(dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Alpha", [false, false, false, false]),
+					"plan",
+				);
+				const progress = git(["rev-parse", "HEAD"], dir);
+				git(["branch", "5x/stale.plan"], dir);
+				git(["update-ref", "refs/remotes/origin/5x/stale.plan", progress], dir);
+				const worktreePath =
+					checkout === "mapped" ? join(dir, "wt") : undefined;
+				if (worktreePath)
+					git(
+						[
+							"worktree",
+							"add",
+							"-b",
+							"feature/descendant",
+							worktreePath,
+							"HEAD",
+						],
+						dir,
+					);
+				const selected = worktreePath ?? dir;
+				commitPlan(selected, "other.txt", "unrelated", "advance checkout");
+				const tip = git(["rev-parse", "HEAD"], selected);
+				git(["merge-base", "--is-ancestor", "5x/stale.plan", tip], dir);
+				const markdown = planMarkdown("Alpha", [true, true, true, true]);
+				writeFileSync(join(selected, PLAN_REL), markdown);
+				const options = {
+					workdir: dir,
+					planPath: join(dir, PLAN_REL),
+					planSlug: "alpha",
+					recordsRelPath: "docs/development/runs",
+					worktreePath,
+				};
+				const resolved = await resolvePlanProgress(options);
+				expect(resolved.state).toBe("present");
+				expect(resolved.markdown).toBe(markdown);
+				expect(resolved.diverged_sources).toBeUndefined();
+				expect(resolved.source).toMatchObject({
+					content_kind: "working-copy",
+					path: join(selected, PLAN_REL),
+					dirty: true,
+					content_commit: tip,
+					progress_commit: progress,
+				});
+				// A failed batch topology query must fall back to Git ancestry,
+				// rather than treating missing topology as independent histories.
+				const session = await prepareProgressSession({
+					workdir: dir,
+					recordsRelPath: options.recordsRelPath,
+					planRepoRels: [PLAN_REL],
+					worktreePaths: worktreePath ? [worktreePath] : [],
+				});
+				session.parents.clear();
+				expect(
+					await resolvePlanProgress({ ...options, session }),
+				).toMatchObject({
+					state: "present",
+					markdown,
+					source: {
+						content_kind: "working-copy",
+						content_commit: tip,
+						progress_commit: progress,
+					},
+				});
+				if (checkout === "root") {
+					const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+					expect(phases.exitCode).toBe(0);
+					expect(parseJson(phases.stdout).data).toMatchObject({
+						plan_state: "present",
+						source_dirty: true,
+						phases: [
+							{ done: true },
+							{ done: true },
+							{ done: true },
+							{ done: true },
+						],
+					});
+					expect((await listedPlans(dir))[0]).toMatchObject({
+						status: "complete",
+						completion_pct: 100,
+					});
+				}
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"incomparable refs with the same progress commit still conflict with local edits",
+		async () => {
+			const dir = makeTmpDir("5x-prog-incomparable-edits");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Alpha", [false]), "plan");
+				const progress = git(["rev-parse", "HEAD"], dir);
+				git(["checkout", "-b", "5x/independent.plan"], dir);
+				commitPlan(dir, "branch.txt", "branch", "advance branch");
+				git(["checkout", "main"], dir);
+				commitPlan(dir, "main.txt", "main", "advance main");
+				writeFileSync(join(dir, PLAN_REL), planMarkdown("Alpha", [true]));
+				const resolved = await resolveAlpha(dir);
+				expect(resolved.state).toBe("diverged");
+				expect(resolved.markdown).toBeNull();
+				expect(resolved.diverged_sources).toHaveLength(2);
+				expect(
+					resolved.diverged_sources?.every(
+						(source) => source.progress_commit === progress,
+					),
+				).toBe(true);
+				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
+				expect(phases.exitCode).not.toBe(0);
+				expect(parseJson(phases.stdout).error).toMatchObject({
+					code: "PLAN_DIVERGED",
+				});
+				expect((await listedPlans(dir))[0]).toMatchObject({
+					status: "diverged",
+					completion_pct: null,
+				});
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
 	test.each([false, true])(
 		"root checkout edits are read from disk (staged: %s)",
 		async (staged) => {
