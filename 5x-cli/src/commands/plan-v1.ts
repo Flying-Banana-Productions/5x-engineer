@@ -27,6 +27,8 @@ export function registerPlan(parent: Command) {
 				"has a mapped worktree copy, 5x prefers that file when it exists.",
 		)
 		.argument("<path>", "Path to implementation plan")
+		.option("--source <source>", "Read the supplied local file (local)")
+		.option("--ref <ref>", "Read a committed snapshot at the selected ref tip")
 		.option(
 			"--fetch",
 			"Fetch remote 5x/* branches before resolving progress (never implicit)",
@@ -49,6 +51,8 @@ export function registerPlan(parent: Command) {
 		.action(async (path, opts) => {
 			await planPhases({
 				path,
+				source: opts.source,
+				ref: opts.ref,
 				fetch: opts.fetch,
 				allRefs: opts.allRefs,
 			});
@@ -56,6 +60,8 @@ export function registerPlan(parent: Command) {
 
 	plan
 		.command("list")
+		.option("--source <source>", "Read plans from the local checkout (local)")
+		.option("--ref <ref>", "Read plans at the selected ref tip")
 		.summary("List plans and their completion status")
 		.description(
 			"Scan the configured plans directory tree for markdown plans and summarize\n" +
@@ -85,6 +91,8 @@ export function registerPlan(parent: Command) {
 		.action(async (opts) => {
 			await planList({
 				excludeFinished: opts.excludeFinished,
+				source: opts.source,
+				ref: opts.ref,
 				fetch: opts.fetch,
 				allRefs: opts.allRefs,
 				startDir: process.cwd(),

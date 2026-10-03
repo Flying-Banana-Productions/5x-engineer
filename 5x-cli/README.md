@@ -540,8 +540,30 @@ still return retained run history with the plan's lifecycle state. Divergent
 deletion-versus-edit histories remain visible with `diverged_sources` and each
 candidate's `plan_state`.
 
-`source` identifies the selected progress source. For equivalent progress
-commits, attribution prefers the mapped working copy, then `HEAD`, the configured
+Selected root and mapped checkouts are read from disk, including uncommitted
+edits. Selected refs are read at their tips, including merge-resolution changes.
+JSON provenance includes `source_kind` (`working-copy` or `git-ref`),
+`source_path`, `source_ref`, and `source_dirty` (whether the plan file differs
+from its checkout's HEAD). `content_commit` identifies the selected ref tip or
+working-copy baseline; `progress_commit` separately identifies the last commit
+touching the plan or its records. `source_commit` is the content baseline/tip.
+
+Both inspection commands accept explicit, mutually exclusive selectors:
+
+```bash
+5x plan phases <path> --source local   # Inspect exactly the supplied file
+5x plan phases <path> --ref main      # Inspect a committed snapshot
+5x plan list --source local           # Inspect the root checkout's plans
+5x plan list --ref origin/5x/my-plan   # Inspect a selected ref's plans
+```
+
+Divergent sources are never ranked by completion percentage. `plan list`
+reports `status: "diverged"`, null completion/phase counts, and candidate
+provenance in `diverged_sources`. `plan phases` returns `PLAN_DIVERGED` until
+`--source local` or `--ref <ref>` selects the content explicitly.
+
+`source` identifies the selected checkout or ref. For equivalent progress
+commits and content, attribution prefers the mapped working copy, then `HEAD`, the configured
 plans branch, the plan's matching local branch, its matching remote-tracking
 branch, and finally other refs in stable order. Newer branch progress still wins
 over older checkout progress. Read failures produce warnings rather than empty

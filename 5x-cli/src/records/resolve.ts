@@ -2,7 +2,8 @@
  * Git-native plan progress resolution (`207` §2.4).
  *
  * Git I/O stays in `git.ts`; this module ranks candidate refs and reads
- * plan markdown from the winning commit (or mapped worktree working copy).
+ * plan markdown from the selected checkout or ref tip. Progress commits are
+ * selection evidence and provenance, never content snapshots.
  *
  * Spike (2026-09-03): a 20-plan × 3-remote fixture with the naive
  * `git log -1` × `merge-base --is-ancestor` loop took 1551ms
@@ -12,7 +13,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseRunJson } from "../control-plane/record-layout.js";
 import {
 	fetchFiveXBranches,
@@ -27,8 +28,8 @@ import {
 	listRemotes,
 	revParseCommit,
 } from "../git.js";
-import { parsePlan } from "../parsers/plan.js";
 import { relativePathUnder } from "../paths.js";
+import { findGitRoot } from "../project-root.js";
 
 export type ProgressSourceKind =
 	| "worktree"
@@ -44,6 +45,11 @@ export interface ProgressSource {
 	label: string; // "worktree" | "5x/<slug>" | "origin/5x/<slug>" | "HEAD" | "diverged"
 	ref?: string;
 	commit?: string;
+	content_kind?: "working-copy" | "git-ref";
+	path?: string;
+	dirty?: boolean;
+	content_commit?: string;
+	progress_commit?: string;
 	age_seconds?: number; // remote-tracking tip vs now
 }
 
@@ -55,6 +61,7 @@ export interface ResolvedPlanProgress {
 	diverged_sources?: Array<ProgressSource & { plan_state: PlanProgressState }>;
 	markdown: string | null;
 	planPath: string;
+	/** Last progress commit (plan or records), independent of content snapshot. */
 	commit: string | null;
 }
 
@@ -452,6 +459,7 @@ interface RankedCandidate {
 	source: ProgressSource;
 	commit: string;
 	tipSha: string;
+	checkoutPath?: string;
 	/** Explicit working-copy removal; don't read the still-present HEAD blob. */
 	deleted?: boolean;
 }
@@ -504,6 +512,7 @@ async function rankCandidates(
 	planSlug: string,
 	plansBranch?: string | null,
 	checkoutCandidates: RankedCandidate[] = [],
+	relPlanPath?: string | null,
 ): Promise<RankedCandidate[]> {
 	const ranked = [...checkoutCandidates];
 
@@ -515,7 +524,14 @@ async function rankCandidates(
 			...tip.source,
 			commit: last,
 		};
-		ranked.push({ source, commit: last, tipSha: tip.sha });
+		ranked.push({
+			source,
+			commit: last,
+			tipSha: tip.sha,
+			...(tip.source.kind === "HEAD" && existsSync(session.workdir)
+				? { checkoutPath: session.workdir }
+				: {}),
+		});
 	}
 
 	ranked.sort((a, b) => {
@@ -525,26 +541,47 @@ async function rankCandidates(
 			a.source.label.localeCompare(b.source.label)
 		);
 	});
-	const byCommit = new Map<string, RankedCandidate>();
-	for (const cand of ranked) {
-		if (!byCommit.has(cand.commit)) byCommit.set(cand.commit, cand);
-	}
-	const unique = [...byCommit.values()];
-	return unique.filter((a) => {
-		for (const b of unique) {
-			if (a.commit === b.commit) continue;
-			if (isAncestorInGraph(session.parents, a.commit, b.commit)) return false;
+	// A merged checkout/ref is authoritative even when git log attributes the
+	// last progress change to one of its parents.
+	const tipSurvivors: RankedCandidate[] = [];
+	const snapshots = new Map<string, string | null>();
+	const snapshot = async (sha: string) => {
+		if (!relPlanPath) return null;
+		if (!snapshots.has(sha))
+			snapshots.set(
+				sha,
+				await readMarkdownAtCommit(session.workdir, sha, relPlanPath),
+			);
+		return snapshots.get(sha);
+	};
+	for (const a of ranked) {
+		let superseded = false;
+		for (const b of ranked) {
+			if (!isAncestorInGraph(session.parents, a.tipSha, b.tipSha)) continue;
+			if (
+				a.commit !== b.commit ||
+				b.checkoutPath ||
+				(await snapshot(a.tipSha)) !== (await snapshot(b.tipSha))
+			) {
+				superseded = true;
+				break;
+			}
 		}
-		return true;
-	});
-}
-
-function phaseCompletionPct(markdown: string): number {
-	const parsed = parsePlan(markdown);
-	const total = parsed.phases.length;
-	if (total === 0) return 0;
-	const done = parsed.phases.filter((p) => p.isComplete).length;
-	return Math.round((done / total) * 100);
+		if (!superseded) tipSurvivors.push(a);
+	}
+	const unique: RankedCandidate[] = [];
+	for (const cand of tipSurvivors) {
+		if (!unique.some((other) => other.tipSha === cand.tipSha))
+			unique.push(cand);
+	}
+	return unique.filter(
+		(a) =>
+			!unique.some(
+				(b) =>
+					a.commit !== b.commit &&
+					isAncestorInGraph(session.parents, a.commit, b.commit),
+			),
+	);
 }
 
 async function maybeBackfilledSource(opts: {
@@ -573,10 +610,9 @@ async function maybeBackfilledSource(opts: {
 			const summary = parseRunJson(text);
 			if (summary.backfilled === true) {
 				return {
+					...opts.source,
 					kind: "backfilled",
 					label: "backfilled",
-					ref: opts.source.ref,
-					commit: opts.commit,
 				};
 			}
 		} catch {
@@ -606,8 +642,9 @@ function readDiskMarkdown(opts: {
 			return { markdown: readFileSync(wtFile, "utf-8"), kind: "worktree" };
 		}
 	}
-	if (existsSync(opts.planPath)) {
-		return { markdown: readFileSync(opts.planPath, "utf-8"), kind: "HEAD" };
+	const suppliedPath = resolve(opts.workdir, opts.planPath);
+	if (existsSync(suppliedPath)) {
+		return { markdown: readFileSync(suppliedPath, "utf-8"), kind: "HEAD" };
 	}
 	if (opts.relPlanPath) {
 		const checkout = checkoutAbs(opts.workdir, opts.relPlanPath);
@@ -629,13 +666,80 @@ export async function resolvePlanProgress(opts: {
 	nowMs?: number;
 	session?: ProgressSession;
 	cache?: LastTouchingCache;
+	source?: "local";
+	ref?: string;
 }): Promise<ResolvedPlanProgress> {
-	const relPlanPath = repoRelFromAbsOrRel(opts.planPath, opts.workdir);
+	if (opts.source && opts.ref)
+		throw new Error("--source and --ref are mutually exclusive");
+	const relPlanPath =
+		repoRelFromAbsOrRel(opts.planPath, opts.workdir) ??
+		(opts.worktreePath
+			? repoRelFromAbsOrRel(opts.planPath, opts.worktreePath)
+			: null);
 	const recordsRel = toPosix(opts.recordsRelPath).replace(/\/$/, "");
 	const touchPaths = [
 		...(relPlanPath ? [relPlanPath] : []),
 		posixJoin(recordsRel, opts.planSlug),
 	];
+	if (opts.source === "local" || opts.ref) {
+		const path = resolve(opts.workdir, opts.planPath);
+		const suppliedCheckout = findGitRoot(dirname(path));
+		const contentWorkdir =
+			opts.source === "local"
+				? (suppliedCheckout ?? opts.workdir)
+				: opts.workdir;
+		const contentRel = repoRelFromAbsOrRel(
+			path,
+			suppliedCheckout ?? contentWorkdir,
+		);
+		const sha = await revParseCommit(contentWorkdir, opts.ref ?? "HEAD");
+		if (opts.ref && !sha) throw new Error(`Unknown git ref: ${opts.ref}`);
+		const markdown = opts.ref
+			? contentRel && sha
+				? await readMarkdownAtCommit(opts.workdir, sha, contentRel)
+				: null
+			: existsSync(path)
+				? readFileSync(path, "utf-8")
+				: null;
+		const progress = sha
+			? await gitLogLastTouching(contentWorkdir, sha, [
+					...(contentRel ? [contentRel] : []),
+					posixJoin(recordsRel, opts.planSlug),
+				])
+			: null;
+		const baseline =
+			sha && contentRel
+				? await readMarkdownAtCommit(contentWorkdir, sha, contentRel)
+				: null;
+		return {
+			state:
+				markdown !== null
+					? "present"
+					: sha &&
+							contentRel &&
+							(await gitLogLastTouching(contentWorkdir, sha, [contentRel]))
+						? "deleted"
+						: "missing",
+			source: {
+				kind: opts.ref
+					? "branch"
+					: contentWorkdir === opts.workdir
+						? "HEAD"
+						: "worktree",
+				label:
+					opts.ref ?? (contentWorkdir === opts.workdir ? "HEAD" : "worktree"),
+				ref: opts.ref ?? "HEAD",
+				content_kind: opts.ref ? "git-ref" : "working-copy",
+				path: opts.ref ? (contentRel ?? opts.planPath) : path,
+				...(sha ? { commit: sha, content_commit: sha } : {}),
+				...(progress ? { progress_commit: progress } : {}),
+				...(!opts.ref ? { dirty: markdown !== baseline } : {}),
+			},
+			markdown,
+			planPath: contentRel ?? opts.planPath,
+			commit: progress,
+		};
+	}
 
 	const session =
 		opts.session ??
@@ -662,11 +766,13 @@ export async function resolvePlanProgress(opts: {
 			)
 				continue;
 			if (!session.checkoutDeletions.get(checkout)?.has(relPlanPath)) continue;
+			if (existsSync(checkoutAbs(checkout, relPlanPath))) continue;
 			checkoutCandidates.push({
 				source: { ...tip.source, commit: tip.sha },
 				commit: tip.sha,
 				tipSha: tip.sha,
 				deleted: true,
+				checkoutPath: checkout,
 			});
 		}
 	}
@@ -692,6 +798,9 @@ export async function resolvePlanProgress(opts: {
 						kind: "worktree",
 						label: "worktree",
 						ref: "HEAD",
+						content_kind: "working-copy",
+						path: wtFile,
+						dirty: true,
 					},
 					markdown: disk.markdown,
 					planPath: relPlanPath ?? opts.planPath,
@@ -709,6 +818,7 @@ export async function resolvePlanProgress(opts: {
 				},
 				commit,
 				tipSha: wtSha,
+				checkoutPath: opts.worktreePath,
 			});
 		}
 	}
@@ -719,6 +829,7 @@ export async function resolvePlanProgress(opts: {
 		opts.planSlug,
 		opts.plansBranch,
 		checkoutCandidates,
+		relPlanPath,
 	);
 
 	if (survivors.length === 0) {
@@ -728,12 +839,24 @@ export async function resolvePlanProgress(opts: {
 			relPlanPath,
 			worktreePath: opts.worktreePath,
 		});
+		const baseline = session.tips.find((tip) =>
+			disk.kind === "worktree"
+				? tip.worktreePath === opts.worktreePath
+				: tip.source.kind === "HEAD",
+		)?.sha;
 		return {
 			state: disk.markdown === null ? "missing" : "present",
 			source: {
 				kind: disk.kind,
 				label: disk.kind === "worktree" ? "worktree" : "HEAD",
 				ref: "HEAD",
+				content_kind: "working-copy",
+				path:
+					disk.kind === "worktree" && opts.worktreePath && relPlanPath
+						? checkoutAbs(opts.worktreePath, relPlanPath)
+						: resolve(opts.workdir, opts.planPath),
+				dirty: disk.markdown !== null,
+				...(baseline ? { commit: baseline, content_commit: baseline } : {}),
 			},
 			markdown: disk.markdown,
 			planPath: relPlanPath ?? opts.planPath,
@@ -750,22 +873,38 @@ export async function resolvePlanProgress(opts: {
 	}> = [];
 	for (const win of survivors) {
 		let markdown: string | null = null;
+		const contentPath =
+			win.checkoutPath && relPlanPath
+				? checkoutAbs(win.checkoutPath, relPlanPath)
+				: (relPlanPath ?? opts.planPath);
+		win.source = {
+			...win.source,
+			commit: win.tipSha,
+			content_kind: win.checkoutPath ? "working-copy" : "git-ref",
+			path: contentPath,
+			content_commit: win.tipSha,
+			progress_commit:
+				(await lastTouching(session, win.tipSha, touchPaths)) ?? undefined,
+		};
+		if (win.checkoutPath && relPlanPath) {
+			markdown = existsSync(contentPath)
+				? readFileSync(contentPath, "utf-8")
+				: null;
+			const baseline = await readMarkdownAtCommit(
+				opts.workdir,
+				win.tipSha,
+				relPlanPath,
+			);
+			win.source.dirty = markdown !== baseline;
+		}
 		if (win.deleted) {
 			states.push({ cand: win, state: "deleted", markdown: null });
 			continue;
 		}
-		if (win.source.kind === "worktree" && relPlanPath && opts.worktreePath) {
-			const disk = readDiskMarkdown({
-				workdir: opts.workdir,
-				planPath: opts.planPath,
-				relPlanPath,
-				worktreePath: opts.worktreePath,
-			});
-			markdown = disk.markdown;
-		} else if (relPlanPath) {
+		if (!win.checkoutPath && relPlanPath) {
 			markdown = await readMarkdownAtCommit(
 				opts.workdir,
-				win.commit,
+				win.tipSha,
 				relPlanPath,
 			);
 		}
@@ -773,7 +912,7 @@ export async function resolvePlanProgress(opts: {
 			markdown !== null
 				? "present"
 				: relPlanPath &&
-						(await lastTouching(session, win.commit, [relPlanPath]))
+						(await lastTouching(session, win.tipSha, [relPlanPath]))
 					? "deleted"
 					: "missing";
 		states.push({ cand: win, state, markdown });
@@ -802,38 +941,53 @@ export async function resolvePlanProgress(opts: {
 						(base === win.commit ||
 							isAncestorInGraph(session.parents, win.commit, base))))
 			) {
-				return {
-					state: "present",
-					source: { kind: disk.kind, label: disk.kind, ref: "HEAD" },
-					markdown: disk.markdown,
-					planPath: relPlanPath ?? opts.planPath,
-					commit: null,
-				};
+				return resolvePlanProgress({
+					...opts,
+					source: "local",
+					planPath:
+						disk.kind === "worktree" && opts.worktreePath && relPlanPath
+							? checkoutAbs(opts.worktreePath, relPlanPath)
+							: opts.planPath,
+				});
 			}
 		}
 		return {
 			state,
-			source: await maybeBackfilledSource({
-				workdir: opts.workdir,
-				planSlug: opts.planSlug,
-				recordsRelPath: recordsRel,
-				source: win.source,
-				commit: win.commit,
-			}),
+			source: {
+				...win.source,
+				...(await maybeBackfilledSource({
+					workdir: opts.workdir,
+					planSlug: opts.planSlug,
+					recordsRelPath: recordsRel,
+					source: win.source,
+					commit: win.commit,
+				})),
+			},
 			markdown,
 			planPath: relPlanPath ?? opts.planPath,
-			commit: win.commit,
+			commit: win.source.progress_commit ?? null,
 		};
 	}
 
-	const withMd = states
-		.filter((s) => s.markdown !== null)
-		.map((s) => ({ ...s, pct: phaseCompletionPct(s.markdown as string) }));
-	withMd.sort((a, b) => {
-		if (a.pct !== b.pct) return b.pct - a.pct;
-		return a.cand.source.label.localeCompare(b.cand.source.label);
-	});
-	const best = withMd[0];
+	// Equal progress on unrelated tips is harmless only when their content and
+	// deletion state agree. Never rank differing snapshots by checked boxes.
+	if (
+		states.every(
+			(s) =>
+				s.state === states[0]?.state &&
+				s.markdown === states[0]?.markdown &&
+				s.cand.commit === states[0]?.cand.commit,
+		)
+	) {
+		const first = states[0] as (typeof states)[number];
+		return {
+			state: first.state,
+			source: first.cand.source,
+			markdown: first.markdown,
+			planPath: relPlanPath ?? opts.planPath,
+			commit: first.cand.source.progress_commit ?? null,
+		};
+	}
 	const diverged_sources = states.map((s) => ({
 		...s.cand.source,
 		plan_state: s.state,
@@ -843,12 +997,11 @@ export async function resolvePlanProgress(opts: {
 		source: {
 			kind: "diverged",
 			label: "diverged",
-			commit: best?.cand.commit,
 		},
 		diverged_sources,
-		markdown: best?.markdown ?? null,
+		markdown: null,
 		planPath: relPlanPath ?? opts.planPath,
-		commit: best?.cand.commit ?? survivors[0]?.commit ?? null,
+		commit: null,
 	};
 }
 
@@ -860,10 +1013,15 @@ export function formatAgeAgo(ageSeconds: number): string {
 	return `fetched ${Math.floor(ageSeconds / 86400)}d ago`;
 }
 
-/** Text-mode provenance line; omitted when the source is the checkout file. */
+/** Text-mode provenance; legacy sources without content metadata retain their format. */
 export function formatProgressSourceLine(
 	source: ProgressSource,
 ): string | null {
+	if (source.content_kind) {
+		return source.content_kind === "working-copy"
+			? `source: working-copy ${source.path} (${source.dirty ? "dirty" : "clean"})`
+			: `source: git-ref ${source.ref ?? source.label}:${source.path} @ ${source.content_commit}${typeof source.age_seconds === "number" ? ` (${formatAgeAgo(source.age_seconds)})` : ""}`;
+	}
 	if (source.kind === "worktree" || source.kind === "HEAD") return null;
 	const agePart =
 		typeof source.age_seconds === "number"
@@ -877,10 +1035,20 @@ export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
 	source: string;
 	source_ref?: string;
 	source_commit?: string;
+	source_kind?: "working-copy" | "git-ref";
+	source_path?: string;
+	source_dirty?: boolean;
+	content_commit?: string;
+	progress_commit?: string;
 	source_age_seconds?: number;
 	diverged_sources?: Array<{
 		source: string;
 		ref?: string;
+		content_kind?: "working-copy" | "git-ref";
+		path?: string;
+		dirty?: boolean;
+		content_commit?: string;
+		progress_commit?: string;
 		age_seconds?: number;
 		plan_state: PlanProgressState;
 	}>;
@@ -890,14 +1058,29 @@ export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
 		source: string;
 		source_ref?: string;
 		source_commit?: string;
+		source_kind?: "working-copy" | "git-ref";
+		source_path?: string;
+		source_dirty?: boolean;
+		content_commit?: string;
+		progress_commit?: string;
 		source_age_seconds?: number;
 		diverged_sources?: Array<{
 			source: string;
 			ref?: string;
+			content_kind?: "working-copy" | "git-ref";
+			path?: string;
+			dirty?: boolean;
+			content_commit?: string;
+			progress_commit?: string;
 			age_seconds?: number;
 			plan_state: PlanProgressState;
 		}>;
 	} = { source: resolved.source.label, plan_state: resolved.state };
+	out.source_kind = resolved.source.content_kind;
+	out.source_path = resolved.source.path;
+	out.source_dirty = resolved.source.dirty;
+	out.content_commit = resolved.source.content_commit;
+	out.progress_commit = resolved.source.progress_commit;
 	if (resolved.source.ref) out.source_ref = resolved.source.ref;
 	const commit = resolved.source.commit ?? resolved.commit;
 	if (commit) out.source_commit = commit;
@@ -908,6 +1091,11 @@ export function envelopeFromProgress(resolved: ResolvedPlanProgress): {
 		out.diverged_sources = resolved.diverged_sources.map((s) => ({
 			source: s.label,
 			plan_state: s.plan_state,
+			content_kind: s.content_kind,
+			path: s.path,
+			dirty: s.dirty,
+			content_commit: s.content_commit,
+			progress_commit: s.progress_commit,
 			...(s.ref ? { ref: s.ref } : {}),
 			...(typeof s.age_seconds === "number"
 				? { age_seconds: s.age_seconds }

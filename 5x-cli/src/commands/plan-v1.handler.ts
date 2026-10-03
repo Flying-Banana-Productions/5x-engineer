@@ -32,7 +32,7 @@ import {
 	updateRunPlanPath,
 } from "../db/operations-v1.js";
 import { runMigrations } from "../db/schema.js";
-import { gitLsTreePaths, gitShowFile } from "../git.js";
+import { gitLsTreePaths, gitShowFile, revParseCommit } from "../git.js";
 import { type LockDirOpts, releaseLock } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
 import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
@@ -64,11 +64,15 @@ import { resolveControlPlaneRoot } from "./control-plane.js";
 
 export interface PlanPhasesParams {
 	path: string;
+	source?: string;
+	ref?: string;
 	fetch?: boolean;
 	allRefs?: boolean;
 }
 
 export interface PlanListParams {
+	source?: string;
+	ref?: string;
 	excludeFinished?: boolean;
 	fetch?: boolean;
 	allRefs?: boolean;
@@ -85,6 +89,19 @@ export interface PlanListResult {
 	plans: PlanListEntry[];
 }
 
+function validateProgressSelection(params: {
+	source?: string;
+	ref?: string;
+}): void {
+	if (params.source && params.source !== "local")
+		outputError("INVALID_ARGUMENT", "--source must be local");
+	if (params.source && params.ref)
+		outputError(
+			"INVALID_ARGUMENT",
+			"--source and --ref are mutually exclusive",
+		);
+}
+
 // ---------------------------------------------------------------------------
 // Text formatter
 // ---------------------------------------------------------------------------
@@ -96,10 +113,14 @@ export interface PlanListResult {
  */
 function formatPhasesText(data: Record<string, unknown>): void {
 	const source = typeof data.source === "string" ? data.source : "";
-	if (source && source !== "worktree" && source !== "HEAD") {
+	if (source) {
 		const line = formatProgressSourceLine({
 			kind: source === "diverged" ? "diverged" : "remote",
 			label: source,
+			content_kind: data.source_kind as "working-copy" | "git-ref" | undefined,
+			path: data.source_path as string | undefined,
+			dirty: data.source_dirty as boolean | undefined,
+			content_commit: data.content_commit as string | undefined,
 			age_seconds:
 				typeof data.source_age_seconds === "number"
 					? data.source_age_seconds
@@ -130,15 +151,16 @@ function formatPhasesText(data: Record<string, unknown>): void {
 	}
 }
 
-export interface PlanListEntry {
+export interface PlanListEntry
+	extends Partial<ReturnType<typeof envelopeFromProgress>> {
 	plan_path: string;
 	name: string;
 	file: string;
 	title: string;
-	status: "complete" | "incomplete";
-	completion_pct: number;
-	phases_done: number;
-	phases_total: number;
+	status: "complete" | "incomplete" | "diverged";
+	completion_pct: number | null;
+	phases_done: number | null;
+	phases_total: number | null;
 	active_run: string | null;
 	runs_total: number;
 	source: string;
@@ -170,7 +192,7 @@ function stripMtime(p: PlanListRow): PlanListEntry {
  */
 function sortPlanListRows(a: PlanListRow, b: PlanListRow): number {
 	if (a.completion_pct !== b.completion_pct)
-		return b.completion_pct - a.completion_pct;
+		return (b.completion_pct ?? -1) - (a.completion_pct ?? -1);
 	if (a.mtime_ms !== b.mtime_ms) return a.mtime_ms - b.mtime_ms;
 	return a.plan_path.localeCompare(b.plan_path);
 }
@@ -197,12 +219,15 @@ export function formatPlanListText(data: {
 
 	const rows = plans.map((p) => ({
 		planPath: p.plan_path,
-		status: p.status,
-		progress: `${p.completion_pct}%`,
-		phases: `${p.phases_done}/${p.phases_total}`,
+		status: p.diverged ? "diverged" : p.status,
+		progress: p.diverged ? "?" : `${p.completion_pct}%`,
+		phases: p.diverged ? "?" : `${p.phases_done}/${p.phases_total}`,
 		runs: String(p.runs_total),
 		activeRun: p.active_run ?? "-",
-		source: p.source,
+		source:
+			p.source_kind === "working-copy"
+				? `${p.source_path} (${p.source_dirty ? "dirty" : "clean"})`
+				: p.source,
 	}));
 
 	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
@@ -273,7 +298,10 @@ async function loadPlanRecordAttribution(opts: {
 }
 
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
+	validateProgressSelection(params);
 	const { config, projectRoot } = await resolveDbContext({ migrate: false });
+	if (params.ref && !(await revParseCommit(projectRoot, params.ref)))
+		outputError("INVALID_ARGUMENT", `Unknown git ref: ${params.ref}`);
 	const planPath = resolvePlanArg(params.path, config.paths.plans);
 	const mapped = resolveMappedWorktree(planPath);
 	const worktreePlanPath =
@@ -303,8 +331,17 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 		worktreePath: mapped?.worktreeRoot ?? null,
 		plansBranch: config.plans.branch ?? null,
 		allRefs: params.allRefs,
+		source: params.source as "local" | undefined,
+		ref: params.ref,
 	});
 
+	if (resolved.state === "diverged") {
+		outputError(
+			"PLAN_DIVERGED",
+			"Plan sources diverged; select --source local or --ref <ref> before using its phases.",
+			envelopeFromProgress(resolved),
+		);
+	}
 	if (resolved.markdown === null) {
 		outputError("PLAN_NOT_FOUND", `Plan file not found: ${planPath}`, {
 			plan_path: planPath,
@@ -401,6 +438,7 @@ function effectivePlanReadPath(
 export async function planList(
 	params: PlanListParams,
 ): Promise<PlanListResult> {
+	validateProgressSelection(params);
 	const { projectRoot, config, db } =
 		params.dbContext ??
 		(await resolveDbContext({
@@ -412,6 +450,8 @@ export async function planList(
 			process.stderr.write(message);
 		});
 	const plansDir = config.paths.plans;
+	if (params.ref && !(await revParseCommit(projectRoot, params.ref)))
+		outputError("INVALID_ARGUMENT", `Unknown git ref: ${params.ref}`);
 	const skipSubtrees = planListSkipSubtrees(plansDir, config.paths);
 
 	if (params.fetch) {
@@ -466,6 +506,22 @@ export async function planList(
 	});
 
 	const allRels = new Set<string>([...diskRels, ...session.discoveredPlanRels]);
+	if (params.ref && plansRel) {
+		const snapshotPaths = await gitLsTreePaths(
+			projectRoot,
+			params.ref,
+			plansRel,
+		);
+		for (const rel of snapshotPaths) {
+			if (
+				rel.endsWith(".md") &&
+				!skipRelPrefixes.some(
+					(prefix) => rel === prefix || rel.startsWith(`${prefix}/`),
+				)
+			)
+				allRels.add(rel);
+		}
+	}
 
 	const allRuns = listRuns(db, { limit: 10000 });
 	const runsByPlanPath = new Map<string, typeof allRuns>();
@@ -502,11 +558,13 @@ export async function planList(
 				worktreePath,
 				plansBranch: config.plans.branch ?? null,
 				allRefs: params.allRefs,
+				source: params.source as "local" | undefined,
+				ref: params.ref,
 				session,
 			});
 			if (resolved.state === "deleted" || resolved.state === "missing")
 				continue;
-			if (resolved.markdown === null) continue;
+			if (resolved.markdown === null && resolved.state !== "diverged") continue;
 			progress = envelopeFromProgress(resolved);
 			diverged = resolved.source.kind === "diverged";
 			if (resolved.markdown !== null) {
@@ -573,10 +631,10 @@ export async function planList(
 			name,
 			file,
 			title,
-			status,
-			completion_pct,
-			phases_done,
-			phases_total,
+			status: diverged ? "diverged" : status,
+			completion_pct: diverged ? null : completion_pct,
+			phases_done: diverged ? null : phases_done,
+			phases_total: diverged ? null : phases_total,
 			active_run,
 			runs_total,
 			...progress,
