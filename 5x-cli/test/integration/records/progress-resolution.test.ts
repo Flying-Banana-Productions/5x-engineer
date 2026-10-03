@@ -155,6 +155,134 @@ async function listedPlans(dir: string, args: string[] = []) {
 
 describe("progress resolution", () => {
 	test.each([false, true])(
+		"root checkout edits are read from disk (staged: %s)",
+		async (staged) => {
+			const dir = makeTmpDir("5x-prog-root-edits");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Committed", [false]), "plan");
+				const progress = git(["rev-parse", "HEAD"], dir);
+				git(["branch", "5x/alpha"], dir);
+				commitPlan(dir, "other.txt", "unrelated", "advance checkout");
+				const tip = git(["rev-parse", "HEAD"], dir);
+				const markdown = `${planMarkdown("Edited", [true])}\n\n`;
+				writeFileSync(join(dir, PLAN_REL), markdown);
+				if (staged) git(["add", PLAN_REL], dir);
+				const resolved = await resolveAlpha(dir);
+				expect(resolved.markdown).toBe(markdown);
+				expect(resolved.source).toMatchObject({
+					content_kind: "working-copy",
+					path: join(dir, PLAN_REL),
+					dirty: true,
+					content_commit: tip,
+					progress_commit: progress,
+				});
+				expect((await listedPlans(dir))[0]).toMatchObject({
+					title: "Edited",
+					completion_pct: 100,
+				});
+				const local = await run5x(dir, [
+					"plan",
+					"phases",
+					PLAN_REL,
+					"--source",
+					"local",
+				]);
+				expect(parseJson(local.stdout).data).toMatchObject({
+					source_kind: "working-copy",
+					source_dirty: true,
+					phases: [{ done: true }],
+				});
+				const snapshot = await run5x(dir, [
+					"plan",
+					"phases",
+					PLAN_REL,
+					"--ref",
+					"HEAD",
+				]);
+				expect(parseJson(snapshot.stdout).data).toMatchObject({
+					source_kind: "git-ref",
+					content_commit: tip,
+					progress_commit: progress,
+					phases: [{ done: false }],
+				});
+				expect((await listedPlans(dir, ["--ref", "HEAD"]))[0]).toMatchObject({
+					title: "Committed",
+					completion_pct: 0,
+				});
+				const invalid = await run5x(dir, [
+					"plan",
+					"list",
+					"--source",
+					"local",
+					"--ref",
+					"HEAD",
+				]);
+				expect(invalid.exitCode).not.toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
+		"merged tips read their resolved tree rather than the last progress parent's blob",
+		async () => {
+			const dir = makeTmpDir("5x-prog-merge-tip");
+			try {
+				initRepo(dir);
+				commitPlan(dir, PLAN_REL, planMarkdown("Base", [false]), "base");
+				git(["checkout", "-b", "5x/alpha"], dir);
+				commitPlan(
+					dir,
+					PLAN_REL,
+					planMarkdown("Side", [true]),
+					"side progress",
+				);
+				const side = git(["rev-parse", "HEAD"], dir);
+				git(["checkout", "main"], dir);
+				git(
+					[
+						"merge",
+						"--no-ff",
+						"-s",
+						"ours",
+						"5x/alpha",
+						"-m",
+						"keep main tree",
+					],
+					dir,
+				);
+				const tip = git(["rev-parse", "HEAD"], dir);
+				const resolved = await resolveAlpha(dir);
+				expect(resolved.state).toBe("present");
+				expect(resolved.markdown).toBe(planMarkdown("Base", [false]));
+				expect(resolved.source).toMatchObject({
+					content_kind: "working-copy",
+					content_commit: tip,
+					dirty: false,
+				});
+				git(["update-ref", "refs/remotes/origin/5x/alpha", tip], dir);
+				git(["reset", "--hard", side], dir);
+				const remote = await resolveAlpha(dir);
+				expect(remote.source).toMatchObject({
+					content_kind: "git-ref",
+					content_commit: tip,
+				});
+				expect(remote.markdown).toBe(planMarkdown("Base", [false]));
+				expect((await listedPlans(dir))[0]).toMatchObject({
+					title: "Base",
+					completion_pct: 0,
+				});
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test.each([false, true])(
 		"archive moves take effect before commit (staged: %s)",
 		async (staged) => {
 			const dir = makeTmpDir("5x-prog-uncommitted-archive");
@@ -215,7 +343,8 @@ describe("progress resolution", () => {
 				const local = await resolveAlpha(dir);
 				expect(local.state).toBe("present");
 				expect(local.source.label).toBe("HEAD");
-				expect(local.commit).toBeNull();
+				expect(local.source.dirty).toBe(true);
+				expect(local.source.progress_commit).toBe(local.commit as string);
 				expect((await listedPlans(dir))[0]?.title).toBe("Reintroduced");
 				git(["add", PLAN_REL], dir);
 				git(["commit", "-m", "reintroduce alpha"], dir);
@@ -273,19 +402,22 @@ describe("progress resolution", () => {
 				git(["commit", "-m", "delete alpha"], dir);
 				const resolved = await resolveAlpha(dir);
 				expect(resolved.state).toBe("diverged");
-				expect(resolved.markdown).toContain("- [x]");
+				expect(resolved.markdown).toBeNull();
 				const row = (await listedPlans(dir))[0];
 				expect(row?.source).toBe("diverged");
-				expect(row?.completion_pct).toBe(100);
-				expect(row?.diverged_sources).toEqual([
+				expect(row?.completion_pct).toBeNull();
+				expect(row?.diverged_sources).toMatchObject([
 					{ source: "HEAD", ref: "HEAD", plan_state: "deleted" },
 					{ source: "5x/alpha", ref: "5x/alpha", plan_state: "present" },
 				]);
 				const phases = await run5x(dir, ["plan", "phases", PLAN_REL]);
-				expect(phases.exitCode).toBe(0);
-				expect(parseJson(phases.stdout).data).toMatchObject({
-					plan_state: "diverged",
-					diverged_sources: row?.diverged_sources,
+				expect(phases.exitCode).not.toBe(0);
+				expect(parseJson(phases.stdout).error).toMatchObject({
+					code: "PLAN_DIVERGED",
+					detail: {
+						plan_state: "diverged",
+						diverged_sources: row?.diverged_sources,
+					},
 				});
 			} finally {
 				cleanupDir(dir);
@@ -502,7 +634,7 @@ describe("progress resolution", () => {
 
 				const text = await run5x(dir, ["--text", "plan", "list"]);
 				expect(text.stdout).toContain("Source");
-				expect(text.stdout).toContain("HEAD");
+				expect(text.stdout).toContain("alpha.md (clean)");
 			} finally {
 				cleanupDir(dir);
 			}
@@ -600,20 +732,45 @@ describe("progress resolution", () => {
 				).plans.find((p) => p.plan_path === "alpha.md");
 				expect(row?.source).toBe("diverged");
 				expect(row?.diverged).toBe(true);
-				expect(row?.completion_pct).toBe(100);
+				expect(row?.completion_pct).toBeNull();
 
 				const phases = await run5x(clone, ["plan", "phases", PLAN_REL]);
-				const pdata = parseJson(phases.stdout).data as {
-					source: string;
-					diverged_sources?: Array<{ source: string }>;
+				expect(phases.exitCode).not.toBe(0);
+				const error = parseJson(phases.stdout).error as {
+					code: string;
+					detail: { diverged_sources: Array<{ source: string }> };
 				};
-				expect(pdata.source).toBe("diverged");
-				const labels = pdata.diverged_sources?.map((s) => s.source).sort();
+				expect(error.code).toBe("PLAN_DIVERGED");
+				const local = await run5x(clone, [
+					"plan",
+					"phases",
+					PLAN_REL,
+					"--source",
+					"local",
+				]);
+				expect(local.exitCode).toBe(0);
+				expect(parseJson(local.stdout).data).toMatchObject({
+					phases: [{ done: true }, { done: true }],
+				});
+				const remote = await run5x(clone, [
+					"plan",
+					"phases",
+					PLAN_REL,
+					"--ref",
+					"origin/5x/alpha",
+				]);
+				expect(remote.exitCode).toBe(0);
+				expect(parseJson(remote.stdout).data).toMatchObject({
+					phases: [{ done: true }, { done: false }],
+				});
+				const labels = error.detail.diverged_sources
+					.map((s) => s.source)
+					.sort();
 				expect(labels).toContain("HEAD");
 				expect(labels).toContain("origin/5x/alpha");
 
 				const text = await run5x(clone, ["--text", "plan", "phases", PLAN_REL]);
-				expect(text.stdout).toContain("source: diverged");
+				expect(text.stderr).toContain("Plan sources diverged");
 			} finally {
 				cleanupDir(root);
 			}
@@ -768,9 +925,44 @@ describe("progress resolution", () => {
 				};
 				expect(pdata.source).toBe("worktree");
 				expect(pdata.phases[0]?.done).toBe(true);
+				expect(parseJson(phases.stdout).data).toMatchObject({
+					source_kind: "working-copy",
+					source_dirty: true,
+					source_path: join(wt, PLAN_REL),
+				});
+				const root = await run5x(dir, [
+					"plan",
+					"phases",
+					PLAN_REL,
+					"--source",
+					"local",
+				]);
+				expect(parseJson(root.stdout).data).toMatchObject({
+					source_path: join(dir, PLAN_REL),
+					source_dirty: false,
+					phases: [{ done: false }],
+				});
+				expect(
+					(await listedPlans(dir, ["--source", "local"]))[0]?.completion_pct,
+				).toBe(0);
 
+				const supplied = await run5x(dir, [
+					"plan",
+					"phases",
+					join(wt, PLAN_REL),
+					"--source",
+					"local",
+				]);
+				expect(supplied.exitCode).toBe(0);
+				expect(parseJson(supplied.stdout).data).toMatchObject({
+					source_path: join(wt, PLAN_REL),
+					content_commit: git(["rev-parse", "HEAD"], wt),
+					source_dirty: true,
+					phases: [{ done: true }],
+				});
 				const text = await run5x(dir, ["--text", "plan", "phases", PLAN_REL]);
-				expect(text.stdout).not.toMatch(/^source:/m);
+				expect(text.stdout).toContain("source: working-copy");
+				expect(text.stdout).toContain("(dirty)");
 
 				// A mapped checkout's removal must not fall back to the root copy.
 				rmSync(join(wt, PLAN_REL));

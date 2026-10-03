@@ -62,7 +62,12 @@ export const subprocess = {
 			new Response(proc.stderr).text(),
 			proc.exited,
 		]);
-		return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+		// Blob reads must preserve whitespace, including a final newline.
+		return {
+			stdout: args[0] === "show" ? stdout : stdout.trim(),
+			stderr: stderr.trim(),
+			exitCode,
+		};
 	},
 
 	/**

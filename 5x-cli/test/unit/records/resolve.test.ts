@@ -164,7 +164,7 @@ describe("resolvePlanProgress", () => {
 		},
 	);
 
-	test("checkout fallback replaces the branch source and clears its commit", async () => {
+	test("checkout fallback reports its actual content baseline", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "5x-resolve-fallback-"));
 		try {
 			mkdirSync(join(dir, "docs/development"), { recursive: true });
@@ -181,6 +181,7 @@ describe("resolvePlanProgress", () => {
 				],
 				[(args) => args[0] === "rev-parse", ok(A)],
 				[(args) => args[0] === "rev-list", ok(`${B} ${A}\n${A}`)],
+				[(args) => args[0] === "log" && args.includes("-1"), ok("")],
 				[
 					(args) => args[0] === "log",
 					ok(`${B}\ndocs/development/runs/foo/run.json\n`),
@@ -196,13 +197,16 @@ describe("resolvePlanProgress", () => {
 			});
 			expect(resolved.markdown).toBe(PLAN_MD_A);
 			expect(resolved.state).toBe("present");
-			expect(resolved.source).toEqual({
+			expect(resolved.source).toMatchObject({
 				kind: "HEAD",
 				label: "HEAD",
 				ref: "HEAD",
+				content_kind: "working-copy",
+				content_commit: A,
+				dirty: true,
 			});
 			expect(resolved.commit).toBeNull();
-			expect(envelopeFromProgress(resolved).source_commit).toBeUndefined();
+			expect(envelopeFromProgress(resolved).source_commit).toBe(A);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -371,7 +375,7 @@ describe("resolvePlanProgress", () => {
 		expect(resolved.diverged_sources).toBeUndefined();
 	});
 
-	test("diverged pair reports both labels and max completion markdown", async () => {
+	test("diverged pair reports both labels without selecting completion markdown", async () => {
 		mockGit(
 			[
 				(args) =>
@@ -417,8 +421,8 @@ describe("resolvePlanProgress", () => {
 			"5x/foo",
 			"origin/5x/foo",
 		]);
-		expect(resolved.markdown).toContain("Phase 2");
-		expect(resolved.markdown).toContain("- [x] b");
+		expect(resolved.markdown).toBeNull();
+		expect(resolved.commit).toBeNull();
 		const env = envelopeFromProgress(resolved);
 		expect(env.source).toBe("diverged");
 		expect(env.diverged_sources?.length).toBe(2);
