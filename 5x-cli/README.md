@@ -562,8 +562,11 @@ reports `status: "diverged"`, null completion/phase counts, and candidate
 provenance in `diverged_sources`. `plan phases` returns `PLAN_DIVERGED` until
 `--source local` or `--ref <ref>` selects the content explicitly.
 
-`source` identifies the selected checkout or ref. For equivalent progress
-commits and content, attribution prefers the mapped working copy, then `HEAD`, the configured
+`source` identifies the selected checkout or ref. Ancestor ref tips are pruned
+before comparing content, so a stale ancestor snapshot cannot conflict with
+a descendant checkout's uncommitted edits, even when their progress commits
+match. For remaining equivalent progress commits and content, attribution
+prefers the mapped working copy, then `HEAD`, the configured
 plans branch, the plan's matching local branch, its matching remote-tracking
 branch, and finally other refs in stable order. Newer branch progress still wins
 over older checkout progress. Read failures produce warnings rather than empty
