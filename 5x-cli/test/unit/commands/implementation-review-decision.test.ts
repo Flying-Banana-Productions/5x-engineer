@@ -11,6 +11,8 @@ import { CliError } from "../../../src/output.js";
 import type { ImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { encodeImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
+import { deriveOpenImplementationGate } from "../../../src/review-governance/store.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
@@ -80,8 +82,8 @@ function observation(
 	};
 }
 
-function seed() {
-	const ctx = makeBudgetContext({ mode: "enforced" });
+function seed(mode: "advisory" | "enforced" = "enforced") {
+	const ctx = makeBudgetContext({ mode });
 	ctx.store.saveImplementationBinding(
 		{
 			kind: "implementation-binding",
@@ -96,7 +98,7 @@ function seed() {
 			approvedPlanBytes: "# Plan\n",
 			b0: 5,
 			governingB: 5,
-			mode: "enforced",
+			mode,
 			thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
 			ledger: {
 				estimateConfidence: "high",
@@ -190,6 +192,52 @@ describe("implementation review decide", () => {
 		expect(shown.allowedChoices).not.toContain("authorize_amendment");
 		expect(promptStore.listOpenPrompts(RUN)).toHaveLength(1);
 		ctx.db.close();
+	});
+
+	test("advisory bindings expose hypothetical causes but never open or decide a gate", async () => {
+		const { ctx, promptStore } = seed("advisory");
+		try {
+			expect(
+				deriveOpenImplementationGate(ctx.recordStore, RUN, "1"),
+			).toBeNull();
+			const shown = await showReviewGate(
+				RUN,
+				{ context: ctx, promptStore },
+				{ phase: "1" },
+			);
+			expect(shown).toEqual({
+				open: false,
+				domain: "implementation",
+				phase: "1",
+				mode: "advisory",
+				hypotheticalCauses: observation().gateCauses,
+			});
+			expect(promptStore.listOpenPrompts(RUN)).toHaveLength(0);
+			await expect(
+				submitReviewDecision(
+					{
+						runId: RUN,
+						gateId: "sha256:any",
+						phase: "1",
+						payload: {
+							choice: "defer_accept_risk",
+							rationale: "Accept the named risk",
+							evidence: ["operator evidence"],
+						},
+						findingIds: ["F1"],
+					},
+					{ context: ctx, promptStore },
+				),
+			).rejects.toMatchObject({ code: "REVIEW_GATE_ADVISORY" });
+			reindexReviewGovernance(ctx.recordStore, ctx.db, RUN);
+			expect(
+				ctx.db
+					.query("SELECT COUNT(*) AS n FROM review_gate_index WHERE run_id = ?")
+					.get(RUN),
+			).toEqual({ n: 0 });
+		} finally {
+			ctx.db.close();
+		}
 	});
 
 	test("same intent retries and a different intent loses", async () => {

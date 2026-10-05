@@ -70,6 +70,7 @@ function fixture(
 		withSnapshot?: boolean;
 		semanticHumanRequired?: boolean;
 		cacheDerived?: boolean;
+		mode?: "advisory" | "enforced";
 	} = {},
 ) {
 	const db = new Database(":memory:");
@@ -93,7 +94,7 @@ function fixture(
 	const baseline = store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
-		mode: "advisory",
+		mode: options.mode ?? "advisory",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin,
@@ -338,7 +339,10 @@ describe("run state review budget", () => {
 	});
 
 	test("governance read model exposes route, gate, stable IDs, and malformed history", () => {
-		const { db, store, records, baseline } = fixture({ withSnapshot: false });
+		const { db, store, records, baseline } = fixture({
+			withSnapshot: false,
+			mode: "enforced",
+		});
 		try {
 			const snapshot = store.appendSnapshot({
 				runId: "run1",
@@ -452,6 +456,33 @@ describe("run state review budget", () => {
 			} finally {
 				console.log = original;
 			}
+		} finally {
+			db.close();
+		}
+	});
+
+	test("advisory gate causes never surface as an active gate", () => {
+		const { db, store, records, baseline } = fixture({ withSnapshot: false });
+		try {
+			store.appendSnapshot({
+				runId: "run1",
+				stepName: "reviewer:plan",
+				phase: "plan",
+				iteration: 1,
+				currentLedger: ledger,
+				findings: [],
+				assessments: [],
+				effectiveGateCauses: [
+					{ kind: "budget_alert", alert: "baseline_disputed" },
+				],
+			});
+			const state = buildReviewGovernanceState({
+				runId: "run1",
+				b0: baseline.b0,
+				recordStore: records,
+				reviewBudgetStore: store,
+			});
+			expect(state.active_gate).toBeUndefined();
 		} finally {
 			db.close();
 		}

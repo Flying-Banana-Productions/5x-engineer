@@ -753,15 +753,11 @@ function assessApprovedSource(input: {
 			refusal: `Source run ${input.sourceRunId} was aborted`,
 		};
 	}
-	// Advisory snapshots persist hypothetical enforced gate causes as
-	// diagnostics; only an enforced baseline turns them into a blocking gate.
-	// Advisory sources are judged by their recorded v1 route below.
-	const openGate =
-		baseline.mode === "enforced"
-			? createReviewGovernanceStore(input.recordStore).deriveOpenGate(
-					input.sourceRunId,
-				)
-			: null;
+	// Advisory sources never have an open gate; they are judged by their
+	// recorded v1 route below.
+	const openGate = createReviewGovernanceStore(
+		input.recordStore,
+	).deriveOpenGate(input.sourceRunId);
 	if (openGate && !openGate.resolved) {
 		return {
 			status: "ok",

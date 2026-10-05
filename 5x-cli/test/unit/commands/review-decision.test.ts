@@ -30,6 +30,7 @@ import {
 function fixture(opts?: {
 	maxSteps?: number;
 	architecture?: "aggregate" | "individual";
+	mode?: "advisory" | "enforced";
 }) {
 	const ctx = makeBudgetContext({ maxSteps: opts?.maxSteps });
 	const promptStore = createMemoryPromptStore();
@@ -85,7 +86,7 @@ function fixture(opts?: {
 	ctx.store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
-		mode: "enforced",
+		mode: opts?.mode ?? "enforced",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin: TEST_ORIGIN,
@@ -341,6 +342,50 @@ describe("review decision action", () => {
 			} finally {
 				ctx.db.close();
 			}
+		}
+	});
+
+	test("advisory runs expose hypothetical causes but never open or decide a gate", async () => {
+		const { ctx, promptStore } = fixture({ mode: "advisory" });
+		try {
+			const snapshot = ctx.store.latestSnapshot("run1");
+			expect(snapshot?.effectiveGateCauses.length).toBeGreaterThan(0);
+			expect(
+				createReviewGovernanceStore(ctx.recordStore).deriveOpenGate("run1"),
+			).toBeNull();
+			const shown = await showPlanReviewGate("run1", {
+				context: ctx,
+				promptStore,
+			});
+			expect(shown).toEqual({
+				open: false,
+				mode: "advisory",
+				hypotheticalCauses: snapshot?.effectiveGateCauses ?? [],
+			});
+			expect(promptStore.listOpenPrompts("run1")).toHaveLength(0);
+			let error: unknown;
+			try {
+				await submitPlanReviewDecision(
+					{
+						runId: "run1",
+						gateId: "sha256:any",
+						payload: { choice: "retain_baseline", rationale: "retain" },
+					},
+					{ context: ctx, promptStore },
+				);
+			} catch (caught) {
+				error = caught;
+			}
+			expect(error).toBeInstanceOf(CliError);
+			expect((error as CliError).code).toBe("REVIEW_GATE_ADVISORY");
+			reindexReviewGovernance(ctx.recordStore, ctx.db, "run1");
+			expect(
+				ctx.db
+					.query("SELECT COUNT(*) AS n FROM review_gate_index WHERE run_id = ?")
+					.get("run1"),
+			).toEqual({ n: 0 });
+		} finally {
+			ctx.db.close();
 		}
 	});
 

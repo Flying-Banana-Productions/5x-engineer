@@ -19,6 +19,7 @@ import {
 	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
+import { isAdvisoryReviewRun } from "./store.js";
 import type { ReviewGateCause } from "./types.js";
 
 export interface GovernanceReindexResult {
@@ -170,7 +171,10 @@ export function reindexReviewGovernance(
 				diagnostics.push(`${decision.decisionId}: ${acceptance.diagnostic}`);
 			decisionCount += 1;
 		}
+		// Advisory gate causes are hypothetical; they never form plan gates.
+		const advisory = isAdvisoryReviewRun(recordStore, id);
 		for (const [seq, line] of budget.entries()) {
+			if (advisory) break;
 			let snapshot: BudgetSnapshotPayload;
 			try {
 				snapshot = decodeBudgetSnapshotPayload(line.payload);
@@ -244,6 +248,7 @@ export function reindexReviewGovernance(
 				diagnostics.push(`${decision.decisionId}: ${acceptance.diagnostic}`);
 			decisionCount += 1;
 		}
+		const advisoryBindings = new Set<string>();
 		for (const [seq, line] of budget.entries()) {
 			const raw = line.payload as { kind?: unknown; version?: unknown } | null;
 			if (!raw || typeof raw.kind !== "string") continue;
@@ -261,6 +266,7 @@ export function reindexReviewGovernance(
 			if (raw.kind === "implementation-binding") {
 				try {
 					const binding = decodeImplementationBindingPayload(line.payload);
+					if (binding.mode === "advisory") advisoryBindings.add(binding.id);
 					db.query(`INSERT INTO implementation_binding_index (
 						id, run_id, record_idempotency_key, record_seq, source_run_id,
 						approved_plan_commit, ledger_hash, decisions_hash, payload_json,
@@ -311,7 +317,11 @@ export function reindexReviewGovernance(
 					JSON.stringify(redactOrigin(line.origin, [])),
 					observation.createdAt,
 				);
-				if (!observation.gateCauses.length) continue;
+				if (
+					!observation.gateCauses.length ||
+					advisoryBindings.has(observation.bindingId)
+				)
+					continue;
 				let causes = observation.gateCauses;
 				let predecessorGateId: string | undefined;
 				let chainDepth = 0;

@@ -106,6 +106,10 @@ export interface ReviewDecisionDeps {
 	onOpenGateMiss?: () => void | Promise<void>;
 }
 
+function advisoryDecisionMessage(runId: string): string {
+	return `Run ${runId} is pinned to advisory review-budget mode; governance gates are informational. Use the v1 human gate path instead of \`5x review decide\`.`;
+}
+
 export async function showPlanReviewGate(
 	runId: string,
 	deps: ReviewDecisionDeps = {},
@@ -121,6 +125,16 @@ export async function showPlanReviewGate(
 	const baseline = ctx.store.getBaseline(runId);
 	if (!baseline)
 		fail("BUDGET_BASELINE_MISSING", "review budget baseline is missing");
+	if (baseline.mode === "advisory") {
+		// Advisory runs keep v1 routing; their persisted gate causes are what
+		// enforced mode would have gated on, surfaced for information only.
+		return {
+			open: false as const,
+			mode: "advisory" as const,
+			hypotheticalCauses:
+				ctx.store.latestSnapshot(runId)?.effectiveGateCauses ?? [],
+		};
+	}
 	const governance = createReviewGovernanceStore(ctx.recordStore, promptStore);
 	repairReviewGatePrompts(ctx.recordStore, promptStore, runId);
 	const gate = governance.deriveOpenGate(runId);
@@ -612,6 +626,8 @@ export async function submitPlanReviewDecision(
 	if (alreadyResolved) return acceptStoredWinner(alreadyResolved);
 	if (run.status !== "active")
 		fail("RUN_NOT_ACTIVE", `Run ${input.runId} is ${run.status}`);
+	if (baseline.mode === "advisory")
+		fail("REVIEW_GATE_ADVISORY", advisoryDecisionMessage(input.runId));
 	const gate = governance.deriveOpenGate(input.runId);
 	if (!gate || gate.gateId !== input.gateId) {
 		// The other process can commit between the first read and this
@@ -1022,7 +1038,13 @@ export async function submitReviewDecision(
 		input.gateId,
 		input.phase,
 	);
-	if (!gate) return submitPlanReviewDecision(input, { ...deps, context: ctx });
+	if (!gate) {
+		// Advisory implementation gates are never open; say so instead of
+		// falling through to the plan path's missing-baseline error.
+		if (ctx.store.getImplementationBinding(input.runId)?.mode === "advisory")
+			fail("REVIEW_GATE_ADVISORY", advisoryDecisionMessage(input.runId));
+		return submitPlanReviewDecision(input, { ...deps, context: ctx });
+	}
 	return submitImplementationReviewDecision(
 		{ ...input, phase: gate.phase },
 		{ ...deps, context: ctx },
@@ -1045,6 +1067,19 @@ async function showImplementationReviewGate(
 	const binding = ctx.store.getImplementationBinding(runId);
 	if (!binding)
 		fail("IMPLEMENTATION_BINDING_MISSING", "implementation binding is missing");
+	if (binding.mode === "advisory") {
+		return {
+			open: false as const,
+			domain: "implementation" as const,
+			phase,
+			mode: "advisory" as const,
+			hypotheticalCauses:
+				ctx.store
+					.listImplementationReviews(runId)
+					.filter((observation) => observation.phase === phase)
+					.at(-1)?.gateCauses ?? [],
+		};
+	}
 	repairReviewGatePrompts(ctx.recordStore, promptStore, runId);
 	const gate = deriveOpenImplementationGate(ctx.recordStore, runId, phase);
 	if (!gate)

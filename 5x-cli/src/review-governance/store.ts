@@ -11,6 +11,8 @@ import {
 	type ReviewGatePromptContext,
 } from "../control-plane/types.js";
 import {
+	baselineIdempotencyKey,
+	decodeBudgetBaselinePayload,
 	decodeBudgetSnapshotPayload,
 	decodeImplementationBindingPayload,
 	decodeImplementationReviewObservationPayload,
@@ -313,6 +315,29 @@ export interface ReviewGovernanceStore {
 	): DerivedImplementationGate | null;
 }
 
+/**
+ * True when the run's baseline is pinned advisory. Advisory snapshots persist
+ * hypothetical enforced gate causes as diagnostics only; v1 routing stays
+ * authoritative, so no governance gate is ever open. A missing or unreadable
+ * baseline is not advisory evidence and keeps gate derivation fail-closed.
+ */
+export function isAdvisoryReviewRun(
+	recordStore: RecordStore,
+	runId: string,
+): boolean {
+	const line = recordStore.getLine(
+		runId,
+		"budget",
+		baselineIdempotencyKey(runId),
+	);
+	if (!line) return false;
+	try {
+		return decodeBudgetBaselinePayload(line.payload).mode === "advisory";
+	} catch {
+		return false;
+	}
+}
+
 function routeForChoice(
 	choice: ReviewDecisionPayload["choice"],
 ): ReviewDecisionRoute {
@@ -340,6 +365,7 @@ export function createReviewGovernanceStore(
 			return listGovernanceDecisions(recordStore, runId).decisions;
 		},
 		deriveOpenGate(runId) {
+			if (isAdvisoryReviewRun(recordStore, runId)) return null;
 			const snapshots = recordStore
 				.listLines(runId, "budget")
 				.flatMap((line) => {
@@ -502,6 +528,8 @@ export function deriveOpenImplementationGate(
 	const latest = observations.at(-1);
 	if (!latest || latest.gateCauses.length === 0) return null;
 	const fingerprint = bindingFingerprint(recordStore, runId, latest.bindingId);
+	// Advisory bindings keep v1 routing; their gate causes are informational.
+	if (fingerprint.mode === "advisory") return null;
 	const decisions = listImplementationDecisions(recordStore, runId).decisions;
 	let causes = latest.gateCauses;
 	let predecessorGateId: string | undefined;
@@ -556,7 +584,11 @@ function bindingFingerprint(
 	recordStore: RecordStore,
 	runId: string,
 	bindingId: string,
-): { ledgerHash: string; decisionsHash: string } {
+): {
+	ledgerHash: string;
+	decisionsHash: string;
+	mode: "advisory" | "enforced" | null;
+} {
 	for (const line of recordStore.listLines(runId, "budget")) {
 		try {
 			const binding = decodeImplementationBindingPayload(line.payload);
@@ -564,12 +596,13 @@ function bindingFingerprint(
 				return {
 					ledgerHash: binding.ledgerHash,
 					decisionsHash: binding.decisionsHash,
+					mode: binding.mode,
 				};
 		} catch {
 			// Budget lines that are not bindings are skipped.
 		}
 	}
-	return { ledgerHash: "", decisionsHash: "" };
+	return { ledgerHash: "", decisionsHash: "", mode: null };
 }
 
 export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
