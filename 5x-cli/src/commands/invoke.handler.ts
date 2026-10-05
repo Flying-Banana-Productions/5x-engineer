@@ -69,6 +69,7 @@ import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
 import {
 	controlPlaneDbPath,
+	controlPlaneStatePath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
@@ -663,7 +664,11 @@ export async function invokeAgent(
 	const prepareLog = deps?.prepareLogPath ?? defaultPrepareLogPath;
 	const appendStart = deps?.appendSessionStart ?? defaultAppendSessionStart;
 
-	const logDir = join(controlPlane.controlPlaneRoot, stateDir, "logs", runId);
+	const logDir = controlPlaneStatePath(
+		controlPlane.controlPlaneRoot,
+		stateDir,
+		join("logs", runId),
+	);
 	const recordPhase = params.phase ?? variables.phase_number;
 	const budgetStepName =
 		params.recordStep ?? resolved.stepName ?? "reviewer:plan";

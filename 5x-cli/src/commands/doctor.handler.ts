@@ -6,6 +6,7 @@
  */
 
 import { join, resolve } from "node:path";
+import { resolveLayeredConfig } from "../config.js";
 import {
 	builtinDoctorChecks,
 	checkFailedFinding,
@@ -20,7 +21,6 @@ import type {
 	DoctorReport,
 } from "../doctor/types.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
-import { resolveProjectContext } from "./context.js";
 import {
 	DB_FILENAME,
 	normalizeDbPath,
@@ -42,19 +42,13 @@ async function resolveDoctorContext(
 	try {
 		const startDir = resolve(params.startDir ?? ".");
 		const controlPlane = resolveControlPlaneRoot(startDir);
-		const stateDir = controlPlane.stateDir;
-
-		let projectRoot: string;
-		let dbRelPath: string;
-
-		if (controlPlane.mode !== "none") {
-			projectRoot = controlPlane.controlPlaneRoot;
-			dbRelPath = join(stateDir, DB_FILENAME);
-		} else {
-			const ctx = await resolveProjectContext({ startDir });
-			projectRoot = ctx.projectRoot;
-			dbRelPath = join(normalizeDbPath(ctx.config.db.path), DB_FILENAME);
+		const projectRoot = controlPlane.controlPlaneRoot;
+		if (controlPlane.mode === "none") {
+			const { config } = await resolveLayeredConfig(projectRoot, startDir);
+			controlPlane.stateDir = normalizeDbPath(config.db.path);
 		}
+		const stateDir = controlPlane.stateDir;
+		const dbRelPath = join(stateDir, DB_FILENAME);
 
 		const dbPath = resolve(projectRoot, dbRelPath);
 		return {

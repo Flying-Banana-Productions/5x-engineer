@@ -21,11 +21,7 @@ import {
 	statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import {
-	type FiveXConfig,
-	loadConfig,
-	resolveLayeredConfig,
-} from "../config.js";
+import { type FiveXConfig, resolveLayeredConfig } from "../config.js";
 import {
 	type AppendOp,
 	createMemoryRecordStore,
@@ -121,7 +117,6 @@ import {
 	isStdinPiped,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import { resolveProjectRoot } from "../project-root.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
@@ -163,8 +158,10 @@ import { StreamWriter } from "../utils/stream-writer.js";
 import { version } from "../version.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import {
+	assertNoLegacySubprojectState,
 	type ControlPlaneResult,
 	controlPlaneDbPath,
+	controlPlaneStatePath,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
@@ -1678,23 +1675,13 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 	// Phase 3b: resolve control-plane root for DB location.
 	// `run init` from a linked worktree creates the run in the root DB.
 	const controlPlane = resolveControlPlaneRoot();
-	const projectRoot =
-		controlPlane.mode !== "none"
-			? controlPlane.controlPlaneRoot
-			: resolveProjectRoot();
-	const stateDir = controlPlane.stateDir;
-	const lockOpts: LockDirOpts = { stateDir };
+	const projectRoot = controlPlane.controlPlaneRoot;
 
-	// Load root config first for plan arg resolution (bare filename → plans dir).
-	// Layered config is loaded below once the plan path is known.
-	const rootResult = await loadConfig(
-		projectRoot,
-		undefined,
-		undefined,
-		projectRoot,
-	);
+	// Bare filenames use the invoking subproject's plans directory. Infrastructure
+	// remains root-owned; final execution config is anchored to the selected plan.
+	const initialResult = await resolveLayeredConfig(projectRoot, resolve("."));
 	const planPath = canonicalizePlanPath(
-		resolvePlanArg(params.plan, rootResult.config.paths.plans),
+		resolvePlanArg(params.plan, initialResult.config.paths.plans),
 	);
 
 	// Phase 3b: plan-path validation — plan must be under controlPlaneRoot
@@ -1711,20 +1698,9 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		);
 	}
 
-	// Config resolution: use plan-path-anchored layering (Phase 1c) when
-	// we have a control-plane root, so config is scoped to the plan's
-	// sub-project context.
-	let config: Awaited<ReturnType<typeof loadConfig>>["config"];
-	let configPath: string | null = null;
-	if (controlPlane.mode !== "none") {
-		const contextDir = dirname(planPath);
-		const result = await resolveLayeredConfig(projectRoot, contextDir);
-		config = result.config;
-		configPath = result.nearestConfigPath ?? result.rootConfigPath;
-	} else {
-		config = rootResult.config;
-		configPath = rootResult.configPath;
-	}
+	const result = await resolveLayeredConfig(projectRoot, dirname(planPath));
+	const config = result.config;
+	const configPath = result.nearestConfigPath ?? result.rootConfigPath;
 
 	const configuredPlansDir = resolveConfiguredPath(
 		projectRoot,
@@ -1745,17 +1721,21 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 		);
 	}
 
-	// Effective state root for both the DB and the focus pointer.
-	// Managed/isolated: controlPlane.stateDir (already the configured root).
-	// None mode: controlPlane.stateDir is the default `.5x` even when config
-	// overrides db.path, so use the configured path — otherwise a first-use
-	// absolute db.path would write 5x.db at the configured root and
-	// current-run under the checkout `.5x`.
-	const stateDirForDb =
-		controlPlane.mode !== "none"
-			? controlPlane.stateDir
-			: normalizeDbPath(config.db.path);
-	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDirForDb));
+	// Bootstrap uses the fully loaded root config, including JS/MJS configs.
+	// All state (DB, locks, pointer, records) shares this same resolution.
+	if (controlPlane.mode === "none") {
+		controlPlane.stateDir = normalizeDbPath(config.db.path);
+	}
+	const stateDir = controlPlane.stateDir;
+	// Also inspect the selected plan's subproject when init is invoked from root.
+	assertNoLegacySubprojectState(
+		dirname(planPath),
+		projectRoot,
+		projectRoot,
+		stateDir,
+	);
+	const lockOpts: LockDirOpts = { stateDir };
+	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
 	runMigrations(db);
 
 	const requestedWorktreePath =
@@ -1845,12 +1825,12 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			await writeRunRecordOnInit({
 				db,
 				config,
-				controlPlane: controlPlane.mode !== "none" ? controlPlane : undefined,
+				controlPlane,
 				projectRoot,
 				run: existing,
 				resume: true,
 			});
-			writeFocusPointer(projectRoot, stateDirForDb, existing.id);
+			writeFocusPointer(projectRoot, stateDir, existing.id);
 			registerLockCleanup(projectRoot, planPath, lockOpts);
 			lockCleanupRegistered = true;
 			outputSuccess({
@@ -1880,7 +1860,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			}),
 		});
 
-		writeFocusPointer(projectRoot, stateDirForDb, runId);
+		writeFocusPointer(projectRoot, stateDir, runId);
 		registerLockCleanup(projectRoot, planPath, lockOpts);
 		lockCleanupRegistered = true;
 
@@ -1889,7 +1869,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 			await writeRunRecordOnInit({
 				db,
 				config,
-				controlPlane: controlPlane.mode !== "none" ? controlPlane : undefined,
+				controlPlane,
 				projectRoot,
 				run,
 				resume: false,
@@ -3653,7 +3633,11 @@ export async function runV1Watch(params: RunWatchParams): Promise<void> {
 	const run = getRunV1(db, runId);
 	// Phase 3b: re-anchor log path to controlPlaneRoot/stateDir
 	const stateDir = controlPlane?.stateDir ?? ".5x";
-	const logDir = join(projectRoot, stateDir, "logs", runId);
+	const logDir = controlPlaneStatePath(
+		projectRoot,
+		stateDir,
+		join("logs", runId),
+	);
 
 	if (!run) {
 		if (existsSync(logDir)) {

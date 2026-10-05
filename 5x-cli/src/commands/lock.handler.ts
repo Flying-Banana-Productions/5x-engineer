@@ -6,7 +6,7 @@
  */
 
 import { resolve } from "node:path";
-import { loadConfig } from "../config.js";
+import { resolveLayeredConfig } from "../config.js";
 import {
 	forceReleaseLock,
 	inspectLock,
@@ -17,8 +17,7 @@ import {
 } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
 import { canonicalizePlanPath, resolvePlanArg } from "../paths.js";
-import { resolveProjectRoot } from "../project-root.js";
-import { resolveControlPlaneRoot } from "./control-plane.js";
+import { normalizeDbPath, resolveControlPlaneRoot } from "./control-plane.js";
 
 export interface LockListParams {
 	/** Working directory override — defaults to `resolve(".")`. */
@@ -47,19 +46,14 @@ async function resolveLockContext(startDir?: string): Promise<{
 }> {
 	const cwd = resolve(startDir ?? ".");
 	const controlPlane = resolveControlPlaneRoot(cwd);
-	const projectRoot =
-		controlPlane.mode !== "none"
-			? controlPlane.controlPlaneRoot
-			: resolveProjectRoot(cwd);
-	const { config } = await loadConfig(
-		projectRoot,
-		undefined,
-		undefined,
-		projectRoot,
-	);
+	const projectRoot = controlPlane.controlPlaneRoot;
+	const { config } = await resolveLayeredConfig(projectRoot, cwd);
 	return {
 		projectRoot,
-		stateDir: controlPlane.stateDir,
+		stateDir:
+			controlPlane.mode === "none"
+				? normalizeDbPath(config.db.path)
+				: controlPlane.stateDir,
 		plansDir: config.paths.plans,
 	};
 }

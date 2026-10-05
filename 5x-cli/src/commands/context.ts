@@ -72,7 +72,7 @@ export async function resolveProjectContext(opts?: {
  * Uses the control-plane resolver to determine DB location:
  * - In managed/isolated mode: DB is at `controlPlaneDbPath(root, stateDir)`
  *   (absolute `stateDir` is the state root; relative joins under the root).
- * - In 'none' mode: falls back to legacy projectRoot-based resolution.
+ * - In 'none' mode: bootstraps at the same canonical root, using root-owned config.
  *
  * @param opts.startDir - Starting directory for project root resolution
  * @param opts.providerNames - Provider names to suppress unknown-key warnings for
@@ -93,44 +93,20 @@ export async function resolveDbContext(opts?: {
 
 	// Resolve control-plane root first for DB location
 	const controlPlane = resolveControlPlaneRoot(opts?.startDir);
-
-	if (controlPlane.mode !== "none") {
-		// Managed or isolated mode: use control-plane root for config + DB
-		const root = controlPlane.controlPlaneRoot;
-
-		// Config resolution: always layered from effectiveContextDir
-		let config: FiveXConfig;
-		{
-			const result = await resolveLayeredConfig(root, effectiveContextDir);
-			config = result.config;
-		}
-
-		const db = getDb(root, controlPlaneDbPath(root, controlPlane.stateDir));
-
-		if (opts?.migrate !== false) {
-			try {
-				runMigrations(db);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				throw new Error(
-					`Database upgrade required. Run "5x upgrade" to fix.\n\nDetails: ${msg}`,
-				);
-			}
-		}
-
-		return { projectRoot: root, config, db, controlPlane };
+	const projectRoot = controlPlane.controlPlaneRoot;
+	const { config } = await resolveLayeredConfig(
+		projectRoot,
+		effectiveContextDir,
+	);
+	// Full config loading is authoritative during bootstrap (including JS/MJS
+	// configs). Return the same state path that is used to open the database.
+	if (controlPlane.mode === "none") {
+		controlPlane.stateDir = normalizeDbPath(config.db.path);
 	}
-
-	// 'none' mode: fall back to legacy project root resolution
-	const { projectRoot, config } = await resolveProjectContext({
-		startDir: opts?.startDir,
-		providerNames: opts?.providerNames,
-		contextDir: effectiveContextDir,
-	});
-	// Normalize db.path: treat as directory. Absolute configured db.path
-	// is the state root (not joined under projectRoot).
-	const normalizedDir = normalizeDbPath(config.db.path);
-	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, normalizedDir));
+	const db = getDb(
+		projectRoot,
+		controlPlaneDbPath(projectRoot, controlPlane.stateDir),
+	);
 
 	if (opts?.migrate !== false) {
 		try {
