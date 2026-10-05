@@ -23,6 +23,7 @@ import { validateRunId } from "../run-id.js";
 import { resolveProjectContext } from "./context.js";
 import {
 	controlPlaneDbPath,
+	controlPlaneStatePath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
 import { resolveRunExecutionContext } from "./run-context.js";
@@ -290,7 +291,7 @@ export async function runQualityCore(
 	const runId = target.runId ?? `quality-${Date.now()}`;
 	// Phase 3a: re-anchor log path to controlPlaneRoot/stateDir
 	const logBase = controlPlaneRoot ?? projectRoot;
-	const logDir = join(logBase, stateDir, "logs", runId);
+	const logDir = controlPlaneStatePath(logBase, stateDir, join("logs", runId));
 	mkdirSync(logDir, { recursive: true, mode: 0o700 });
 
 	const result = await runQualityGates(qualityGates, projectRoot, {

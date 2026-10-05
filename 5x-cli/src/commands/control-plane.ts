@@ -8,17 +8,22 @@
  * lives. All run lifecycle, step recording, and artifact paths anchor
  * to this root.
  *
- * Two modes:
+ * Modes:
  * - **Managed:** root state DB exists at the git common-dir parent.
  *   All checkouts use this DB. Always wins over local state DBs.
  * - **Isolated:** no root state DB, but a local state DB exists in the
  *   current checkout. The checkout IS the control-plane root.
+ * - **None:** no state DB yet. Git projects still bootstrap at the canonical
+ *   repository root with its configured state directory; subproject config
+ *   never establishes a separate control plane.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
+import { outputError } from "../output.js";
 import { realpathExisting } from "../paths.js";
+import { resolveProjectRoot } from "../project-root.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +90,19 @@ const CONFIG_FILENAMES = ["5x.toml", "5x.config.js", "5x.config.mjs"] as const;
  * Returns the raw string value, or null if not found.
  */
 function readDbPathFromConfig(rootDir: string): string | null {
+	// Root local overlays apply even when no main config exists, and also
+	// override JS/MJS configs, just as in resolveLayeredConfig.
+	const localPath = join(rootDir, "5x.toml.local");
+	if (existsSync(localPath)) {
+		try {
+			const parsed = parseToml(readFileSync(localPath, "utf-8")) as {
+				db?: { path?: unknown };
+			};
+			if (typeof parsed.db?.path === "string") return parsed.db.path;
+		} catch {
+			// Full config loading reports parse errors; bootstrap remains best-effort.
+		}
+	}
 	for (const filename of CONFIG_FILENAMES) {
 		const configPath = join(rootDir, filename);
 		if (!existsSync(configPath)) continue;
@@ -107,25 +125,6 @@ function readDbPathFromConfig(rootDir: string): string | null {
 				}
 			} catch {
 				// Config parse error — fromMain stays null
-			}
-
-			const localPath = join(rootDir, "5x.toml.local");
-			if (existsSync(localPath)) {
-				try {
-					const text = readFileSync(localPath, "utf-8");
-					const parsed = parseToml(text) as Record<string, unknown>;
-					const db = parsed.db;
-					if (
-						db &&
-						typeof db === "object" &&
-						"path" in db &&
-						typeof (db as Record<string, unknown>).path === "string"
-					) {
-						return (db as Record<string, unknown>).path as string;
-					}
-				} catch {
-					// Local parse error — fall back to main or null below
-				}
 			}
 
 			if (fromMain !== null) return fromMain;
@@ -229,6 +228,47 @@ export function resolveCheckoutRoot(startDir: string): string | null {
 	return toplevel ? realpathExisting(toplevel) : null;
 }
 
+/**
+ * Detect legacy state along the current subproject's ancestor chain. Checkout
+ * root state is handled by managed/isolated resolution, not by this diagnostic.
+ * Never open or move a legacy DB: its runs must be migrated deliberately.
+ */
+export function assertNoLegacySubprojectState(
+	cwd: string,
+	checkoutRoot: string,
+	controlPlaneRoot: string,
+	stateDir: string,
+): void {
+	const expectedDb = controlPlaneDbPath(controlPlaneRoot, stateDir);
+	let dir = cwd;
+	while (dir !== checkoutRoot) {
+		const candidates = new Set([
+			controlPlaneDbPath(dir, DEFAULT_STATE_DIR),
+			controlPlaneDbPath(dir, getStateDirValue(readDbPathFromConfig(dir))),
+		]);
+		for (const legacyDb of candidates) {
+			if (
+				existsSync(legacyDb) &&
+				realpathExisting(legacyDb) !== realpathExisting(expectedDb)
+			) {
+				outputError(
+					"LEGACY_SUBPROJECT_STATE",
+					`Legacy subproject database found at \`${legacyDb}\`. Subprojects share the repository control plane at \`${expectedDb}\`; migration is required before continuing.`,
+					{
+						legacy_db_path: legacyDb,
+						control_plane_db_path: expectedDb,
+						remediation:
+							"Back up the legacy state directory and migrate its runs into the repository control plane before retrying. If the legacy state is no longer needed, move it aside after backing it up. No automatic migration is performed.",
+					},
+				);
+			}
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Main resolver
 // ---------------------------------------------------------------------------
@@ -240,12 +280,14 @@ export function resolveCheckoutRoot(startDir: string): string | null {
  * 1. Run `git rev-parse --git-dir` and `--git-common-dir` from startDir.
  * 2. Resolve common-dir to absolute. If relative, resolve relative to
  *    the absolute git-dir path.
- * 3. Main repo root = dirname(absoluteCommonDir).
+ * 3. Main repo root = checkout root for a main checkout, otherwise the
+ *    git common-dir parent.
  * 4. Read db.path from root config → resolve state dir → check for DB.
  *    If found → managed mode.
  * 5. If no root DB, check current checkout root for local state DB →
  *    isolated mode.
- * 6. If neither → mode 'none'.
+ * 6. If neither → mode 'none', retaining the root and its configured state dir.
+ * 7. Reject legacy subproject-local state along the current ancestor chain.
  */
 export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 	const cwd = realpathExisting(startDir ?? ".");
@@ -253,8 +295,13 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 	// Step 1: get git-dir and git-common-dir
 	const gitDir = gitSync(["rev-parse", "--git-dir"], cwd);
 	if (!gitDir) {
-		// Not inside a git repo
-		return { controlPlaneRoot: cwd, stateDir: DEFAULT_STATE_DIR, mode: "none" };
+		// Outside Git, retain config-root project discovery, including state paths.
+		const root = realpathExisting(resolveProjectRoot(cwd));
+		return {
+			controlPlaneRoot: root,
+			stateDir: getStateDirValue(readDbPathFromConfig(root)),
+			mode: "none",
+		};
 	}
 
 	const gitCommonDir = gitSync(["rev-parse", "--git-common-dir"], cwd);
@@ -286,24 +333,39 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 		absoluteCommonDir = resolve(absoluteGitDir, gitCommonDir);
 	}
 
-	// Step 3: main repo root = parent of common-dir (.git)
-	const mainRepoRoot = realpathExisting(dirname(absoluteCommonDir));
+	// Step 3: resolve the repository boundary independently of config discovery.
+	const checkoutRoot = resolveCheckoutRoot(cwd);
+	// A main checkout may have its git directory elsewhere (e.g. a submodule).
+	const mainRepoRoot =
+		absoluteCommonDir === absoluteGitDir && checkoutRoot
+			? checkoutRoot
+			: realpathExisting(dirname(absoluteCommonDir));
 
 	// Step 4: check for root state DB (managed mode)
 	const rootRawDbPath = readDbPathFromConfig(mainRepoRoot);
 	const rootStateDir = resolveStateDir(mainRepoRoot, rootRawDbPath);
 	const rootStateDirValue = getStateDirValue(rootRawDbPath);
+	const checked = (result: ControlPlaneResult): ControlPlaneResult => {
+		if (checkoutRoot) {
+			assertNoLegacySubprojectState(
+				cwd,
+				checkoutRoot,
+				result.controlPlaneRoot,
+				result.stateDir,
+			);
+		}
+		return result;
+	};
 
 	if (stateDbExists(rootStateDir)) {
-		return {
+		return checked({
 			controlPlaneRoot: mainRepoRoot,
 			stateDir: rootStateDirValue,
 			mode: "managed",
-		};
+		});
 	}
 
 	// Step 5: check current checkout for local state DB (isolated mode)
-	const checkoutRoot = resolveCheckoutRoot(cwd);
 	if (checkoutRoot && checkoutRoot !== mainRepoRoot) {
 		// We're in a linked worktree — check for local state DB
 		const localRawDbPath = readDbPathFromConfig(checkoutRoot);
@@ -311,11 +373,11 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 		const localStateDirValue = getStateDirValue(localRawDbPath);
 
 		if (stateDbExists(localStateDir)) {
-			return {
+			return checked({
 				controlPlaneRoot: checkoutRoot,
 				stateDir: localStateDirValue,
 				mode: "isolated",
-			};
+			});
 		}
 	} else if (checkoutRoot === mainRepoRoot) {
 		// We're in the main checkout — no separate isolated check needed.
@@ -323,9 +385,9 @@ export function resolveControlPlaneRoot(startDir?: string): ControlPlaneResult {
 	}
 
 	// Step 6: no state DB found anywhere
-	return {
+	return checked({
 		controlPlaneRoot: mainRepoRoot,
-		stateDir: DEFAULT_STATE_DIR,
+		stateDir: rootStateDirValue,
 		mode: "none",
-	};
+	});
 }

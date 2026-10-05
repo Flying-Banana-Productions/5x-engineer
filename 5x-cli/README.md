@@ -757,6 +757,10 @@ Plan files are markdown with phase headings and checklists:
 
 The control-plane root is resolved via `git rev-parse --git-common-dir`, so commands run from any linked worktree (including externally attached worktrees) automatically find the root state DB.
 
+**Subproject bootstrap:** Running `5x run init` from a subproject uses the repository control plane even before a root database exists. Subproject configuration controls plan paths and execution settings; database, locks, logs, and `current-run` remain root-owned. Root `db.path` settings, including a root-only `5x.toml.local`, can relocate the state directory. The new run becomes available to implicit `5x run state` and `5x run watch` immediately after initialization.
+
+**Legacy subproject state:** Commands detect subproject-local databases along the current directory's ancestor chain; `run init` also checks the selected plan's subproject. A separate legacy database produces `LEGACY_SUBPROJECT_STATE` with both database paths. Back up that state and migrate its runs into the repository control plane before retrying, or move obsolete state aside after backing it up. Migration is not automatic.
+
 **Isolated mode:** If you run `5x init` in a worktree checkout whose parent repo is *not* 5x-managed (no root `.5x/5x.db`), a local state DB is created in that checkout. This is isolated mode — state is local to that worktree. If a root DB is later created, subsequent commands from the worktree switch to managed mode and use the root DB.
 
 Logs may contain sensitive code and context. Keep `.5x/` out of version control (added to `.gitignore` by `5x init`).

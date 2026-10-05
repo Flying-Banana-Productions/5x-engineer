@@ -23,7 +23,9 @@ import {
 } from "../templates/default-artifacts.js";
 import { getDefaultTemplateRaw, listTemplates } from "../templates/loader.js";
 import {
+	controlPlaneDbPath,
 	DB_FILENAME,
+	normalizeDbPath,
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
@@ -420,9 +422,12 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		console.log("  Skipped .5x/ directory (already exists)");
 	}
 
-	// 2a. Create state DB with schema migrations
-	const dbPath = join(".5x", DB_FILENAME);
-	const dbFullPath = join(dotFiveXDir, DB_FILENAME);
+	// 2a. State is owned by this checkout's root config. In a linked checkout
+	// without main-root state, plain init deliberately establishes isolated mode.
+	const { config } = await resolveLayeredConfig(projectRoot, projectRoot);
+	const stateDir = normalizeDbPath(config.db.path);
+	const dbPath = join(stateDir, DB_FILENAME);
+	const dbFullPath = controlPlaneDbPath(projectRoot, stateDir);
 	if (!existsSync(dbFullPath)) {
 		const db = getDb(projectRoot, dbPath);
 		runMigrations(db);

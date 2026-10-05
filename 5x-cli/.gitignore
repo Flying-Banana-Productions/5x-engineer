@@ -4,3 +4,5 @@ dist/
 .5x/
 .env
 coverage/
+5x.toml.local
+docs/development/runs/**/.txn.*
