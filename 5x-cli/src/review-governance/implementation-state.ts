@@ -268,9 +268,19 @@ export type ImplementationAdmissionResult =
 			status: "approval_required";
 			code: "IMPLEMENTATION_APPROVAL_REQUIRED";
 			message: string;
-			detail: { candidateRunIds: string[]; remediation: string };
+			detail: {
+				candidateRunIds: string[];
+				rejectedSources: RejectedApprovalSource[];
+				remediation: string;
+			};
 	  }
 	| { status: "error"; code: string; message: string; detail?: unknown };
+
+/** A same-plan run that auto-selection considered and refused, with why. */
+export interface RejectedApprovalSource {
+	runId: string;
+	reason: string;
+}
 
 export async function showPlanAtCommit(
 	workdir: string,
@@ -393,9 +403,13 @@ function loadAmendments(
 function remediation(
 	executionRunId: string,
 	candidateRunIds: readonly string[],
+	rejected: readonly RejectedApprovalSource[] = [],
 ): string {
 	if (candidateRunIds.length === 0) {
-		return `No approved plan-review source matches this plan. Select one explicitly with \`5x review implementation bind --run ${executionRunId} --source-run <plan-review>\`.`;
+		const reasons = rejected
+			.map((entry) => ` ${entry.runId}: ${entry.reason.replace(/\.$/, "")}.`)
+			.join("");
+		return `No approved plan-review source matches this plan.${reasons ? ` Rejected:${reasons}` : ""} Select one explicitly with \`5x review implementation bind --run ${executionRunId} --source-run <plan-review>\`.`;
 	}
 	return `Multiple approved plan-review sources match this plan (${candidateRunIds.join(", ")}). Select one explicitly with \`5x review implementation bind --run ${executionRunId} --source-run <plan-review>\`.`;
 }
@@ -500,22 +514,34 @@ export async function ensureImplementationAdmission(input: {
 	const candidates = approvedCandidates(input);
 	if (candidates.status === "error") return candidates;
 	if (candidates.runIds.length !== 1) {
-		const message = remediation(input.executionRunId, candidates.runIds);
+		const message = remediation(
+			input.executionRunId,
+			candidates.runIds,
+			candidates.rejected,
+		);
 		return {
 			status: "approval_required",
 			code: "IMPLEMENTATION_APPROVAL_REQUIRED",
 			message,
-			detail: { candidateRunIds: candidates.runIds, remediation: message },
+			detail: {
+				candidateRunIds: candidates.runIds,
+				rejectedSources: candidates.rejected,
+				remediation: message,
+			},
 		};
 	}
 	const sourceRunId = candidates.runIds[0];
 	if (!sourceRunId) {
-		const message = remediation(input.executionRunId, []);
+		const message = remediation(input.executionRunId, [], candidates.rejected);
 		return {
 			status: "approval_required",
 			code: "IMPLEMENTATION_APPROVAL_REQUIRED",
 			message,
-			detail: { candidateRunIds: [], remediation: message },
+			detail: {
+				candidateRunIds: [],
+				rejectedSources: candidates.rejected,
+				remediation: message,
+			},
 		};
 	}
 	return bindImplementationExecution({
@@ -624,14 +650,16 @@ function approvedCandidates(input: {
 	recordStore: RecordStore;
 	store: ReviewBudgetStore;
 	planPath: string;
+	executionRunId: string;
 }):
-	| { status: "ok"; runIds: string[] }
+	| { status: "ok"; runIds: string[]; rejected: RejectedApprovalSource[] }
 	| { status: "error"; code: string; message: string } {
 	const slug = planSlugFromPath(input.planPath);
 	const runs = input.recordStore
 		.listRuns({ planSlug: slug })
 		.filter((run) => planPathsIdentifySamePlan(run.plan_path, input.planPath));
 	const runIds: string[] = [];
+	const rejected: RejectedApprovalSource[] = [];
 	for (const run of runs) {
 		const assessed = assessApprovedSource({
 			recordStore: input.recordStore,
@@ -641,9 +669,15 @@ function approvedCandidates(input: {
 		});
 		if (assessed.status === "error") return assessed;
 		if (assessed.approval) runIds.push(run.id);
+		else if (run.id !== input.executionRunId)
+			rejected.push({
+				runId: run.id,
+				reason: assessed.refusal ?? "Source run is not an approved plan review",
+			});
 	}
 	runIds.sort();
-	return { status: "ok", runIds };
+	rejected.sort((a, b) => a.runId.localeCompare(b.runId));
+	return { status: "ok", runIds, rejected };
 }
 
 interface ApprovalEvidence {
@@ -719,9 +753,15 @@ function assessApprovedSource(input: {
 			refusal: `Source run ${input.sourceRunId} was aborted`,
 		};
 	}
-	const openGate = createReviewGovernanceStore(
-		input.recordStore,
-	).deriveOpenGate(input.sourceRunId);
+	// Advisory snapshots persist hypothetical enforced gate causes as
+	// diagnostics; only an enforced baseline turns them into a blocking gate.
+	// Advisory sources are judged by their recorded v1 route below.
+	const openGate =
+		baseline.mode === "enforced"
+			? createReviewGovernanceStore(input.recordStore).deriveOpenGate(
+					input.sourceRunId,
+				)
+			: null;
 	if (openGate && !openGate.resolved) {
 		return {
 			status: "ok",

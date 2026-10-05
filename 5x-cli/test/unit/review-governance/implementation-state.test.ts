@@ -28,6 +28,7 @@ import {
 	planRepoPath,
 	recordVerifiedTextAmendment,
 } from "../../../src/review-governance/implementation-state.js";
+import type { ReviewGateCause } from "../../../src/review-governance/types.js";
 
 const PLAN_PATH = "docs/development/plans/gov.md";
 const ORIGIN: RecordOrigin = {
@@ -161,6 +162,11 @@ function approveSource(
 		/** `run:complete` head. Defaults to `finalHead`. */
 		completeHead?: string;
 		unsealed?: boolean;
+		mode?: "advisory" | "enforced";
+		/** Unresolved causes persisted on the reviewer snapshot. */
+		gateCauses?: ReviewGateCause[];
+		/** Reviewer verdict items; defaults to none. */
+		items?: unknown[];
 	},
 ) {
 	const parsed = parseDeliveryBudget(markdown);
@@ -171,7 +177,7 @@ function approveSource(
 		captureKind: "initial",
 		parsed: parsed.value,
 		configSnapshot: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
-		mode: "enforced",
+		mode: options?.mode ?? "enforced",
 		origin: ORIGIN,
 	});
 	const snapshot = ctx.store.appendSnapshot({
@@ -182,6 +188,7 @@ function approveSource(
 		currentLedger: parsed.value,
 		findings: [],
 		assessments: [],
+		...(options?.gateCauses ? { effectiveGateCauses: options.gateCauses } : {}),
 		origin: ORIGIN,
 	});
 	const route = options?.route ?? "complete";
@@ -193,7 +200,7 @@ function approveSource(
 		1,
 		{
 			readiness: route === "complete" ? "ready" : "not_ready",
-			items: [],
+			items: options?.items ?? [],
 			governance: { route },
 		},
 		options?.head ?? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -476,6 +483,117 @@ describe("implementation execution binding", () => {
 		expect(multiple).toMatchObject({
 			status: "approval_required",
 			detail: { candidateRunIds: ["source-a", "source-b"] },
+		});
+	});
+
+	test("advisory sources bind despite unresolved hypothetical budget alerts", async () => {
+		const markdown = plan();
+		const budgetAlerts: ReviewGateCause[] = [
+			{ kind: "budget_alert", alert: "baseline_disputed" },
+			{ kind: "budget_alert", alert: "credit_unrealized" },
+		];
+
+		const auto = setup();
+		approveSource(auto, "source", markdown, {
+			mode: "advisory",
+			gateCauses: budgetAlerts,
+		});
+		putRun(auto.recordStore, "exec");
+		const autoBound = await admit(auto, { executionRunId: "exec", markdown });
+		expect(autoBound).toMatchObject({
+			status: "bound",
+			binding: { sourceRunId: "source", mode: "advisory" },
+		});
+
+		const explicit = setup();
+		approveSource(explicit, "source", markdown, {
+			mode: "advisory",
+			gateCauses: budgetAlerts,
+		});
+		putRun(explicit.recordStore, "exec");
+		expect(
+			await admit(explicit, {
+				executionRunId: "exec",
+				markdown,
+				sourceRunId: "source",
+			}),
+		).toMatchObject({
+			status: "bound",
+			binding: { sourceRunId: "source", mode: "advisory" },
+		});
+	});
+
+	test("enforced open gates and unapproved advisory sources still refuse", async () => {
+		const markdown = plan();
+
+		const enforced = setup();
+		approveSource(enforced, "source", markdown, {
+			gateCauses: [{ kind: "budget_alert", alert: "baseline_disputed" }],
+		});
+		putRun(enforced.recordStore, "exec");
+		const refused = await admit(enforced, { executionRunId: "exec", markdown });
+		expect(refused).toMatchObject({
+			status: "approval_required",
+			detail: {
+				candidateRunIds: [],
+				rejectedSources: [
+					{
+						runId: "source",
+						reason: "Source run source has an open review gate",
+					},
+				],
+			},
+		});
+		if (refused.status !== "approval_required") return;
+		expect(refused.message).toContain(
+			"source: Source run source has an open review gate.",
+		);
+		expect(
+			await admit(enforced, {
+				executionRunId: "exec",
+				markdown,
+				sourceRunId: "source",
+			}),
+		).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+
+		const humanRequired = setup();
+		approveSource(humanRequired, "source", markdown, {
+			mode: "advisory",
+			route: "human_gate",
+			items: [
+				{
+					id: "F1",
+					title: "Needs a product call",
+					action: "human_required",
+					reason: "Scope is a human decision",
+				},
+			],
+			gateCauses: [
+				{
+					kind: "semantic_human",
+					finding: { findingId: "F1", fingerprint: "f1" },
+				},
+			],
+		});
+		putRun(humanRequired.recordStore, "exec");
+		expect(
+			await admit(humanRequired, { executionRunId: "exec", markdown }),
+		).toMatchObject({
+			status: "approval_required",
+			detail: { candidateRunIds: [], rejectedSources: [{ runId: "source" }] },
+		});
+		expect(
+			await admit(humanRequired, {
+				executionRunId: "exec",
+				markdown,
+				sourceRunId: "source",
+			}),
+		).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
 		});
 	});
 
