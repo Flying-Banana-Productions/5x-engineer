@@ -434,11 +434,21 @@ export async function composeImplementationReviewerRecord(input: {
 			message: `Review context ${stored.id} does not match the verified code range.`,
 		};
 	}
-	const closure = readImplementationCodeClosure(
-		input.ctx.recordStore,
-		input.runId,
-		phaseId,
-	);
+	let closure: ReturnType<typeof readImplementationCodeClosure>;
+	try {
+		closure = readImplementationCodeClosure(
+			input.ctx.recordStore,
+			input.runId,
+			phaseId,
+		);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: `Implementation review history could not be read: ${message}`,
+		};
+	}
 	const reviewed = validateImplementationReview({
 		verdict: input.verdict,
 		phase: phaseId,
@@ -554,7 +564,8 @@ export async function composeImplementationReviewerRecord(input: {
 		items: input.verdict.items,
 		identities,
 		exemptionAuthorized,
-		inheritedRequiresHuman: inherited.requiresHuman,
+		inheritedRequiresHuman:
+			binding.mode === "enforced" && inherited.requiresHuman,
 		band: inherited.budgetBand,
 		alerts: inherited.budgetAlerts,
 	});

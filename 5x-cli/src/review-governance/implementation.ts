@@ -8,13 +8,18 @@
  */
 
 import type { RecordStore } from "../control-plane/record-store.js";
+import { stepIdempotencyKey } from "../control-plane/record-types.js";
 import {
 	isImplementationScopeClass,
 	isPlanScopeClass,
 	type ReviewerVerdict,
 	type VerdictItem,
 } from "../protocol.js";
-import type { ImplementationTextAmendmentPayload } from "../review-budget/record-lines.js";
+import {
+	decodeImplementationBindingPayload,
+	decodeImplementationReviewObservationPayload,
+	type ImplementationTextAmendmentPayload,
+} from "../review-budget/record-lines.js";
 import {
 	type CodeClosureDecision,
 	type CodeClosureFinding,
@@ -617,8 +622,9 @@ function codeClosureDecisions(
 }
 
 /**
- * Prior findings are the open items on the latest same-phase reviewer
- * verdict. Decisions are whatever governance decisions this run recorded.
+ * Bound runs take closure authority from coupled implementation observations,
+ * never a journal-only verdict. Unbound legacy runs retain step-based history.
+ * Decisions are whatever governance decisions this run recorded.
  */
 export function readImplementationCodeClosure(
 	recordStore: RecordStore,
@@ -632,6 +638,43 @@ export function readImplementationCodeClosure(
 	const phaseId = canonicalPhaseId(phase);
 	const verdicts: ReviewerVerdict[] = [];
 	let priorReviewCount = 0;
+	const budget = recordStore.listLines(runId, "budget");
+	const bindingLine = budget.find(
+		(line) =>
+			(line.payload as { kind?: unknown } | null)?.kind ===
+			"implementation-binding",
+	);
+	const binding = bindingLine
+		? decodeImplementationBindingPayload(bindingLine.payload)
+		: null;
+	const observations = new Map<string, ReviewerVerdict>();
+	if (binding) {
+		for (const line of budget) {
+			if (
+				(line.payload as { kind?: unknown } | null)?.kind !==
+				"implementation-review"
+			)
+				continue;
+			const observation = decodeImplementationReviewObservationPayload(
+				line.payload,
+			);
+			if (
+				observation.bindingId !== binding.id ||
+				observation.runId !== runId ||
+				observation.phase !== phaseId ||
+				observation.stepKey.iteration === null
+			)
+				continue;
+			observations.set(
+				stepIdempotencyKey({
+					runId,
+					...observation.stepKey,
+					iteration: observation.stepKey.iteration,
+				}),
+				observation.originalVerdict,
+			);
+		}
+	}
 	if (phaseId && phaseId !== "plan") {
 		for (const line of recordStore.listLines(runId, "steps")) {
 			const payload = line.payload;
@@ -655,8 +698,11 @@ export function readImplementationCodeClosure(
 			) {
 				continue;
 			}
+			const verdict = binding
+				? observations.get(line.idempotencyKey)
+				: reviewerVerdictFrom(step.result_json);
+			if (binding && !verdict) continue;
 			priorReviewCount += 1;
-			const verdict = reviewerVerdictFrom(step.result_json);
 			if (verdict) verdicts.push(verdict);
 		}
 	}

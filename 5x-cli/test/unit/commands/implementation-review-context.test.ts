@@ -26,6 +26,7 @@ import {
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
 import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
+import { readImplementationCodeClosure } from "../../../src/review-governance/implementation.js";
 import {
 	hashPlanBytes,
 	recordCorrectionAttempt,
@@ -287,6 +288,108 @@ function appendStep(
 }
 
 describe("implementation review observations", () => {
+	test("journal-only approvals cannot close findings in a bound run", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			seed(ctx, binding());
+			const { verdict, pending } = await composeDefect(ctx);
+			await recordImplementationReviewerStepWithObservation(
+				recordParams(verdict, 1),
+				pending,
+				ctx,
+			);
+			const closure = {
+				readiness: "ready" as const,
+				items: [],
+				priorFindings: [{ id: "I1", status: "addressed" as const }],
+			};
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "steps",
+				idempotencyKey: "step:run1:reviewer:review:1:2",
+				payload: {
+					step_name: STEP,
+					phase: PHASE,
+					iteration: 2,
+					result_json: closure,
+				},
+				createdAt: "2026-01-01 00:00:01",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			expect(
+				readImplementationCodeClosure(ctx.recordStore, "run1", PHASE),
+			).toMatchObject({
+				priorReviewCount: 1,
+				priorCodeFindings: [{ id: "I1" }],
+			});
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: STEP,
+				phase: PHASE,
+				iteration: 3,
+				verdict: closure,
+				contextId: "ctx-1",
+				codeContext: diff,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			expect(composed.pending.route).toBe("complete");
+			expect(composed.diagnostics).toEqual([]);
+			await recordImplementationReviewerStepWithObservation(
+				recordParams(closure, 3),
+				composed.pending,
+				ctx,
+			);
+			expect(
+				readImplementationCodeClosure(ctx.recordStore, "run1", PHASE),
+			).toMatchObject({
+				priorReviewCount: 2,
+				priorCodeFindings: [],
+			});
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("advisory inherited architecture alerts do not block durable completion", async () => {
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		try {
+			const seedBinding = binding({ mode: "advisory" });
+			const item = seedBinding.ledger.workItems[0];
+			if (!item) throw new Error("Missing fixture work item");
+			item.architectureDelta = 5;
+			seed(ctx, seedBinding);
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: STEP,
+				phase: PHASE,
+				iteration: 1,
+				verdict: readyVerdict(),
+				contextId: "ctx-1",
+				codeContext: diff,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			expect(composed.reconciliation.budget.budgetAlerts).toContain(
+				"positive_architecture_exceeded",
+			);
+			expect(composed.pending.route).toBe("complete");
+			expect(composed.pending.nextAction).toBe("complete");
+			expect(composed.pending.gateCauses).toEqual([]);
+			const written = await recordImplementationReviewerStepWithObservation(
+				recordParams(readyVerdict(), 1),
+				composed.pending,
+				ctx,
+				composed.reconciliation,
+			);
+			expect(written.completionAuthorized).toBe(true);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
 	test("ordinary defects route to author revision and variance does not move W/R/B/D", async () => {
 		const ctx = makeBudgetContext({ mode: "enforced" });
 		const seedBinding = binding({ effort: 8, governingB: 1 });
