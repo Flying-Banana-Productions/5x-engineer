@@ -689,9 +689,11 @@ export function validateImplementationReview(
 	}
 	const phase = commandPhase ?? envelopePhase;
 	const phaseId = phase ? canonicalPhaseId(phase) : null;
-	const implementationContract = verdictUsesImplementationContract(
-		input.verdict,
-	);
+	// A prepared code range identifies an implementation review even when a
+	// closure has no new findings (and therefore no item-level scope fields).
+	const implementationContract =
+		input.codeContext != null ||
+		verdictUsesImplementationContract(input.verdict);
 	const planContract = verdictUsesPlanContract(input.verdict);
 	if (
 		(input.envelopeDomain === "plan" && implementationContract) ||

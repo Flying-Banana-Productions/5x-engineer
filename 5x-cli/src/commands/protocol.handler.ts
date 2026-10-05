@@ -578,6 +578,7 @@ export async function protocolValidate(
 		// validateImplementationReview. Plan contracts are included only for a
 		// known non-plan phase; standalone plan verdicts stay on the plan path.
 		const contextualImplementationReview =
+			params.reviewContext !== undefined ||
 			verdictUsesImplementationContract(verdict) ||
 			(verdictUsesPlanContract(verdict) &&
 				phaseId !== null &&

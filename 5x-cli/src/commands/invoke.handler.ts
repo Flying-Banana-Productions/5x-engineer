@@ -78,7 +78,6 @@ import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
 	validateImplementationReview,
-	verdictUsesImplementationContract,
 } from "../review-governance/implementation.js";
 import { evaluateStoredImplementationBoundary } from "../review-governance/implementation-boundary.js";
 import {
@@ -1082,8 +1081,7 @@ export async function invokeAgent(
 				if (
 					role === "reviewer" &&
 					implementationReviewContextId &&
-					budgetContext &&
-					verdictUsesImplementationContract(structured as ReviewerVerdict)
+					budgetContext
 				) {
 					const phase = canonicalPhaseId(recordPhase ?? "");
 					const binding = budgetContext.store.getImplementationBinding(runId);

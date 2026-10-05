@@ -910,6 +910,123 @@ describe("implementation completion boundaries", () => {
 	);
 
 	test(
+		"a findings-only closure records governance for the approved fixes",
+		async () => {
+			const { dir, planPath } = await initRepo("enforced");
+			await approveSource(dir, planPath, 2);
+			const runId = await startRun(dir, planPath);
+			const initial = await commitFile(
+				dir,
+				runId,
+				"1",
+				"src/a.ts",
+				"export const a = 1;\n",
+				"implement",
+			);
+			expect((await recordAuthor(dir, runId, "1", initial, "1")).exitCode).toBe(
+				0,
+			);
+			const firstReview = await renderReview(
+				dir,
+				runId,
+				planPath,
+				"1",
+				initial,
+			);
+			const first = await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					runId,
+					"--record",
+					"--step",
+					"reviewer:review",
+					"--phase",
+					"1",
+					"--iteration",
+					"1",
+					"--review-context",
+					reviewContextId(firstReview.stdout),
+				],
+				{
+					readiness: "not_ready",
+					items: [
+						{
+							id: "F1",
+							title: "Wrong value",
+							action: "auto_fix",
+							reason: "The requested value is two.",
+							priority: "P1",
+							scopeClass: "implementation_defect",
+							effortDelta: 1,
+							architectureDelta: 0,
+							planWorkItemIds: ["W1"],
+						},
+					],
+				},
+			);
+			expect(first.exitCode, `${first.stdout}\n${first.stderr}`).toBe(0);
+			const fixed = await commitFile(
+				dir,
+				runId,
+				"1",
+				"src/a.ts",
+				"export const a = 2;\n",
+				"fix",
+			);
+			const closureReview = await renderReview(
+				dir,
+				runId,
+				planPath,
+				"1",
+				fixed,
+			);
+			const closure = await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					runId,
+					"--record",
+					"--step",
+					"reviewer:commit",
+					"--phase",
+					"1",
+					"--iteration",
+					"1",
+					"--review-context",
+					reviewContextId(closureReview.stdout),
+				],
+				{
+					readiness: "ready",
+					items: [],
+					priorFindings: [{ id: "F1", status: "addressed" }],
+				},
+			);
+			expect(closure.exitCode, `${closure.stdout}\n${closure.stderr}`).toBe(0);
+			expect(governanceOf(closure.stdout).completionAuthorized).toBe(true);
+			const state = await cli(dir, ["run", "state", "--run", runId]);
+			expect(state.exitCode, state.stderr).toBe(0);
+			const governance = JSON.parse(state.stdout).data
+				.implementation_governance;
+			expect(governance.reviewedRange.reviewedCommit).toBe(fixed);
+			expect(governance.phases).toContainEqual(
+				expect.objectContaining({
+					phase: "1",
+					reviewed: true,
+					ready: true,
+				}),
+			);
+		},
+		{ timeout: 60000 },
+	);
+
+	test(
 		"a zero-claim review seals, and a realized claim seals only after the realization",
 		async () => {
 			const zero = await initRepo("enforced");
