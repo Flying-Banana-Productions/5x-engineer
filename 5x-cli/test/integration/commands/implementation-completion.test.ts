@@ -1010,6 +1010,11 @@ describe("implementation completion boundaries", () => {
 			);
 			expect(closure.exitCode, `${closure.stdout}\n${closure.stderr}`).toBe(0);
 			expect(governanceOf(closure.stdout).completionAuthorized).toBe(true);
+			const reviewPath = join(dir, "docs/development/reviews/closure.md");
+			mkdirSync(join(reviewPath, ".."), { recursive: true });
+			writeFileSync(reviewPath, "The implementation fixes are approved.\n");
+			git(dir, "add", "docs/development/reviews/closure.md");
+			git(dir, "commit", "-m", "review artifact");
 			const state = await cli(dir, ["run", "state", "--run", runId]);
 			expect(state.exitCode, state.stderr).toBe(0);
 			const governance = JSON.parse(state.stdout).data
@@ -1021,6 +1026,16 @@ describe("implementation completion boundaries", () => {
 					reviewed: true,
 					ready: true,
 				}),
+			);
+			writeFileSync(join(dir, "src/a.ts"), "export const a = 3;\n");
+			git(dir, "add", "src/a.ts");
+			git(dir, "commit", "-m", "unreviewed code change");
+			const changed = await cli(dir, ["run", "state", "--run", runId]);
+			expect(changed.exitCode, changed.stderr).toBe(0);
+			expect(
+				JSON.parse(changed.stdout).data.implementation_governance.phases,
+			).toContainEqual(
+				expect.objectContaining({ phase: "1", reviewed: false, ready: false }),
 			);
 		},
 		{ timeout: 60000 },

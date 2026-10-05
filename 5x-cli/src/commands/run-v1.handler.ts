@@ -2766,6 +2766,15 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 							archivedHead = null;
 						}
 						try {
+							const codeEquivalentCommits = archivedHead
+								? await equivalentReviewedCommits({
+										store: archivedBudgetStore,
+										runId: gitRecord.summary.id,
+										headCommit: archivedHead,
+										workdir: projectRoot,
+										intent: "run_complete",
+									})
+								: [];
 							const readiness = evaluateStoredImplementationBoundary({
 								store: archivedBudgetStore,
 								recordStore: records,
@@ -2774,6 +2783,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 								mode: planConfig.reviewBudget.mode,
 								currentPlanBytes: archivedPlan,
 								headCommit: archivedHead,
+								codeEquivalentCommits,
 								hasImplementationHistory,
 								hasDeliveryBudget: archivedPlan
 									? parseDeliveryBudget(archivedPlan).ok
@@ -3026,6 +3036,16 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					headCommit = null;
 				}
 				try {
+					const codeEquivalentCommits = headCommit
+						? await equivalentReviewedCommits({
+								store: reviewStore,
+								runId: run.id,
+								headCommit,
+								workdir:
+									recordContext.executionContext.effectiveWorkingDirectory,
+								intent: "run_complete",
+							})
+						: [];
 					const readiness = evaluateStoredImplementationBoundary({
 						store: reviewStore,
 						recordStore: recordContext.recordStore,
@@ -3034,6 +3054,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						mode: configuredMode,
 						currentPlanBytes: currentPlanMarkdown ?? null,
 						headCommit,
+						codeEquivalentCommits,
 						hasImplementationHistory,
 						hasDeliveryBudget: currentPlanMarkdown
 							? parseDeliveryBudget(currentPlanMarkdown).ok
