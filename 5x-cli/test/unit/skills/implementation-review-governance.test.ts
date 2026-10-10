@@ -7,7 +7,10 @@ import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
 import { protocolEmitReviewer } from "../../../src/commands/protocol-emit.handler.js";
 import { templateRender } from "../../../src/commands/template.handler.js";
-import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
+import {
+	recordedEnvelope,
+	stepIdempotencyKey,
+} from "../../../src/control-plane/record-types.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { getDefaultSkillRaw } from "../../../src/harnesses/opencode/skills/loader.js";
@@ -170,6 +173,49 @@ function binding(): ImplementationBindingPayload {
 	};
 }
 
+function observation(
+	originalVerdict: ImplementationReviewObservationPayload["originalVerdict"],
+): ImplementationReviewObservationPayload {
+	return {
+		kind: "implementation-review",
+		version: 1,
+		id: "obs-1",
+		runId: "run1",
+		stepKey: { stepName: "reviewer:commit", phase: "1", iteration: 1 },
+		bindingId: "binding-1",
+		contextId: "ctx-1",
+		domain: "implementation",
+		phase: "1",
+		originalVerdict,
+		outcomes: [],
+		route: "author_revision",
+		nextAction: "author_revision",
+		diagnostics: [],
+		claimObservations: [],
+		gateCauses: [],
+		telemetry: {
+			reviewCycles: 1,
+			fixCycles: 0,
+			reviewOriginatedCommits: 0,
+			qualityReruns: 0,
+			classCounts: {
+				implementation_defect: originalVerdict.items.length,
+				plan_defect: 0,
+				scope_expansion: 0,
+				pre_existing: 0,
+			},
+			planAmendments: 0,
+			addedPaths: [],
+			boundaryInventory: [],
+			effortVariance: 0,
+			architectureVariance: 0,
+		},
+		budgetInvariant: { W: 1, R: 0, B: 8, D: 0 },
+		completionAuthorized: false,
+		createdAt: "2026-01-02 00:00:00",
+	};
+}
+
 const roleCases = [
 	{ context: createRenderContext(true), reviewerNative: true },
 	{ context: createRenderContext(false), reviewerNative: false },
@@ -314,18 +360,31 @@ describe("implementation prompt context", () => {
 			binding(),
 			ctx.originFor({ kind: "system", role: "cli" }),
 		);
+		const prior = observation({
+			readiness: "not_ready",
+			items: [{ id: "I1", title: "Open", action: "auto_fix", reason: "x" }],
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: "budget:implementation-review:obs-1",
+			payload: encodeImplementationReviewObservationPayload(prior),
+			...recordedEnvelope(TEST_ORIGIN),
+		});
 		ctx.recordStore.append({
 			runId: "run1",
 			stream: "steps",
-			idempotencyKey: "steps:reviewer:1",
+			idempotencyKey: stepIdempotencyKey({
+				runId: "run1",
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 1,
+			}),
 			payload: {
 				step_name: "reviewer:commit",
 				phase: "1",
 				iteration: 1,
-				result_json: {
-					readiness: "not_ready",
-					items: [{ id: "I1", title: "Open", action: "auto_fix", reason: "x" }],
-				},
+				result_json: prior.originalVerdict,
 			},
 			...recordedEnvelope(TEST_ORIGIN),
 		});

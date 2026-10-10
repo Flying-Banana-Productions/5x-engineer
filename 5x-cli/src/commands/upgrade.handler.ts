@@ -323,6 +323,9 @@ function upgradeDatabase(projectRoot: string, dbRelPath: string): string[] {
 
 function refreshTemplates(projectRoot: string, force: boolean): string[] {
 	const log: string[] = [];
+	log.push(
+		"  Document skeletons: --force overwrites plan/review templates only; prompt overrides are preserved.",
+	);
 
 	const templateResult = ensureTemplateFiles(projectRoot, force);
 	for (const name of templateResult.created) {

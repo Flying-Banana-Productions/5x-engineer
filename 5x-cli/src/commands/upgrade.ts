@@ -13,12 +13,16 @@ export function registerUpgrade(parent: Command) {
 		.command("upgrade")
 		.summary("Upgrade project config, database, and templates")
 		.description(
-			"Run database migrations, update prompt templates, and apply any configuration\n" +
-				"schema changes for the current 5x version. Safe to run multiple times; skips\n" +
-				"already up-to-date components unless --force is used. Also reports harness\n" +
-				"asset freshness and optionally refreshes stale installs when permitted.",
+			"Run database migrations, refresh plan/review document skeletons, and apply\n" +
+				"configuration schema changes for the current 5x version. --force overwrites\n" +
+				"document skeletons only; installed prompt overrides are preserved and checked.\n" +
+				"Use '5x init --install-templates --force' to replace prompt overrides. Harness\n" +
+				"assets refresh separately through --sync, harness.autoSync, or '5x harness sync'.",
 		)
-		.option("-f, --force", "Overwrite templates even if already up-to-date")
+		.option(
+			"-f, --force",
+			"Overwrite plan/review document skeletons (not prompt overrides or harness assets)",
+		)
 		.option(
 			"--sync",
 			"Refresh stale harness assets this invocation (overrides harness.autoSync)",
@@ -31,7 +35,7 @@ export function registerUpgrade(parent: Command) {
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x upgrade\n" +
-				"  $ 5x upgrade -f                                     # force template refresh\n" +
+				"  $ 5x upgrade -f                                     # refresh document skeletons\n" +
 				"  $ 5x upgrade --sync                                 # also refresh lossless stale harnesses\n" +
 				"  $ 5x upgrade --no-sync                               # report harnesses, never write",
 		)

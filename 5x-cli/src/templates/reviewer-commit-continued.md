@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit-continued
 description: Re-review revised implementation commits
-version: 3
+version: 4
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -12,12 +12,11 @@ variable_defaults:
 
 The implementation at commit `{{commit_hash}}` has been revised since your last review. This is a closure review, not another exhaustive pass.
 
-## Context Since Last Review
+## Review Range Authority
 
-- Previous review commit: `{{previous_review_commit}}`
-- Current commit: `{{current_commit}}`
+When an `Implementation-review governance context` is supplied, use its full-diff retrieval command and exact recorded range. It starts at the previous reviewed code endpoint and ends at the recorded author commit. The durable context is the sole authority for endpoints; do not use a review-document commit or current HEAD as a substitute.
 
-Examine `git log --oneline {{previous_review_commit}}..{{current_commit}}` and the corresponding diffs to understand what changed. Focus your review on the new and modified code.
+Only without governance context, use the legacy workflow's previous commit `{{previous_review_commit}}` and current commit `{{current_commit}}` to inspect the revision. If those are unavailable, inspect the supplied implementation commit `{{commit_hash}}`. Focus on the new and modified code.
 
 Treat line numbers from your prior findings as potentially stale — re-anchor them against the current source. For each previously raised issue, decide whether it is **addressed**, **partially addressed**, or **still open**, and say so explicitly in the addendum below.
 
@@ -30,7 +29,7 @@ Treat line numbers from your prior findings as potentially stale — re-anchor t
 
 ## Instructions
 
-1. Examine the changes between `{{previous_review_commit}}` and `{{current_commit}}`.
+1. Examine the revision using the range authority above.
 2. Read the implementation plan at `{{plan_path}}` for context on what was intended.
 3. Walk through your prior findings and classify each one against the current state.
 4. Surface any new issues introduced by the revision.
