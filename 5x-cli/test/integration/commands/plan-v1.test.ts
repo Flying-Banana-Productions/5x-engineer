@@ -488,7 +488,49 @@ reviews = "docs/development/reviews"
 				expect(result.stdout).toContain("Active Run");
 				expect(result.stdout).toContain("Source");
 				expect(result.stdout).toContain("text-mode.md");
+				expect(result.stdout).toContain("local (clean)");
+				expect(result.stdout).not.toContain(join(devDir, "text-mode.md"));
+				expect(result.stdout).not.toContain("Sources:");
 				expect(result.stdout).not.toContain('"ok"');
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"--text moves long shared refs into numbered source details",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const devDir = join(dir, "docs", "development");
+				mkdirSync(devDir, { recursive: true });
+				writeFileSync(join(devDir, "first.md"), PLAN_ONE_PHASE_TODO);
+				writeFileSync(join(devDir, "second.md"), PLAN_ONE_PHASE_TODO);
+				commitAll(dir, "plans");
+				const ref = `5x/${"long-feature-name-".repeat(4)}`;
+				const branch = Bun.spawnSync(["git", "branch", ref], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				expect(branch.exitCode).toBe(0);
+				const result = await run5x(dir, [
+					"--text",
+					"plan",
+					"list",
+					"--ref",
+					ref,
+				]);
+				expect(result.exitCode).toBe(0);
+				const [table, details] = result.stdout.split("Sources:");
+				expect(table?.match(/ref \[1\]/g)).toHaveLength(2);
+				expect(table).not.toContain(ref);
+				expect(details?.trim()).toBe(`[1] ${ref}`);
 			} finally {
 				cleanupDir(dir);
 			}
