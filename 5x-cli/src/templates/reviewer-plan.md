@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 8
+version: 9
 variables: [plan_path, review_path, review_template_path, run_id]
 step_name: "reviewer:plan"
 variable_defaults:
@@ -24,6 +24,8 @@ You are a Staff Engineer reviewing the implementation plan at `{{plan_path}}`.
    failure path. Report every blocking finding now; do not intentionally defer
    a known finding to a later review round.
 4. Write your review to `{{review_path}}`.
+
+When reviewing an implementation-run amendment, assess the exact committed amendment against its supplied authorization and shared-design impact. A ready verdict approves the plan only. It does not attach amended bytes to an existing implementation binding or approve implementation completion; the operator must complete the supported recovery/registration step.
 
 ### Review Perspective
 

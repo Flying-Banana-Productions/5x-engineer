@@ -26,10 +26,10 @@ import {
 	type ImplementationBudgetInvariant,
 	type ImplementationCreditReconciliationPayload,
 	type ImplementationObservationGateCause,
+	type ImplementationPlanAmendmentPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
 	type ImplementationReviewTelemetry,
-	type ImplementationTextAmendmentPayload,
 	implementationCreditReconciliationKey,
 	implementationReviewObservationKey,
 } from "../review-budget/record-lines.js";
@@ -174,7 +174,7 @@ export function addedPathsFromCodeContext(
 
 function planAmendmentCount(input: {
 	observations: readonly ImplementationReviewObservationPayload[];
-	amendments: readonly ImplementationTextAmendmentPayload[];
+	amendments: readonly ImplementationPlanAmendmentPayload[];
 	current: readonly ImplementationObservationGateCause[];
 }): number {
 	const byId = new Map(

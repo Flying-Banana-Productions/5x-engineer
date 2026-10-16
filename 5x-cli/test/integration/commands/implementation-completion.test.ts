@@ -366,6 +366,335 @@ function preAuthorSteps(dir: string, runId: string): unknown[] {
 
 describe("implementation completion boundaries", () => {
 	test(
+		"authorized same-run frontier recovery preserves history and requires a fresh review context",
+		async () => {
+			const { dir, planPath } = await initRepo("enforced", {
+				plan: twoPhasePlan(),
+			});
+			const ok = (result: Awaited<ReturnType<typeof cli>>) => {
+				expect(result.exitCode, `${result.stdout}\n${result.stderr}`).toBe(0);
+				return JSON.parse(result.stdout).data;
+			};
+			try {
+				await approveSource(dir, planPath, 2);
+				const runId = await startRun(dir, planPath);
+				writeFileSync(planPath, twoPhasePlan().replace("[ ] Bind", "[x] Bind"));
+				const firstCommit = await commitFile(
+					dir,
+					runId,
+					"1",
+					"src/a.ts",
+					"export const a = 1;\n",
+					"phase 1",
+				);
+				ok(await recordAuthor(dir, runId, "1", firstCommit, "0"));
+				const firstContext = ok(
+					await renderReview(dir, runId, planPath, "1", firstCommit),
+				).review_context_id;
+				ok(
+					await cli(
+						dir,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"reviewer:commit",
+							"--phase",
+							"1",
+							"--iteration",
+							"0",
+							"--review-context",
+							firstContext,
+						],
+						{ readiness: "ready", items: [] },
+					),
+				);
+				ok(
+					await cli(dir, [
+						"run",
+						"record",
+						"phase:complete",
+						"--run",
+						runId,
+						"--phase",
+						"1",
+						"--result",
+						'{"phase":"1"}',
+					]),
+				);
+				const phaseCommit = await commitFile(
+					dir,
+					runId,
+					"2",
+					"src/b.ts",
+					"export const b = 'wrong';\n",
+					"phase 2",
+				);
+				ok(await recordAuthor(dir, runId, "2", phaseCommit, "0"));
+				const oldContext = ok(
+					await renderReview(dir, runId, planPath, "2", phaseCommit),
+				).review_context_id;
+				ok(
+					await cli(
+						dir,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"reviewer:commit",
+							"--phase",
+							"2",
+							"--iteration",
+							"0",
+							"--review-context",
+							oldContext,
+						],
+						{
+							readiness: "not_ready",
+							items: [
+								{
+									id: "R1",
+									title: "Clarify policy",
+									action: "human_required",
+									reason: "Choose the phase 2 behavior",
+									priority: "P1",
+									scopeClass: "plan_defect",
+									effortDelta: 1,
+									architectureDelta: 0,
+									estimateConfidence: "high",
+									failure: "Ambiguous behavior",
+									lowestCostCorrection: "Choose correct behavior",
+									planImpact: { kind: "design", locations: [] },
+								},
+							],
+						},
+					),
+				);
+				const gate = ok(
+					await cli(dir, [
+						"review",
+						"gate",
+						"show",
+						"--run",
+						runId,
+						"--phase",
+						"2",
+					]),
+				);
+				const authorization = ok(
+					await cli(dir, [
+						"review",
+						"decide",
+						"--run",
+						runId,
+						"--gate",
+						gate.gateId,
+						"--choice",
+						"authorize_amendment",
+						"--finding",
+						"R1",
+						"--rationale",
+						"Use the correct offline behavior only",
+					]),
+				).decision.decisionId;
+				const amended = readFileSync(planPath, "utf8").replace(
+					"- [ ] Follow",
+					"- [ ] Follow the correct offline behavior",
+				);
+				writeFileSync(planPath, amended);
+				const amendmentCommit = ok(
+					await cli(dir, [
+						"commit",
+						"--run",
+						runId,
+						"--phase",
+						"plan",
+						"--files",
+						planPath,
+						"-m",
+						"authorized documentation amendment",
+					]),
+				).hash;
+				ok(
+					await cli(
+						dir,
+						[
+							"protocol",
+							"validate",
+							"author",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"author:process-plan-review",
+							"--phase",
+							"plan",
+							"--iteration",
+							"0",
+						],
+						{ result: "complete", commit: amendmentCommit },
+					),
+				);
+				ok(
+					await cli(
+						dir,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"reviewer:plan",
+							"--phase",
+							"plan",
+							"--iteration",
+							"0",
+						],
+						{
+							readiness: "ready",
+							items: [],
+							baselineAssessment: {
+								independentEffortEstimate: 2,
+								confidence: "high",
+								reason: "Same accepted work",
+							},
+						},
+					),
+				);
+				const budgetPath = join(
+					dir,
+					"docs/development/runs/governance",
+					runId,
+					"budget.jsonl",
+				);
+				const rows = () =>
+					readFileSync(budgetPath, "utf8")
+						.trim()
+						.split("\n")
+						.map((line) => JSON.parse(line).payload);
+				const snapshot = rows()
+					.filter((row) => row.kind === "snapshot")
+					.at(-1).id;
+				const bindingBefore = rows().find(
+					(row) => row.kind === "implementation-binding",
+				);
+				const recover = [
+					"review",
+					"implementation",
+					"recover-plan",
+					"--run",
+					runId,
+					"--phase",
+					"2",
+					"--authorization",
+					authorization,
+					"--snapshot",
+					snapshot,
+					"--commit",
+					amendmentCommit,
+					"--confirm-scope",
+					"Only authorized correct offline behavior; no provider operations",
+					"--confirm-preserved-phases",
+					"Phase 1 contracts and shared design remain valid",
+				];
+				const before = readFileSync(budgetPath, "utf8");
+				expect(ok(await cli(dir, [...recover, "--dry-run"])).dryRun).toBe(true);
+				expect(readFileSync(budgetPath, "utf8")).toBe(before);
+				expect(ok(await cli(dir, recover)).created).toBe(true);
+				expect(ok(await cli(dir, recover)).created).toBe(false);
+				expect(
+					rows().find((row) => row.kind === "implementation-binding"),
+				).toEqual(bindingBefore);
+				const state = ok(await cli(dir, ["run", "state", "--run", runId]));
+				expect(state.implementation_governance.planDrifted).toBe(false);
+				expect(state.summary.phases_completed).toEqual(["1"]);
+				const author = ok(
+					await cli(dir, [
+						"template",
+						"render",
+						"author-process-impl-review",
+						"--run",
+						runId,
+						"--var",
+						"phase_number=2",
+					]),
+				);
+				expect(author.prompt).toContain(
+					"Only authorized correct offline behavior",
+				);
+				expect(author.prompt).toContain("R1 (plan_defect, P1, auto_fix)");
+				const freshContext = ok(
+					await renderReview(dir, runId, planPath, "2", phaseCommit),
+				).review_context_id;
+				expect(freshContext).not.toBe(oldContext);
+				const stale = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"reviewer:commit",
+						"--phase",
+						"2",
+						"--iteration",
+						"1",
+						"--review-context",
+						oldContext,
+					],
+					{
+						readiness: "ready",
+						items: [],
+						priorFindings: [{ id: "R1", status: "addressed" }],
+					},
+				);
+				expect(stale.exitCode).not.toBe(0);
+				expect(stale.stdout).toContain("IMPLEMENTATION_REVIEW_CONTEXT_STALE");
+				const blocked = await cli(dir, [
+					"run",
+					"record",
+					"phase:complete",
+					"--run",
+					runId,
+					"--phase",
+					"2",
+					"--result",
+					'{"phase":"2"}',
+				]);
+				expect(blocked.exitCode).not.toBe(0);
+				writeFileSync(planPath, `${amended}\nUnapproved expansion\n`);
+				const drift = await cli(dir, [
+					"template",
+					"render",
+					"author-process-impl-review",
+					"--run",
+					runId,
+					"--var",
+					"phase_number=2",
+				]);
+				expect(drift.exitCode).not.toBe(0);
+				expect(drift.stdout).toContain("IMPLEMENTATION_PLAN_DRIFT");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+
+	test(
 		"approved aggregate P32 completes Phase 1 and admits Phase 2 under enforcement",
 		async () => {
 			const plan = twoPhasePlan().replace(

@@ -448,6 +448,9 @@ describe("5x upgrade", () => {
 				);
 				expect(skill).toContain(".data.result.governance.route");
 				expect(skill).toContain("5x review corrections finish");
+				expect(skill).toContain("5x review implementation recover-plan");
+				expect(skill).toContain("--confirm-preserved-phases");
+				expect(skill).toContain("Recovery never completes a phase");
 				expect(skill).toContain("5x review decide --gate");
 				expect(skill).toContain("revise_plan");
 				expect(skill).toContain("inheritedBudgetGovernance");

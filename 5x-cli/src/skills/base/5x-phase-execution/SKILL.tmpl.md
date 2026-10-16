@@ -581,6 +581,23 @@ pauses for author amendment and plan re-review; it is not permission to
 implement new scope. Do not record a generic `human:gate` or approve-override
 for this gate. On restart, show the gate again and resume from its route.
 
+For an already-authorized, committed and ready-reviewed amendment on this same
+active run, an operator may use the narrow `5x review implementation recover-plan`
+path at an unfinished frontier. Inspect `--help`, then supply the original
+`--authorization`, latest plan `--snapshot`, full author `--commit`, and earliest
+affected `--phase`, with explicit operator `--confirm-scope` and
+`--confirm-preserved-phases` attestations. The latter must cover shared/design
+document effects on earlier phases; do not invent these confirmations from a
+freeform ready summary. Run with `--dry-run`, inspect the receipt, then repeat
+without it to accept. The command requires unchanged phase identities, work-item
+contracts/scores/surface, no debt claims, and no completed/approved affected phases.
+It preserves the original binding and budget baseline and supports one recovery
+per binding. If rejected, escalate for the full amendment workflow; never rebind
+or edit records to bypass it. After acceptance, render a fresh author context,
+fix all admitted findings, run ordinary quality gates, and prepare a fresh
+reviewer context at the next unused iteration. Keep prior findings and code
+range history. Recovery never completes a phase or clears operator restrictions.
+
 #### Step 5a: Escalate
 
 Legacy v1 escalations only. When `PINNED_MODE` is `enforced`, use Step 5b

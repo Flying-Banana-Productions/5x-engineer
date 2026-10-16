@@ -5,6 +5,7 @@ import {
 	decodeImplementationBindingPayload,
 	decodeImplementationCompatibilityPayload,
 	decodeImplementationCorrectionAttemptPayload,
+	decodeImplementationPlanRecoveryPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
@@ -220,6 +221,7 @@ export function reindexReviewBudget(
 			kind === "implementation-binding" ||
 			kind === "implementation-compatibility" ||
 			kind === "implementation-text-amendment" ||
+			kind === "implementation-plan-recovery" ||
 			kind === "implementation-review-context" ||
 			kind === "implementation-review" ||
 			kind === "implementation-correction-attempt"
@@ -229,6 +231,8 @@ export function reindexReviewBudget(
 					decodeImplementationBindingPayload(line.payload);
 				} else if (kind === "implementation-compatibility") {
 					decodeImplementationCompatibilityPayload(line.payload);
+				} else if (kind === "implementation-plan-recovery") {
+					decodeImplementationPlanRecoveryPayload(line.payload);
 				} else if (kind === "implementation-text-amendment") {
 					decodeImplementationTextAmendmentPayload(line.payload);
 				} else if (kind === "implementation-review-context") {

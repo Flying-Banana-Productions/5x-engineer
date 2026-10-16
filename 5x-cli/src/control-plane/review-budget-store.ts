@@ -8,6 +8,7 @@ import {
 	decodeImplementationCompatibilityPayload,
 	decodeImplementationCorrectionAttemptPayload,
 	decodeImplementationCreditReconciliationPayload,
+	decodeImplementationPlanRecoveryPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationTextAmendmentPayload,
@@ -23,6 +24,7 @@ import {
 	type ImplementationCompatibilityPayload,
 	type ImplementationCorrectionAttemptPayload,
 	type ImplementationCreditReconciliationPayload,
+	type ImplementationPlanAmendmentPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
@@ -140,10 +142,11 @@ export interface ReviewBudgetStore {
 	getImplementationCompatibility(
 		runId: string,
 	): ImplementationCompatibilityPayload | null;
+	/** Authorized byte lineage in journal order, including explicit frontier recovery. */
 	listImplementationTextAmendments(
 		runId: string,
 		bindingId: string,
-	): ImplementationTextAmendmentPayload[];
+	): ImplementationPlanAmendmentPayload[];
 	saveImplementationBinding(
 		payload: ImplementationBindingPayload,
 		origin: RecordOrigin,
@@ -467,8 +470,16 @@ export function createReviewBudgetStore(
 		},
 
 		listImplementationTextAmendments(runId, bindingId) {
-			const amendments: ImplementationTextAmendmentPayload[] = [];
+			const amendments: ImplementationPlanAmendmentPayload[] = [];
 			for (const line of budgetLines(runId)) {
+				if (
+					(line.payload as { kind?: unknown } | null)?.kind ===
+					"implementation-plan-recovery"
+				) {
+					const decoded = decodeImplementationPlanRecoveryPayload(line.payload);
+					if (decoded.bindingId === bindingId) amendments.push(decoded);
+					continue;
+				}
 				if (
 					typeof line.payload !== "object" ||
 					line.payload === null ||

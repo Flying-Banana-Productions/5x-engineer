@@ -18,7 +18,7 @@ import {
 import {
 	decodeImplementationBindingPayload,
 	decodeImplementationReviewObservationPayload,
-	type ImplementationTextAmendmentPayload,
+	type ImplementationPlanAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import {
 	type CodeClosureDecision,
@@ -67,7 +67,7 @@ export interface ImplementationValidationInput {
 	creditClaimIds?: readonly string[];
 	approvedPlanBytes?: string;
 	approvedPlanHash?: string;
-	amendments?: readonly ImplementationTextAmendmentPayload[];
+	amendments?: readonly ImplementationPlanAmendmentPayload[];
 	/**
 	 * True when validation is bound to a run. False is standalone protocol
 	 * validate: a missing phase is structural acceptance, not `UNKNOWN_PHASE`.

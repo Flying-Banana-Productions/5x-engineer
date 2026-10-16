@@ -16,9 +16,9 @@ import type {
 	ImplementationCompatibilityPayload,
 	ImplementationCorrectionAttemptPayload,
 	ImplementationCreditReconciliationPayload,
+	ImplementationPlanAmendmentPayload,
 	ImplementationReviewContextPayload,
 	ImplementationReviewObservationPayload,
-	ImplementationTextAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import {
 	isCompleteDebtClaimEvidence,
@@ -41,6 +41,15 @@ export interface ImplementationBoundaryPhaseReadiness {
 }
 
 export interface ImplementationGovernanceReadiness {
+	acceptedPlanRecovery?: {
+		id: string;
+		phase: string;
+		commit: string;
+		planHash: string;
+		authorizationId: string;
+		scope: string;
+		preservedPhases: string;
+	};
 	/** True when an implementation binding imposes execution obligations. */
 	executionObligations: boolean;
 	/** Checked plan boxes never authorize enforced advancement. */
@@ -68,7 +77,7 @@ export interface ImplementationBoundaryInput {
 	binding: ImplementationBindingPayload | null;
 	compatibility: ImplementationCompatibilityPayload | null;
 	currentPlanBytes: string | null;
-	amendments: readonly ImplementationTextAmendmentPayload[];
+	amendments: readonly ImplementationPlanAmendmentPayload[];
 	observations: readonly ImplementationReviewObservationPayload[];
 	contexts: readonly ImplementationReviewContextPayload[];
 	reconciliations: readonly ImplementationCreditReconciliationPayload[];
@@ -350,11 +359,29 @@ export function evaluateImplementationBoundary(
 		(input.phase === undefined ||
 			phaseIndex(input.binding.phaseMap, input.phase) < 0);
 	const freshPhase = freshnessPhaseId(input.binding, input.intent, input.phase);
+	const invalidatedContexts = new Set(
+		input.amendments.flatMap((entry) =>
+			entry.kind === "implementation-plan-recovery"
+				? entry.invalidatedContextIds
+				: [],
+		),
+	);
+	const invalidatedObservations = new Set(
+		input.amendments.flatMap((entry) =>
+			entry.kind === "implementation-plan-recovery"
+				? entry.invalidatedObservationIds
+				: [],
+		),
+	);
 	const settlements = phasesToCheck.map((phase) =>
 		phaseSettlement({
 			binding: input.binding as ImplementationBindingPayload,
 			phase: phase.id,
-			observations: input.observations,
+			observations: input.observations.filter(
+				(entry) =>
+					!invalidatedObservations.has(entry.id) &&
+					!invalidatedContexts.has(entry.contextId),
+			),
 			contexts: input.contexts,
 			reconciliations: input.reconciliations,
 			correctionAttempts: input.correctionAttempts,
@@ -367,6 +394,20 @@ export function evaluateImplementationBoundary(
 		}),
 	);
 	const readiness: ImplementationGovernanceReadiness = {
+		...input.amendments
+			.filter((entry) => entry.kind === "implementation-plan-recovery")
+			.map((entry) => ({
+				acceptedPlanRecovery: {
+					id: entry.id,
+					phase: entry.phase,
+					commit: entry.afterCommit,
+					planHash: entry.afterBlobHash,
+					authorizationId: entry.authorizationId,
+					scope: entry.scopeConfirmation,
+					preservedPhases: entry.preservedPhaseConfirmation,
+				},
+			}))
+			.at(-1),
 		executionObligations: true,
 		checklistSufficient: false,
 		planDrifted: planMissing || drift.drifted,
@@ -480,7 +521,7 @@ export function evaluateStoredImplementationBoundary(input: {
 }): ImplementationBoundaryResult {
 	let binding: ImplementationBindingPayload | null = null;
 	let compatibility: ImplementationCompatibilityPayload | null = null;
-	let amendments: ImplementationTextAmendmentPayload[] = [];
+	let amendments: ImplementationPlanAmendmentPayload[] = [];
 	let observations: ImplementationReviewObservationPayload[] = [];
 	const contexts: ImplementationReviewContextPayload[] = [];
 	let reconciliations: ImplementationCreditReconciliationPayload[] = [];

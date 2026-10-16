@@ -187,6 +187,13 @@ export interface ImplementationAuthorFindingContext {
 }
 
 export interface ImplementationReviewPromptContext {
+	planRecovery?: {
+		id: string;
+		commit: string;
+		authorizationId: string;
+		scope: string;
+		preservedPhases: string;
+	};
 	inheritedBudgetGovernance?: InheritedBudgetGovernance;
 	reviewKind: "initial" | "closure";
 	mode: "advisory" | "enforced";
@@ -401,6 +408,27 @@ export function buildImplementationReviewPromptContext(input: {
 		},
 	);
 	const latest = observations.at(-1) ?? null;
+	const recovery = input.store
+		.listImplementationTextAmendments(input.runId, binding.id)
+		.find(
+			(entry) =>
+				entry.kind === "implementation-plan-recovery" &&
+				entry.phase === phaseId,
+		);
+	const recoveredAuthorization =
+		recovery?.kind === "implementation-plan-recovery"
+			? active.find(
+					(decision) => decision.decisionId === recovery.authorizationId,
+				)
+			: undefined;
+	const recoveredFindingIds = new Set(
+		recoveredAuthorization?.findingRefs.map((finding) => finding.findingId) ??
+			[],
+	);
+	const resumingRecovery =
+		recovery?.kind === "implementation-plan-recovery" &&
+		latest &&
+		recovery.invalidatedObservationIds.includes(latest.id);
 	const eligibility = latest
 		? evaluateImplementationCorrectionEligibility(latest.originalVerdict)
 		: null;
@@ -420,7 +448,8 @@ export function buildImplementationReviewPromptContext(input: {
 		}
 		if (
 			item.scopeClass === "plan_defect" &&
-			item.planImpact?.kind !== "text_only"
+			item.planImpact?.kind !== "text_only" &&
+			!recoveredFindingIds.has(item.id)
 		) {
 			return [];
 		}
@@ -432,7 +461,7 @@ export function buildImplementationReviewPromptContext(input: {
 				title: item.title,
 				scopeClass: item.scopeClass ?? "",
 				priority: item.priority ?? "",
-				action: item.action,
+				action: recoveredFindingIds.has(item.id) ? "auto_fix" : item.action,
 				reason: item.reason,
 				planWorkItemIds: [...(item.planWorkItemIds ?? [])],
 			},
@@ -446,6 +475,17 @@ export function buildImplementationReviewPromptContext(input: {
 		),
 	);
 	return {
+		...(recovery?.kind === "implementation-plan-recovery"
+			? {
+					planRecovery: {
+						id: recovery.id,
+						commit: recovery.afterCommit,
+						authorizationId: recovery.authorizationId,
+						scope: recovery.scopeConfirmation,
+						preservedPhases: recovery.preservedPhaseConfirmation,
+					},
+				}
+			: {}),
 		reviewKind: closure.priorReviewCount === 0 ? "initial" : "closure",
 		inheritedBudgetGovernance: deriveInheritedBudgetGovernance(
 			binding,
@@ -485,8 +525,10 @@ export function buildImplementationReviewPromptContext(input: {
 		dueClaims: dueClaimsForPhase(binding, phaseId, waivers),
 		deferredOrAcceptedRisks: [...importedRisks(binding), ...risks],
 		debtWaivers: waivers,
-		authorRoute: latest?.route ?? null,
-		authorNextAction: latest?.nextAction ?? null,
+		authorRoute: resumingRecovery ? "author_revision" : (latest?.route ?? null),
+		authorNextAction: resumingRecovery
+			? "author_revision"
+			: (latest?.nextAction ?? null),
 		finalCorrection,
 		eligibleItemId: finalCorrection ? (eligibility?.itemId ?? null) : null,
 		actionableFindings: actionable,
@@ -543,6 +585,14 @@ function sharedImplementationLines(
 				]
 			: []),
 		`- Approved plan commit: ${context.approvedPlanCommit}`,
+		...(context.planRecovery
+			? [
+					`- Accepted frontier plan recovery: ${context.planRecovery.id}; effective plan commit: ${context.planRecovery.commit}; authorization: ${context.planRecovery.authorizationId}`,
+					`- Operator-confirmed recovery scope and restrictions: ${context.planRecovery.scope}`,
+					`- Earlier-phase non-impact confirmation: ${context.planRecovery.preservedPhases}`,
+					"- Apply the amended plan to the admitted findings, including authorized design findings. Findings remain pending until implementation review verifies them. Recovery is not implementation approval; prepare a fresh reviewer context after ordinary quality gates.",
+				]
+			: []),
 		`- Phase: ${context.phaseId}${context.phaseHeading ? ` — ${context.phaseHeading}` : ""}`,
 		`- Approved work-item IDs: ${list(context.approvedWorkItemIds)}`,
 		`- Phase scope: ${list(context.phaseScope)}`,

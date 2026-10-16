@@ -1,7 +1,7 @@
 ---
 name: author-process-impl-review
 description: Fix implementation issues from code review
-version: 4
+version: 5
 variables: [review_path, plan_path, user_notes, run_id]
 step_name: "author:fix-review"
 variable_defaults:
@@ -21,7 +21,7 @@ You are fixing implementation issues identified in a code review for `{{plan_pat
 1. Read the review document at `{{review_path}}`.
 2. If the review has addendums, focus on the **latest addendum** — it contains the most recent feedback. Do a quick sanity check that prior review items are already addressed, but your primary task is the latest addendum.
 3. Read the implementation plan at `{{plan_path}}` for context on what was intended.
-4. When an `Admitted implementation work` section is appended, implement only those admitted findings and governing decisions. Do not treat the rest of the review Markdown as a work list. Without that section, use the latest addendum's actionable items and still do not invent scope.
+4. When an `Admitted implementation work` section is appended, implement only those admitted findings and governing decisions. Do not treat the rest of the review Markdown as a work list. Only on the legacy compatibility path without that section, use the latest addendum's actionable items and still do not invent scope.
    - **P0 blockers** in the admitted list: Must be resolved.
    - **P1 items** in the admitted list: Should be resolved.
    - **P2 items** in the admitted list: Address if they are admitted; do not pull in extra cleanup.
@@ -42,6 +42,7 @@ This is a **code implementation** task. You are fixing issues in the source code
 - Update the implementation plan checklist items (`[x]`) only if your fixes complete previously incomplete items.
 - Do **not** make structural changes to the plan document (phase descriptions, design decisions, budget table bytes, or new scope). That requires an approved amendment workflow.
 - Guarded nonstructural text synchronization is allowed only inside the supplied text guard spans, plus checkbox toggles.
+- When runtime context supplies an accepted frontier plan recovery, apply its effective plan and operator-confirmed restrictions to the admitted findings. Authorized design findings may now require code corrections; the recovery does not approve the implementation or permit another plan amendment. Keep pending operator gates pending.
 - Do not implement deferred or accepted-risk findings, nonblocking Markdown follow-ups, or scope expansion.
 - Applicable bound architecture approvals and suppressed inherited alerts in runtime context are governing decisions, not an instruction to reduce approved scope. Unresolved inherited-budget causes require the orchestrator's plan-revision route; a raw alert alone is not admitted author work.
 - When the admitted section says this pass is a final correction, change only the eligible item. Do not clean up unrelated code, tests, docs, or plan structure.

@@ -36,6 +36,7 @@ import {
 	type ImplementationCreditReconciliationPayload,
 	type ImplementationDebtTarget,
 	type ImplementationPhaseMapping,
+	type ImplementationPlanAmendmentPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationTextAmendmentPayload,
@@ -191,7 +192,7 @@ export interface PlanDriftResult {
 export function detectPlanDrift(input: {
 	approvedPlanBytes: string;
 	approvedPlanHash: string;
-	amendments: readonly ImplementationTextAmendmentPayload[];
+	amendments: readonly ImplementationPlanAmendmentPayload[];
 	currentPlanBytes: string;
 }): PlanDriftResult {
 	const chain = replayTextAmendments(input);
@@ -217,7 +218,7 @@ export function detectPlanDrift(input: {
 function replayTextAmendments(input: {
 	approvedPlanBytes: string;
 	approvedPlanHash: string;
-	amendments: readonly ImplementationTextAmendmentPayload[];
+	amendments: readonly ImplementationPlanAmendmentPayload[];
 }): { chainValid: boolean; authorizedBytes: string; authorizedHash: string } {
 	if (hashPlanBytes(input.approvedPlanBytes) !== input.approvedPlanHash) {
 		return {
@@ -388,7 +389,7 @@ function loadAmendments(
 	runId: string,
 	bindingId: string,
 ):
-	| { ok: true; amendments: ImplementationTextAmendmentPayload[] }
+	| { ok: true; amendments: ImplementationPlanAmendmentPayload[] }
 	| { ok: false } {
 	try {
 		return {
@@ -603,7 +604,7 @@ async function admitExistingBinding(
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_BINDING_CONFLICT",
-			message: `Run ${input.executionRunId} is already bound to ${binding.sourceRunId}. A different source requires explicit human-approved amendment provenance.`,
+			message: `Run ${input.executionRunId} is already bound to ${binding.sourceRunId}; bind cannot replace that source. For an authorized same-run amendment at an unfinished frontier, inspect \`5x review implementation recover-plan --help\`. Other changes require the full amendment workflow.`,
 			detail: {
 				bindingId: binding.id,
 				sourceRunId: binding.sourceRunId,
@@ -640,6 +641,8 @@ async function admitExistingBinding(
 			detail: {
 				bindingId: binding.id,
 				chainValid: amendments.ok && drift.chainValid,
+				recoveryHelp:
+					"5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only)",
 			},
 		};
 	}
@@ -2002,6 +2005,15 @@ export async function prepareImplementationReviewContext(input: {
 	const prior = input.store
 		.listImplementationReviewContexts(input.executionRunId, input.bindingId)
 		.filter((context) => context.phase === phase);
+	const invalidated = new Set(
+		input.store
+			.listImplementationTextAmendments(input.executionRunId, input.bindingId)
+			.flatMap((entry) =>
+				entry.kind === "implementation-plan-recovery"
+					? entry.invalidatedContextIds
+					: [],
+			),
+	);
 	const latest = prior.at(-1);
 	let baseCommit = initialBase;
 	let previousReviewId: string | undefined;
@@ -2025,6 +2037,7 @@ export async function prepareImplementationReviewContext(input: {
 	}
 	const sameRange = prior.find(
 		(context) =>
+			!invalidated.has(context.id) &&
 			context.baseCommit === diff.baseCommit &&
 			context.reviewedCommit === diff.reviewedCommit,
 	);
@@ -2099,6 +2112,22 @@ export async function verifyImplementationReviewContext(input: {
 			status: "error",
 			code: "IMPLEMENTATION_REVIEW_CONTEXT_NOT_FOUND",
 			message: `Review context ${input.reviewContextId} was not prepared for run ${input.executionRunId}. Render the reviewer template instead of manufacturing endpoints.`,
+		};
+	}
+	if (
+		input.store
+			.listImplementationTextAmendments(input.executionRunId, input.bindingId)
+			.some(
+				(entry) =>
+					entry.kind === "implementation-plan-recovery" &&
+					entry.invalidatedContextIds.includes(context.id),
+			)
+	) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_CONTEXT_STALE",
+			message:
+				"This context predates the accepted plan recovery. Render a fresh reviewer context; retain the original review history and prior findings.",
 		};
 	}
 	if (

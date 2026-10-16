@@ -38,5 +38,9 @@ export interface RecordStore {
 	 */
 	atomicAppend(ops: AppendOp[]): AppendResult[];
 	/** Append the whole coupled batch only when every idempotency key is new. */
-	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult;
+	atomicAppendIfAllNew(
+		ops: AppendOp[],
+		/** Optional optimistic precondition, checked under the run writer lock. */
+		expectedKeys?: Partial<Record<RecordStream, string[]>>,
+	): AtomicAppendIfAllNewResult;
 }

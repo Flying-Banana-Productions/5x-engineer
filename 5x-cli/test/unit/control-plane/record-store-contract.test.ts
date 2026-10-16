@@ -101,6 +101,42 @@ function expectCode(fn: () => unknown, code: string): void {
  * working-tree harness to the same factory.
  */
 export function runRecordStoreContract(setup: () => RecordStore): void {
+	test("all-new append checks stream preconditions atomically before publishing recovery", () => {
+		const store = setup();
+		store.putRun(v1Summary("run_precondition"));
+		const op = {
+			runId: "run_precondition",
+			stream: "budget" as const,
+			idempotencyKey: "recovery",
+			payload: { kind: "test-recovery" },
+			...recordedEnvelope(FIXTURE_ORIGIN),
+		};
+		store.append({
+			...op,
+			stream: "steps",
+			idempotencyKey: "concurrent-review",
+			payload: stepPayload("reviewer:plan"),
+		});
+		expectCode(
+			() =>
+				store.atomicAppendIfAllNew([op], {
+					steps: [],
+					budget: [],
+					decisions: [],
+				}),
+			"RECORD_PRECONDITION_FAILED",
+		);
+		expect(store.listLines("run_precondition", "budget")).toEqual([]);
+		expect(
+			store.atomicAppendIfAllNew([op], {
+				steps: ["concurrent-review"],
+				budget: [],
+				decisions: [],
+			}).created,
+		).toBe(true);
+		expect(store.listLines("run_precondition", "budget")).toHaveLength(1);
+	});
+
 	test("putRun / getRun round-trip then seal preserves creator and sets sealer", () => {
 		const store = setup();
 		const creator = {

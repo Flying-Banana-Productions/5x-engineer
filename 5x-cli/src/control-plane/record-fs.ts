@@ -744,16 +744,24 @@ class WorkingTreeRecordStore implements RecordStore {
 		return this.atomicAppendUnderLock(ops, false) as AppendResult[];
 	}
 
-	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult {
+	atomicAppendIfAllNew(
+		ops: AppendOp[],
+		expectedKeys?: Partial<Record<RecordStream, string[]>>,
+	): AtomicAppendIfAllNewResult {
 		if (ops.length === 0) return { created: true, results: [] };
 		requireSingleRunAtomicAppend(ops);
 		requireUniqueAtomicAppendKeys(ops);
-		return this.atomicAppendUnderLock(ops, true) as AtomicAppendIfAllNewResult;
+		return this.atomicAppendUnderLock(
+			ops,
+			true,
+			expectedKeys,
+		) as AtomicAppendIfAllNewResult;
 	}
 
 	private atomicAppendUnderLock(
 		ops: AppendOp[],
 		ifAllNew: boolean,
+		expectedKeys?: Partial<Record<RecordStream, string[]>>,
 	): AppendResult[] | AtomicAppendIfAllNewResult {
 		if (ops.length === 0) return [];
 		requireSingleRunAtomicAppend(ops);
@@ -838,6 +846,19 @@ class WorkingTreeRecordStore implements RecordStore {
 						if (existing) duplicates.push({ index, line: cloneLine(existing) });
 					}
 					if (duplicates.length > 0) return { created: false, duplicates };
+					for (const stream of Object.keys(
+						expectedKeys ?? {},
+					) as RecordStream[]) {
+						if (
+							JSON.stringify([...states[stream].lines.keys()]) !==
+							JSON.stringify(expectedKeys?.[stream])
+						) {
+							throw new RecordStoreError(
+								"RECORD_PRECONDITION_FAILED",
+								"Run history changed; repeat the recovery dry-run.",
+							);
+						}
+					}
 				}
 				for (const op of ops) {
 					if (op.runId !== runId) continue;

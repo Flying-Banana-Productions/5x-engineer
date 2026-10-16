@@ -28,6 +28,7 @@ export type BudgetRecordKind =
 	| "implementation-binding"
 	| "implementation-compatibility"
 	| "implementation-text-amendment"
+	| "implementation-plan-recovery"
 	| "implementation-review-context"
 	| "implementation-review"
 	| "implementation-correction-attempt"
@@ -327,6 +328,68 @@ export interface ImplementationTextAmendmentPayload {
 	afterBlobHash: string;
 	authorizedPlanBytes: string;
 	createdAt: string;
+}
+
+/** Operator-confirmed recovery at an unfinished frontier, not a new binding. */
+export interface ImplementationPlanRecoveryPayload
+	extends Omit<ImplementationTextAmendmentPayload, "kind" | "guardId"> {
+	kind: "implementation-plan-recovery";
+	guardId: null;
+	authorizationId: string;
+	snapshotId: string;
+	phase: string;
+	scopeConfirmation: string;
+	preservedPhaseConfirmation: string;
+	/** Existing evidence cannot certify the amended frontier. */
+	invalidatedContextIds: string[];
+	invalidatedObservationIds: string[];
+}
+
+export type ImplementationPlanAmendmentPayload =
+	| ImplementationTextAmendmentPayload
+	| ImplementationPlanRecoveryPayload;
+
+function recoveryStringArray(raw: unknown, field: string): string[] {
+	if (!Array.isArray(raw)) throw new TypeError(`${field} must be an array`);
+	return raw.map((value) => stringField(value, field));
+}
+
+export function decodeImplementationPlanRecoveryPayload(
+	raw: unknown,
+): ImplementationPlanRecoveryPayload {
+	const value = object(raw, "implementation plan recovery");
+	if (value.kind !== "implementation-plan-recovery" || value.guardId !== null) {
+		throw new TypeError("invalid implementation plan recovery kind/guard");
+	}
+	const common = decodeImplementationTextAmendmentPayload({
+		...value,
+		kind: "implementation-text-amendment",
+		guardId: "recovery",
+	});
+	return {
+		...common,
+		kind: "implementation-plan-recovery",
+		guardId: null,
+		authorizationId: stringField(value.authorizationId, "authorizationId"),
+		snapshotId: stringField(value.snapshotId, "snapshotId"),
+		phase: stringField(value.phase, "phase"),
+		scopeConfirmation: stringField(
+			value.scopeConfirmation,
+			"scopeConfirmation",
+		),
+		preservedPhaseConfirmation: stringField(
+			value.preservedPhaseConfirmation,
+			"preservedPhaseConfirmation",
+		),
+		invalidatedContextIds: recoveryStringArray(
+			value.invalidatedContextIds,
+			"invalidatedContextIds",
+		),
+		invalidatedObservationIds: recoveryStringArray(
+			value.invalidatedObservationIds,
+			"invalidatedObservationIds",
+		),
+	};
 }
 
 export function implementationBindingKey(runId: string): string {
