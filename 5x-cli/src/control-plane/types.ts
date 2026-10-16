@@ -12,7 +12,8 @@ export type AbandonReason =
 	| "interrupted"
 	| "eof"
 	| "non-interactive"
-	| "run-terminal";
+	| "run-terminal"
+	| "superseded";
 
 import type { ImplementationObservationGateCause } from "../review-budget/record-lines.js";
 import type {

@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit-continued
 description: Re-review revised implementation commits
-version: 4
+version: 5
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -61,6 +61,8 @@ Use the four classes and source-of-correction precedence from the initial review
 - Ordinary `pre_existing` notes stay in **Nonblocking follow-ups**, not `items[]`.
 
 Do not create new credit. The same `Implementation-review governance context` is appended on a fresh session and on continuation. It includes binding, source, approved work-item IDs, phase scope, full-diff retrieval, due claims, deferred decisions (title, rationale, decision ID, approved scope), and debt waivers. Assess the effective approved post-state.
+
+Applicable bound architecture approvals resolve inherited burden even when raw budget telemetry retains an alert. Use the runtime context's effective alerts and suppressed-alert decision references; do not reopen approved burden solely from raw alerts. New or increased architecture and boundary changes still require their own review and governance.
 
 In `enforced` mode this evidence is required. In `advisory` mode the same evidence is diagnostic. No context present means the broad v1 fallback: surface both prior and newly discovered blocking issues, and omit `priorFindings`, `--prior-finding`, and `introducedBy`.
 

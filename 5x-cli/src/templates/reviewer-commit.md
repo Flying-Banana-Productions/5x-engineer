@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit
 description: Review implementation commits
-version: 6
+version: 7
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -62,6 +62,8 @@ Classify every structured item with exactly one `scopeClass`. Source-of-correcti
 Do not create new credit. Effort is a nonnegative integer and architecture delta is a signed integer; neither mints plan credit. Follow-ups in Markdown are not author work.
 
 Read the appended `Implementation-review governance context` on this initial pass and on a fresh session. It carries the binding, source run, approved work-item IDs, phase scope, full-diff retrieval command, required prior outcomes, due claims, deferred or accepted-risk decisions (title, rationale, decision ID, approved scope), and human debt waivers. Assess the effective approved post-state.
+
+Applicable bound architecture approvals resolve inherited burden even when raw budget telemetry retains an alert. Use the runtime context's effective alerts and suppressed-alert decision references; do not reopen approved burden solely from raw alerts. New or increased architecture and boundary changes still require their own review and governance.
 
 In pinned `enforced` mode the evidence requirements are strict. In pinned `advisory` mode provide the same evidence; violations are diagnostics. Mode off and runs without a binding keep the v1 contract and omit implementation-only fields.
 

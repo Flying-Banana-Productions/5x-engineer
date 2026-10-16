@@ -64,7 +64,7 @@ import {
 } from "./run-v1.handler.js";
 
 export interface SubmitPlanReviewDecisionPayload {
-	choice: ReviewDecisionChoice;
+	choice: ReviewDecisionChoice | ImplementationDecisionChoice;
 	rationale: string;
 	evidence?: string[];
 	findingRefs?: FindingIdentity[];
@@ -318,7 +318,7 @@ function validateAndCreate(input: {
 			"REVIEW_DECISION_INVALID",
 			"findingRefs must contain findingId/fingerprint pairs",
 		);
-	if (!input.allowedChoices.includes(payload.choice))
+	if (!input.allowedChoices.includes(payload.choice as ReviewDecisionChoice))
 		fail(
 			"REVIEW_DECISION_CHOICE_NOT_ALLOWED",
 			`${payload.choice} is not allowed for this gate`,
@@ -477,7 +477,7 @@ function validateAndCreate(input: {
 	return createReviewDecision({
 		gateId: input.gateId,
 		snapshotId: input.snapshotId,
-		choice: payload.choice,
+		choice: payload.choice as ReviewDecisionChoice,
 		findingRefs: refs,
 		rationale: payload.rationale.trim(),
 		evidence: payload.evidence ?? [],

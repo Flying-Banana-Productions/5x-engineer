@@ -12,7 +12,10 @@ import type { ImplementationReviewObservationPayload } from "../../../src/review
 import { encodeImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
-import { deriveOpenImplementationGate } from "../../../src/review-governance/store.js";
+import {
+	deriveOpenImplementationGate,
+	implementationGatePromptContext,
+} from "../../../src/review-governance/store.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
@@ -170,6 +173,111 @@ function seed(mode: "advisory" | "enforced" = "enforced") {
 }
 
 describe("implementation review decide", () => {
+	test("uncovered inherited burden offers an auditable plan revision without authorizing completion", async () => {
+		const { ctx, promptStore } = seed();
+		try {
+			const payload = observation({
+				id: "inherited-observation",
+				stepKey: { stepName: "reviewer:impl", phase: "1", iteration: 2 },
+				gateCauses: [
+					{
+						kind: "inherited_budget",
+						band: "within_standard",
+						alerts: ["positive_architecture_exceeded"],
+					},
+				],
+			});
+			ctx.recordStore.append({
+				runId: RUN,
+				stream: "budget",
+				idempotencyKey: "inherited-review",
+				payload,
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			const earlier = ctx.recordStore.listLines(RUN, "steps")[0];
+			if (!earlier) throw new Error("Missing reviewer step");
+			ctx.recordStore.append({
+				runId: RUN,
+				stream: "steps",
+				idempotencyKey: "inherited-reviewer-step",
+				payload: {
+					...(earlier.payload as Record<string, unknown>),
+					iteration: 2,
+				},
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			const gate = deriveOpenImplementationGate(ctx.recordStore, RUN, "1");
+			if (!gate) throw new Error("Expected inherited gate");
+			const legacyContext = implementationGatePromptContext({
+				gate,
+				ledgerHash: "ledger",
+				decisionsHash: "decisions",
+			});
+			legacyContext.allowedChoices = ["abort"];
+			const legacyPrompt = promptStore.createPrompt({
+				runId: RUN,
+				kind: "choose",
+				message: "Historical abort-only gate",
+				options: ["abort"],
+				defaultValue: null,
+				contextVersion: 1,
+				context: legacyContext,
+			});
+			const shown = await showReviewGate(
+				RUN,
+				{ context: ctx, promptStore },
+				{ phase: "1" },
+			);
+			if (!shown.open || !("allowedChoices" in shown))
+				throw new Error("Expected inherited gate");
+			expect(shown.allowedChoices).toEqual(["revise_plan", "abort"]);
+			expect(shown.eligibleFindings).toEqual([]);
+			expect(promptStore.getPrompt(legacyPrompt.id)?.abandonReason).toBe(
+				"superseded",
+			);
+			expect(promptStore.listOpenPrompts(RUN)).toHaveLength(1);
+			expect(
+				await showReviewGate(
+					RUN,
+					{ context: ctx, promptStore },
+					{ phase: "1" },
+				),
+			).toMatchObject({ promptId: shown.promptId });
+			const input = {
+				runId: RUN,
+				gateId: shown.gateId,
+				phase: "1",
+				payload: {
+					choice: "revise_plan" as const,
+					rationale: "Return the uncovered architecture burden to plan review",
+				},
+			};
+			const result = await submitReviewDecision(input, {
+				context: ctx,
+				promptStore,
+			});
+			expect(result).toMatchObject({
+				created: true,
+				nextAction: "plan_amendment",
+			});
+			expect(
+				deriveOpenImplementationGate(ctx.recordStore, RUN, "1"),
+			).toBeNull();
+			expect(
+				ctx.store.listImplementationReviews(RUN).at(-1)?.completionAuthorized,
+			).toBe(false);
+			expect(
+				await submitReviewDecision(input, { context: ctx, promptStore }),
+			).toMatchObject({ created: false, nextAction: "plan_amendment" });
+			expect(ctx.recordStore.listLines(RUN, "decisions")).toHaveLength(1);
+			expect(
+				reindexReviewGovernance(ctx.recordStore, ctx.db, RUN).diagnostics,
+			).toEqual([]);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
 	test("gate show --phase opens a typed prompt", async () => {
 		const { ctx, promptStore } = seed();
 		const shown = await showReviewGate(

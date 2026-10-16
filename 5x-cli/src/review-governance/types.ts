@@ -240,6 +240,7 @@ export type GovernanceReviewerVerdict = ReviewerVerdict & {
 export type ReviewDomain = "plan" | "implementation";
 
 export type ImplementationDiagnosticCode =
+	| "INHERITED_BUDGET_UNRESOLVED"
 	| "PHASE_CONFLICT"
 	| "UNKNOWN_PHASE"
 	| "IMPLEMENTATION_CONTEXT_MISSING"
@@ -291,6 +292,7 @@ export type ImplementationNextAction =
 
 /** Human choices for an implementation gate. Plan choices stay on the plan payload. */
 export type ImplementationDecisionChoice =
+	| "revise_plan"
 	| "authorize_amendment"
 	| "defer_accept_risk"
 	| "restore_simplification"

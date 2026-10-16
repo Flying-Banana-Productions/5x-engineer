@@ -4,6 +4,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -163,6 +164,7 @@ async function approveSource(
 	planPath: string,
 	effort: number,
 	claimId?: string,
+	approvedP?: number,
 ): Promise<string> {
 	const sourceId = await startRun(dir, planPath);
 	const verdict: Record<string, unknown> = {
@@ -204,6 +206,28 @@ async function approveSource(
 	);
 	if (review.exitCode !== 0) {
 		throw new Error(`${review.stdout}\n${review.stderr}`);
+	}
+	if (approvedP !== undefined) {
+		const shown = await cli(dir, ["review", "gate", "show", "--run", sourceId]);
+		if (shown.exitCode !== 0) throw new Error(shown.stdout);
+		const approved = await cli(dir, [
+			"review",
+			"decide",
+			"--run",
+			sourceId,
+			"--gate",
+			JSON.parse(shown.stdout).data.gateId,
+			"--input-json",
+			JSON.stringify({
+				choice: "approve_architecture_burden",
+				rationale: "Approve the aggregate architecture burden",
+				approvedP,
+				approvedItemIds: [],
+				approvedWorkItemIds: [],
+			}),
+		]);
+		if (approved.exitCode !== 0)
+			throw new Error(`${approved.stdout}\n${approved.stderr}`);
 	}
 	const done = await cli(dir, [
 		"run",
@@ -341,6 +365,128 @@ function preAuthorSteps(dir: string, runId: string): unknown[] {
 }
 
 describe("implementation completion boundaries", () => {
+	test(
+		"approved aggregate P32 completes Phase 1 and admits Phase 2 under enforcement",
+		async () => {
+			const plan = twoPhasePlan().replace(
+				"| W1 | Required behavior | 2 | 0 | - | - | Implements the requested behavior. |",
+				Array.from(
+					{ length: 32 },
+					(_, index) =>
+						`| W${index + 1} | Required behavior | 2 | 1 | - | - | Approved behavior. |`,
+				).join("\n"),
+			);
+			const { dir, planPath } = await initRepo("enforced", { plan });
+			try {
+				const sourceId = await approveSource(dir, planPath, 64, undefined, 32);
+				const runId = await startRun(dir, planPath);
+				writeFileSync(
+					planPath,
+					plan.replace("- [ ] Bind execution", "- [x] Bind execution"),
+				);
+				const commit = await commitFile(
+					dir,
+					runId,
+					"1",
+					"src/a.ts",
+					"export const a = 1;\n",
+					"implement phase 1",
+				);
+				expect(
+					(await recordAuthor(dir, runId, "1", commit, "1")).exitCode,
+				).toBe(0);
+				const rendered = await renderReview(dir, runId, planPath, "1", commit);
+				expect(rendered.exitCode, rendered.stdout).toBe(0);
+				expect(JSON.parse(rendered.stdout).data.prompt).toContain(
+					"positive_architecture_exceeded resolved by decision",
+				);
+				const reviewed = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"reviewer:commit",
+						"--phase",
+						"1",
+						"--iteration",
+						"1",
+						"--review-context",
+						reviewContextId(rendered.stdout),
+					],
+					{ readiness: "ready", items: [], creditRealizations: [] },
+				);
+				expect(
+					reviewed.exitCode,
+					`${reviewed.stdout}\n${reviewed.stderr}`,
+				).toBe(0);
+				expect(governanceOf(reviewed.stdout)).toMatchObject({
+					route: "complete",
+					completionAuthorized: true,
+				});
+				expect(
+					JSON.parse(reviewed.stdout).data.result.governance
+						.inheritedBudgetGovernance,
+				).toMatchObject({
+					P: 32,
+					sourceRunId: sourceId,
+					requiresHuman: false,
+					effectiveAlerts: [],
+					suppressedAlerts: [
+						{
+							alert: "positive_architecture_exceeded",
+							resolvedBy: expect.any(String),
+						},
+					],
+				});
+				const gate = await cli(dir, [
+					"review",
+					"gate",
+					"show",
+					"--run",
+					runId,
+					"--phase",
+					"1",
+				]);
+				expect(JSON.parse(gate.stdout).data.open).toBe(false);
+				const completed = await cli(dir, [
+					"run",
+					"record",
+					"phase:complete",
+					"--run",
+					runId,
+					"--phase",
+					"1",
+					"--result",
+					'{"phase":"1"}',
+				]);
+				expect(
+					completed.exitCode,
+					`${completed.stdout}\n${completed.stderr}`,
+				).toBe(0);
+				const next = await cli(dir, [
+					"template",
+					"render",
+					"author-next-phase",
+					"--run",
+					runId,
+					"--var",
+					"phase_number=2",
+					"--var",
+					`plan_path=${planPath}`,
+				]);
+				expect(next.exitCode, `${next.stdout}\n${next.stderr}`).toBe(0);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60000 },
+	);
+
 	test(
 		"raw phase completion and sealing cannot skip binding or review",
 		async () => {

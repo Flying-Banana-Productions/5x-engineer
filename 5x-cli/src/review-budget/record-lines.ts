@@ -697,6 +697,21 @@ export interface ImplementationBudgetInvariant {
 	D: number;
 }
 
+/** Approval-aware interpretation of raw budget telemetry from a sealed binding. */
+export interface InheritedBudgetGovernance {
+	bindingId: string;
+	sourceRunId: string;
+	sourceSnapshotId: string;
+	P: number;
+	effectiveAlerts: BudgetAlert[];
+	suppressedAlerts: Array<{
+		alert: "positive_architecture_exceeded";
+		resolvedBy: string;
+	}>;
+	/** Effective budget requirement; raw arithmetic remains unchanged. */
+	requiresHuman: boolean;
+}
+
 /**
  * One implementation review, paired with its reviewer step. Plan snapshot
  * readers ignore this kind. It is not a `FindingDelta[]`.
@@ -720,6 +735,8 @@ export interface ImplementationReviewObservationPayload {
 	gateCauses: ImplementationObservationGateCause[];
 	telemetry: ImplementationReviewTelemetry;
 	budgetInvariant: ImplementationBudgetInvariant;
+	/** Absent on historical observations written before approval carryover. */
+	inheritedBudgetGovernance?: InheritedBudgetGovernance;
 	/**
 	 * True only on the durable line when the route is complete and no separate
 	 * gate cause remains. A pre-write copy is not authorization.
@@ -777,6 +794,7 @@ const BOUNDARY_LABELS = new Set<BoundaryChangeLabel>([
 ]);
 
 const OBSERVATION_KEYS = new Set([
+	"inheritedBudgetGovernance",
 	"kind",
 	"version",
 	"id",
@@ -1134,6 +1152,38 @@ function decodeBudgetInvariant(raw: unknown): ImplementationBudgetInvariant {
 	};
 }
 
+function decodeInheritedBudgetGovernance(
+	raw: unknown,
+): InheritedBudgetGovernance {
+	const value = object(raw, "inheritedBudgetGovernance");
+	if (
+		!Array.isArray(value.effectiveAlerts) ||
+		!Array.isArray(value.suppressedAlerts)
+	)
+		throw new TypeError("inherited budget alerts must be arrays");
+	return {
+		bindingId: stringField(value.bindingId, "bindingId"),
+		sourceRunId: stringField(value.sourceRunId, "sourceRunId"),
+		sourceSnapshotId: stringField(value.sourceSnapshotId, "sourceSnapshotId"),
+		P: nonNegativeInteger(value.P, "P"),
+		requiresHuman: booleanField(value.requiresHuman, "requiresHuman"),
+		effectiveAlerts: value.effectiveAlerts.map((alert) => {
+			if (!BUDGET_ALERTS.has(alert as BudgetAlert))
+				throw new TypeError("invalid effective budget alert");
+			return alert as BudgetAlert;
+		}),
+		suppressedAlerts: value.suppressedAlerts.map((raw) => {
+			const cause = object(raw, "suppressed alert");
+			if (cause.alert !== "positive_architecture_exceeded")
+				throw new TypeError("invalid suppressed budget alert");
+			return {
+				alert: cause.alert,
+				resolvedBy: stringField(cause.resolvedBy, "resolvedBy"),
+			};
+		}),
+	};
+}
+
 function decodeTextGuard(raw: unknown): TextAmendmentGuard {
 	const value = object(raw, "textGuard");
 	rejectUnknownKeys(
@@ -1254,6 +1304,13 @@ export function decodeImplementationReviewObservationPayload(
 		),
 		telemetry: decodeObservationTelemetry(value.telemetry),
 		budgetInvariant: decodeBudgetInvariant(value.budgetInvariant),
+		...(value.inheritedBudgetGovernance === undefined
+			? {}
+			: {
+					inheritedBudgetGovernance: decodeInheritedBudgetGovernance(
+						value.inheritedBudgetGovernance,
+					),
+				}),
 		completionAuthorized: booleanField(
 			value.completionAuthorized,
 			"completionAuthorized",
@@ -1495,6 +1552,7 @@ export interface ImplementationCreditClaimRecord {
 }
 
 export interface ImplementationCreditBudgetSnapshot {
+	inheritedBudgetGovernance?: InheritedBudgetGovernance;
 	W: number;
 	R: number;
 	B: number;
@@ -1648,6 +1706,13 @@ function decodeCreditBudget(raw: unknown): ImplementationCreditBudgetSnapshot {
 		throw new TypeError("budget.budgetAlerts must be an array");
 	}
 	return {
+		...(value.inheritedBudgetGovernance === undefined
+			? {}
+			: {
+					inheritedBudgetGovernance: decodeInheritedBudgetGovernance(
+						value.inheritedBudgetGovernance,
+					),
+				}),
 		W: nonNegativeInteger(value.W, "budget.W"),
 		R: integerField(value.R, "budget.R"),
 		B: nonNegativeInteger(value.B, "budget.B"),

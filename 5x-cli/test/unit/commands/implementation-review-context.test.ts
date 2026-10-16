@@ -15,6 +15,7 @@ import {
 	reindexReviewBudget,
 } from "../../../src/control-plane/review-budget-index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
+import { createSqlitePromptStore } from "../../../src/control-plane/sqlite-store.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import {
 	decodeImplementationReviewObservationPayload,
@@ -24,13 +25,22 @@ import {
 	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { deriveInheritedBudgetGovernance } from "../../../src/review-governance/architecture-approval.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
-import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
+import {
+	createImplementationDecision,
+	createReviewDecision,
+} from "../../../src/review-governance/decisions.js";
 import { readImplementationCodeClosure } from "../../../src/review-governance/implementation.js";
 import {
 	hashPlanBytes,
 	recordCorrectionAttempt,
 } from "../../../src/review-governance/implementation-state.js";
+import {
+	deriveOpenImplementationGate,
+	ensureImplementationGatePrompt,
+	repairReviewGatePrompts,
+} from "../../../src/review-governance/store.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
@@ -153,6 +163,36 @@ function contextPayload(): ImplementationReviewContextPayload {
 		binaryPaths: [],
 		createdAt: "2026-01-01 00:00:00",
 	};
+}
+
+function architectureBinding(): ImplementationBindingPayload {
+	const value = binding({ governingB: 73 });
+	const item = value.ledger.workItems[0];
+	if (!item) throw new Error("Missing work item");
+	value.ledger.workItems = Array.from({ length: 32 }, (_, index) => ({
+		...item,
+		id: `W${index + 1}`,
+		architectureDelta: 1,
+		debtClaim: null,
+	}));
+	value.effectiveDecisions = [
+		createReviewDecision({
+			decisionId: "aaad78d4-0ecd-498b-83e6-f7a6483b8768",
+			gateId: "source-architecture-gate",
+			snapshotId: "earlier-snapshot",
+			choice: "approve_architecture_burden",
+			findingRefs: [],
+			rationale: "Approve aggregate P32",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+			architectureApproval: {
+				approvedP: 32,
+				approvedItemIds: [],
+				approvedWorkItemIds: [],
+			},
+		}),
+	];
+	return value;
 }
 
 function defectVerdict() {
@@ -350,6 +390,157 @@ describe("implementation review observations", () => {
 		} finally {
 			ctx.db.close();
 		}
+	});
+
+	test("bound aggregate approval recovers an existing gate append-only and survives replay", async () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			const bound = architectureBinding();
+			seed(ctx, bound);
+			const compose = (iteration: number) =>
+				composeImplementationReviewerRecord({
+					ctx,
+					runId: "run1",
+					stepName: STEP,
+					phase: PHASE,
+					iteration,
+					verdict: readyVerdict(),
+					contextId: "ctx-1",
+					codeContext: diff,
+				});
+			const initial = await compose(1);
+			if (initial.status !== "applied") throw new Error("Composition failed");
+			// Historical buggy observation: retain its exact unauthorized state.
+			const old = {
+				...initial.pending,
+				route: "human_gate" as const,
+				nextAction: "human_gate" as const,
+				gateCauses: [
+					{
+						kind: "inherited_budget" as const,
+						band: "within_standard" as const,
+						alerts: ["positive_architecture_exceeded" as const],
+					},
+				],
+			};
+			delete old.inheritedBudgetGovernance;
+			await recordImplementationReviewerStepWithObservation(
+				recordParams(readyVerdict(), 1),
+				old,
+				ctx,
+			);
+			const gate = deriveOpenImplementationGate(ctx.recordStore, "run1", PHASE);
+			if (!gate) throw new Error("Expected historical gate");
+			const prompts = createSqlitePromptStore(ctx.db);
+			const prompt = ensureImplementationGatePrompt({
+				promptStore: prompts,
+				gate,
+				ledgerHash: bound.ledgerHash,
+				decisionsHash: bound.decisionsHash,
+			});
+			const corrected = await compose(2);
+			if (corrected.status !== "applied")
+				throw new Error("Recovery composition failed");
+			expect(corrected.pending.route).toBe("complete");
+			expect(corrected.pending.gateCauses).toEqual([]);
+			expect(corrected.pending.budgetInvariant).toEqual(old.budgetInvariant);
+			expect(corrected.pending.inheritedBudgetGovernance).toMatchObject({
+				bindingId: bound.id,
+				sourceRunId: bound.sourceRunId,
+				sourceSnapshotId: bound.sourceSnapshotId,
+				P: 32,
+				requiresHuman: false,
+				effectiveAlerts: [],
+				suppressedAlerts: [
+					{
+						alert: "positive_architecture_exceeded",
+						resolvedBy: "aaad78d4-0ecd-498b-83e6-f7a6483b8768",
+					},
+				],
+			});
+			expect(corrected.reconciliation.budget).toMatchObject({
+				P: 32,
+				requiresHuman: true,
+				budgetAlerts: ["positive_architecture_exceeded"],
+				inheritedBudgetGovernance: { requiresHuman: false },
+			});
+			const write = () =>
+				recordImplementationReviewerStepWithObservation(
+					recordParams(readyVerdict(), 2),
+					corrected.pending,
+					ctx,
+					corrected.reconciliation,
+				);
+			expect((await write()).completionAuthorized).toBe(true);
+			expect((await write()).recorded).toBe(false);
+			expect(
+				deriveOpenImplementationGate(ctx.recordStore, "run1", PHASE),
+			).toBeNull();
+			expect(repairReviewGatePrompts(ctx.recordStore, prompts, "run1")).toBe(1);
+			expect(repairReviewGatePrompts(ctx.recordStore, prompts, "run1")).toBe(0);
+			expect(prompts.getPrompt(prompt.id)).toMatchObject({
+				abandonReason: "superseded",
+				answer: null,
+			});
+			expect(ctx.recordStore.listLines("run1", "decisions")).toHaveLength(0);
+			reindexReviewBudget(
+				ctx.recordStore,
+				createReviewBudgetIndex(ctx.db),
+				"run1",
+			);
+			const reviews = ctx.store.listImplementationReviews("run1");
+			expect(reviews).toHaveLength(2);
+			expect(reviews[0]?.completionAuthorized).toBe(false);
+			expect(reviews[1]?.inheritedBudgetGovernance).toEqual(
+				corrected.pending.inheritedBudgetGovernance,
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("carryover does not cover growth, new individual IDs, malformed approvals, or effort violations", () => {
+		const bound = architectureBinding();
+		const evaluate = () =>
+			deriveInheritedBudgetGovernance(bound, inheritedBudget(bound));
+		expect(evaluate().requiresHuman).toBe(false);
+		const item = bound.ledger.workItems[0];
+		if (!item) throw new Error("Missing work item");
+		bound.ledger.workItems.push({ ...item, id: "extra" });
+		expect(evaluate()).toMatchObject({
+			P: 33,
+			requiresHuman: true,
+			suppressedAlerts: [],
+		});
+		bound.ledger.workItems.pop();
+		item.architectureDelta = 5;
+		bound.ledger.workItems.splice(-4);
+		expect(evaluate()).toMatchObject({
+			P: 32,
+			requiresHuman: true,
+			suppressedAlerts: [],
+		});
+		const valid = architectureBinding();
+		valid.governingB = 1;
+		expect(
+			deriveInheritedBudgetGovernance(valid, inheritedBudget(valid)),
+		).toMatchObject({
+			requiresHuman: true,
+			effectiveAlerts: [],
+			suppressedAlerts: [
+				{ resolvedBy: "aaad78d4-0ecd-498b-83e6-f7a6483b8768" },
+			],
+		});
+		valid.effectiveDecisions = [
+			{
+				choice: "approve_architecture_burden",
+				architectureApproval: { approvedP: 99 },
+			},
+		];
+		expect(
+			deriveInheritedBudgetGovernance(valid, inheritedBudget(valid))
+				.suppressedAlerts,
+		).toEqual([]);
 	});
 
 	test("advisory inherited architecture alerts do not block durable completion", async () => {

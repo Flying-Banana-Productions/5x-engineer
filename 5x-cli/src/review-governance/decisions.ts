@@ -648,6 +648,7 @@ export function validateImplementationDecision(
 	if (!Array.isArray(input.evidence))
 		throw new TypeError("evidence must be an array");
 	const choices: ImplementationDecisionChoice[] = [
+		"revise_plan",
 		"authorize_amendment",
 		"defer_accept_risk",
 		"restore_simplification",
@@ -657,6 +658,13 @@ export function validateImplementationDecision(
 	];
 	if (!choices.includes(input.choice))
 		throw new TypeError("unsupported implementation decision choice");
+	if (
+		input.choice === "revise_plan" &&
+		(input.findingRefs.length > 0 || input.claimAdjustments.length > 0)
+	)
+		throw new TypeError(
+			"revise_plan is gate-scoped and rejects finding refs and claim adjustments",
+		);
 	if (
 		(input.choice === "authorize_amendment" ||
 			input.choice === "defer_accept_risk") &&
@@ -929,7 +937,11 @@ export function implementationDecisionNextAction(
 	remainingCauses: number,
 ): ImplementationNextAction | "aborted" {
 	if (choice === "abort") return "aborted";
-	if (choice === "authorize_amendment" || choice === "reduce_scope")
+	if (
+		choice === "authorize_amendment" ||
+		choice === "reduce_scope" ||
+		choice === "revise_plan"
+	)
 		return "plan_amendment";
 	if (choice === "restore_simplification") return "author_revision";
 	return remainingCauses > 0 ? "human_gate" : "complete";

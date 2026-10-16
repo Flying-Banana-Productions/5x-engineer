@@ -11,11 +11,13 @@ import {
 import { reindexReviewBudget } from "../../../src/control-plane/review-budget-index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../../../src/parsers/delivery-budget.js";
+import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import {
 	decodeBudgetSnapshotPayload,
 	type ImplementationBindingPayload,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { deriveInheritedBudgetGovernance } from "../../../src/review-governance/architecture-approval.js";
 import {
 	createReviewDecision,
 	governanceDecisionKey,
@@ -594,6 +596,135 @@ describe("implementation execution binding", () => {
 		).toMatchObject({
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+	});
+
+	test("earlier aggregate architecture approval survives later final-corrections closure and binding", async () => {
+		const markdown = plan().replace(
+			"| W1 | Bind | 2 | 0 | - | - | Required |",
+			Array.from(
+				{ length: 32 },
+				(_, index) => `| W${index + 1} | Bind | 2 | 1 | - | - | Required |`,
+			).join("\n"),
+		);
+		const ctx = setup();
+		const initial = approveSource(ctx, "source", markdown, {
+			unsealed: true,
+			route: "human_gate",
+		});
+		const decision = createReviewDecision({
+			gateId: "source-architecture-gate",
+			snapshotId: initial.snapshot.id,
+			choice: "approve_architecture_burden",
+			findingRefs: [],
+			rationale: "Approve P32",
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+			architectureApproval: {
+				approvedP: 32,
+				approvedItemIds: [],
+				approvedWorkItemIds: [],
+			},
+		});
+		appendStep(
+			ctx.recordStore,
+			"source",
+			"human:review-governance",
+			"plan",
+			1,
+			{ decisionId: decision.decisionId, gateId: decision.gateId },
+			null,
+		);
+		ctx.recordStore.append({
+			runId: "source",
+			stream: "decisions",
+			idempotencyKey: governanceDecisionKey(decision.gateId),
+			payload: decision,
+			...recordedEnvelope(ORIGIN),
+		});
+		const closure = ctx.store.appendSnapshot({
+			runId: "source",
+			stepName: "reviewer:plan",
+			phase: "plan",
+			iteration: 2,
+			currentLedger: initial.snapshot.currentLedger,
+			findings: [],
+			assessments: [],
+			effectiveGateCauses: [],
+			suppressedGateCauses: [
+				{
+					kind: "budget_alert",
+					alert: "positive_architecture_exceeded",
+					itemIds: [],
+					workItemIds: [],
+					resolvedBy: decision.decisionId,
+				},
+			],
+			origin: ORIGIN,
+		});
+		appendStep(
+			ctx.recordStore,
+			"source",
+			"reviewer:plan",
+			"plan",
+			2,
+			{
+				readiness: "ready_with_corrections",
+				items: [],
+				governance: { route: "final_corrections" },
+			},
+			"a".repeat(40),
+		);
+		appendStep(
+			ctx.recordStore,
+			"source",
+			"author:process-plan-review",
+			"plan",
+			2,
+			{ result: "complete", commit: "b".repeat(40) },
+			"b".repeat(40),
+		);
+		appendStep(
+			ctx.recordStore,
+			"source",
+			"run:complete",
+			"plan",
+			1,
+			{ status: "completed", reason: null },
+			"b".repeat(40),
+		);
+		const sourceRun = ctx.recordStore.getRun("source");
+		if (!sourceRun) throw new Error("Missing source run");
+		ctx.recordStore.putRun({
+			...sourceRun,
+			status: "completed",
+			sealed_at: "2026-09-23T00:00:02.000Z",
+			final_head_commit: "b".repeat(40),
+			sealer: ORIGIN.recorder,
+		});
+		putRun(ctx.recordStore, "exec");
+		const bound = await admit(ctx, { executionRunId: "exec", markdown });
+		if (bound.status !== "bound") throw new Error(JSON.stringify(bound));
+		expect(bound.binding.sourceSnapshotId).toBe(closure.id);
+		expect(bound.binding.approvedPlanCommit).toBe("b".repeat(40));
+		expect(bound.binding.effectiveDecisions).toEqual([decision]);
+		const budget = deriveBudget({
+			B0: bound.binding.b0,
+			B: bound.binding.governingB,
+			I: null,
+			workItems: bound.binding.ledger.workItems,
+			findings: [],
+			assessments: [],
+			config: bound.binding.thresholds,
+			semanticHumanRequired: false,
+		});
+		expect(
+			deriveInheritedBudgetGovernance(bound.binding, budget),
+		).toMatchObject({
+			P: 32,
+			requiresHuman: false,
+			sourceSnapshotId: closure.id,
+			suppressedAlerts: [{ resolvedBy: decision.decisionId }],
 		});
 	});
 

@@ -1,7 +1,7 @@
 ---
 name: author-process-impl-review
 description: Fix implementation issues from code review
-version: 3
+version: 4
 variables: [review_path, plan_path, user_notes, run_id]
 step_name: "author:fix-review"
 variable_defaults:
@@ -43,6 +43,7 @@ This is a **code implementation** task. You are fixing issues in the source code
 - Do **not** make structural changes to the plan document (phase descriptions, design decisions, budget table bytes, or new scope). That requires an approved amendment workflow.
 - Guarded nonstructural text synchronization is allowed only inside the supplied text guard spans, plus checkbox toggles.
 - Do not implement deferred or accepted-risk findings, nonblocking Markdown follow-ups, or scope expansion.
+- Applicable bound architecture approvals and suppressed inherited alerts in runtime context are governing decisions, not an instruction to reduce approved scope. Unresolved inherited-budget causes require the orchestrator's plan-revision route; a raw alert alone is not admitted author work.
 - When the admitted section says this pass is a final correction, change only the eligible item. Do not clean up unrelated code, tests, docs, or plan structure.
 
 ### Quality Checks

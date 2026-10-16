@@ -361,6 +361,7 @@ export function reindexReviewGovernance(
 					chainDepth += 1;
 					if (!winner) break;
 					if (
+						winner.choice === "revise_plan" ||
 						winner.choice === "authorize_amendment" ||
 						winner.choice === "reduce_scope"
 					)

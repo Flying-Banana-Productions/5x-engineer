@@ -7,6 +7,7 @@ import type {
 	FindingDelta,
 	ParsedWorkItem,
 } from "../review-budget/types.js";
+import { applicableArchitectureApproval } from "./architecture-approval.js";
 import type {
 	GoverningReviewState,
 	ReviewDecisionPayload,
@@ -89,19 +90,11 @@ function architectureApproval(
 	state: GoverningReviewState,
 	context: ArchitectureRoutingContext,
 ): string | undefined {
-	for (const approval of [...state.architectureApprovals].reverse()) {
-		if (budget.P > approval.approvedP) continue;
-		if (!context.itemIds.every((id) => approval.approvedItemIds.includes(id)))
-			continue;
-		if (
-			!context.workItemIds.every((id) =>
-				approval.approvedWorkItemIds.includes(id),
-			)
-		)
-			continue;
-		return approval.decisionId;
-	}
-	return undefined;
+	return applicableArchitectureApproval({
+		P: budget.P,
+		approvals: state.architectureApprovals,
+		...context,
+	});
 }
 
 function causesFor(input: {

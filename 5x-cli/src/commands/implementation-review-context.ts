@@ -34,6 +34,7 @@ import {
 	implementationReviewObservationKey,
 } from "../review-budget/record-lines.js";
 import type { BudgetAlert, BudgetBand } from "../review-budget/types.js";
+import { deriveInheritedBudgetGovernance } from "../review-governance/architecture-approval.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
 	isExcludedPath,
@@ -101,6 +102,7 @@ export type ComposeImplementationReviewerRecordResult =
 	  };
 
 export interface ImplementationGovernanceDecoration {
+	inheritedBudgetGovernance?: ImplementationReviewObservationPayload["inheritedBudgetGovernance"];
 	domain: "implementation";
 	phase: string;
 	route: PlanReviewRoute;
@@ -268,9 +270,13 @@ export function implementationGovernanceDecoration(
 		| "gateCauses"
 		| "completionAuthorized"
 		| "id"
+		| "inheritedBudgetGovernance"
 	>,
 ): ImplementationGovernanceDecoration {
 	return {
+		...(observation.inheritedBudgetGovernance
+			? { inheritedBudgetGovernance: observation.inheritedBudgetGovernance }
+			: {}),
 		domain: observation.domain,
 		phase: observation.phase,
 		route: observation.route,
@@ -560,14 +566,25 @@ export async function composeImplementationReviewerRecord(input: {
 			}
 		}
 	}
+	const inheritedBudgetGovernance = deriveInheritedBudgetGovernance(
+		binding,
+		inherited,
+	);
+	if (binding.mode === "enforced" && inheritedBudgetGovernance.requiresHuman) {
+		reviewed.governance.diagnostics.push({
+			code: "INHERITED_BUDGET_UNRESOLVED",
+			severity: "info",
+			message: `Bound source ${binding.sourceRunId} snapshot ${binding.sourceSnapshotId} has unresolved budget causes (band ${inherited.budgetBand}; alerts ${inheritedBudgetGovernance.effectiveAlerts.join(", ") || "none"}; P ${inherited.P}). No applicable bound approval covers these causes. Use review gate show to request plan revision; claim approvals do not authorize inherited architecture burden.`,
+		});
+	}
 	const gateCauses = gateCausesFor({
 		items: input.verdict.items,
 		identities,
 		exemptionAuthorized,
 		inheritedRequiresHuman:
-			binding.mode === "enforced" && inherited.requiresHuman,
+			binding.mode === "enforced" && inheritedBudgetGovernance.requiresHuman,
 		band: inherited.budgetBand,
-		alerts: inherited.budgetAlerts,
+		alerts: inheritedBudgetGovernance.effectiveAlerts,
 	});
 	let route = reviewed.governance.route;
 	let nextAction = reviewed.governance.nextAction;
@@ -724,6 +741,7 @@ export async function composeImplementationReviewerRecord(input: {
 		gateCauses,
 		telemetry,
 		budgetInvariant,
+		inheritedBudgetGovernance,
 		completionAuthorized: false,
 		...(textGuard ? { textGuard } : {}),
 	};

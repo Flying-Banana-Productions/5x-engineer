@@ -518,7 +518,7 @@ describe("implementation review decisions", () => {
 					alerts: ["credit_unrealized"],
 				},
 			]),
-		).toEqual(["abort"]);
+		).toEqual(["revise_plan", "abort"]);
 	});
 
 	test("claim scope rejects arbitrary ids and broader credit", () => {
@@ -610,6 +610,7 @@ describe("implementation review decisions", () => {
 				eligibleFindings: [],
 				allowedChoices: ["abort"],
 				requiredFieldsByChoice: {
+					revise_plan: ["rationale"],
 					authorize_amendment: [],
 					defer_accept_risk: [],
 					restore_simplification: [],

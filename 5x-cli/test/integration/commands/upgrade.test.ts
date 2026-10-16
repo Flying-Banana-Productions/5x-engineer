@@ -379,12 +379,17 @@ describe("5x upgrade", () => {
 							expect(prompt).toContain("full-diff retrieval command");
 							expect(prompt).not.toContain("git log --oneline");
 							expect(prompt).toContain("planWorkItemIds");
+							expect(prompt).toContain("suppressed-alert decision references");
+							expect(prompt).toContain("New or increased architecture");
 						} else {
 							expect(prompt).toContain(
 								"implement only those admitted findings",
 							);
 							expect(prompt).toContain(
 								"Do not treat the rest of the review Markdown as a work list",
+							);
+							expect(prompt).toContain(
+								"raw alert alone is not admitted author work",
 							);
 						}
 						if (template === "reviewer-commit") {
@@ -444,6 +449,9 @@ describe("5x upgrade", () => {
 				expect(skill).toContain(".data.result.governance.route");
 				expect(skill).toContain("5x review corrections finish");
 				expect(skill).toContain("5x review decide --gate");
+				expect(skill).toContain("revise_plan");
+				expect(skill).toContain("inheritedBudgetGovernance");
+				expect(skill).toContain("next unused");
 			} finally {
 				cleanupDir(project.dir);
 			}

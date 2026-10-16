@@ -28,7 +28,10 @@ import {
 	formatImplementationReviewerContext,
 	type ImplementationReviewPromptContext,
 } from "../../../src/review-governance/context.js";
-import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
+import {
+	createImplementationDecision,
+	createReviewDecision,
+} from "../../../src/review-governance/decisions.js";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { renderSkillByName } from "../../../src/skills/loader.js";
 import { createRenderContext } from "../../../src/skills/renderer.js";
@@ -260,6 +263,9 @@ describe("implementation review skill branches", () => {
 			}
 			expect(content).toContain("5x review corrections finish");
 			expect(content).toContain("5x review decide --gate");
+			expect(content).toContain("revise_plan");
+			expect(content).toContain("inheritedBudgetGovernance");
+			expect(content).toContain("next unused");
 			expect(content).toContain("5x review implementation bind");
 			expect(content).toContain("pre_author_commit");
 			expect(content).toContain("IMPLEMENTATION_APPROVAL_REQUIRED");
@@ -766,7 +772,30 @@ describe("implementation handler prompt parity", () => {
 					.trim();
 				const seeded = binding();
 				seeded.mode = "advisory";
-				seeded.effectiveDecisions = [];
+				const workItem = seeded.ledger.workItems[0];
+				if (!workItem) throw new Error("Missing work item");
+				seeded.ledger.workItems.push({
+					...workItem,
+					id: "W2",
+					architectureDelta: 3,
+					debtClaim: null,
+				});
+				seeded.effectiveDecisions = [
+					createReviewDecision({
+						gateId: "source-architecture",
+						snapshotId: "earlier-snapshot",
+						choice: "approve_architecture_burden",
+						findingRefs: [],
+						rationale: "Approved bound burden",
+						evidence: [],
+						approvedScope: { retained: [], removed: [] },
+						architectureApproval: {
+							approvedP: 3,
+							approvedItemIds: [],
+							approvedWorkItemIds: ["W2"],
+						},
+					}),
+				];
 				seeded.approvedPlanBytes = plan;
 				seeded.approvedPlanHash = hashPlanBytes(plan);
 				seeded.ledgerHash = hashPlanBytes(stableStringify(seeded.ledger));
@@ -876,6 +905,12 @@ describe("implementation handler prompt parity", () => {
 					expect(slice(invokePrompt)).toBe(slice(nativePrompt));
 					expect(slice(nativePrompt)).toContain("Binding: binding-1");
 					expect(slice(nativePrompt)).toContain("Source run: source-run");
+					expect(slice(nativePrompt)).toContain(
+						"positive_architecture_exceeded resolved by decision",
+					);
+					expect(slice(nativePrompt)).toContain(
+						"Effective inherited alerts: (none)",
+					);
 					expect(slice(nativePrompt)).toContain("Pinned mode: advisory");
 					const invokeEnvelope = JSON.parse(
 						logs.filter((line) => line.includes('"binding_id"')).at(-1) ?? "{}",

@@ -185,11 +185,18 @@ export function ensureImplementationGatePrompt(input: {
 	ledgerHash: string;
 	decisionsHash: string;
 }): ReturnType<PromptStore["createPrompt"]> {
+	const context = implementationGatePromptContext(input);
 	const existing = input.promptStore
 		.listOpenPrompts(input.gate.runId)
 		.find((prompt) => prompt.context?.gateId === input.gate.gateId);
-	if (existing) return existing;
-	const context = implementationGatePromptContext(input);
+	if (existing) {
+		if (JSON.stringify(existing.context) === JSON.stringify(context))
+			return existing;
+		// Older CLI versions may have offered only abort for this same gate.
+		// Refresh the notification contract without changing its durable cause.
+		const retired = input.promptStore.abandonPrompt(existing.id, "superseded");
+		if (!retired.ok) return existing;
+	}
 	return input.promptStore.createPrompt({
 		runId: input.gate.runId,
 		kind: "choose",
@@ -229,6 +236,25 @@ export function repairReviewGatePrompts(
 	for (const prompt of promptStore.listOpenPrompts(runId)) {
 		const context = prompt.context;
 		if (!isReviewGatePromptContext(context)) continue;
+		if (context.type === "implementation_review_gate") {
+			const latest = implementationObservations(recordStore, runId)
+				.filter((observation) => observation.phase === context.phase)
+				.at(-1);
+			// A durable newer observation supersedes the notification, not history.
+			// Do not fabricate a human decision to answer a superseded gate.
+			if (
+				latest &&
+				latest.bindingId === context.bindingId &&
+				latest.id !== context.observationId
+			) {
+				try {
+					if (promptStore.abandonPrompt(prompt.id, "superseded").ok) repaired++;
+				} catch {
+					// The records-first repair can be retried after projection failure.
+				}
+				continue;
+			}
+		}
 		const line = recordStore.getLine(
 			runId,
 			"decisions",
@@ -566,6 +592,7 @@ export function deriveOpenImplementationGate(
 		// Scope and amendment decisions pause for a plan change. They do not
 		// leave the decided gate open, and they do not mint a successor.
 		if (
+			decision.choice === "revise_plan" ||
 			decision.choice === "authorize_amendment" ||
 			decision.choice === "reduce_scope"
 		)
@@ -609,6 +636,7 @@ export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
 	ImplementationDecisionChoice,
 	string[]
 > = {
+	revise_plan: ["rationale"],
 	authorize_amendment: ["rationale", "findingRefs"],
 	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
 	restore_simplification: ["rationale", "claimAdjustments"],
@@ -648,6 +676,8 @@ export function allowedImplementationChoices(
 	causes: readonly ImplementationObservationGateCause[],
 ): ImplementationDecisionChoice[] {
 	const choices: ImplementationDecisionChoice[] = [];
+	if (causes.some((cause) => cause.kind === "inherited_budget"))
+		choices.push("revise_plan");
 	if (causes.some((cause) => cause.kind === "plan_amendment"))
 		choices.push("authorize_amendment");
 	if (
@@ -660,8 +690,8 @@ export function allowedImplementationChoices(
 	)
 		choices.push("defer_accept_risk");
 	// Claim choices require a shortfall whose claim ids scope validation and
-	// coverage can both accept. Unreconciled claims and inherited budget
-	// alerts stay on the gate until a later review or an abort.
+	// coverage can both accept. Inherited budgets can request plan revision;
+	// they cannot be waived by an unrelated claim decision.
 	if (
 		causes.some(
 			(cause) => cause.kind === "credit_shortfall" && cause.claimIds.length > 0,

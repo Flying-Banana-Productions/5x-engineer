@@ -1,15 +1,18 @@
 import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import { deriveBudget } from "../review-budget/arithmetic.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationReviewContextPayload,
 	ImplementationReviewObservationPayload,
+	InheritedBudgetGovernance,
 } from "../review-budget/record-lines.js";
 import {
 	isCompleteDebtClaimEvidence,
 	type ReviewBudgetMode,
 } from "../review-budget/types.js";
 import { persistedFindingsFromSnapshots } from "./apply.js";
+import { deriveInheritedBudgetGovernance } from "./architecture-approval.js";
 import { requiredClosureOutcomeFindings } from "./closure.js";
 import { codeDiffRetrievalCommand } from "./code-diff.js";
 import { evaluateImplementationCorrectionEligibility } from "./corrections.js";
@@ -184,6 +187,7 @@ export interface ImplementationAuthorFindingContext {
 }
 
 export interface ImplementationReviewPromptContext {
+	inheritedBudgetGovernance?: InheritedBudgetGovernance;
 	reviewKind: "initial" | "closure";
 	mode: "advisory" | "enforced";
 	bindingId: string;
@@ -443,6 +447,19 @@ export function buildImplementationReviewPromptContext(input: {
 	);
 	return {
 		reviewKind: closure.priorReviewCount === 0 ? "initial" : "closure",
+		inheritedBudgetGovernance: deriveInheritedBudgetGovernance(
+			binding,
+			deriveBudget({
+				B0: binding.b0,
+				B: binding.governingB,
+				I: null,
+				workItems: binding.ledger.workItems,
+				findings: [],
+				assessments: [],
+				config: binding.thresholds,
+				semanticHumanRequired: false,
+			}),
+		),
 		mode: binding.mode,
 		bindingId: binding.id,
 		sourceRunId: binding.sourceRunId,
@@ -518,6 +535,13 @@ function sharedImplementationLines(
 		`- Binding: ${context.bindingId}`,
 		`- Source run: ${context.sourceRunId}`,
 		`- Source snapshot: ${context.sourceSnapshotId}`,
+		...(context.inheritedBudgetGovernance
+			? [
+					`- Bound architecture P: ${context.inheritedBudgetGovernance.P}`,
+					`- Effective inherited alerts: ${list(context.inheritedBudgetGovernance.effectiveAlerts)}`,
+					`- Suppressed inherited alerts: ${list(context.inheritedBudgetGovernance.suppressedAlerts.map((cause) => `${cause.alert} resolved by decision ${cause.resolvedBy}`))}`,
+				]
+			: []),
 		`- Approved plan commit: ${context.approvedPlanCommit}`,
 		`- Phase: ${context.phaseId}${context.phaseHeading ? ` — ${context.phaseHeading}` : ""}`,
 		`- Approved work-item IDs: ${list(context.approvedWorkItemIds)}`,

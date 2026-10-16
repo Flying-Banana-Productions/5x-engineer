@@ -21,6 +21,7 @@ import {
 	isCompleteDebtClaimEvidence,
 	type ParsedWorkItem,
 } from "../review-budget/types.js";
+import { deriveInheritedBudgetGovernance } from "./architecture-approval.js";
 import type { ImplementationDiagnostic, PlanReviewRoute } from "./types.js";
 
 export interface HumanDebtWaiver {
@@ -879,7 +880,14 @@ export function reconcileApprovedCredits(
 			pendingClaimIds: pending,
 			supersedesId: input.supersedesId ?? null,
 			supersedesObservationId: restoration?.supersedesObservationId ?? null,
-			budget: budgetSnapshot(derived),
+			budget: {
+				...budgetSnapshot(derived),
+				inheritedBudgetGovernance: deriveInheritedBudgetGovernance(
+					input.binding,
+					derived,
+					material,
+				),
+			},
 			creditUnrealized: anyShortfall,
 			material,
 			completionSatisfied,

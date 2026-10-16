@@ -559,6 +559,22 @@ Check the result:
 
 Run `5x review gate show --phase $PHASE`. Set `$GATE_ID` from `.data.gateId`.
 Present its causes and `allowedChoices`. Submit with `5x review decide --gate "$GATE_ID"`.
+
+Applicable bound architecture approvals suppress inherited architecture causes;
+raw budget alerts may remain as telemetry. Read `inheritedBudgetGovernance`
+and its suppressed-alert decision references from the recorded review response.
+An uncovered inherited-budget gate offers `revise_plan` with a rationale. This
+pauses for plan revision/review (`nextAction: plan_amendment`); it does not
+authorize new scope, change the binding, or authorize phase completion. Do not
+use claim-scoped `approve_higher_burden` to waive inherited architecture.
+
+After upgrading an active run affected by approval carryover, prepare a fresh
+review context through Step 3 and record a fresh review at the next unused
+iteration. Use that context's required prior outcomes; do not replay old outcomes
+or reuse the blocked review's iteration. Duplicate identities return the stored
+observation. A clean new durable review supersedes the old gate; show the gate
+again to repair its superseded notification, then verify `5x run state` readiness
+before normal phase completion. Preserve the original binding and history.
 Branch on the decision's `.data.route` (`complete`, `author_revision`,
 `final_corrections`, `human_gate`, `aborted`). A `plan_amendment` next action
 pauses for author amendment and plan re-review; it is not permission to
