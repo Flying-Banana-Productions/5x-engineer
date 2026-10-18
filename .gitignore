@@ -4,3 +4,4 @@
 .cursor/
 node_modules/
 5x.toml.local
+docs/development/runs/**/.txn.*
