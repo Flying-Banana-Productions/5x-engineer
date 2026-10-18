@@ -26,13 +26,21 @@ function fixture(git = true) {
 	);
 	writeFileSync(join(plans, "plan.md"), "# Plan\n\n## Phase 1\n\n- [ ] Task\n");
 	if (git) {
-		const result = Bun.spawnSync(["git", "init", root], {
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		// Aborting a run commits its sealed records; do not rely on host identity.
+		for (const args of [
+			["init", root],
+			["config", "user.email", "test@test.com"],
+			["config", "user.name", "Test"],
+		]) {
+			const result = Bun.spawnSync(["git", ...args], {
+				cwd: root,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		}
 	}
 	return { root, app, plans };
 }
@@ -177,7 +185,7 @@ describe("repository-owned control-plane bootstrap", () => {
 						"--status",
 						"aborted",
 					]);
-					expect(complete.code).toBe(0);
+					expect(complete.code, JSON.stringify(complete)).toBe(0);
 					expect(existsSync(join(stateDir, "current-run"))).toBe(false);
 				} finally {
 					rmSync(root, { recursive: true, force: true });
