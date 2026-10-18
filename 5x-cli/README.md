@@ -1,782 +1,289 @@
 # 5x CLI
 
-A toolbelt of CLI primitives for AI-assisted implementation workflows. Manages run lifecycle, agent invocation, quality gates, and human interaction -- designed to be driven by an orchestrating agent loaded with a skill, or composed in scripts.
+**Turn requirements into reviewed plans, then implement them one verified phase at a time.**
 
-## How It Works
+5x gives your coding agent a repeatable author/reviewer workflow: write a plan,
+review it, implement a phase, run your checks, and review the result. You make
+scope and design decisions; the CLI preserves progress, review evidence, and
+decisions so work can resume across sessions.
 
-5x uses a three-layer architecture:
-
-```
-Layer 3: Orchestrating Agent (OpenCode 5x-orchestrator, Claude Code, ...)
-         Loaded with a 5x skill (.md). Makes workflow decisions.
-              |
-              |  calls CLI commands as tools
-              v
-Layer 2: 5x CLI (this tool)
-         Stateless primitives returning JSON envelopes.
-         Manages persistence (SQLite), logging, sub-agent invocation.
-              |
-              |  native subagents (preferred) or 5x invoke (fallback)
-              v
-Layer 1: Sub-Agents (Workers)
-         Author and reviewer agents.
-         Preferred: harness-native subagents (5x-plan-author, 5x-code-author, 5x-reviewer).
-         Fallback: 5x invoke with pluggable provider (OpenCode provider ships by default).
+```text
+Requirements → Plan → Plan review → Implement phase → Quality checks → Code review
+                        ↑ fix ↵                          ↑ fix ↵          │
+                                                        Next phase ←─────┘
 ```
 
-The CLI does not decide what to do next -- it provides building blocks. Orchestration logic lives in **skills**: markdown documents loaded into your agent session that describe the workflow (which commands to run, when to retry, when to ask the human).
+An **orchestrating agent** follows installed workflow skills and delegates bounded
+tasks to author and reviewer agents. The **CLI** manages runs, worktrees, records,
+validation, and governance. You can also compose its commands in scripts.
 
-Plan review is the exception where policy must be deterministic: with
-`[reviewBudget] mode = "enforced"`, the CLI validates closure evidence, derives
-the route, and opens durable budget/scope/risk gates. Inspect and resolve them
-with `5x review gate show` and `5x review decide`; do not answer their prompt
-notifications through generic prompt commands. Mode is pinned at baseline
-capture, advisory remains the default, and older baselines decode as advisory.
-Dashboard views/actions are intentionally deferred; handler-safe read/action
-exports are available for that follow-up
-(`docs/v2/plan-inputs/10-plan-review-governance-dashboard.plan-input.md`).
+> **Version status:** This checkout contains the implemented changes for **2.0.0
+> (unreleased)** since v1.3.0. The published npm version may differ. Check
+> `5x --version` and the [changelog][changelog]. General semantic plan amendments
+> and the dashboard are still pending; current output-format exceptions remain.
 
-Implementation review inherits that approved ledger. A budgeted non-off
-execution binds the unique approved source (or fails closed), reviews an exact
-code range, and reconciles promised credit. `5x run state` shows gross effort,
-inherited ceilings, provisional and realized credit, and positive burden
-separately. Waived or unrealized credit is not reported as physically
-realized. Advisory remains the default. A separate implementation budget and
-output normalization are later follow-ups, not this slice.
+## Contents
 
-### Native-First Subagent Execution
-
-When running inside a supported harness (OpenCode or Cursor), author and reviewer work is
-delegated to **native subagents** rather than external subprocess invocations.
-The `5x-orchestrator` agent renders task prompts with `5x template render`,
-launches the appropriate native child agent, and validates structured results
-with `5x protocol validate`. This keeps all sub-agent work visible as native
-child sessions in the harness UI.
-
-`5x invoke` is retained as a fallback transport for unsupported harnesses and
-for environments where the custom 5x agents have not been installed.
-
-## Requirements
-
-- [Bun](https://bun.sh) >= 1.1.0
-- Git repository (recommended; safety checks and worktree features depend on it)
-- [OpenCode](https://opencode.ai) installed and on `PATH` (for native subagent and fallback invocation)
-- Provider API keys configured for the models you use (e.g., via `.env` / `.env.local`)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Everyday commands](#everyday-commands)
+- [Configuration essentials](#configuration-essentials)
+- [Reviews and approvals](#reviews-and-approvals)
+- [Files, history, and worktrees](#files-history-and-worktrees)
+- [Upgrading and recovery](#upgrading-and-recovery)
+- [Documentation](#documentation)
 
 ## Install
 
+You need [Bun](https://bun.sh) **1.1.0 or newer** on `PATH`, and Git for the
+normal branch/worktree/commit workflow. Use a Git repository for implementation.
+Install and authenticate the coding tool or provider you intend to use; OpenCode
+is required only for OpenCode execution, not for every integration.
+
 ```bash
 npm install -g @5x-ai/5x-cli
-```
-
-Verify:
-
-```bash
+5x --version
 5x --help
 ```
 
-## Quick Start
+### Choose your integration
 
-### Option A: Native OpenCode Workflow (Recommended)
+A **harness** connects 5x to the tool where you interact with the orchestrator.
+A **provider** executes workers launched through `5x invoke`.
 
-The recommended workflow uses OpenCode's native subagents so all author and
-reviewer sessions appear as first-class child sessions in the OpenCode TUI.
-
-1. Initialize in your repo:
-
-```bash
-5x init
-```
-
-2. Edit `5x.toml` -- set your models, quality gates, and paths.
-
-3. Install the native OpenCode agents and skills:
-
-```bash
-# Project scope — installs to .opencode/skills/ and .opencode/agents/:
-5x init opencode project
-
-# Or user scope — installs to ~/.config/opencode/skills/ and ~/.config/opencode/agents/:
-5x init opencode user
-```
-
-> **Note:** OpenCode uses `~/.config/opencode/` for user-scope assets, not
-> `~/.opencode/`. The `5x init opencode user` command installs to the correct
-> XDG-style path automatically.
-
-4. Start an OpenCode session using the `5x-orchestrator` agent:
-
-```bash
-opencode
-# Select or @mention the 5x-orchestrator agent, then describe your task:
-# "Use the 5x-plan skill to generate an implementation plan from docs/product/my-feature-prd.md"
-```
-
-The orchestrator loads the skill, delegates author and reviewer work to native
-subagents (`5x-plan-author`, `5x-code-author`, `5x-reviewer`), and guides you
-through decision points.
-
-### Option B: Universal Harness Workflow (Any Tool)
-
-Use this when your tool does **not** have a dedicated 5x harness plugin (for
-example: Claude Code, Windsurf, Aider, or custom setups).
-
-The universal harness installs only skills (no agent profiles) to
-agentskills.io convention paths. Delegation runs through `5x invoke`.
-
-1. Initialize in your repo:
-
-```bash
-5x init
-```
-
-2. Edit `5x.toml` -- set your models, quality gates, and paths.
-
-3. Install universal skills:
-
-```bash
-# Project scope -> .agents/skills/
-5x harness install universal --scope project
-
-# User scope -> ~/.agents/skills/
-5x harness install universal --scope user
-```
-
-4. Start your agent session and load the skill:
-
-```bash
-# Example with any AI coding tool (e.g., Claude Code or Windsurf):
-<your-tool-command>
-# Then in the session, load the 5x-plan skill and point it at your PRD:
-# "Use the 5x-plan skill to generate an implementation plan from docs/product/my-feature-prd.md"
-```
-
-The skill guides the agent through the full workflow: plan generation, review
-cycles, phase execution with quality gates. In this mode, author/reviewer
-delegation uses `5x invoke`.
-
-5. Monitor progress from another terminal:
-
-```bash
-5x run watch --run <run-id> --human-readable
-```
-
-### Option C: Native Cursor Workflow
-
-Use this when you run 5x from Cursor IDE or `cursor-agent` CLI.
-
-1. Initialize in your repo:
-
-```bash
-5x init
-```
-
-2. Install Cursor harness assets:
-
-```bash
-# Project scope (recommended): installs to .cursor/skills/, .cursor/agents/, .cursor/rules/
-# Requires `5x init` first.
-5x harness install cursor --scope project
-
-# User scope: installs to ~/.cursor/skills/ and ~/.cursor/agents/
-# (rules are not file-backed at user scope)
-5x harness install cursor --scope user
-```
-
-3. Start Cursor in the repo and trigger a workflow:
-
-```text
-Use 5x to generate an implementation plan from docs/product/my-feature-prd.md
-```
-
-Cursor will use the installed `5x-orchestrator` rule (project scope), load the
-right skill (`5x-plan`, `5x-plan-review`, or `5x-phase-execution`), and
-delegate to `5x-plan-author`, `5x-code-author`, and `5x-reviewer`.
-
-> **User-scope limitation:** Cursor user rules are settings-managed (not
-> file-backed). `5x harness install cursor --scope user` installs skills and
-> subagents only.
-
-> **Reducing approval prompts:** By default Cursor asks for confirmation on
-> terminal commands and file edits. To run 5x workflows without interruption:
->
-> - **Terminal commands:** `Cursor Settings → Agents → Auto-run mode` →
->   set to **"Run everything"** (full auto) or **"Use allowlist"** and add
->   `bun`, `git`, `5x` to the list.
-> - **File edits:** `Cursor Settings → Agents` → disable
->   **"External file edit protection"**.
->
-> The installed `5x-permissions.mdc` rule (`alwaysApply: true`) also
-> pre-authorizes subagents to run `5x` commands and edit files without
-> asking in-chat, reducing the "may I?" pauses independent of IDE settings.
-
-### Option D: Bash Scripting
-
-Commands return JSON envelopes (`{ "ok": true, "data": {...} }`) and compose via Unix pipes. Context (run ID, template variables) flows through the pipe chain automatically.
-
-```bash
-# Pipe-composed: run_id and plan_path flow from init to invoke automatically
-5x run init --plan docs/development/001-impl-example.md | \
-  5x invoke author author-next-phase --var phase_number=1 --record
-```
-
-For workflows that need branching logic, capture the envelope and use `jq`:
-
-```bash
-PLAN="docs/development/001-impl-example.md"
-RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
-
-# --record auto-records using the template's step_name
-AUTHOR_OUT=$(5x invoke author author-next-phase --run "$RUN_ID" --record \
-  --var phase_number=1)
-RESULT=$(echo "$AUTHOR_OUT" | jq -r '.data.result.result')
-
-# Quality output piped to run record (step name + run from CLI flags)
-5x quality run | 5x run record "quality:check" --run "$RUN_ID"
-
-5x run complete --run "$RUN_ID"
-```
-
-For native subagent workflows (render → detect → subagent → validate):
-
-```bash
-RUN_ID=$(5x run init --plan "$PLAN" | jq -r '.data.run_id')
-
-# Render the task prompt
-RENDERED=$(5x template render author-next-phase --run "$RUN_ID" \
-  --var phase_number=1)
-PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
-STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
-
-# Detect native agent; fallback to 5x invoke
-if [[ -f ".opencode/agents/5x-code-author.md" ]] || \
-   [[ -f "$HOME/.config/opencode/agents/5x-code-author.md" ]]; then
-  RESULT=<native subagent result JSON>
-else
-  RESULT=$(5x invoke author author-next-phase --run "$RUN_ID" \
-    --var phase_number=1 2>/dev/null)
-fi
-
-# Validate + record (works for both paths)
-echo "$RESULT" | 5x protocol validate author \
-  --run "$RUN_ID" --record --step "$STEP"
-```
-
-See [`examples/author-review-loop.sh`](examples/author-review-loop.sh) for a full working script with error handling and review-fix cycles.
-
-## Upgrading from v0.2.0
-
-v1 is a ground-up redesign. The high-level orchestrator commands (`5x plan`, `5x plan-review`, `5x run <plan>`) have been removed. Orchestration now lives in agent skills, not TypeScript state machines.
-
-**What changed:**
-
-- **Commands replaced:** `5x plan`, `5x plan-review`, `5x run <plan>`, `5x status` are gone. Use the v1 primitives (`run init/state/record/complete`, `invoke author/reviewer`, `quality run`, etc.) via skills or scripts.
-- **Flags removed:** `--auto`, `--ci`, `--tui-listen` no longer exist. Non-interactive behavior is handled by `5x prompt` commands with `--default` values. Skills decide retry/escalation logic.
-- **Config:** `maxAutoIterations` is deprecated (still accepted with a warning). Use `maxStepsPerRun` instead. New fields: `author.provider`, `reviewer.provider` for pluggable agent backends.
-- **Database:** Schema migrated from v0 tables (`agent_results`, `quality_results`, `run_events`) to a unified `steps` journal. In-progress v0 runs are marked aborted on first migration. No manual migration needed.
-- **Output:** All commands return structured JSON envelopes to stdout. Streaming commands (`run watch`) are documented exceptions.
-
-For the full architecture rationale, see [`docs/v1/100-architecture.md`](docs/v1/100-architecture.md).
-
-## Skills
-
-Skills are markdown documents that teach an agent how to drive the 5x workflow. Three are bundled:
-
-| Skill | Purpose |
-| --- | --- |
-| `5x-plan` | Generate an implementation plan from a PRD/TDD, then review/fix until approved |
-| `5x-plan-review` | Run iterative review/fix cycles on an existing plan |
-| `5x-phase-execution` | Execute phases: author, quality gates, code review, fix loops |
-
-### Choosing a Harness
-
-Use one harness per install scope:
-
-| Harness | Use when | Delegation mode |
+| Harness | Best fit | Worker execution |
 | --- | --- | --- |
-| `opencode` | You use OpenCode and want native subagents in the harness UI | Native subagents (`Task` tool + `5x protocol validate`) |
-| `cursor` | You use Cursor IDE / `cursor-agent` and want native subagents + project rule orchestration | Native Cursor subagents + `5x protocol validate` |
-| `universal` | Your tool has no dedicated 5x harness plugin | `5x invoke` |
+| `opencode` | OpenCode sessions with visible native child sessions | Native subagents by default; per-role invoke supported |
+| `cursor` | Cursor with native subagent support | Native subagents by default; project rules guide orchestration |
+| `universal` | Other tools that can load skills, or custom integrations | `5x invoke` through configured providers |
 
-### Installing Skills
+Native execution uses the host tool's authentication and model support. Invoke
+execution needs the selected provider's executable/server and authentication.
+The OpenCode provider is bundled; other providers are plugins. See
+[setup and harnesses][getting-started] for paths, authentication, and scope choices.
 
-Skills are installed via the harness system.
+## Quick start
 
-OpenCode installs skills **and** native subagent profiles:
+### 1. Initialize and configure your repository
+
+From your repository:
 
 ```bash
-# Project scope: installs skills under .opencode/skills/ AND
-# native subagent profiles under .opencode/agents/
+5x init
+5x config show --text
+```
+
+`init` creates local state, document templates, and Git ignore/attribute entries.
+It **does not create a root `5x.toml`**: built-in defaults apply until you customize
+them. Configuration commands create the TOML file as needed.
+
+Add the checks that actually validate your project. For example, for a Bun project:
+
+```bash
+5x config add qualityGates "bun test"
+5x config add qualityGates "bun run lint"
+```
+
+The default quality-gate list is empty. Configure your author/reviewer models as
+appropriate for your tool; the [configuration guide][configuration] covers model
+overrides, providers, and mixed delegation. You can also ask your agent to use the
+`5x-config` skill.
+
+### 2. Install one harness
+
+Choose the matching command:
+
+```bash
 5x harness install opencode --scope project
-
-# User scope: installs under ~/.config/opencode/skills/ and
-# ~/.config/opencode/agents/ (XDG path, NOT ~/.opencode/)
-5x harness install opencode --scope user
-```
-
-Resolved model strings for agent frontmatter use **cwd-anchored** layered config (`5x.toml` / `5x.toml.local`), consistent with `5x invoke`—run the command from a monorepo package directory when that package owns the overrides.
-
-Universal installs skills only (cross-client agentskills.io convention):
-
-```bash
-# Project scope: .agents/skills/<name>/SKILL.md
-5x harness install universal --scope project
-
-# User scope: ~/.agents/skills/<name>/SKILL.md
-5x harness install universal --scope user
-```
-
-Cursor installs skills + native subagents in both scopes, and installs the
-orchestrator rule in project scope:
-
-```bash
-# Project scope: .cursor/skills/, .cursor/agents/, .cursor/rules/
-# Requires `5x init` first.
+# or
 5x harness install cursor --scope project
-
-# User scope: ~/.cursor/skills/ and ~/.cursor/agents/ (no rules)
-5x harness install cursor --scope user
+# or
+5x harness install universal --scope project
 ```
 
-`.agents/skills/` (project) and `~/.agents/skills/` (user) are the
-[agentskills.io](https://agentskills.io) cross-client convention paths.
-5x writes files there; discovery behavior depends on each host tool's
-implementation.
+Project scope keeps the integration with the repository. Use `--scope user` for
+shared user-level assets. Universal skill discovery depends on your host tool;
+point it at `.agents/skills/` if it does not discover that directory automatically.
 
-> **OpenCode path note:** OpenCode discovers user-scope assets at
-> `~/.config/opencode/skills/` and `~/.config/opencode/agents/` (XDG-style),
-> **not** `~/.opencode/`. Running `5x harness install opencode --scope user`
-> writes to the correct path. If you install manually, ensure you use
-> `~/.config/opencode/`, not `~/.opencode/`.
+Review and commit the generated project files before starting work. `.5x/` and
+`5x.toml.local` are ignored; project harness assets and their `.5x-manifest.json`
+belong together if you version them.
 
-### Keeping assets fresh
+### 3. Ask your agent to run a workflow
 
-Harness install **bakes** config into the files it writes (agent model
-frontmatter, delegation-mode skill sections). After you change those inputs,
-run:
+In OpenCode, select the installed `5x-orchestrator` agent. In Cursor, the
+project-level orchestrator rule guides skill selection. In other tools, load the
+installed skills explicitly.
 
-```bash
-5x harness sync                        # refresh every installed scope
-5x harness sync opencode -s project    # one harness × scope
-5x harness sync --check                # report only (Tier 2)
-```
-
-`sync` is the command that establishes a verified freshness baseline. Plain
-`5x harness install` preserves existing agent files (skills may refresh) and
-therefore does **not** claim a new baseline — after a model change you will
-still see a freshness warning until you `sync` (or `install --force`).
-
-Project-scope manifests (`.opencode/.5x-manifest.json`, `.cursor/.5x-manifest.json`,
-`.agents/.5x-manifest.json`) travel with the install root. Commit them alongside
-`.opencode/` / `.cursor/` / `.agents/` when you version those directories — do not
-add the manifest to `.gitignore`. User-scope manifests live under the home
-directory with the shared assets and are not committed.
-
-### Customizing
-
-Skills are plain markdown. Edit the installed copies directly:
-
-- OpenCode: `.opencode/skills/` or `~/.config/opencode/skills/`
-- Cursor: `.cursor/skills/` or `~/.cursor/skills/`
-- Universal: `.agents/skills/` or `~/.agents/skills/`
-
-Use `5x harness sync --force` (or `5x harness install <harness> --scope <scope>
---force`) to overwrite local edits and re-baseline from bundled templates.
-
-## Commands
-
-All commands return JSON: `{ "ok": true, "data": {...} }` on success, `{ "ok": false, "error": {"code": "...", "message": "..."} }` on failure. Use `--help` on any command for full flag details.
-
-### Run Lifecycle
-
-```bash
-5x run init --plan <path> [--allow-dirty] [--worktree [<path>]]
-                                                # Start/resume run; optionally ensure/attach worktree
-5x run state --run <id>                        # Get run state, steps, and summary
-5x run record [step] [--run <id>] [--result '{}'] [--phase <p>] [--iteration <n>]
-5x run complete --run <id> [--status aborted]  # Complete or abort a run
-5x run reopen --run <id>                       # Re-activate a completed/aborted run
-5x run list [--plan <path>] [--status active]  # List runs
-5x run watch --run <id> [--human-readable]     # Tail agent logs in real-time
-```
-
-`run init` is idempotent -- returns the existing active run if one exists for the plan. `run record` uses INSERT OR IGNORE semantics (first write wins; corrections are new iterations). When piping from `invoke`, step name, run ID, result, and metadata are auto-extracted: `5x invoke ... | 5x run record`.
-
-`run init --plan` takes the implementation plan output path, not the requirements doc path. The file may not exist yet, but it must live under `paths.plans`.
-
-### Commits
-
-```bash
-5x commit --run <id> -m <message> (--files <paths...> | --all-files) [--phase <p>]
-5x commit --run <id> -m <message> (--files <paths...> | --all-files) --no-record
-5x commit --run <id> -m <message> --no-record        # active run records only
-```
-
-Normal commits append a `git:commit` event to the active run's tracked journal,
-so `steps.jsonl` is expected to be dirty again immediately after the commit.
-Use `--no-record` to checkpoint those run artifacts without recursively adding
-another event. For safety, `--no-record` rejects a staged commit containing
-anything outside the active run's records directory. A successful artifact-only
-checkpoint leaves the worktree clean when no other changes are present.
-
-`--no-record` with neither `--files` nor `--all-files` is the records-only
-checkpoint: it stages and commits just the active run's records directory
-(other staged or dirty files are left untouched) and succeeds with
-`committed: false` when the records are already committed. The bundled skills
-run it before every human gate, escalation, or exit that leaves a run active.
-
-**Windows notes:**
-- In PowerShell, prefer `--result @path/to/result.json` or `Get-Content result.json -Raw | 5x run record ... --result -` over inline JSON.
-- On older Windows PowerShell, use `;` or separate lines instead of `&&`.
-- Prefer `ConvertFrom-Json` over `jq` in PowerShell-based examples.
-- If you are using 5x skills in a Windows-native harness, load the optional `5x-windows` skill alongside the core 5x skills.
-- If `5x plan phases <canonical-path>` cannot resolve a mapped worktree copy, use `worktree_plan_path` from `5x run state`.
-
-### Native Subagent Primitives
-
-```bash
-5x template render <template> [--run <id>] [--var key=value ...] [--session <id>] [--new-session]
-5x template list                           # List all available prompt templates
-5x template describe <template>            # Show detailed template metadata
-```
-
-`template render` renders a task prompt template and returns the result in a JSON envelope. When
-`--run` is passed, resolves run/worktree context and appends a `## Context`
-block with the effective working directory. When `--session` is passed and a
-`<template>-continued` variant exists, the shorter continued template is used
-automatically. `--new-session` forces a fresh session (skips continued-template selection).
-This is a CLI continuity control (template selection + `continuePhaseSessions`
-enforcement), and is independent from native subagent continuity ids
-(`task_id` in OpenCode harness, `resume` in Cursor harness).
-
-```json
-{
-  "ok": true,
-  "data": {
-    "template": "reviewer-plan",
-    "selected_template": "reviewer-plan-continued",
-    "step_name": "reviewer:review",
-    "prompt": "<rendered markdown>",
-    "declared_variables": ["plan_path", "review_path"],
-    "run_id": "run_abc123",
-    "plan_path": "/abs/path/to/plan.md",
-    "worktree_root": "/abs/path/to/worktree"
-  }
-}
-```
-
-`template list` returns all available prompt templates with descriptions. `template describe` shows full metadata including version, variables, defaults, step name, and whether an on-disk override is active.
-
-```bash
-5x protocol validate <author|reviewer> [--run <id>] [--record] [--step <name>]
-                                        [--phase <name>] [--iteration <n>]
-                                        [--require-commit | --no-require-commit]
-5x protocol emit <author|reviewer> [flags]
-```
-
-`protocol validate` validates structured output from a native subagent or `5x invoke` fallback.
-Accepts JSON via stdin or `--input`. Auto-detects input format: if the JSON
-contains an `ok` field (from `5x invoke`), unwraps `.data.result` before
-validation; otherwise treats the input as raw structured JSON (from a native
-subagent). A single fenced JSON block is also accepted as input, but native
-subagents should still return raw JSON with no markdown fences. With `--record`,
-records the validated result as a run step in one command.
-
-`--require-commit` defaults to `true` for author validation. Use
-`--no-require-commit` to opt out.
-
-`protocol emit` lets agents construct canonical structured output from CLI flags or piped JSON. Success output is raw canonical JSON to stdout (not wrapped in the `{ok, data}` envelope) so agents can use it directly as their structured result. Accepts alternative field names (e.g., `verdict` → `readiness`) and normalizes to the canonical schema.
-
-### Agent Invocation (Fallback Transport)
-
-```bash
-5x invoke author <template> [--run <id>] [--var key=value ...] [--record]
-5x invoke reviewer <template> [--run <id>] [--var key=value ...] [--record]
-```
-
-Invokes a sub-agent with a prompt template via an external provider (fallback
-when native subagents are not installed). The author returns `AuthorStatus`
-(`result: complete | needs_human | failed`), the reviewer returns
-`ReviewerVerdict` (`readiness: ready | ready_with_corrections | not_ready`).
-
-Key flags:
-- `--run` -- run ID (optional when piping from an upstream command)
-- `--var key=value` -- template variables (repeatable). Supports `--var key=@path` (read from file) and `--var key=@-` (read from stdin)
-- `--record` / `--record-step` -- auto-record the result as a run step using the template's `step_name`
-- `--phase`, `--iteration` -- metadata for `--record`
-- `--session` -- resume an existing session (auto-selects an abbreviated prompt template if a `-continued` variant exists)
-- `--model` (override config), `--timeout` (seconds), `--quiet` (suppress stderr), `--stderr` (force stderr in non-TTY)
-
-Templates are resolved from `.5x/templates/prompts/` (user overrides, if installed via `5x init --install-templates`) then bundled defaults. Use `5x template list` to see all available templates.
-
-### Quality Gates
-
-```bash
-5x quality run [--record --run <id>]    # Execute quality gates, optionally auto-record
-```
-
-Runs each command in `qualityGates` from config sequentially. Returns `{ passed: bool, results: [...] }`. With `--record`, the result is auto-recorded as a `quality:check` step. Can also pipe to `run record`: `5x quality run | 5x run record "quality:check" --run <id>`.
-
-### Inspection
-
-```bash
-5x plan list [--exclude-finished]       # List all plans with completion status
-5x plan phases <path>                   # Parse plan into phases with progress
-5x diff [--since <ref>] [--stat]        # Git diff (working tree or since ref)
-```
-
-`plan list` discovers plans under `paths.plans` in the checkout, local and
-remote-tracking `5x/*` branches, and the configured `plans.branch`. `--all-refs`
-also considers other branches; `--fetch` explicitly refreshes remote 5x refs.
-The configured archive subtree is excluded. Later deletions or archive moves
-supersede older branch copies, including copies retained on merged branches.
-Staged and unstaged removals in the checkout or mapped worktree also count.
-New branch-only plans and explicitly reintroduced plans remain discoverable.
-
-Progress JSON includes `plan_state` (`present`, `deleted`, `missing`, or
-`diverged`). Deleted/missing plans are omitted from the list; `plan phases`
-returns `PLAN_NOT_FOUND` when no plan content remains. `run state --plan` can
-still return retained run history with the plan's lifecycle state. Divergent
-deletion-versus-edit histories remain visible with `diverged_sources` and each
-candidate's `plan_state`.
-
-Selected root and mapped checkouts are read from disk, including uncommitted
-edits. Selected refs are read at their tips, including merge-resolution changes.
-JSON provenance includes `source_kind` (`working-copy` or `git-ref`),
-`source_path`, `source_ref`, and `source_dirty` (whether the plan file differs
-from its checkout's HEAD). `content_commit` identifies the selected ref tip or
-working-copy baseline; `progress_commit` separately identifies the last commit
-touching the plan or its records. `source_commit` is the content baseline/tip.
-
-Both inspection commands accept explicit, mutually exclusive selectors:
-
-```bash
-5x plan phases <path> --source local   # Inspect exactly the supplied file
-5x plan phases <path> --ref main      # Inspect a committed snapshot
-5x plan list --source local           # Inspect the root checkout's plans
-5x plan list --ref origin/5x/my-plan   # Inspect a selected ref's plans
-```
-
-Divergent sources are never ranked by completion percentage. `plan list`
-reports `status: "diverged"`, null completion/phase counts, and candidate
-provenance in `diverged_sources`. `plan phases` returns `PLAN_DIVERGED` until
-`--source local` or `--ref <ref>` selects the content explicitly.
-
-`source` identifies the selected checkout or ref. Ancestor ref tips are pruned
-before comparing content, so a stale ancestor snapshot cannot conflict with
-a descendant checkout's uncommitted edits, even when their progress commits
-match. For remaining equivalent progress commits and content, attribution
-prefers the mapped working copy, then `HEAD`, the configured
-plans branch, the plan's matching local branch, its matching remote-tracking
-branch, and finally other refs in stable order. Newer branch progress still wins
-over older checkout progress. Read failures produce warnings rather than empty
-plan rows.
-
-### Human Interaction
-
-```bash
-5x prompt choose <message> --options a,b,c [--default a]
-5x prompt confirm <message> [--default yes]
-5x prompt input <message> [--multiline]
-```
-
-When stdin is not a TTY: returns `--default` if provided, otherwise exits with code 3 (`NON_INTERACTIVE`). This makes scripts safe by default.
-
-### Setup
-
-```bash
-5x init [--force] [--install-templates]              # Scaffold config, templates, DB
-5x harness install <name> [--scope user|project] [--force]  # Install harness skills + agents
-5x harness list                                      # List harnesses + freshness
-5x harness sync [name] [--scope user|project] [--check] [--force]
-                                                     # Re-render installed assets to match config
-5x harness uninstall <name> [--scope user|project|--all]
-5x upgrade [--sync|--no-sync]                        # Migrate DB/templates; report harness freshness
-```
-
-`--install-templates` scaffolds editable prompt templates to `.5x/templates/prompts/` for customization. Without this flag, the CLI uses bundled templates directly (recommended for most users).
-
-`5x harness install opencode --scope project` installs skills under `.opencode/skills/` and agent profiles under
-`.opencode/agents/` (requires `5x init` to have been run first).
-`5x harness install opencode --scope user` installs under `~/.config/opencode/skills/` and `~/.config/opencode/agents/`.
-
-`5x upgrade` always reports harness freshness for bundled installs. It writes
-nothing to harness roots by default — automatic refresh requires
-`harness.autoSync = true` (opt-in) **and** a lossless refresh, or an explicit
-`--sync` on that invocation. `--no-sync` forces report-only.
-
-### Worktrees
-
-```bash
-5x worktree create --plan <path> [--branch <name>]   # Create isolated git worktree
-5x worktree attach --plan <path> --path <worktree>   # Attach existing git worktree to plan
-5x worktree detach --plan <path>                     # Remove plan->worktree mapping only
-5x worktree remove --plan <path> [--force]            # Remove worktree
-5x worktree list                                      # List active worktrees
-```
-
-`run init --worktree` resolves a plan worktree automatically: reuse existing DB mapping, attach a unique matching git worktree, or create a new default worktree when none exists. Use `--worktree <path>` (or `--worktree-path <path>`) to attach an explicit existing path. If worktree creation fails, `run init` now errors clearly and does not silently fall back to the main checkout; rerun without `--worktree` only when shared-checkout execution is intentional.
-
-`worktree detach` reports the post-detach state (`worktree_path: null`, `branch: null`) and also includes `previous_worktree_path` / `previous_branch` for confirmation.
-
-**Worktree-aware execution:** When a run is mapped to a worktree, all `--run`-scoped commands (`invoke`, `quality run`, `diff`) automatically resolve the mapped worktree as their execution context. No `cd` or `--workdir` is needed. No `.5x/` directory is required in worktree checkouts — all state stays in the root control-plane.
-
-## Configuration
-
-`5x init` creates `5x.toml`. Auto-discovered by walking up from the working directory. (`5x.config.js` / `.mjs` are also supported for backward compatibility.)
-
-```toml
-# 5x.toml
-
-maxStepsPerRun = 50    # Hard limit on steps per run (prevents runaway loops)
-
-# Shell commands run by `5x quality run`
-qualityGates = [
-  "bun test --concurrent --dots",
-  "bun run lint",
-  "bun run typecheck",
-]
-
-[author]
-provider = "opencode"                  # "opencode" (default) or a plugin name, e.g. "cursor-agent"
-model = "anthropic/claude-sonnet-4-6"
-timeout = 300                          # Inactivity timeout in seconds
-# continuePhaseSessions = true         # Require --session for continued reviews (opt-in)
-
-[reviewer]
-provider = "opencode"
-model = "anthropic/claude-sonnet-4-6"
-timeout = 120
-# continuePhaseSessions = true
-
-[paths]
-plans = "docs/development"
-reviews = "docs/development/reviews"
-archive = "docs/archive"
-
-[paths.templates]
-plan = ".5x/templates/implementation-plan-template.md"
-review = ".5x/templates/review-template.md"
-
-[db]
-path = ".5x"    # Directory path (DB file is always 5x.db within this directory)
-
-[worktree]
-postCreate = "bun install"
-
-[harness]
-# Warn when installed assets no longer match current config (default "on")
-freshnessWarnings = "on"    # "on" | "off"
-# Opt in to automatic harness refresh during `5x upgrade` (default false).
-# Off by default: upgrade only reports. When on, assets are still only
-# rewritten where the refresh is provably lossless (project scope, verified
-# baseline, matching install context, no local edits). Override per
-# invocation with `5x upgrade --sync` / `--no-sync`.
-autoSync = false
-```
-
-**Provider plugins:** Any provider other than `opencode` is loaded as a plugin package. Short names resolve by convention — `provider = "cursor-agent"` loads `@5x-ai/provider-cursor-agent`; full package names starting with `@` are used as-is. Install the plugin next to the CLI (`npm install @5x-ai/provider-cursor-agent`) and put provider-specific options in a top-level table named after the provider (e.g. `[cursor-agent]`). Currently published: [`@5x-ai/provider-cursor-agent`](packages/provider-cursor-agent) (Cursor Agent CLI).
-
-**Config layering:** In monorepos, sub-projects can have their own `5x.toml` that overrides the root config. Config resolution is anchored to the plan's location — run-scoped commands use `dirname(plan_path)` to find the nearest `5x.toml`. Objects merge deeply (sub-project inherits unset fields from root), arrays replace entirely, and `db` settings always come from the root config.
-
-**`5x.toml.local` (TOML only):** Optional machine-local overlay merged after the resolved main config (root + nearest). Put it next to the main file: `<control-plane-root>/5x.toml.local` and, when layering applies, `<sub-project>/5x.toml.local`. Merge rules match layering (objects deep, arrays replace). `[db]` in the control-plane root `5x.toml.local` may override `db.path` (e.g. a personal state directory); `[db]` in a sub-project `5x.toml.local` is ignored with a warning, same as `[db]` in a sub-project `5x.toml`. With no `5x.toml` at all, `5x.toml.local` at the project root still layers on top of Zod defaults. `5x init` appends `5x.toml.local` to `.gitignore` alongside `.5x/` so it stays out of version control.
-
-## Output Contract
-
-### JSON Envelope
-
-```jsonc
-// Success (exit 0):
-{ "ok": true, "data": { ... } }
-
-// Error (exit 1-9):
-{ "ok": false, "error": { "code": "RUN_NOT_FOUND", "message": "...", "detail": { ... } } }
-```
-
-Output is compact JSON when piped, pretty-printed when stdout is a TTY. Override with `--pretty` or `--no-pretty`. Streaming commands (`run watch`) write NDJSON lines or human-readable text to stdout instead of envelopes.
-
-### Exit Codes
-
-| Code | Meaning |
+| Your goal | Example request |
 | --- | --- |
-| 0 | Success |
-| 1 | General error |
-| 2 | Resource not found (template, plan, provider) |
-| 3 | Non-interactive / EOF (TTY required, no default provided) |
-| 4 | Plan locked by another process |
-| 5 | Dirty worktree |
-| 6 | Max steps exceeded |
-| 7 | Invalid structured output from agent |
-| 8 | Phase checklist incomplete / phase not found |
-| 9 | Session required (continuePhaseSessions enabled, no --session provided) |
-| 130 | Interrupted (SIGINT) |
+| Create and review a plan | “Use 5x to create an implementation plan from `docs/product/my-feature-prd.md`.” |
+| Review an existing plan | “Use 5x to review `docs/development/my-feature.md`.” |
+| Execute an approved plan | “Use 5x to implement `docs/development/my-feature.md`, one phase at a time.” |
 
-## Plan Format
+The agent loads the `5x` foundation plus `5x-plan`, `5x-plan-review`, or
+`5x-phase-execution`. `5x-windows` adds PowerShell guidance when needed.
 
-Plan files are markdown with phase headings and checklists:
+Expect a Markdown plan and reviews, code commits during implementation, and
+tracked run records. The workflow asks you to resolve decisions it cannot make
+from the approved scope. Plan generation/review and implementation are distinct
+workflows; an approved plan is the starting point for implementation.
 
-```md
-# Add Example Feature
+## Everyday commands
 
-**Version:** 1.0
-**Status:** Draft
+Use `--text` for terminal inspection. Most commands default to JSON for automation.
 
-## Phase 1: Data model updates
-
-**Completion gate:** New schema is migrated and validated.
-
-- [ ] Add migration
-- [ ] Add unit tests
-
-## Phase 2: API endpoints
-
-**Completion gate:** Endpoints pass integration tests.
-
-- [ ] Implement handlers
-- [ ] Add integration tests
+```bash
+5x plan list --text                     # Plans and progress across Git sources
+5x plan phases docs/development/my-feature.md --text
+5x run list --text                      # Runs, including the ambient selection
+5x run state --text                     # Current run, history, and governance
+5x run watch --human-readable           # Stream worker logs
+5x config show --text                   # Effective settings and defaults
+5x harness sync                        # Refresh installed assets after changes
+5x doctor --text                       # Diagnose project health
 ```
 
-`5x plan phases` uses this structure to extract phase metadata and checklist progress.
+Run-scoped commands can infer the run from `FIVEX_RUN`, a unique linked-worktree
+mapping, or the local `current-run` pointer. Pass `--run <id>` when selecting a
+different run or when context is ambiguous. Invocation-registry commands use
+explicit IDs. See [operations and recovery][operations].
 
-## Runtime Artifacts
+`run watch` streams logs, not a dashboard. Use `run state` to inspect decisions,
+budget usage, and completion readiness.
 
-`5x` writes local state under `.5x/` in the **control-plane root** (the main repository root):
+## Configuration essentials
 
+Use `5x.toml` for shared settings and `5x.toml.local` for machine-local overrides.
+Common changes are:
+
+```bash
+5x config set maxStepsPerRun 300
+5x config set paths.plans docs/development
+5x config set author.model anthropic/claude-sonnet-4-6
+5x config set reviewer.model anthropic/claude-sonnet-4-6
+5x config show --key author.model --text
 ```
-.5x/
-  5x.db                          # SQLite: runs, steps, plans
-  logs/<run-id>/agent-NNN.ndjson # Per-agent NDJSON event logs (0o700)
-  locks/<hash>.lock              # Plan-level lock files
-  worktrees/                     # Isolated git worktrees
-  templates/                     # Plan and review templates (prompt templates opt-in via --install-templates)
-  skills/                        # Bundled skill source (internal)
-  debug/                         # Debug traces
+
+Model IDs must be supported by the selected harness/provider; those above are
+OpenCode-style examples. Per-harness `harnessModels` overrides let native tools
+use their own model naming.
+
+**Delegation is configured per role.** `native` uses a harness subagent;
+`invoke` uses the configured external provider. A native author and invoke
+reviewer, or the reverse, is supported. Universal always uses invoke. Installed
+agent-file presence is not a substitute for reading this configuration.
+
+Models and delegation settings are baked into installed harness assets. After
+changing them, run:
+
+```bash
+5x harness sync
 ```
 
-**Control-plane model:** The root repository's `.5x/` directory is the single source of truth. All artifacts — DB, logs, locks, worktrees, templates — are anchored to this root, regardless of which checkout (root or linked worktree) a command is run from. Worktree checkouts do not need their own `.5x/` directory.
+Plain `harness install` preserves existing agent files; `sync` establishes a
+verified freshness baseline. Inspect local-edit conflicts before using `--force`,
+which overwrites those edits. Surface freshness warnings when a run starts.
 
-The control-plane root is resolved via `git rev-parse --git-common-dir`, so commands run from any linked worktree (including externally attached worktrees) automatically find the root state DB.
+See [configuration][configuration] for defaults, monorepo layering, provider
+plugins, timeouts, template overrides, and review-budget settings.
 
-**Subproject bootstrap:** Running `5x run init` from a subproject uses the repository control plane even before a root database exists. Subproject configuration controls plan paths and execution settings; database, locks, logs, and `current-run` remain root-owned. Root `db.path` settings, including a root-only `5x.toml.local`, can relocate the state directory. The new run becomes available to implicit `5x run state` and `5x run watch` immediately after initialization.
+## Reviews and approvals
 
-**Legacy subproject state:** Commands detect subproject-local databases along the current directory's ancestor chain; `run init` also checks the selected plan's subproject. A separate legacy database produces `LEGACY_SUBPROJECT_STATE` with both database paths. Back up that state and migrate its runs into the repository control plane before retrying, or move obsolete state aside after backing it up. Migration is not automatic.
+5x separates automated checks from independent review:
 
-**Isolated mode:** If you run `5x init` in a worktree checkout whose parent repo is *not* 5x-managed (no root `.5x/5x.db`), a local state DB is created in that checkout. This is isolated mode — state is local to that worktree. If a root DB is later created, subsequent commands from the worktree switch to managed mode and use the root DB.
+- **Quality gates** run your test/lint/build commands.
+- **Plan review** assesses scope, design, estimates, and required corrections.
+- **Implementation review** checks the implementation against the approved plan
+  and, for bound runs, an exact recorded code range.
+- **Human decisions** resolve scope, architecture, risk, and budget trade-offs.
 
-Logs may contain sensitive code and context. Keep `.5x/` out of version control (added to `.gitignore` by `5x init`).
+Delivery budgets use work-item estimates and architecture-burden scores, not
+token costs or currency. The CLI calculates forecasts and tracks whether promised
+simplifications were actually delivered.
 
-## Troubleshooting
+`reviewBudget.mode` defaults to **`advisory`**. **`enforced`** adds deterministic
+review routing and durable gates; **`off`** uses the compatibility workflow.
+Existing baselines/bindings retain their pinned mode. Advisory still applies
+approved-source binding and plan-drift validation for budgeted implementation.
 
-| Problem | Fix |
-| --- | --- |
-| `OpenCode server failed to start` | Ensure `opencode` is installed and on `PATH` |
-| `Working tree has uncommitted changes` | Commit/stash, or pass `--allow-dirty` |
-| `NON_INTERACTIVE` exit code 3 | Provide `--default` on prompt commands, or run in a TTY |
-| `PLAN_LOCKED` | Another process holds the lock. Wait for it, or check for stale locks in `.5x/locks/` |
-| `MAX_STEPS_EXCEEDED` | Increase `maxStepsPerRun` in config, or investigate why the run is looping |
-| No phases found by `5x plan phases` | Ensure plan uses `## Phase N: ...` headings with markdown checklists |
-| Agent output not visible during `invoke` | stderr streaming is TTY-gated. Use `--stderr` to force it, or run `5x run watch` in another terminal |
+Inspect a governance gate with `5x review gate show`; submit its human decision
+with `5x review decide`. Generic prompts do not resolve these gates.
+
+For scripts and agents, `5x phase finish` combines quality, author-result
+validation/recording, and checklist checks. **It does not grant reviewer approval
+or replace the phase/run completion boundary.** See [automation][automation].
+
+## Files, history, and worktrees
+
+| Location | Purpose | Version control |
+| --- | --- | --- |
+| `docs/development/` | Default plan location | Track |
+| `docs/development/reviews/` | Default review location | Track |
+| `docs/development/runs/` | Default `paths.records`: run summaries, steps, decisions | Track |
+| `.5x/` | Local SQLite index/coordination, logs, locks, worktrees, templates | Ignore |
+| `5x.toml` / `5x.toml.local` | Shared / machine-local configuration | Track / ignore |
+| Project harness directories | Installed skills, agents/rules, freshness manifest | Track together if shared |
+
+Git-native records carry durable history with the plan branch. SQLite indexes
+that history and also holds local coordination state. Sessions and transcripts
+stay local. `5x records index` rebuilds record projections; it does not restore
+local sessions or logs.
+
+`5x run init --plan <path> --worktree` creates or attaches an isolated checkout.
+Run-scoped execution resolves that checkout automatically while local coordination
+stays in the repository's control plane. The plan argument is the implementation
+plan path under `paths.plans`, not the requirements document.
+
+See [operations][operations] for record checkpoints, branch-aware plan discovery,
+worktree management, and what to do after moving or archiving plans.
+
+## Upgrading and recovery
+
+Updating the CLI package and migrating a project are separate actions. After
+installing the intended CLI release:
+
+```bash
+5x upgrade
+5x harness sync
+5x doctor --text
+```
+
+`upgrade` reports harness freshness; automatic lossless sync is opt-in. Use
+`5x records backfill --dry-run` to inspect migration of historical SQLite runs
+before exporting them. Follow the [v1.3 → v2 migration guide][upgrading] for active
+runs, prompt overrides, and compatibility details.
+
+Start troubleshooting with `5x doctor --text`. Use `5x doctor --fix` for supported
+safe repairs. For locks, inspect `5x lock list`; use `5x unlock <plan>` for targeted
+recovery. Releasing a live holder requires explicit `--force`.
+
+## Documentation
+
+- [Setup and harnesses][getting-started] — installation paths and first workflow
+- [Configuration][configuration] — models, providers, local overrides, monorepos
+- [Operations and recovery][operations] — monitoring, records, worktrees, diagnosis
+- [CLI reference][reference] — command map and output/exit contracts
+- [Automation guide][automation] — workflow contracts for scripts and assistants
+- [Upgrading to v2][upgrading] — migration from v1.3 and earlier versions
+- [LLM documentation index][llms] — start here when helping a user operate 5x
+- [Changelog][changelog] — implemented changes and release status
+
+Contributors: see [AGENTS.md][agent-guide] for repository development conventions.
+The numbered `docs/v0/`, `docs/v1/`, and `docs/v2/` trees contain architecture and
+design history; proposals there may describe behavior that has not shipped.
 
 ## License
 
-MIT
+[MIT][license]
+
+[getting-started]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/getting-started.md
+[configuration]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/configuration.md
+[operations]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/operations.md
+[reference]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/cli-reference.md
+[automation]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/automation.md
+[upgrading]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/upgrading.md
+[llms]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/llms.txt
+[changelog]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/CHANGELOG.md
+[agent-guide]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/AGENTS.md
+[license]: https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/LICENSE

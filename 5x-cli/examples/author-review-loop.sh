@@ -1,203 +1,148 @@
 #!/usr/bin/env bash
-#
-# Minimal author/review loop using 5x CLI primitives.
-#
-# Demonstrates a single-phase workflow with composable piping:
-#   1. Initialize a run
-#   2. Invoke the author agent (auto-records via --record)
-#   3. Run quality gates (pipe result to run record)
-#   4. Invoke the reviewer agent (auto-records via --record)
-#   5. If not ready, prompt the user for guidance on human_required items,
-#      then feed review back to the author and repeat
-#   6. Complete the run
-#
-# Composability patterns used:
-#   - `--record` flag: invoke auto-records the step using the template's
-#     step_name from frontmatter — no manual `run record` call needed.
-#   - Pipe to `run record`: quality output piped directly, with step name
-#     and --run from CLI flags (quality has no template step_name).
-#   - `jq` for branching: extract result fields to decide next action.
-#
-# Requirements: 5x-cli, jq, a configured 5x.toml
-#
-# Usage:
-#   ./examples/author-review-loop.sh docs/development/001-impl-example.md
-#
+# One phase of a fresh execution run, using configured invoke providers.
+# Requires Bash, jq, Git, 5x, an approved plan, and invoke delegation for both roles.
+# Ordinary fixes loop through fresh quality + review. Human gates, specialized
+# corrections, amendments, failures, and existing runs hand off to the installed
+# 5x-phase-execution skill. See docs/automation.md; this is not a resume engine.
+# Usage: bash examples/author-review-loop.sh docs/development/my-feature.md
 set -euo pipefail
 
-PLAN="${1:?Usage: $0 <plan-path>}"
-MAX_REVIEW_CYCLES=3
-
-# ---------------------------------------------------------------------------
-# 1. Initialize the run
-# ---------------------------------------------------------------------------
-
-echo "--- Initializing run for $PLAN ---"
-INIT_OUT=$(5x run init --plan "$PLAN" --allow-dirty)
-RUN_ID=$(echo "$INIT_OUT" | jq -r '.data.run_id')
-echo "Run ID: $RUN_ID"
-
-# ---------------------------------------------------------------------------
-# 2. Determine the next incomplete phase
-# ---------------------------------------------------------------------------
-
-PHASES_OUT=$(5x plan phases "$PLAN")
-PHASE=$(echo "$PHASES_OUT" | jq -r '[.data.phases[] | select(.done == false)][0].id // empty')
-if [ -z "$PHASE" ]; then
-  echo "All phases complete."
-  5x run complete --run "$RUN_ID"
-  exit 0
-fi
-echo "Working on phase: $PHASE"
-
-# ---------------------------------------------------------------------------
-# 3. Author implementation
-#    --record auto-records using the template's step_name ("author:implement")
-# ---------------------------------------------------------------------------
-
-echo "--- Invoking author (phase $PHASE) ---"
-AUTHOR_OUT=$(5x invoke author author-next-phase \
-  --run "$RUN_ID" \
-  --record --phase "$PHASE" \
-  --var "plan_path=$PLAN" \
-  --var "phase_number=$PHASE")
-
-# jq for branching: inspect the result to decide next action
-AUTHOR_RESULT=$(echo "$AUTHOR_OUT" | jq -r '.data.result.result')
-echo "Author result: $AUTHOR_RESULT"
-
-if [ "$AUTHOR_RESULT" != "complete" ]; then
-  echo "Author did not complete. Reason: $(echo "$AUTHOR_OUT" | jq -r '.data.result.reason')"
-  5x run complete --run "$RUN_ID" --status aborted --reason "Author: $AUTHOR_RESULT"
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# 4. Quality gates
-#    Pipe quality output directly to `run record` — step name and --run
-#    provided as CLI args since quality has no template step_name.
-# ---------------------------------------------------------------------------
-
-echo "--- Running quality gates ---"
-QUALITY_OUT=$(5x quality run)
-
-# Pipe to record: quality envelope -> run record extracts result automatically
-echo "$QUALITY_OUT" | 5x run record "quality:check" \
-  --run "$RUN_ID" --phase "$PHASE" > /dev/null
-
-QUALITY_PASSED=$(echo "$QUALITY_OUT" | jq -r '.data.passed')
-echo "Quality gates passed: $QUALITY_PASSED"
-
-if [ "$QUALITY_PASSED" != "true" ]; then
-  echo "Quality gates failed. Aborting."
-  5x run complete --run "$RUN_ID" --status aborted --reason "Quality gates failed"
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# 5. Review loop
-# ---------------------------------------------------------------------------
-
-# Ensure the review output directory exists before the first reviewer write
-mkdir -p .5x/reviews
-
-for i in $(seq 1 "$MAX_REVIEW_CYCLES"); do
-  echo "--- Review cycle $i/$MAX_REVIEW_CYCLES ---"
-
-  # Reviewer uses commit_hash to examine changes directly via git
-  COMMIT_HASH=$(git rev-parse HEAD)
-
-  # --record auto-records using the template's step_name ("reviewer:review")
-  REVIEW_OUT=$(5x invoke reviewer reviewer-commit \
-    --run "$RUN_ID" \
-    --record --phase "$PHASE" --iteration "$i" \
-    --var "commit_hash=$COMMIT_HASH" \
-    --var "plan_path=$PLAN" \
-    --var "review_path=.5x/reviews/phase-${PHASE}-review.md" \
-    --var "review_template_path=.5x/templates/review.md")
-
-  READINESS=$(echo "$REVIEW_OUT" | jq -r '.data.result.readiness')
-  echo "Reviewer verdict: $READINESS"
-
-  if [ "$READINESS" = "ready" ]; then
-    echo "Approved!"
-    break
-  fi
-
-  if [ "$i" -eq "$MAX_REVIEW_CYCLES" ]; then
-    echo "Max review cycles reached without approval."
-    5x run complete --run "$RUN_ID" --status aborted --reason "Review limit reached"
-    exit 1
-  fi
-
-  # Split review items by action type
-  ITEMS=$(echo "$REVIEW_OUT" | jq -c '.data.result.items')
-  HUMAN_REQ=$(echo "$ITEMS" | jq -c '[.[] | select(.action == "human_required")]')
-  HUMAN_COUNT=$(echo "$HUMAN_REQ" | jq 'length')
-
-  # -----------------------------------------------------------------------
-  # Handle human_required items: prompt the user for guidance on each one
-  # -----------------------------------------------------------------------
-  USER_NOTES=""
-  if [ "$HUMAN_COUNT" -gt 0 ]; then
-    echo ""
-    echo "The reviewer flagged $HUMAN_COUNT item(s) requiring human judgment:"
-    echo "$HUMAN_REQ" | jq -r '.[] | "  [\(.id)] \(.title) (\(.priority // "P1"))\n         \(.reason)\n"'
-
-    # Ask the user what to do
-    CHOICE_OUT=$(5x prompt choose \
-      "How do you want to handle these items?" \
-      --options "provide guidance,skip and let author decide,abort run")
-    CHOICE=$(echo "$CHOICE_OUT" | jq -r '.data.answer')
-
-    case "$CHOICE" in
-      "provide guidance")
-        echo "Enter guidance for the author (press Ctrl+D when done):"
-        GUIDANCE_OUT=$(5x prompt input "Guidance for human_required items" --multiline)
-        USER_NOTES=$(echo "$GUIDANCE_OUT" | jq -r '.data.answer')
-        ;;
-      "skip and let author decide")
-        USER_NOTES="Human items deferred to author's best judgment."
-        ;;
-      "abort run")
-        5x run complete --run "$RUN_ID" --status aborted --reason "Human declined to resolve review items"
-        exit 1
-        ;;
-    esac
-
-    5x run record "human:gate" \
-      --run "$RUN_ID" \
-      --phase "$PHASE" \
-      --iteration "$i" \
-      --result "$(jq -nc --arg choice "$CHOICE" --arg notes "$USER_NOTES" \
-        '{action: $choice, notes: $notes}')" > /dev/null
-  fi
-
-  # -----------------------------------------------------------------------
-  # Feed review back to author for fixes
-  # --record auto-records using the template's step_name ("author:fix-review")
-  # -----------------------------------------------------------------------
-  TOTAL_ITEMS=$(echo "$ITEMS" | jq 'length')
-  echo "Sending $TOTAL_ITEMS review item(s) back to author..."
-
-  FIX_VARS=(
-    --var "plan_path=$PLAN"
-    --var "review_path=.5x/reviews/phase-${PHASE}-review.md"
-  )
-  if [ -n "$USER_NOTES" ]; then
-    FIX_VARS+=(--var "user_notes=$USER_NOTES")
-  fi
-
-  5x invoke author author-process-impl-review \
-    --run "$RUN_ID" \
-    --record --phase "$PHASE" --iteration "$i" \
-    "${FIX_VARS[@]}" > /dev/null
+PLAN="${1:?Usage: $0 <approved-plan-path>}"
+for tool in 5x jq git; do
+  command -v "$tool" >/dev/null || { printf 'Missing tool: %s\n' "$tool" >&2; exit 1; }
 done
+[[ -f "$PLAN" ]] || { printf 'Plan must exist locally: %s\n' "$PLAN" >&2; exit 1; }
 
-# ---------------------------------------------------------------------------
-# 6. Complete the run
-# ---------------------------------------------------------------------------
+# Preserve stderr and expose captured error envelopes. Always override a user's
+# FIVEX_OUTPUT_FORMAT=text preference. Process failure wins over an ok envelope
+# (invoke can emit a result before its recording side effect fails).
+fivex() {
+  local output status
+  if output=$(5x "$@" --json); then
+    printf '%s\n' "$output"
+  else
+    status=$?
+    printf '%s\n' "$output" >&2
+    return "$status"
+  fi
+}
 
-echo "--- Completing run $RUN_ID ---"
-5x run complete --run "$RUN_ID"
-echo "Done."
+pause() {
+  printf '%s\nResume with the installed 5x-phase-execution skill and inspect run state.\n' "$1" >&2
+  exit 1
+}
+
+CONFIG=$(fivex config show --context "$(dirname "$PLAN")")
+config_value() {
+  printf '%s\n' "$CONFIG" | jq -er --arg key "$1" '.data.entries[] | select(.key == $key) | .value'
+}
+[[ $(config_value author.delegationMode) == invoke && $(config_value reviewer.delegationMode) == invoke ]] ||
+  pause 'This shell example requires both roles configured for invoke. Use the native skill otherwise.'
+MAX_REVIEWS=$(config_value maxReviewIterations)
+
+INITIAL_PHASES=$(fivex plan phases "$PLAN")
+PHASE=$(printf '%s\n' "$INITIAL_PHASES" | jq -r '[.data.phases[] | select(.done == false)][0].id // empty')
+[[ -n "$PHASE" ]] || pause 'No pending phase. Check review/governance state before completing any run.'
+PHASE_IDS=$(printf '%s\n' "$INITIAL_PHASES" | jq -c '[.data.phases[].id]')
+
+# Shared-checkout safety is intentional; no automatic --allow-dirty opt-out.
+# Existing worktree mappings still resolve through --run on subsequent commands.
+INIT=$(fivex run init --plan "$PLAN")
+printf '%s\n' "$INIT" | jq '.data | {warnings, harness_freshness} | with_entries(select(.value != null))' >&2
+RUN_ID=$(printf '%s\n' "$INIT" | jq -er '.data.run_id')
+export FIVEX_RUN="$RUN_ID"
+FINISHED=false
+checkpoint_on_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$FINISHED" == false ]]; then
+    if ! fivex commit --run "$RUN_ID" --no-record -m "5x: checkpoint run records"; then
+      printf 'Record checkpoint failed; inspect run %s before handoff.\n' "$RUN_ID" >&2
+      status=1
+    fi
+  fi
+  exit "$status"
+}
+trap checkpoint_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+[[ $(printf '%s\n' "$INIT" | jq -r '.data.resumed') == false ]] ||
+  pause "Run $RUN_ID already exists. Refusing to replay its step identities."
+
+TEMPLATE=author-next-phase
+APPROVED=false
+for (( ITERATION=1; ITERATION<=MAX_REVIEWS; ITERATION++ )); do
+  AUTHOR=$(fivex invoke author "$TEMPLATE" --run "$RUN_ID" \
+    --var "phase_number=$PHASE" --new-session --record \
+    --phase "$PHASE" --iteration "$ITERATION")
+  printf '%s\n' "$AUTHOR" | jq -e '.data.result.result == "complete" and (.data.result.commit | type == "string" and length > 0)' >/dev/null ||
+    pause "Author needs attention in run $RUN_ID: $AUTHOR"
+  COMMIT=$(printf '%s\n' "$AUTHOR" | jq -er '.data.result.commit')
+  STEP=$(printf '%s\n' "$AUTHOR" | jq -er '.data.step_name')
+
+  # Every changed-code attempt gets a new iteration. A retry at the same keys
+  # can reuse successful quality, so never reuse those keys for a new fix.
+  printf '%s\n' "$AUTHOR" | fivex phase finish --run "$RUN_ID" \
+    --phase "$PHASE" --iteration "$ITERATION" --step "$STEP"
+
+  # Resolve review paths from the template, rather than hardcoding old .5x paths.
+  RENDERED=$(fivex template render reviewer-commit --run "$RUN_ID" \
+    --var "phase_number=$PHASE" --var "commit_hash=$COMMIT" --new-session)
+  REVIEW_PATH=$(printf '%s\n' "$RENDERED" | jq -er '.data.variables.review_path')
+  REVIEW=$(fivex invoke reviewer reviewer-commit --run "$RUN_ID" \
+    --var "phase_number=$PHASE" --var "commit_hash=$COMMIT" --new-session \
+    --record --phase "$PHASE" --iteration "$ITERATION")
+
+  # A reviewer should commit its narrative. Verify the actual mapped checkout,
+  # and checkpoint the review file if the worker left it uncommitted.
+  STATE=$(fivex run state --run "$RUN_ID")
+  WORKTREE=$(printf '%s\n' "$STATE" | jq -r '.data.run.worktree_path // empty')
+  if [[ -z "$WORKTREE" ]]; then
+    WORKTREE=$(git -C "$(dirname "$PLAN")" rev-parse --show-toplevel)
+  fi
+  [[ -f "$REVIEW_PATH" ]] || pause "Reviewer did not write $REVIEW_PATH"
+  if ! git -C "$WORKTREE" ls-files --error-unmatch -- "$REVIEW_PATH" >/dev/null 2>&1 ||
+      [[ -n $(git -C "$WORKTREE" status --porcelain -- "$REVIEW_PATH") ]]; then
+    fivex commit --run "$RUN_ID" -m "review: phase $PHASE" --files "$REVIEW_PATH"
+  fi
+
+  MODE=$(printf '%s\n' "$REVIEW" | jq -r '.data.pinned_mode // empty')
+  ROUTE=$(printf '%s\n' "$REVIEW" | jq -r '.data.result.governance.route // empty')
+  NEXT=$(printf '%s\n' "$REVIEW" | jq -r '.data.result.governance.nextAction // empty')
+  if [[ "$MODE" == enforced ]]; then
+    [[ "$NEXT" != plan_amendment ]] || pause "Run $RUN_ID requires a plan amendment."
+    case "$ROUTE" in
+      complete) APPROVED=true; break ;;
+      author_revision) ;;
+      *) pause "Run $RUN_ID requires workflow handoff: route=$ROUTE nextAction=$NEXT" ;;
+    esac
+  else
+    # Advisory hypothetical routes do not grant final-correction shortcuts.
+    READINESS=$(printf '%s\n' "$REVIEW" | jq -er '.data.result.readiness')
+    if [[ "$READINESS" == ready ]]; then
+      APPROVED=true
+      break
+    fi
+    printf '%s\n' "$REVIEW" | jq -e '.data.result.items | length > 0 and all(.[]; .action == "auto_fix")' >/dev/null ||
+      pause "Run $RUN_ID needs a human decision: $REVIEW"
+  fi
+  TEMPLATE=author-process-impl-review
+done
+[[ "$APPROVED" == true ]] || pause "Configured review limit reached for run $RUN_ID."
+
+PHASES=$(fivex plan phases "$PLAN")
+[[ $(printf '%s\n' "$PHASES" | jq -c '[.data.phases[].id]') == "$PHASE_IDS" ]] ||
+  pause 'Plan phase identities changed during execution.'
+printf '%s\n' "$PHASES" | jq -e --arg phase "$PHASE" \
+  '.data.phases[] | select((.id | tostring) == $phase) | .done == true' >/dev/null ||
+  pause "Phase $PHASE checklist is incomplete."
+
+# The CLI enforces the durable implementation boundary as well as our checks.
+fivex run record phase:complete --run "$RUN_ID" --phase "$PHASE" \
+  --iteration "$ITERATION" --result "$(jq -nc --arg phase "$PHASE" '{phase:$phase}')"
+if printf '%s\n' "$PHASES" | jq -e 'all(.data.phases[]; .done == true)' >/dev/null; then
+  fivex run complete --run "$RUN_ID"
+  FINISHED=true
+else
+  printf 'Phase %s reviewed. Run %s remains active for the next phase.\n' "$PHASE" "$RUN_ID"
+fi
