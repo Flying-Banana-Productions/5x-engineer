@@ -591,8 +591,9 @@ document effects on earlier phases; do not invent these confirmations from a
 freeform ready summary. Run with `--dry-run`, inspect the receipt, then repeat
 without it to accept. The command requires unchanged phase identities, work-item
 contracts/scores/surface, no debt claims, and no completed/approved affected phases.
-It preserves the original binding and budget baseline and supports one recovery
-per binding. If rejected, escalate for the full amendment workflow; never rebind
+It preserves the original binding and budget baseline and supports repeated
+recoveries, each with a new authorization and plan review. If rejected, escalate
+for the full amendment workflow; never rebind
 or edit records to bypass it. After acceptance, render a fresh author context,
 fix all admitted findings, run ordinary quality gates, and prepare a fresh
 reviewer context at the next unused iteration. Keep prior findings and code

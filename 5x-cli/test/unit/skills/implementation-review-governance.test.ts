@@ -265,6 +265,9 @@ describe("implementation review skill branches", () => {
 			expect(content).toContain("5x review implementation recover-plan");
 			expect(content).toContain("--confirm-preserved-phases");
 			expect(content).toContain("Recovery never completes a phase");
+			expect(content).toContain(
+				"supports repeated\nrecoveries, each with a new authorization and plan review",
+			);
 			expect(content).toContain("5x review decide --gate");
 			expect(content).toContain("revise_plan");
 			expect(content).toContain("inheritedBudgetGovernance");

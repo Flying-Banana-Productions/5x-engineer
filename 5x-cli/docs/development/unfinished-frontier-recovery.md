@@ -8,7 +8,7 @@ deliver general revision-aware amendments, claim withdrawal, finding resolution
 by scope change, or invalidation of completed phases.
 
 The original binding, source approval, B0/B, policy, ledger and phase map remain
-immutable. One distinct `implementation-plan-recovery` journal record extends
+immutable. Each distinct `implementation-plan-recovery` journal record extends
 the authorized plan-byte chain. It references the exact authorization, source
 observation, amended author commit, latest same-run ready plan-review snapshot,
 and explicit operator confirmations of bounded scope and earlier-phase non-impact.
@@ -55,7 +55,11 @@ The confirmation arguments are actual operator attestations: inspect the
 amendment and its shared-design effects before accepting them. Replace the
 example prose with the specific authorized scope and restrictions. Review the
 preview, then repeat the same command without `--dry-run`. Identical acceptance
-is idempotent; changed intent or a second recovery is rejected. A concurrent
+is idempotent, including receipts written by the original single-recovery version.
+Further amendments may repeat this procedure without a per-binding limit, each
+with a new authorization and coupled ready plan review. Reusing an accepted
+authorization with changed intent is rejected. Earlier-phase preservation is
+checked against the latest admitted plan bytes. A concurrent
 journal append fails the optimistic precondition under the existing writer lock.
 
 Check `5x run state --run "$RUN_ID" --json`: plan drift should be false,
@@ -76,13 +80,19 @@ prerequisites remain pending; recovery does not authorize phase completion.
 - Appended context: one shared native/invoke builder provides effective commit,
   authorization, scope restrictions, and admitted design findings. Durable
   records own those facts; prompts contain no incident-specific identities.
+  It selects the latest accepted recovery for the phase after repeated amendments.
 - Skills: phase execution and plan review explain the explicit operator handoff
   across delegation modes. General plan authoring is unaffected: recovery takes
   an already-recorded amendment author result and does not change authoring.
+  Phase execution now explains repeatable recovery with fresh authorization and
+  review in every rendered delegation mode; plan-review guidance already applies
+  independently to each amendment and needs no change.
 - Installation/override/upgrade/sync: existing versioned template upgrade and
   skill rendering/sync paths apply. Existing customized overrides are preserved;
   runtime recovery context still supplies authority. Acceptance checks cover
   installed/synced phase-execution guidance, not only bundled Markdown.
+  No schema migration is needed: new receipts use authorization-scoped keys,
+  while replay finds existing receipts by payload ID regardless of their key.
 
 ## Verification
 
@@ -95,3 +105,7 @@ CLI through completed Phase 1, failed Phase 2, human authorization, committed
 amendment, same-run review, acceptance/retry, fresh author/reviewer contexts,
 preserved progress and blocked stale completion. The asset acceptance suite
 verifies effective installed/rendered guidance.
+Repeated-recovery coverage extends an original-format receipt through multiple
+same-phase amendments and a later frontier after phase completion, verifies
+hash/commit/parent lineage and latest runtime context, rejects authorization
+reuse and earlier-phase reversion, and checks dry-run and idempotent replay.

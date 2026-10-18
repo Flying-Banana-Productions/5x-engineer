@@ -410,7 +410,7 @@ export function buildImplementationReviewPromptContext(input: {
 	const latest = observations.at(-1) ?? null;
 	const recovery = input.store
 		.listImplementationTextAmendments(input.runId, binding.id)
-		.find(
+		.findLast(
 			(entry) =>
 				entry.kind === "implementation-plan-recovery" &&
 				entry.phase === phaseId,

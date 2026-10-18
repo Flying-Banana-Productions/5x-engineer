@@ -45,7 +45,11 @@ export async function recoverImplementationPlanCommand(
 	};
 	const accepted = ctx.store
 		.listImplementationTextAmendments(input.runId, binding.id)
-		.find((entry) => entry.kind === "implementation-plan-recovery");
+		.find(
+			(entry) =>
+				entry.kind === "implementation-plan-recovery" &&
+				entry.authorizationId === input.authorizationId,
+		);
 	if (accepted?.kind === "implementation-plan-recovery") {
 		if (
 			accepted.phase !== input.phase ||
@@ -57,7 +61,7 @@ export async function recoverImplementationPlanCommand(
 		) {
 			throw new CliError(
 				"IMPLEMENTATION_RECOVERY_UNSUPPORTED",
-				"This binding already has a different recovery. Inspect its receipt; a second recovery requires the full revision workflow.",
+				"This amendment authorization already has a different accepted recovery. Inspect its receipt; further amendments require a new authorization and plan review.",
 			);
 		}
 		// Receipt replay is not a new admission. Later code/checklist work does not

@@ -77,9 +77,6 @@ export function recoverImplementationPlan(
 		input.runId,
 		binding.id,
 	);
-	const priorRecovery = existing.find(
-		(entry) => entry.kind === "implementation-plan-recovery",
-	);
 	const intent = {
 		bindingId: binding.id,
 		phase: input.phase,
@@ -91,11 +88,11 @@ export function recoverImplementationPlan(
 		preservedPhaseConfirmation: input.preservedPhaseConfirmation,
 	};
 	const id = `recovery:${createHash("sha256").update(JSON.stringify(intent)).digest("hex")}`;
+	const priorRecovery = existing.find(
+		(entry): entry is ImplementationPlanRecoveryPayload =>
+			entry.kind === "implementation-plan-recovery" && entry.id === id,
+	);
 	if (priorRecovery) {
-		if (priorRecovery.id !== id)
-			reject(
-				"Only one frontier recovery per binding is supported. Use the full revision workflow for further amendments.",
-			);
 		return {
 			created: false,
 			dryRun: Boolean(input.dryRun),
@@ -103,6 +100,15 @@ export function recoverImplementationPlan(
 			completionAuthorized: false as const,
 			nextAction: "implementation_corrections",
 		};
+	}
+	if (
+		existing.some(
+			(entry) =>
+				entry.kind === "implementation-plan-recovery" &&
+				entry.authorizationId === input.authorizationId,
+		)
+	) {
+		reject("This amendment authorization already has an accepted recovery.");
 	}
 	const listed = listImplementationDecisions(recordStore, input.runId);
 	if (listed.diagnostics.length)
@@ -147,7 +153,17 @@ export function recoverImplementationPlan(
 			"Authorization must cover exact amendment finding fingerprints on the latest same-phase observation.",
 		);
 	}
-	const oldPlan = parsePlan(binding.approvedPlanBytes);
+	const drift = detectPlanDrift({
+		approvedPlanBytes: binding.approvedPlanBytes,
+		approvedPlanHash: binding.approvedPlanHash,
+		amendments: existing,
+		currentPlanBytes: deps.committedPlanBytes,
+	});
+	if (!drift.chainValid || !drift.drifted)
+		reject(
+			"Recovery requires valid existing lineage and a substantive amendment not already admitted.",
+		);
+	const oldPlan = parsePlan(drift.authorizedBytes);
 	const newPlan = parsePlan(deps.committedPlanBytes);
 	const frontier = oldPlan.phases.findIndex(
 		(phase) => phase.number === input.phase,
@@ -193,7 +209,7 @@ export function recoverImplementationPlan(
 			).trim();
 		if (
 			section(
-				binding.approvedPlanBytes,
+				drift.authorizedBytes,
 				oldPhase.line,
 				oldPlan.phases[index + 1]?.line,
 			) !==
@@ -283,16 +299,6 @@ export function recoverImplementationPlan(
 			"Recovery requires authorization → committed plan author → coupled ready/empty plan review, with no later plan author/reviewer or open plan gate.",
 		);
 	}
-	const drift = detectPlanDrift({
-		approvedPlanBytes: binding.approvedPlanBytes,
-		approvedPlanHash: binding.approvedPlanHash,
-		amendments: existing,
-		currentPlanBytes: deps.committedPlanBytes,
-	});
-	if (!drift.chainValid || !drift.drifted)
-		reject(
-			"Recovery requires valid existing lineage and a substantive amendment not already admitted.",
-		);
 	const parent = existing.at(-1);
 	const recovery: ImplementationPlanRecoveryPayload = {
 		kind: "implementation-plan-recovery",
@@ -321,7 +327,7 @@ export function recoverImplementationPlan(
 				{
 					runId: input.runId,
 					stream: "budget",
-					idempotencyKey: `budget:implementation-plan-recovery:${binding.id}`,
+					idempotencyKey: `budget:implementation-plan-recovery:${binding.id}:${input.authorizationId}`,
 					payload: recovery,
 					createdAt: recovery.createdAt,
 					...recordedEnvelope(deps.origin),

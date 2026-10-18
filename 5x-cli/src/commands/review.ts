@@ -237,7 +237,7 @@ export function registerReview(parent: Command) {
 	implementation
 		.command("recover-plan")
 		.description(
-			"Operator-confirmed, one-time amendment recovery at an unfinished frontier; preserves binding/baseline and requires fresh implementation review",
+			"Operator-confirmed amendment recovery at an unfinished frontier; repeatable with a new authorization and plan review; preserves binding/baseline and requires fresh implementation review",
 		)
 		.requiredOption("--run <id>", "Existing execution run")
 		.requiredOption("--phase <p>", "Earliest affected, unfinished phase")
