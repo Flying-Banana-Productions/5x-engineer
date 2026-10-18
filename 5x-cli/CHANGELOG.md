@@ -5,32 +5,85 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
-## Unreleased
+## 2.0.0 (Unreleased)
+
+Release preparation in progress. The entries below describe implemented changes
+on main since 1.3.0. Plan 215 (same-run semantic plan amendments) is a required
+pre-release follow-up and is not implemented yet. Dashboard delivery remains
+pending and may be deferred beyond 2.0.0.
 
 ### Features
 
-- **Implementation-review governance** — budgeted execution binds an approved
-  plan, reviews an exact code range, and reconciles inherited debt. Run state
-  reports binding, range, gate, quality attempt, claims, and telemetry, with
-  gross effort, ceilings, provisional credit, realized credit, and positive
-  burden kept separate. Advisory remains the default. Dashboard HTTP stays in
-  the plan-review governance dashboard follow-up.
-- **Plan-review governance** — exhaustive initial reviews now converge through
+- **Harness asset freshness** — installed harnesses track baked configuration
+  and per-file hashes in `.5x-manifest.json`. Freshness warnings surface at
+  `run init`, baked-key config changes, `config show`, and `harness list`.
+  `5x harness sync` re-renders installed scopes and establishes a verified
+  baseline while preserving user-owned changes. `5x upgrade` reports freshness
+  and supports `--sync` / `--no-sync`; automatic lossless sync is opt-in through
+  `harness.autoSync`. Warnings can be disabled with `harness.freshnessWarnings`.
+- **Recovery and doctor** — `5x doctor` diagnoses harness freshness, locks,
+  worktree mappings, lingering runs, database health, orphaned prompts, and
+  git-native records. `--fix` applies deterministic safe repairs. `5x lock list`
+  and `5x unlock` expose targeted lock recovery, while run state reports step
+  budget usage and remaining capacity.
+- **Ambient run identity and phase finish** — run-scoped commands resolve
+  identity from `--run`, `FIVEX_RUN`, a unique linked-worktree mapping, then
+  `.5x/current-run`, rejecting ambiguous or incompatible context. `run list`
+  identifies the ambient selection. `5x phase finish` composes quality gates,
+  author-result validation, checklist checks, and recording with retry-safe
+  recovery; reviewer approval remains a separate boundary.
+- **Durable prompt queue** — human prompts are UUID-addressed records with
+  first-writer-wins answers shared by terminal and future control-plane
+  adapters. Defaults, polling, timeouts, interruption, and terminal-run cleanup
+  use the same store; doctor detects and repairs orphaned prompts.
+- **Invocation registry** — agent invocations have UUID identities, lifecycle
+  state, and a provider-neutral cancellation contract. `5x invoke status`
+  inspects an invocation or explicit run; `5x invoke cancel` requests supported
+  cancellation and rejects unsupported providers without changing run status.
+  Provider-specific process cancellation adapters remain follow-up work.
+- **Git-native run records** — run summaries, append-only steps, decisions, and
+  origin attribution are tracked under configurable `paths.records` (default
+  `docs/development/runs/`). Durable history travels with the plan branch;
+  SQLite remains a rebuildable local index. Record writes use crash-recoverable
+  journals and per-run writer locks. `5x records index` rebuilds projections,
+  and `5x records backfill` exports historical SQLite runs with dry-run and
+  target-branch controls. Sessions, log paths, and transcripts stay local;
+  `records.redact` supports additional field redaction.
+- **Git-aware plan progress** — `plan list`, `plan phases`, and `run state --plan`
+  resolve progress across mapped worktrees, local and remote plan branches,
+  configured branches, and HEAD. Branch-only plans are discoverable; source
+  metadata, divergence reporting, `--fetch`, and `--all-refs` make provenance
+  inspectable without requiring a checkout switch.
+- **Review-budget advisory foundation** — Delivery Budget ledgers, work-item
+  estimates, debt claims, immutable baselines, and deterministic forecasts are
+  persisted alongside reviewer steps. Configuration controls growth ceilings,
+  architecture thresholds, and credit limits; run state separates gross effort,
+  positive architecture burden, provisional credit, and effective budget.
+- **Plan-review governance** — exhaustive initial reviews converge through
   evidence-checked closure reviews. Enforced, baseline-pinned runs derive
   deterministic complete/revision/final-correction/human-gate routes and expose
   `review gate show` / `review decide` for append-only budget, baseline, scope,
   architecture, risk, re-estimate, and abort decisions. Run state includes the
   governing baseline/scope, active gate, stable decision IDs, and diagnostics;
-  record-index rebuild restores budget and governance projections.
+  record-index rebuild restores budget and governance projections. Advisory
+  remains the default, and existing runs retain their pinned policy.
+- **Implementation-review governance** — budgeted execution binds an approved
+  plan, reviews an exact code range, and reconciles inherited debt. Findings
+  distinguish implementation defects, plan defects, scope expansion, and
+  pre-existing issues, with approved work-item links and diff-causal closure
+  evidence. Guarded text-only plan amendments preserve approved scope; eligible
+  mechanical final corrections require a fresh full quality run. Debt-claim
+  reconciliation and durable review evidence govern phase/run completion.
+  Native and invoke reviewers receive the same runtime context. Run state
+  reports binding, range, gate, quality attempt, claims, and telemetry, with
+  gross effort, ceilings, provisional credit, realized credit, and positive
+  burden kept separate. Advisory remains the default.
 - **Governance adapter seams** — exported redacted prompt/read and decision
   action contracts are ready for a later authenticated dashboard. No dashboard
   HTTP, WebSocket, or browser implementation is included.
 
 ### Fixes
 
-- **Run artifact checkpoints** — `5x commit --no-record` can commit only the
-  active run's tracked artifacts without recursively appending another
-  `git:commit` event, allowing a clean mid-run checkpoint.
 - **Clean records at human gates and exits** — `5x commit --no-record` with no
   `--files`/`--all-files` now commits only the active run's records and is a
   successful no-op (`committed: false`) when they are already committed. The
@@ -44,23 +97,39 @@ source of truth for the corresponding GitHub Release.
 - **Stale worktree mappings** — `plan list`, `plan phases`, `records index`, and
   `run state --plan` no longer fail with `ENOENT: posix_spawn 'git'` when a plan
   is still mapped to a removed worktree directory.
+- **Portable plan and run resolution** — recorded plan paths are repository
+  relative and re-index correctly in another checkout. Plan content resolves
+  from available checkouts and ref tips after pruning stale ancestor refs;
+  archived plans no longer contaminate active progress selection. `plan list`
+  compacts source details into numbered references.
+- **Subproject bootstrap** — run initialization from a subproject uses the
+  repository control plane, bootstraps its runtime directories, and resolves
+  worktree paths consistently.
+- **Review decision races** — concurrent gate decisions use atomic acceptance
+  and reject stale or losing submissions without contradictory durable state.
+- **Governance continuity** — implementation bindings carry approved
+  architecture decisions; closure history uses coupled reviewer/snapshot
+  evidence. Advisory diagnostics remain nonblocking, review-only artifact
+  commits preserve freshness/readiness, and reviewed amendments at unfinished
+  implementation frontiers can be recovered repeatedly. This recovery does not
+  provide plan 215's general semantic amendment registration.
+- **Historical record backfill** — temporary export worktrees are initialized
+  correctly, and backfill commits skip git hooks.
 
-## 2.0
+### Upgrade notes
 
-### Features
-
-- **Harness asset freshness** — each `harness install` writes a
-  `.5x-manifest.json` at the install root recording baked inputs, a fingerprint,
-  a verified/unverified baseline, and per-file content hashes. Tier 1 freshness
-  warnings fire at `run init`, baked-key `config set`/`unset`/`add`/`remove`,
-  `config show` (full show, or a baked-key show — catches direct 5x.toml
-  edits), and `harness list`. New `5x harness sync` re-renders installed scopes through
-  the same render path as install (the only command that establishes a verified
-  baseline; plain reinstall preserves existing agents). `5x upgrade` reports
-  harness freshness across bundled installs and auto-syncs only when
-  `harness.autoSync = true` (opt-in, default off) **and** the refresh is
-  lossless, with `--sync` / `--no-sync` per-invocation overrides. Config keys:
-  `harness.freshnessWarnings` (`on`/`off`, default `on`) and `harness.autoSync`.
+- Run `5x upgrade` to refresh managed project assets and `5x harness sync` to
+  synchronize installed agents and skills with the current workflow contracts.
+  Plain `harness install` preserves existing agent files and does not establish
+  a verified freshness baseline.
+- Use `5x records backfill --dry-run` to inspect migration of historical SQLite
+  runs, then backfill as appropriate. `5x records index` rebuilds local indexes
+  from tracked records; coordination state, locks, sessions, and logs remain
+  local.
+- Review-budget enforcement is opt-in. Advisory is the default; existing
+  bindings and baselines retain their pinned mode. In non-off budgeted
+  implementation runs, approved-source binding and plan-drift validation still
+  apply in advisory mode.
 
 ## 1.3.0 (2026-08-10)
 
