@@ -1,0 +1,33 @@
+# 5x CLI
+
+> 5x is a CLI toolbelt for AI-assisted plan generation, review, and phased implementation. An orchestrating agent follows installed skills; the CLI manages durable runs, validation, quality checks, and review governance.
+
+These links document the implemented 2.0.0 development line, currently unreleased. Check `5x --version` and the changelog: the published npm package can differ from main. Dashboard delivery, output normalization, and general semantic plan amendment registration are pending. The narrow operator-confirmed `review implementation recover-plan` path is implemented.
+
+## Start here
+
+- [README](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/README.md): Human overview, quick start, everyday commands.
+- [Automation guide](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/automation.md): Authority, delegation, identity, continuation, recording, governance, completion, and handoff contracts.
+- [Setup and harnesses](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/getting-started.md): OpenCode, Cursor, universal skills, install locations, and prerequisites.
+- [Configuration](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/configuration.md): Effective settings, models/providers, per-role delegation, layered/local overrides, and freshness.
+- [CLI reference](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/cli-reference.md): Command map, JSON/text exceptions, exit codes, and prompt behavior.
+- [Operations and recovery](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/operations.md): Run inspection, Git-aware progress, records, worktrees, doctor, and locks.
+- [Upgrading](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/docs/upgrading.md): v1.3-to-v2 migration and active-run compatibility.
+- [Changelog](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/CHANGELOG.md): Release status and implemented changes.
+
+## Runtime discovery
+
+Read `5x config show --json` (use `--context` for the plan directory in a monorepo). It returns `data.entries`; a single `--key` lookup returns `data.value`. Use `5x <command> --help`, `5x template describe <name>`, `5x protocol schema author`, `5x protocol schema reviewer`, and `5x protocol emit reviewer --help` for installed-version contracts.
+
+Load the effective installed `5x` foundation alongside `5x-plan`, `5x-plan-review`, or `5x-phase-execution`. Use `5x-config` for configuration and `5x-windows` for Windows/PowerShell. Respect per-role delegationMode; universal always invokes. Native task IDs and provider session IDs are different.
+
+Runtime-appended context and durable state own review ranges, bindings, admitted findings, decisions, claims, and routes. Do not invent them from documentation or current HEAD. Advisory is the default, but budgeted implementation still requires approved-source binding and plan-drift validation. Governance gates use `review gate show` / `review decide`, not generic prompt answers.
+
+Surface run-init warnings/harness_freshness unless explicitly silenced by configuration. Use `5x harness sync` to refresh baked assets. Before handing off an active run, checkpoint with `5x commit --run <id> --no-record -m "5x: checkpoint run records"`. Start recovery with `5x doctor`.
+
+## Optional
+
+- [Invoke-loop example](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/examples/author-review-loop.sh): Bounded fresh-run, single-phase example with handoff for specialized routes.
+- [Contributor instructions](https://github.com/Flying-Banana-Productions/5x-engineer/blob/main/5x-cli/AGENTS.md): Developing 5x itself, not the end-user workflow.
+
+The numbered docs/v0, docs/v1, and docs/v2 trees include design proposals and historical contracts. Consult current guides and the installed executable before applying those designs. Installed/rendered skills, not raw conditional skill source templates, define the effective harness workflow.
