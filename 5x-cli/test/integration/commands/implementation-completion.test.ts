@@ -365,20 +365,31 @@ function preAuthorSteps(dir: string, runId: string): unknown[] {
 }
 
 describe("implementation completion boundaries", () => {
-	test(
-		"authorized same-run frontier recovery preserves history and requires a fresh review context",
-		async () => {
+	test.each(["ready", "final corrections", "approved architecture"] as const)(
+		"authorized same-run frontier recovery (%s) preserves history and requires a fresh review context",
+		async (recoveryKind) => {
+			const finalCorrections = recoveryKind !== "ready";
+			const architecture = recoveryKind === "approved architecture";
+			const original = architecture
+				? twoPhasePlan().replace("| 2 | 0 |", "| 2 | 2 |")
+				: twoPhasePlan();
 			const { dir, planPath } = await initRepo("enforced", {
-				plan: twoPhasePlan(),
+				plan: original,
 			});
 			const ok = (result: Awaited<ReturnType<typeof cli>>) => {
 				expect(result.exitCode, `${result.stdout}\n${result.stderr}`).toBe(0);
 				return JSON.parse(result.stdout).data;
 			};
 			try {
-				await approveSource(dir, planPath, 2);
+				await approveSource(
+					dir,
+					planPath,
+					2,
+					undefined,
+					architecture ? 2 : undefined,
+				);
 				const runId = await startRun(dir, planPath);
-				writeFileSync(planPath, twoPhasePlan().replace("[ ] Bind", "[x] Bind"));
+				writeFileSync(planPath, original.replace("[ ] Bind", "[x] Bind"));
 				const firstCommit = await commitFile(
 					dir,
 					runId,
@@ -505,12 +516,17 @@ describe("implementation completion boundaries", () => {
 						"Use the correct offline behavior only",
 					]),
 				).decision.decisionId;
-				const amended = readFileSync(planPath, "utf8").replace(
+				let amended = readFileSync(planPath, "utf8").replace(
 					"- [ ] Follow",
 					"- [ ] Follow the correct offline behavior",
 				);
+				if (architecture)
+					amended = amended.replace(
+						"| Required behavior | 2 | 2 |",
+						"| Clarified behavior | 2 | 3 |",
+					);
 				writeFileSync(planPath, amended);
-				const amendmentCommit = ok(
+				let amendmentCommit = ok(
 					await cli(dir, [
 						"commit",
 						"--run",
@@ -561,8 +577,25 @@ describe("implementation completion boundaries", () => {
 							"0",
 						],
 						{
-							readiness: "ready",
-							items: [],
+							readiness: finalCorrections ? "ready_with_corrections" : "ready",
+							items: finalCorrections
+								? [
+										{
+											id: "R8",
+											title: "Clarify wording",
+											action: "auto_fix",
+											reason: "Mechanical clarification",
+											priority: "P2",
+											scopeClass: "acceptance_required",
+											effortDelta: 0,
+											architectureDelta: 0,
+											estimateConfidence: "high",
+											failure: "Ambiguous wording",
+											lowestCostCorrection: "Clarify the wording",
+											requiresReviewerVerification: false,
+										},
+									]
+								: [],
 							baselineAssessment: {
 								independentEffortEstimate: 2,
 								confidence: "high",
@@ -571,6 +604,73 @@ describe("implementation completion boundaries", () => {
 						},
 					),
 				);
+				let architectureApprovalId: string | undefined;
+				if (architecture) {
+					const planGate = ok(
+						await cli(dir, ["review", "gate", "show", "--run", runId]),
+					);
+					const approval = ok(
+						await cli(dir, [
+							"review",
+							"decide",
+							"--run",
+							runId,
+							"--gate",
+							planGate.gateId,
+							"--choice",
+							"approve_architecture_burden",
+							"--approved-p",
+							"3",
+							"--rationale",
+							"Approve the bounded architecture increase",
+						]),
+					);
+					expect(approval.route).toBe("final_corrections");
+					architectureApprovalId = approval.decision.decisionId;
+				}
+				const preCorrectionCommit = amendmentCommit;
+				if (finalCorrections) {
+					amended = amended
+						.replace("| - | - | Implements", "| - | R8 | Implements")
+						.replace(
+							"Follow the correct offline behavior",
+							"Follow the clarified correct offline behavior",
+						);
+					writeFileSync(planPath, amended);
+					amendmentCommit = ok(
+						await cli(dir, [
+							"commit",
+							"--run",
+							runId,
+							"--phase",
+							"plan",
+							"--files",
+							planPath,
+							"-m",
+							"final wording corrections",
+						]),
+					).hash;
+					ok(
+						await cli(
+							dir,
+							[
+								"protocol",
+								"validate",
+								"author",
+								"--run",
+								runId,
+								"--record",
+								"--step",
+								"author:process-plan-review",
+								"--phase",
+								"plan",
+								"--iteration",
+								"1",
+							],
+							{ result: "complete", commit: amendmentCommit },
+						),
+					);
+				}
 				const budgetPath = join(
 					dir,
 					"docs/development/runs/governance",
@@ -608,9 +708,46 @@ describe("implementation completion boundaries", () => {
 					"Phase 1 contracts and shared design remain valid",
 				];
 				const before = readFileSync(budgetPath, "utf8");
+				if (finalCorrections) {
+					git(dir, "update-ref", "HEAD", preCorrectionCommit);
+					const unreachable = await cli(dir, [...recover, "--dry-run"]);
+					expect(unreachable.exitCode).not.toBe(0);
+					expect(unreachable.stdout).toContain("reachable ancestors");
+					git(dir, "update-ref", "HEAD", amendmentCommit);
+					writeFileSync(planPath, `${amended}\nUncommitted wording\n`);
+					expect((await cli(dir, [...recover, "--dry-run"])).stdout).toContain(
+						"exactly match",
+					);
+					writeFileSync(planPath, amended);
+					writeFileSync(
+						join(dir, "src/b.ts"),
+						"export const b = 'unreviewed';\n",
+					);
+					expect((await cli(dir, [...recover, "--dry-run"])).exitCode).not.toBe(
+						0,
+					);
+					git(dir, "add", "src/b.ts");
+					git(dir, "commit", "-m", "unreviewed code during preparation");
+					expect((await cli(dir, [...recover, "--dry-run"])).stdout).toContain(
+						"Non-workflow files changed",
+					);
+					git(dir, "update-ref", "HEAD", amendmentCommit);
+					git(
+						dir,
+						"restore",
+						"--source=HEAD",
+						"--staged",
+						"--worktree",
+						"src/b.ts",
+					);
+				}
 				expect(ok(await cli(dir, [...recover, "--dry-run"])).dryRun).toBe(true);
 				expect(readFileSync(budgetPath, "utf8")).toBe(before);
-				expect(ok(await cli(dir, recover)).created).toBe(true);
+				const receipt = ok(await cli(dir, recover));
+				expect(receipt.created).toBe(true);
+				expect(receipt.recovery.architectureApprovalId).toBe(
+					architectureApprovalId,
+				);
 				expect(ok(await cli(dir, recover)).created).toBe(false);
 				expect(
 					rows().find((row) => row.kind === "implementation-binding"),

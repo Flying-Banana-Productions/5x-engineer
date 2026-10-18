@@ -6,12 +6,17 @@ import {
 } from "../../../src/control-plane/index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../../../src/parsers/delivery-budget.js";
+import {
+	deriveBudget,
+	sumEffort,
+} from "../../../src/review-budget/arithmetic.js";
 import type { ImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import {
 	buildImplementationReviewPromptContext,
 	formatImplementationAuthorContext,
 } from "../../../src/review-governance/context.js";
+import { createReviewDecision } from "../../../src/review-governance/decisions.js";
 import { evaluateImplementationBoundary } from "../../../src/review-governance/implementation-boundary.js";
 import { recoverImplementationPlan } from "../../../src/review-governance/implementation-recovery.js";
 import {
@@ -20,7 +25,10 @@ import {
 	hashPlanBytes,
 	verifyImplementationReviewContext,
 } from "../../../src/review-governance/implementation-state.js";
-import { deriveOpenImplementationGate } from "../../../src/review-governance/store.js";
+import {
+	createReviewGovernanceStore,
+	deriveOpenImplementationGate,
+} from "../../../src/review-governance/store.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
@@ -81,7 +89,18 @@ function fixtureHash(value: unknown): string {
 	return hashPlanBytes(JSON.stringify(value, [...keys].sort()));
 }
 
-async function fixture() {
+async function fixture(
+	options: {
+		original?: string;
+		amended?: string;
+		finalCorrections?: boolean;
+		finalAuthorResult?: string;
+		approvedP?: number;
+		approvedWorkItemIds?: string[];
+	} = {},
+) {
+	const original = options.original ?? ORIGINAL;
+	const amended = options.amended ?? AMENDED;
 	const ctx = makeBudgetContext({ mode: "enforced" });
 	const append = (stream: "budget" | "steps", key: string, payload: unknown) =>
 		ctx.recordStore.append({
@@ -97,7 +116,7 @@ async function fixture() {
 			phase,
 			iteration,
 			result_json: result,
-			head_commit: COMMIT,
+			head_commit: (result as { commit?: string })?.commit ?? COMMIT,
 		});
 	const binding = ctx.store.saveImplementationBinding(
 		{
@@ -109,13 +128,13 @@ async function fixture() {
 			sourceSnapshotId: "source-snapshot",
 			sourceBaselineId: "source-baseline",
 			approvedPlanCommit: "b".repeat(40),
-			approvedPlanHash: hashPlanBytes(ORIGINAL),
-			approvedPlanBytes: ORIGINAL,
+			approvedPlanHash: hashPlanBytes(original),
+			approvedPlanBytes: original,
 			b0: 2,
 			governingB: 2,
 			mode: "enforced",
 			thresholds: DEFAULT_REVIEW_BUDGET_CONFIG,
-			ledger: ledger(ORIGINAL),
+			ledger: ledger(original),
 			effectiveDecisions: [],
 			phaseMap: [
 				{ id: "1", heading: "Foundation" },
@@ -123,7 +142,7 @@ async function fixture() {
 				{ id: "3", heading: "Verification" },
 			],
 			debtTargets: [],
-			ledgerHash: fixtureHash(ledger(ORIGINAL)),
+			ledgerHash: fixtureHash(ledger(original)),
 			decisionsHash: fixtureHash([]),
 			createdAt: "2026-01-01",
 		},
@@ -246,28 +265,121 @@ async function fixture() {
 	ctx.store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
-		parsed: ledger(AMENDED),
+		parsed: ledger(amended),
 		mode: "enforced",
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin: TEST_ORIGIN,
 	});
-	step("reviewer:plan", "plan", { readiness: "ready", items: [] });
+	const items = options.finalCorrections
+		? [
+				{
+					id: "R8",
+					title: "Clarify wording",
+					action: "auto_fix",
+					reason: "Mechanical wording",
+					priority: "P2",
+					scopeClass: "acceptance_required",
+					effortDelta: 0,
+					architectureDelta: 0,
+					failure: "Ambiguous wording",
+					lowestCostCorrection: "Clarify",
+					requiresReviewerVerification: false,
+				},
+			]
+		: [];
+	step("reviewer:plan", "plan", {
+		readiness: options.finalCorrections ? "ready_with_corrections" : "ready",
+		items,
+		governance: {
+			route:
+				options.approvedP !== undefined
+					? "human_gate"
+					: options.finalCorrections
+						? "final_corrections"
+						: "complete",
+		},
+	});
+	const findings = items.map((item) => ({
+		id: item.id,
+		effortDelta: 0,
+		architectureDelta: 0,
+		scopeClass: "acceptance_required" as const,
+		coupling: undefined,
+	}));
 	const snapshot = ctx.store.appendSnapshot({
 		runId: "run1",
 		stepName: "reviewer:plan",
 		phase: "plan",
 		iteration: 0,
-		currentLedger: ledger(AMENDED),
-		findings: [],
+		currentLedger: ledger(amended),
+		findings,
 		assessments: [],
+		derived: deriveBudget({
+			B0: sumEffort(ledger(amended).workItems),
+			B: sumEffort(ledger(amended).workItems),
+			I: null,
+			semanticHumanRequired: false,
+			workItems: ledger(amended).workItems,
+			findings,
+			assessments: [],
+			config: DEFAULT_REVIEW_BUDGET_CONFIG,
+		}),
 		origin: TEST_ORIGIN,
 	});
+	let architectureApprovalId: string | undefined;
+	if (options.approvedP !== undefined) {
+		const approval = createReviewDecision({
+			gateId: "architecture-gate",
+			snapshotId: snapshot.id,
+			choice: "approve_architecture_burden",
+			rationale: "Explicitly approve the amended architecture burden",
+			findingRefs: [],
+			evidence: [],
+			approvedScope: { retained: [], removed: [] },
+			architectureApproval: {
+				approvedP: options.approvedP,
+				approvedItemIds: [],
+				approvedWorkItemIds: options.approvedWorkItemIds ?? [],
+			},
+		});
+		createReviewGovernanceStore(ctx.recordStore).resolveGate({
+			runId: "run1",
+			decision: approval,
+			origin: TEST_ORIGIN,
+			humanStep: {
+				step_name: "human:review-governance",
+				phase: "plan",
+				iteration: 1,
+				result_json: {
+					decisionId: approval.decisionId,
+					gateId: approval.gateId,
+				},
+				head_commit: COMMIT,
+				patch_id: null,
+				diff_summary: null,
+				duration_ms: null,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				model: null,
+			},
+		});
+		architectureApprovalId = approval.decisionId;
+	}
+	const finalCommit = "c".repeat(40);
+	if (options.finalCorrections)
+		step(
+			"author:process-plan-review",
+			"plan",
+			{ result: options.finalAuthorResult ?? "complete", commit: finalCommit },
+			1,
+		);
 	const input = {
 		runId: "run1",
 		phase: "2",
 		authorizationId: decision.decision.decisionId,
 		snapshotId: snapshot.id,
-		commit: COMMIT,
+		commit: options.finalCorrections ? finalCommit : COMMIT,
 		scopeConfirmation:
 			"Only authorized timestamp policy and pending pagination; offline only",
 		preservedPhaseConfirmation:
@@ -277,13 +389,184 @@ async function fixture() {
 		recordStore: ctx.recordStore,
 		store: ctx.store,
 		origin: TEST_ORIGIN,
-		committedPlanBytes: AMENDED,
-		worktreePlanBytes: AMENDED,
+		committedPlanBytes: amended,
+		worktreePlanBytes: amended,
 	};
-	return { ctx, binding, observation, input, deps, step, append };
+	return {
+		ctx,
+		binding,
+		observation,
+		input,
+		deps,
+		step,
+		append,
+		architectureApprovalId,
+	};
 }
 
 describe("unfinished-frontier amendment recovery", () => {
+	test("accepts a completed final-correction author and descriptive Addresses changes after review", async () => {
+		const f = await fixture({ finalCorrections: true });
+		try {
+			f.deps.committedPlanBytes =
+				f.deps.worktreePlanBytes = `${AMENDED.replace("| - | - | Required |", "| - | R8 | Clarified wording |")}\nFinal wording.\n`;
+			const result = recoverImplementationPlan(f.input, f.deps);
+			expect(result.created).toBe(true);
+			expect(result.recovery.afterCommit).toBe("c".repeat(40));
+			expect(result.completionAuthorized).toBe(false);
+		} finally {
+			f.ctx.db.close();
+		}
+	});
+
+	for (const scenario of [
+		"incomplete author",
+		"earlier author",
+		"later author",
+		"later reviewer",
+		"unreviewed score",
+	] as const) {
+		test(`final corrections reject ${scenario}`, async () => {
+			const f = await fixture({
+				finalCorrections: true,
+				finalAuthorResult:
+					scenario === "incomplete author" ? "needs_human" : "complete",
+			});
+			try {
+				if (scenario === "earlier author") f.input.commit = COMMIT;
+				if (scenario === "later author")
+					f.step(
+						"author:process-plan-review",
+						"plan",
+						{ result: "complete", commit: "d".repeat(40) },
+						2,
+					);
+				if (scenario === "later reviewer")
+					f.step("reviewer:plan", "plan", { readiness: "ready", items: [] }, 1);
+				if (scenario === "unreviewed score")
+					f.deps.committedPlanBytes = f.deps.worktreePlanBytes =
+						AMENDED.replace("| 2 | 0 |", "| 2 | 1 |");
+				expect(() => recoverImplementationPlan(f.input, f.deps)).toThrow();
+				expect(
+					f.ctx.store.listImplementationTextAmendments("run1", "binding"),
+				).toEqual([]);
+			} finally {
+				f.ctx.db.close();
+			}
+		});
+	}
+
+	const architectureOriginal = ORIGINAL.replace(
+		"| W1 | Providers | 2 | 0 | - | - | Required |",
+		[
+			"| W16 | Providers | 2 | 2 | - | - | Required |",
+			...Array.from(
+				{ length: 7 },
+				(_, i) => `| W${i + 1} | Other ${i} | 1 | 3 | - | - | Required |`,
+			),
+		].join("\n"),
+	);
+	const architectureAmended = architectureOriginal.replace(
+		"| W16 | Providers | 2 | 2 | - | - | Required |",
+		"| W16 | Validation projection | 2 | 3 | - | R1 | Queue-state coupling |",
+	);
+	test("admits W16 2 → 3 / P23 → P24 with durable approval, including post-decision final corrections", async () => {
+		const f = await fixture({
+			original: architectureOriginal,
+			amended: architectureAmended,
+			approvedP: 24,
+			finalCorrections: true,
+		});
+		try {
+			f.deps.committedPlanBytes = f.deps.worktreePlanBytes = architectureAmended
+				.replace(
+					"| R1 | Queue-state coupling |",
+					"| R1, R8 | Clarified queue-state coupling |",
+				)
+				.replace(
+					"| Validation projection |",
+					"| Public validation projection |",
+				);
+			const history = f.ctx.recordStore.listLines("run1", "steps");
+			const decisions = f.ctx.recordStore.listLines("run1", "decisions");
+			const result = recoverImplementationPlan(f.input, f.deps);
+			expect(result.recovery.architectureApprovalId).toBe(
+				f.architectureApprovalId,
+			);
+			expect(result.completionAuthorized).toBe(false);
+			expect(result.nextAction).toBe("implementation_corrections");
+			const rebuilt = createReviewBudgetStore(f.ctx.recordStore);
+			expect(
+				rebuilt.listImplementationTextAmendments("run1", "binding"),
+			).toEqual([result.recovery]);
+			expect(rebuilt.getImplementationBinding("run1")).toEqual(f.binding);
+			expect(f.ctx.recordStore.listLines("run1", "steps")).toEqual(history);
+			expect(f.ctx.recordStore.listLines("run1", "decisions")).toEqual(
+				decisions,
+			);
+			expect(
+				recoverImplementationPlan(f.input, f.deps).recovery
+					.architectureApprovalId,
+			).toBe(f.architectureApprovalId);
+		} finally {
+			f.ctx.db.close();
+		}
+	});
+
+	for (const scenario of [
+		"missing approval",
+		"unpaired approval",
+		"insufficient ceiling",
+		"uncovered item",
+		"effort",
+		"surface",
+		"debt",
+	] as const) {
+		test(`architecture recovery rejects ${scenario}`, async () => {
+			const amended =
+				scenario === "uncovered item"
+					? architectureAmended.replace("| 2 | 3 |", "| 2 | 5 |")
+					: architectureAmended;
+			const f = await fixture({
+				original: architectureOriginal,
+				amended,
+				approvedP:
+					scenario === "missing approval"
+						? undefined
+						: scenario === "insufficient ceiling"
+							? 23
+							: 30,
+			});
+			try {
+				if (scenario === "unpaired approval") {
+					const list = f.ctx.recordStore.listLines.bind(f.ctx.recordStore);
+					f.ctx.recordStore.listLines = (runId, stream) =>
+						list(runId, stream).filter(
+							(line) =>
+								stream !== "steps" ||
+								(line.payload as { result_json?: { decisionId?: string } })
+									.result_json?.decisionId !== f.architectureApprovalId,
+						);
+				}
+				if (scenario === "effort")
+					f.deps.committedPlanBytes = f.deps.worktreePlanBytes =
+						amended.replace("| 2 | 3 |", "| 3 | 3 |");
+				if (scenario === "surface")
+					f.deps.committedPlanBytes = f.deps.worktreePlanBytes =
+						amended.replace("Production files: 1", "Production files: 2");
+				if (scenario === "debt")
+					f.deps.committedPlanBytes = f.deps.worktreePlanBytes =
+						amended.replace("| 2 | 3 |", "| 2 | -1 |");
+				expect(() => recoverImplementationPlan(f.input, f.deps)).toThrow();
+				expect(
+					f.ctx.store.listImplementationTextAmendments("run1", "binding"),
+				).toEqual([]);
+			} finally {
+				f.ctx.db.close();
+			}
+		});
+	}
+
 	test("extends legacy recovery through repeated same-phase and later-frontier amendments", async () => {
 		const f = await fixture();
 		try {

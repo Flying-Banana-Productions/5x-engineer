@@ -12,8 +12,10 @@ import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js"
 import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
+import type { ReviewerVerdict } from "../protocol.js";
 import type { ImplementationPlanRecoveryPayload } from "../review-budget/record-lines.js";
 import { decodeImplementationPlanRecoveryPayload } from "../review-budget/record-lines.js";
+import { applicableArchitectureApproval } from "./architecture-approval.js";
 import {
 	classifyDecisionAcceptance,
 	listImplementationDecisions,
@@ -23,6 +25,7 @@ import {
 	hashPlanBytes,
 	normalizeCheckboxState,
 } from "./implementation-state.js";
+import { routeAfterDecision } from "./routing.js";
 import { createReviewGovernanceStore } from "./store.js";
 
 export interface RecoverImplementationPlanInput {
@@ -39,6 +42,103 @@ export interface RecoverImplementationPlanInput {
 
 function reject(message: string): never {
 	throw new CliError("IMPLEMENTATION_RECOVERY_UNSUPPORTED", message);
+}
+
+/** Shared by Git admission and durable admission; never infer a final pass from prose. */
+export function implementationRecoveryReview(
+	input: RecoverImplementationPlanInput,
+	recordStore: RecordStore,
+	store: ReviewBudgetStore,
+) {
+	const snapshot = store.latestSnapshot(input.runId);
+	if (
+		!snapshot ||
+		snapshot.id !== input.snapshotId ||
+		snapshot.phase !== "plan"
+	)
+		reject("The latest same-run plan-review snapshot is required.");
+	const steps = recordStore
+		.listLines(input.runId, "steps")
+		.map((line) => line.payload as StepRecordPayload);
+	const reviewerIndex = steps.findIndex(
+		(step) =>
+			step.step_name === snapshot.stepName &&
+			step.phase === "plan" &&
+			step.iteration === snapshot.iteration,
+	);
+	const verdict = steps[reviewerIndex]?.result_json as
+		| (ReviewerVerdict & {
+				governance?: { route?: string };
+		  })
+		| undefined;
+	const governance = createReviewGovernanceStore(recordStore);
+	const governing = governance.deriveGoverningState(
+		input.runId,
+		store.getBaseline(input.runId)?.b0 ?? 0,
+	);
+	let route = verdict?.governance?.route;
+	const decision = governing.history.at(-1);
+	if (verdict && decision?.snapshotId === snapshot.id) {
+		route = routeAfterDecision({
+			latestVerdict: verdict,
+			latestBudgetSnapshot: snapshot,
+			newGoverningState: governing,
+			decision,
+		});
+	}
+	const finalCorrections = route === "final_corrections";
+	const authorIndex = steps.findIndex(
+		(step) =>
+			step.phase === "plan" &&
+			step.step_name.startsWith("author:") &&
+			(step.result_json as { commit?: string } | null)?.commit === input.commit,
+	);
+	const author = steps[authorIndex]?.result_json as
+		| { result?: string }
+		| undefined;
+	const routeDecisionIndex =
+		decision?.snapshotId === snapshot.id
+			? steps.findIndex(
+					(step) =>
+						(step.result_json as { decisionId?: string } | null)?.decisionId ===
+						decision.decisionId,
+				)
+			: reviewerIndex;
+	const humanIndex = steps.findIndex(
+		(step) =>
+			(step.result_json as { decisionId?: string } | null)?.decisionId ===
+			input.authorizationId,
+	);
+	const laterPlanPasses = steps
+		.slice(reviewerIndex + 1)
+		.filter(
+			(step) =>
+				step.phase === "plan" && /^(author|reviewer):/.test(step.step_name),
+		);
+	if (
+		humanIndex < 0 ||
+		reviewerIndex <= humanIndex ||
+		authorIndex <= humanIndex ||
+		author?.result !== "complete" ||
+		(Boolean(steps[authorIndex]?.head_commit) &&
+			steps[authorIndex]?.head_commit !== input.commit) ||
+		(finalCorrections
+			? authorIndex <= Math.max(reviewerIndex, routeDecisionIndex) ||
+				laterPlanPasses.length !== 1 ||
+				laterPlanPasses[0] !== steps[authorIndex]
+			: reviewerIndex <= authorIndex ||
+				verdict?.readiness !== "ready" ||
+				!Array.isArray(verdict.items) ||
+				verdict.items.length > 0 ||
+				laterPlanPasses.length > 0) ||
+		governing.aborted ||
+		governance.deriveOpenGate(input.runId)
+	) {
+		reject(
+			"Recovery requires authorization, a coupled ready/empty review or durable final_corrections route, and its completed committed author pass, with no later plan pass or open plan gate.",
+		);
+	}
+	return { snapshot, governing, finalCorrections, reviewerIndex, steps };
 }
 
 /** No Git/subprocesses here. The command verifies the exact committed bytes. */
@@ -226,77 +326,73 @@ export function recoverImplementationPlan(
 	}
 	const parsed = parseDeliveryBudget(deps.committedPlanBytes);
 	if (!parsed.ok) reject(parsed.message);
-	// Addresses/rationale may document the amendment; numeric scope and credit cannot change.
-	const contract = (ledger: typeof binding.ledger) => ({
+	const previousLedger = parseDeliveryBudget(drift.authorizedBytes);
+	if (!previousLedger.ok) reject(previousLedger.message);
+	const { snapshot, governing, finalCorrections } =
+		implementationRecoveryReview(input, recordStore, store);
+	// Descriptions may document approved architecture changes; effort/surface/credit stay fixed.
+	const contract = (
+		ledger: typeof binding.ledger,
+		architecture = true,
+		title = true,
+	) => ({
 		surface: ledger.surface,
 		workItems: ledger.workItems.map((item) => ({
 			id: item.id,
-			title: item.title,
+			...(title ? { title: item.title } : {}),
 			effort: item.effort,
-			architectureDelta: item.architectureDelta,
+			...(architecture ? { architectureDelta: item.architectureDelta } : {}),
 			debtClaim: item.debtClaim,
 		})),
 	});
+	const architectureChanged =
+		JSON.stringify(contract(previousLedger.value)) !==
+		JSON.stringify(contract(parsed.value));
+	const architectureApprovalId = architectureChanged
+		? applicableArchitectureApproval({
+				P: parsed.value.workItems.reduce(
+					(total, item) => total + Math.max(0, item.architectureDelta),
+					0,
+				),
+				approvals: governing.architectureApprovals.filter((approval) =>
+					governing.history.some(
+						(decision) =>
+							decision.decisionId === approval.decisionId &&
+							decision.snapshotId === snapshot.id,
+					),
+				),
+				itemIds: [],
+				workItemIds: parsed.value.workItems
+					.filter(
+						(item) =>
+							item.architectureDelta >=
+							binding.thresholds.singleArchitectureReviewPoints,
+					)
+					.map((item) => item.id),
+			})
+		: undefined;
 	if (
-		binding.ledger.workItems.some(
+		[...previousLedger.value.workItems, ...parsed.value.workItems].some(
 			(item) => item.debtClaim || item.architectureDelta < 0,
 		) ||
-		JSON.stringify(contract(binding.ledger)) !==
-			JSON.stringify(contract(parsed.value))
+		JSON.stringify(contract(previousLedger.value, false, false)) !==
+			JSON.stringify(contract(parsed.value, false, false)) ||
+		(architectureChanged && !architectureApprovalId)
 	) {
 		reject(
-			"Frontier recovery requires unchanged work-item IDs, scores and surface, and no debt claims. Baseline/policy cannot change.",
+			"Frontier recovery requires unchanged work-item IDs, effort and surface, and no debt claims. Architecture/title changes require a covering durable architecture approval on this snapshot. Baseline/policy cannot change.",
 		);
 	}
-	const snapshot = store.latestSnapshot(input.runId);
 	if (
-		!snapshot ||
-		snapshot.id !== input.snapshotId ||
-		snapshot.phase !== "plan" ||
-		JSON.stringify(snapshot.currentLedger) !== JSON.stringify(parsed.value)
+		finalCorrections
+			? JSON.stringify(
+					contract(snapshot.currentLedger, true, !architectureApprovalId),
+				) !==
+				JSON.stringify(contract(parsed.value, true, !architectureApprovalId))
+			: JSON.stringify(snapshot.currentLedger) !== JSON.stringify(parsed.value)
 	) {
 		reject(
 			"The latest same-run plan-review snapshot must match the amended ledger exactly.",
-		);
-	}
-	const reviewerIndex = parsedSteps.findIndex(
-		(step) =>
-			step.step_name === snapshot.stepName &&
-			step.phase === "plan" &&
-			step.iteration === snapshot.iteration,
-	);
-	const reviewer = parsedSteps[reviewerIndex];
-	const verdict = reviewer?.result_json as
-		| { readiness?: string; items?: unknown[] }
-		| undefined;
-	const authorIndex = parsedSteps.findIndex(
-		(step) =>
-			step.phase === "plan" &&
-			step.step_name.startsWith("author:") &&
-			(step.result_json as { commit?: string } | null)?.commit === input.commit,
-	);
-	const humanIndex = parsedSteps.findIndex(
-		(step) =>
-			(step.result_json as { decisionId?: string } | null)?.decisionId ===
-			input.authorizationId,
-	);
-	if (
-		humanIndex < 0 ||
-		authorIndex <= humanIndex ||
-		reviewerIndex <= authorIndex ||
-		verdict?.readiness !== "ready" ||
-		!Array.isArray(verdict.items) ||
-		verdict.items.length ||
-		parsedSteps
-			.slice(reviewerIndex + 1)
-			.some(
-				(step) =>
-					step.phase === "plan" && /^(author|reviewer):/.test(step.step_name),
-			) ||
-		createReviewGovernanceStore(recordStore).deriveOpenGate(input.runId)
-	) {
-		reject(
-			"Recovery requires authorization → committed plan author → coupled ready/empty plan review, with no later plan author/reviewer or open plan gate.",
 		);
 	}
 	const parent = existing.at(-1);
@@ -305,6 +401,7 @@ export function recoverImplementationPlan(
 		version: 1,
 		id,
 		...intent,
+		...(architectureApprovalId ? { architectureApprovalId } : {}),
 		executionRunId: input.runId,
 		guardId: null,
 		sourceObservationId: source.id,

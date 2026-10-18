@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import type { StepRecordPayload } from "../control-plane/record-types.js";
 import { CliError } from "../output.js";
 import {
 	assertCleanCodeWorktree,
@@ -10,6 +9,7 @@ import {
 	workdirCodeDiffGit,
 } from "../review-governance/code-diff.js";
 import {
+	implementationRecoveryReview,
 	type RecoverImplementationPlanInput,
 	recoverImplementationPlan,
 } from "../review-governance/implementation-recovery.js";
@@ -91,16 +91,8 @@ export async function recoverImplementationPlanCommand(
 			"IMPLEMENTATION_RECOVERY_UNSUPPORTED",
 			"The frontier has no recorded implementation review context.",
 		);
-	const steps = ctx.recordStore
-		.listLines(input.runId, "steps")
-		.map((line) => line.payload as StepRecordPayload);
-	const snapshot = ctx.store.latestSnapshot(input.runId);
-	const reviewerIndex = steps.findIndex(
-		(step) =>
-			step.step_name === snapshot?.stepName &&
-			step.phase === snapshot?.phase &&
-			step.iteration === snapshot?.iteration,
-	);
+	const { steps, reviewerIndex, finalCorrections } =
+		implementationRecoveryReview(input, ctx.recordStore, ctx.store);
 	const reviewBoundary = steps
 		.slice(0, reviewerIndex)
 		.reverse()
@@ -111,23 +103,36 @@ export async function recoverImplementationPlanCommand(
 	const head = await readHeadCommit(git);
 	if (
 		!boundaryCommit ||
-		!(await isCodeAncestor(git, commit, boundaryCommit)) ||
-		!(await isCodeAncestor(git, boundaryCommit, head))
+		!(await isCodeAncestor(git, commit, head)) ||
+		!(await isCodeAncestor(git, boundaryCommit, head)) ||
+		!(await isCodeAncestor(git, source.reviewedCommit, commit)) ||
+		!(await isCodeAncestor(
+			git,
+			finalCorrections ? boundaryCommit : commit,
+			finalCorrections ? commit : boundaryCommit,
+		))
 	) {
 		throw new CliError(
 			"IMPLEMENTATION_RECOVERY_UNSUPPORTED",
 			"The amendment and recorded pre-review commit must be reachable ancestors of HEAD.",
 		);
 	}
-	// Only existing excluded plan/review/run paths may change after the author.
+	// Only existing excluded plan/review/run paths may change during preparation.
 	// The plan itself is checked exactly below; shared design docs are not excluded.
 	await assertCleanCodeWorktree(git, source.excludedPaths);
 	if (
-		(await changedCodePaths(git, commit, head, source.excludedPaths)).length
+		(
+			await changedCodePaths(
+				git,
+				source.reviewedCommit,
+				head,
+				source.excludedPaths,
+			)
+		).length
 	) {
 		throw new CliError(
 			"IMPLEMENTATION_RECOVERY_UNSUPPORTED",
-			"Non-workflow files changed after the amendment commit. Obtain a fresh scoped review before recovery.",
+			"Non-workflow files changed during amendment preparation. Obtain a fresh scoped review before recovery.",
 		);
 	}
 	const planPath = ctx.executionContext.run.plan_path;
@@ -140,7 +145,10 @@ export async function recoverImplementationPlanCommand(
 		planPath,
 		{ repoRoot: ctx.executionContext.controlPlaneRoot },
 	);
-	if (committedPlanBytes === null || boundaryPlan !== committedPlanBytes) {
+	if (
+		committedPlanBytes === null ||
+		(!finalCorrections && boundaryPlan !== committedPlanBytes)
+	) {
 		throw new CliError(
 			"IMPLEMENTATION_RECOVERY_UNSUPPORTED",
 			"The recorded pre-review plan does not match the amendment commit.",

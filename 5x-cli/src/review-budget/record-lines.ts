@@ -337,6 +337,8 @@ export interface ImplementationPlanRecoveryPayload
 	guardId: null;
 	authorizationId: string;
 	snapshotId: string;
+	/** Same-run durable approval covering admitted architecture/title changes. */
+	architectureApprovalId?: string;
 	phase: string;
 	scopeConfirmation: string;
 	preservedPhaseConfirmation: string;
@@ -372,6 +374,14 @@ export function decodeImplementationPlanRecoveryPayload(
 		guardId: null,
 		authorizationId: stringField(value.authorizationId, "authorizationId"),
 		snapshotId: stringField(value.snapshotId, "snapshotId"),
+		...(value.architectureApprovalId === undefined
+			? {}
+			: {
+					architectureApprovalId: stringField(
+						value.architectureApprovalId,
+						"architectureApprovalId",
+					),
+				}),
 		phase: stringField(value.phase, "phase"),
 		scopeConfirmation: stringField(
 			value.scopeConfirmation,
