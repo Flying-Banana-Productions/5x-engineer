@@ -1,19 +1,19 @@
 # Implementation Plan Amendments — Same-Run Approval Lineage and Revision-Aware Evidence
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** October 8, 2026
-**Status:** Draft — pending review; required follow-up after plan 210 is merged
-**Execution order:** Merge completed plan 210, review and approve this plan, then execute this follow-up in a separate implementation branch.
+**Status:** Draft — revised after merged plan 210; pending review
+**Execution order:** Review and approve this plan against merged plan 210, then execute this follow-up in a separate implementation branch.
 
 ## Executive Summary
 
 Add a supported operation for registering a human-authorized, reviewer-approved semantic plan amendment during an existing implementation run. Preserve the original execution binding, budget baseline, run identity, and code history; append a revision that updates the approved plan and ledger and explicitly governs which earlier evidence remains applicable. Author admission, prompts, review validation, claim reconciliation, gates, and run state must consume the same effective revision.
 
-This is a required follow-up to [plan 210](./210-implementation-review-governance-plan.md), not additional implementation scope for its current branch. The current branch carries this document for review only.
+This is a required follow-up to merged [plan 210](./210-implementation-review-governance-plan.md). Documentation revision/review may occur on main; product implementation belongs in a separate implementation branch.
 
 ### Scope
 
-**In scope:** same-run amendment registration; explicit human/approval provenance; immutable revision lineage; unchanged baseline and pinned policy; affected-phase invalidation; reviewed evidence carry; amendment-resolved findings; revision-aware text amendments, gates, contexts and claim assessments; dry-run/receipt/state output; recovery and orchestration documentation.
+**In scope:** same-run amendment registration; explicit human/approval provenance; immutable revision lineage; unchanged baseline and pinned policy; affected-phase invalidation; reviewed evidence carry; amendment-resolved findings; revision-aware text amendments, gates, contexts and claim assessments; retirement of the frontier recovery mutation command with historical record support; upgrade discovery/validation/reporting; dry-run/receipt/state output; recovery and orchestration documentation.
 
 **Out of scope:** arbitrary phase renumbering/reordering; automatic semantic impact detection; implicit rebinding; retrospective inference from freeform approval summaries; baseline resets; a new budget formula; importing approval from unrelated plans; application/provider operations; operational handoffs for existing project runs.
 
@@ -21,17 +21,18 @@ This is a required follow-up to [plan 210](./210-implementation-review-governanc
 
 ### Observed implementation gap
 
-At inspected branch commit `76938df0d5565ff4b02a72516ecbda3f8c68bf38`:
+The original gap was inspected at `76938df0d5565ff4b02a72516ecbda3f8c68bf38`. Plan 210 subsequently merged through `f3a8d67` (PR #33), including repeated frontier recovery (`a15d7b9`). The integrated documentation-review base is `aeaabb1`; Phase 0 must reconcile any later integration changes. Current seams:
 
 | Existing seam | Current behavior / required extension |
 |---|---|
-| `src/commands/review.ts` | `review implementation bind` accepts only execution/source run IDs. No amendment registration command exists. |
-| `src/review-governance/implementation-state.ts` | Existing binding admission rejects a different source with `IMPLEMENTATION_BINDING_CONFLICT`; other semantic edits produce `IMPLEMENTATION_PLAN_DRIFT`. The error mentions human-approved amendment provenance without exposing an input for it. |
-| `src/control-plane/review-budget-store.ts` | `getImplementationBinding` reads one immutable binding by its run key. Text amendments are separately replayed; semantic successor revisions are absent. |
+| `src/commands/review.ts`, `implementation-recovery.handler.ts` | Initial `bind` remains source-run based. Operator-driven `recover-plan` now admits a constrained semantic amendment; replace that mutation path with unified `amend`. |
+| `src/review-governance/implementation-state.ts` | Existing binding admission rejects a different source with `IMPLEMENTATION_BINDING_CONFLICT`; unregistered semantic edits produce `IMPLEMENTATION_PLAN_DRIFT`. Remediation now points to narrow frontier recovery, which cannot handle general revision/carry/claim changes. |
+| `src/control-plane/review-budget-store.ts` | `getImplementationBinding` reads one immutable binding. `listImplementationTextAmendments` also folds `implementation-plan-recovery` records into authorized byte lineage; no general effective revision abstraction exists. |
 | `src/review-governance/plan-amendment.ts` | Guarded text-only amendments protect design, structure, budget and debt-claim bytes. They cannot authorize changed campaign routing or withdrawn credit. |
 | `src/review-governance/store.ts` | `authorize_amendment` resolves its gate and pauses for amendment; it does not register the reviewed result. |
 | `src/review-governance/context.ts`, `implementation.ts`, `implementation-boundary.ts` | Findings and evidence are mostly qualified by binding and phase, not an effective plan revision. |
 | `src/review-governance/implementation-state.ts` | Initial source selection requires a completed plan-review run with a finalized commit. A plan review recorded inside an active execution is not that source. |
+| `src/review-governance/implementation-recovery.ts`, `context.ts`, `implementation-boundary.ts` | Repeated frontier recoveries preserve the ledger/baseline and findings, invalidate affected contexts/observations, and change routing/state. Historical committed receipts must remain readable without retaining a second amendment authority. |
 
 Changing live configuration to advisory cannot repair lineage: existing bindings pin their mode, and plan-drift admission checks apply to advisory bindings too.
 
@@ -67,7 +68,7 @@ Proposed command, not a shipped API:
 
 `--resolves` is optional and repeatable; IDs are resolved against the source phase/observation, never globally. `--from-phase` is required. Removing `--dry-run` records registration. Accept numeric step IDs as local convenience and a portable run-qualified step-key selector for rebuild/no-index use; persist only authoritative journal identities, not SQLite IDs, line offsets or timestamps. Human and approval records must belong to the execution run in the first release.
 
-Accept affirmative recorded `human:gate` authorization or an accepted typed `authorize_amendment` decision plus its coupled human step. Verify record identity, acceptance/disposition and referenced scope; do not infer permission from keywords in freeform prose. Referencing a generic authorization is an explicit operator-directed registration action, not autonomous interpretation of an arbitrary `continue` record. Orchestration guidance must require actual operator authorization and expose all claimed effects in dry-run output.
+For the first release, accept only an accepted, unsuperseded typed `authorize_amendment` decision plus its coupled human step. `--human-step` selects that coupled step, from which the exact decision is resolved. Verify binding/revision applicability, phase/observation/finding fingerprints, acceptance, ordering and authorized scope against the proposed amendment. A generic `human:gate`, including `continue` or `override`, does not qualify. Proactive amendments without an eligible typed authorization are unsupported in this release; do not manufacture an implementation finding to obtain one. Orchestration guidance must require actual operator authorization and expose all claimed effects in dry-run output.
 
 The approval may be a coupled plan review within the active execution run. That path validates its committed blob and snapshot directly; it does not relax the finalized-source requirements for initial `bind`.
 
@@ -85,6 +86,8 @@ Registration requires an active run, a valid binding/revision chain, accepted hu
 
 Baseline/threshold/mode discrepancies in the execution run's separate plan-review snapshot cannot replace execution policy. Validate registration under the original pinned policy; in enforced mode unresolved new budget/semantic gates require existing typed decisions, while advisory diagnostics remain nonblocking. Proposed lineage must not imply that approval of a document certifies the changed implementation.
 
+Amendment review must explicitly override the ordinary final-correction shortcut: a `final_corrections` author pass that changes assessed bytes cannot register using the preceding assessment. Within the still-active execution run, record the corrected author commit, render a continued scoped amendment review against that exact hash and unchanged predecessor, and obtain a new coupled assessment/approval before registration. Do not seal the execution run as a plan-only review. Amendment-specific CLI routing and native/invoke guidance must require this reassessment rather than telling the orchestrator to stop after final corrections; initial plan-review behavior remains unchanged. Cover correction → reassessment → registration in acceptance tests.
+
 ### 5. Budget continuity and claim identity
 
 Preserve original source/baseline provenance, `B0`, governing `B`, pinned mode and thresholds. Recompute the effective ledger's budget using canonical arithmetic. The amendment review's independent estimate is evidence, not a replacement baseline. Any baseline change must occur through an explicit existing budget decision and be independently referenced, not through this command's flags.
@@ -95,7 +98,7 @@ For the triggering scenario, DC1 is withdrawn without credit; DC0 remains only t
 
 ### 6. Preserve work; requalify authority
 
-Retain run ID, worktree mapping, code commits, exact pre-author baselines, review-cycle history and audit records. Existing evidence lacking a revision field belongs to the initial revision; never relabel it as current on decode.
+Retain run ID, worktree mapping, code commits, exact pre-author baselines, review-cycle history and audit records. Existing evidence lacking a revision field belongs to the initial revision only when no legacy recovery boundary intervenes; for recovered runs use the deterministic attribution rules in Decision 9. Never relabel evidence as the latest revision merely because it lacks a field.
 
 For phases at or after the affected boundary, old completion reviews, correction shortcuts, contexts and claim reconciliations cannot authorize completion under the new revision. Earlier approvals carry only through the explicit validated assessment. Carry records reference source evidence; they do not rewrite it or fabricate new reviews. Every affected phase requires ordinary quality and reviewer re-entry before completion, including phases that previously had `phase:complete` records. Admission/progress and final sealing must honor the new evidence disposition, not checked boxes or old progress shortcuts.
 
@@ -115,25 +118,37 @@ Show original binding/source provenance separately from effective revision/plan 
 
 All current admission, template render, invoke, protocol validation, correction finish, decision acceptance, phase/run completion and active/archived state use the effective revision helpers. Fix raw binding scans in gate fingerprinting and closure readers; changing only `getImplementationBinding` would leave inconsistent authority. Rebuilds decode the new kind without projecting it as a plan baseline/snapshot. No SQLite schema migration is expected; verify this assumption against integrated 210. Document the minimum toolchain requirement for amended runs. The new reader rejects unsupported revision versions; do not claim an already-released older CLI can be retrofitted by a new record. Older binaries may continue reporting drift or ignore unfamiliar records and must not be used to execute amended runs.
 
+### 9. Retire recovery mutation; preserve historical recovery authority
+
+Remove `review implementation recover-plan` and its independent registration handler once `amend` supports its scenarios. Retain strict decoding of committed `implementation-plan-recovery` receipts, including the original single-recovery key and later authorization-scoped keys. The canonical effective fold interprets each receipt as a deterministic `legacy_frontier_recovery` revision, using the durable receipt identity and parent/hash/commit chain. Preserve its original authorization, operator attestations, immutable ledger/baseline/policy, invalidated contexts/observations, pending findings and code-review history. Historical recovery acceptance is grandfathered under its original contract; it is not a new amendment approval and has no synthetic `amendmentAssessment`.
+
+Consolidate recovery-specific admission, context, routing and boundary branches into this fold. Attribute revision-less historical evidence using authoritative journal ordering, causal references and recorded invalidation sets at each recovery boundary. Compare the resulting evidence applicability with the former recovery behavior, including carried earlier phases and reviews recorded between repeated recoveries. Do not compare timestamps or invent a total order across independent streams. Phase 0 must establish the exact causal attribution algorithm from existing record identities; if those records cannot unambiguously establish authority, fail closed for the affected run with a diagnostic identifying the evidence and required explicit repair/review. Do not silently assign everything to the initial or latest revision.
+
+The final legacy recovery is a valid predecessor for a new-format amendment. All newly registered semantic amendments require the new authorization/assessment contract; legacy attestations cannot authorize additional changes. Guarded text amendments may precede, follow or occur between legacy recoveries and semantic revisions, with their original anchor checks preserved.
+
+`5x upgrade` discovers affected runs from authoritative configured record roots, including completed/archived runs without requiring source worktrees or an existing index. Report recovery identities, lineage validity, compatibility/readiness to resume, actionable malformed/ambiguous-history diagnostics, and minimum CLI/workflow-asset requirements. Readiness here is compatibility to resume, never implementation completion approval. Discovery does not resume runs, rewrite/replace committed journal lines, append synthetic approvals, or auto-commit project history. No durable bridge/import record is planned: historical decoding supplies the transition. If implementation demonstrates a bridge is necessary, revise this plan and its schema/surface estimates first; any future bridge must reference original receipts idempotently and preserve only their historical authority.
+
+Reuse the existing recovery validation and regression scenarios under unified amendment registration; remove recovery-specific output/guidance in favor of effective revision history with explicit legacy provenance. Do not operate on a real project's run as a migration test.
+
 ## Delivery Budget
 
 - Estimate confidence: medium
 
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
-| W1 | Versioned amendment records and canonical effective revision fold | 5 | 2 | - | - | Adds durable lineage and an execution-state abstraction over existing RecordStore streams, including rebuild/compatibility tests. |
+| W1 | Versioned amendment records and canonical effective revision fold | 8 | 2 | - | - | Adds durable lineage and an execution-state abstraction over existing RecordStore streams, including historical recovery attribution and rebuild/compatibility tests. |
 | W2 | Exact approval provenance and atomic registration command | 5 | 1 | - | - | Extends paired mutation/CAS across human, reviewer, Git and revision evidence; includes dry-run, duplicate and concurrent tests. |
 | W3 | Reviewed impact assessment and effective finding continuity | 5 | 1 | - | - | Adds a plan-domain protocol contract and revision-aware finding/carry semantics across prompts and closure. |
 | W4 | Revision-aware admission, contexts, gates and completion | 5 | 1 | - | - | Threads one effective state through execution boundaries without replacing history or resetting pre-author ranges. |
 | W5 | Claim withdrawal and conservative evidence carry | 3 | 0 | - | - | Extends existing reconciliation/contract comparisons without another scoring model or authority. |
-| W6 | State, orchestration guidance and integrated acceptance | 3 | 0 | - | - | Publishes effective/history provenance and the complete workflow in all delegation variants, with end-to-end recovery tests. |
+| W6 | State, upgrade transition, orchestration guidance and integrated acceptance | 5 | 0 | - | - | Publishes effective/history provenance, authoritative legacy discovery, command retirement and the complete workflow in all delegation variants, with installed-asset and end-to-end transition tests. |
 
 Tests belong to their implementation item. No debt credit is claimed for this additional governance machinery.
 
 ### Surface Snapshot
 
 - Subsystems: 6
-- Production files: 26
+- Production files: 30
 - Persistent/external boundaries: 2
 - New shared abstractions: 2
 - New persistent schemas: 1
@@ -166,6 +181,8 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 - [ ] Verify plan 210 is completed and merged; record the integrated commit and interface reconciliation in run records, not unapproved structural plan edits.
 - [ ] Confirm binding, closure, gate, text-lineage, credit and archived-state readers; inventory raw record scans that need effective-revision semantics.
+- [ ] Reconcile legacy recovery codecs/keys, repeated recovery and text-lineage ordering; specify deterministic cross-stream causal evidence attribution and fail-closed ambiguity diagnostics before implementing the fold.
+- [ ] Confirm upgrade can discover active/completed/archived authoritative records without SQLite or source worktrees; inventory retirement of recovery-only command/handler/state branches while retaining historical decoding.
 - [ ] Verify atomic append plus existing mutation lock/CAS covers approval/predecessor revalidation; resolve any gap by revising this plan before implementation.
 - [ ] Verify reviewed impact assessment contract and portable step selector fit existing protocol/parser conventions; confirm no SQLite migration is needed.
 
@@ -174,9 +191,10 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 **Completion gate:** Pure record/assessment codecs and effective revision fold reconstruct valid lineage and reject ambiguous or corrupt authority without changing existing runs.
 
 - [ ] Define amendment payload, initial/current revision identities, portable evidence references, strict codecs, and rebuild kind handling.
-- [ ] Add optional revision qualification to implementation evidence; omitted fields map only to the initial revision.
+- [ ] Add optional revision qualification to implementation evidence; omitted fields use initial-revision fallback only absent intervening legacy recovery, otherwise use Decision 9's causal attribution.
 - [ ] Add plan-only `amendmentAssessment` schema/help/normalization and reviewer prompt context containing trusted predecessor/hash/diff.
 - [ ] Implement effective execution/finding/evidence fold with explicit carry, invalidation and amendment-resolution dispositions.
+- [ ] Fold original-format and repeated frontier recovery receipts as explicitly legacy revisions; reconstruct evidence between boundaries without synthetic reviewer assessments or history rewrites.
 - [ ] Cover unknown versions, missing causal pairs, forked predecessor chains, wrong hashes, phase identity changes, and old-run compatibility.
 
 ## Phase 2: Provenance Validation and Registration (W2)
@@ -185,6 +203,7 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 - [ ] Add `review implementation amend` options/help and framework-independent handler using existing command context and canonical plan identity.
 - [ ] Validate active run, accepted human reference, coupled scoped plan approval, exact committed blob/ledger and current revision/hash.
+- [ ] Require typed `authorize_amendment` and its coupled human step; reject generic continue/override, unrelated or superseded authorizations, and effects outside authorized scope.
 - [ ] Require requested phase/finding dispositions to match the reviewer assessment; reject unresolved approval gates and unsupported credit/phase changes.
 - [ ] Derive preview output without authoritative writes; pair receipt/record through shared admission/finalization and read back the winner.
 - [ ] Test retry after partial local projection, changed-intent conflicts, competing amendments, concurrent reviewers/decisions, stale plan/head and missing authorization.
@@ -194,6 +213,8 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 **Completion gate:** A registered amendment permits correctly scoped author admission but cannot reuse affected completion authority or obsolete credit.
 
 - [ ] Route author admission, render/invoke/protocol paths and text-lineage replay through effective state without resetting binding/pre-author identities.
+- [ ] Replace recovery-specific authority/routing branches with the canonical fold and remove the independent `recover-plan` mutation path; preserve historical acceptance and allow legacy-to-new revision predecessors.
+- [ ] Add amendment-specific post-final-correction reassessment routing on native/invoke paths; initial plan reviews retain the existing shortcut.
 - [ ] Refresh revision-qualified code contexts even for unchanged endpoints; retain original continued-review range history and round counts.
 - [ ] Carry unresolved findings; suppress only explicitly amendment-resolved identities; preserve unchanged accepted decisions with recorded applicability.
 - [ ] Include revision in gate/decision/shortcut authority and prevent stale guards, contexts, decisions and correction attempts from certifying affected phases.
@@ -205,10 +226,13 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 **Completion gate:** Every orchestration path and current/archived reader agrees on effective revision, pending fixes and readiness; documented workflow is executable after a restart/rebuild.
 
 - [ ] Present original/effective provenance and amendment history, affected phases, retained evidence, resolved/pending findings and credit differences in state and registration output.
+- [ ] Add upgrade discovery/validation/reporting for legacy recoveries across active/completed/archived authoritative records; repeat safely without journal conversion, synthetic approval, run resumption or automatic project commits.
 - [ ] Update author/reviewer templates and phase-execution/plan-review skills across supported delegation modes with authorize → amend → assess → register → resume.
 - [ ] Replace misleading bind/drift remediation with actual supported commands and amendment-assessment requirements; document toolchain compatibility and initial binding distinction.
 - [ ] Add deterministic Player Desk-shaped acceptance: unchanged Phase 1, affected Phase 2+, R7 scope-resolution, seven retained fixes, DC1 withdrawal, DC0 conservative carry, and unchanged baseline.
 - [ ] Verify read-only dry-run/state against recorded fixtures, index rebuild/source-worktree removal, repeated amendments and interleaved guarded text amendments.
+- [ ] Exercise a deterministic legacy-to-new lifecycle: repeated frontier recoveries, intervening reviews, earlier phase completion and text amendments → upgrade/rebuild with identical historical authority → resume → register a new-format amendment against the final legacy predecessor; malformed/ambiguous histories fail closed.
+- [ ] Verify the effective installed/rendered asset contract, including retired recovery guidance and amendment reassessment, using `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`.
 - [ ] Run focused suites, `bun run typecheck`, `bun run lint`, and the full configured quality gates before final review; complete only after all work items and acceptance cases pass.
 
 ## Files Touched
@@ -230,6 +254,9 @@ Paths are relative to `5x-cli/`. Proposed new modules are named explicitly; the 
 | `src/review-governance/credit-reconciliation.ts` | Withdrawn/changed claim and evidence applicability. |
 | `src/review-governance/corrections.ts` | Revision-bound proof and shortcut invalidation. |
 | `src/commands/review.ts` | Command options, selectors and help. |
+| `src/commands/implementation-recovery.handler.ts` (remove) | Retire independent recovery mutation command; historical receipts remain readable. |
+| `src/review-governance/implementation-recovery.ts` (remove/consolidate) | Move reusable checks to canonical registration and legacy fold, removing the second authority path. |
+| `src/commands/upgrade.handler.ts` | Discover and validate historical recovery lineage; report compatibility and repair diagnostics without rewriting journals. |
 | `src/commands/review-decision.handler.ts` | Framework-independent registration and atomic receipt. |
 | `src/commands/implementation-review-context.ts` | Revision-qualified composition and durable observations. |
 | `src/commands/protocol.handler.ts` | Shared scoped amendment assessment and revision validation. |
@@ -240,23 +267,38 @@ Paths are relative to `5x-cli/`. Proposed new modules are named explicitly; the 
 | `src/protocol-help.ts` | Concrete amendment contract and diagnostics. |
 | `src/templates/reviewer-plan.md` | Scoped assessment and carry/resolution requirements. |
 | `src/templates/reviewer-plan-continued.md` | Continued amendment approval and exact predecessor evidence. |
+| `src/templates/author-process-plan-review.md` | Amendment-specific corrected-commit handoff for fresh scoped assessment. |
 | `src/skills/base/5x-phase-execution/SKILL.tmpl.md` | Registration/resume workflow and restart handling. |
 | `src/skills/base/5x-plan/SKILL.tmpl.md` | Authoring handoff for semantic amendments and required assessment. |
 | `src/skills/base/5x-plan-review/SKILL.tmpl.md` | Scoped amendment review, registration handoff and missing-assessment recovery. |
 
 Update canonical `docs/v1/101-cli-primitives.md` and `docs/v2/206-review-budget-governance.md`. Existing protocol emitter/schema export, skill loader/render fixtures and rebuild dispatch must be inspected in Phase 0; if changes outside this inventory are required, revise the inventory/estimate rather than hiding scope.
 
+Also revise `docs/development/unfinished-frontier-recovery.md` to describe historical support, the retired command and unified amendment registration; it must no longer instruct operators to produce new legacy receipts.
+
+### Workflow Asset-Impact Check
+
+- **Document skeletons (`src/templates/default-artifacts.ts`):** no new static plan/review section is required; `amendmentAssessment` is structured protocol evidence. Confirm this remains true during Phase 0; revise inventory if a skeleton change is needed.
+- **Agent prompts:** update initial/continued plan reviewers, plan-review correction author and concrete protocol-emitter examples for exact-hash assessment, typed authorization and post-correction reassessment. Dynamic legacy/revision facts belong in appended runtime context, not copied into static assets.
+- **Runtime-appended context:** use one trusted composition/validation path for native/invoke, including predecessor, exact hash/diff, pending/resolved findings, legacy provenance and required next action. Test parity and rejection of stale assessments.
+- **Workflow skills:** render plan, plan-review and phase-execution guidance in all supported delegation modes. Remove instructions to create new frontier recoveries; explain historical acceptance, upgrade reporting and continued review after amendment final corrections.
+- **Installation, overrides, upgrade and harness synchronization:** reuse existing installation/override/upgrade/sync machinery, preserve customized overrides, and surface stale installed guidance with the actual refresh procedure. Do not assume changing bundled Markdown refreshes installed assets. Confirm runtime authority remains correct with overrides and inspect effective installed/rendered guidance after upgrade/sync. No new installation or synchronization authority is introduced.
+- **Required acceptance:** run `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`; extend consequential assertions for compatibility reporting, installed guidance, command retirement and amendment reassessment rather than prose snapshots.
+
 ## Tests
 
 | Type | Scope | Required proof |
 |---|---|---|
 | Unit | Amendment codecs/fold/assessment | Exact predecessor/hash, phase-qualified findings, no inferred carry, no malformed authority. |
+| Unit | Historical recovery compatibility | Original/repeated receipt keys, causal revision attribution between recoveries, preserved historical invalidations/findings/phase authority, interleaved text anchors, ambiguous/corrupt lineage rejection. |
 | Unit | Registration/record store | Dry-run purity, identical intent replay, atomic failure, concurrent stale evidence and competing-winner conflicts. |
 | Unit | Protocol, prompt, decision and closure | Plan-only contract; native/invoke parity; retained seven fixes; R7 resolved by amendment; stale context/guard/decision rejection. |
 | Unit | Budget/credit/boundary | B0/B/policy invariance, DC1 withdrawal, no new credit, DC0 contract/code freshness, affected-phase invalidation and prefix carry. |
 | Integration | `test/integration/commands/implementation-amendment.test.ts` (new) | Full authorization/amend/review/register/resume/quality/closure lifecycle in a mapped worktree; canonical path and excluded-artifact behavior. |
 | Integration | Existing completion/code-diff suites | Old phase-complete records cannot skip affected review; unchanged contexts cannot cross revisions; ordinary no-amendment behavior unchanged. |
 | Integration | Rebuild/archive/skills | Record-only reconstruction, source removal, portable selectors, two semantic revisions interleaved with text-only amendments, rendered delegation variants. |
+| Integration | Upgrade and legacy-to-new transition | Active/completed/archived discovery without index/source worktree; no journal rewrites or invented approvals; repeatable reports; historical authority unchanged after rebuild; final legacy predecessor admits new-contract amendments. |
+| Integration | Amendment final corrections | Corrected bytes reject the old assessment; continued scoped review in the active execution run produces fresh exact-hash approval; registration then succeeds with native/invoke parity. |
 
 Use deterministic fake approval/quality/provider fixtures; no network or Player Desk database is necessary. Respect `AGENTS.md` test tiers: direct-call/side-effect assertions in unit tests; subprocess/output assertions in integration tests, with `cleanGitEnv()`, `stdin: "ignore"` unless intentional input, and appropriate timeout. Do not treat a real historical run mutation as test verification.
 
@@ -264,7 +306,8 @@ Use deterministic fake approval/quality/provider fixtures; no network or Player 
 
 - Arbitrary phase deletion, renumbering or reordering, automatic semantic impact analysis, or importing evidence from another execution.
 - Rewriting original bindings, approvals, decisions, findings, pre-author commits or completed phase receipts.
-- Treating generic `human:gate`, freeform `ready`, checked boxes, config changes or document-only file inventory as automatic amendment registration.
+- Treating generic `human:gate`, freeform `ready`, checked boxes, config changes or document-only file inventory as amendment authorization/registration; proactive amendments without eligible typed authorization in this release.
+- Rewriting committed historical recovery records, synthesizing missing reviewer assessments, retaining a second recovery mutation API, or introducing a durable migration/bridge record without revising this plan.
 - Baseline recapture/reset, new credit IDs, increased credit magnitude, implementation effort added to plan R, or a second arithmetic engine.
 - New prompt/lock authority, new external service, dashboard mutation UI, or an unrelated output normalization project.
 - Operational handoffs or lifecycle changes to existing project runs.
@@ -278,3 +321,5 @@ This is a moderate cross-cutting feature, not an inline error-message fix. Estim
 The operator requested this required follow-up after investigating Player Desk run `run_cb28fdaefe1a`, canonical plan `539-follow-up-sms-verify-existing-member-qr-claim.md`. Read-only inspection found initial source `run_a3132582022d`, binding `2c67af34-570d-4354-a025-6a147aa25576`, human authorization step 1041, amended plan author step 1043 at `d6c0f56451793cd4bec2710f491bc72b8c1369c9`, and successful plan reviewer step 1045. The amendment retained authentication-campaign invitation-link SMS and withdrew DC1; existing code fixes remained pending. Admission still rejected plan drift and alternate binding conflicted. These references explain requirements, not approval to modify that project.
 
 After further review, the operator reported reversing that scope-change decision and instructing the Player Desk orchestrator to continue under the existing approved scope binding instead. This is an operator-reported disposition, not independent verification that the plan was restored or execution resumed. The historical amendment remains a motivating example and a synthetic acceptance scenario: its reversal does not remove the missing same-run semantic-amendment capability addressed by this plan. No run replacement or application scope change is prescribed here.
+
+During this plan's revision, the operator confirmed at least one local project has used frontier recovery and committed its receipts. The agreed transition retires the mutation command while preserving historical decoding/authority through the canonical effective fold, with `5x upgrade` discovery/validation/reporting rather than automatic journal conversion. Actual project records are not authorized for mutation by this plan or its tests.
