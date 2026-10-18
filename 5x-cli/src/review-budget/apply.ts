@@ -6,6 +6,8 @@ import type {
 } from "../control-plane/review-budget-store.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
+	isImplementationScopeClass,
+	isPlanScopeClass,
 	type ReviewerVerdict,
 	rejectCliOwnedBudgetFields,
 } from "../protocol.js";
@@ -218,6 +220,12 @@ export function applyPlanReviewBudget(
 	const reviewerClaimIds = new Set<string>();
 	const findings: FindingDelta[] = [];
 	for (const item of input.verdict.items) {
+		if (isImplementationScopeClass(item.scopeClass)) {
+			return error(
+				"BUDGET_ITEM_FIELDS_REQUIRED",
+				`Reviewer item '${item.id}' uses an implementation scope class and cannot enter a plan budget snapshot`,
+			);
+		}
 		if (
 			!Number.isInteger(item.effortDelta) ||
 			(item.effortDelta ?? -1) < 0 ||
@@ -266,7 +274,9 @@ export function applyPlanReviewBudget(
 			title: item.title,
 			effortDelta: item.effortDelta as number,
 			architectureDelta: item.architectureDelta as number,
-			scopeClass: item.scopeClass,
+			scopeClass: isPlanScopeClass(item.scopeClass)
+				? item.scopeClass
+				: undefined,
 			coupling: item.coupling,
 			...(item.failure ? { failure: item.failure } : {}),
 			...(item.lowestCostCorrection

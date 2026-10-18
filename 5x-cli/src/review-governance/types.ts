@@ -236,3 +236,100 @@ export type GovernanceReviewerVerdict = ReviewerVerdict & {
 	items: GovernanceVerdictItem[];
 	priorFindings?: PriorFindingOutcome[];
 };
+
+export type ReviewDomain = "plan" | "implementation";
+
+export type ImplementationDiagnosticCode =
+	| "INHERITED_BUDGET_UNRESOLVED"
+	| "PHASE_CONFLICT"
+	| "UNKNOWN_PHASE"
+	| "IMPLEMENTATION_CONTEXT_MISSING"
+	| "IMPLEMENTATION_CONTRACT_IN_PLAN_PHASE"
+	| "PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE"
+	| "WORK_ITEM_UNKNOWN"
+	| "CREDIT_CLAIM_UNKNOWN"
+	| "CREDIT_EVIDENCE_UNRESOLVED"
+	| "PLAN_IMPACT_AMBIGUOUS"
+	| "PLAN_IMPACT_OVERLAP"
+	| "PLAN_IMPACT_PROTECTED"
+	| "PLAN_IMPACT_NOT_AUTHORIZED"
+	| "PRE_EXISTING_NOT_ACTIONABLE"
+	| "SCOPE_EXPANSION_NOT_AUTO"
+	| "SOURCE_OF_CORRECTION_PRECEDENCE"
+	| "BOUNDARY_IMPACT_UNKNOWN"
+	| "CRITICAL_PRE_EXISTING_REQUIRES_HUMAN"
+	| "CODE_DIFF_CONTEXT_MISSING"
+	| "CODE_RANGE_MISMATCH"
+	| "CODE_HUNK_NOT_FOUND"
+	| "CODE_HUNK_WRONG_FILE"
+	| "CODE_HUNK_CONTEXT_ONLY"
+	| "CODE_HUNK_BINARY"
+	| "CODE_HUNK_COMBINED"
+	| "CODE_HUNK_WHITESPACE"
+	| "CODE_HUNK_EVIDENCE_INCOMPLETE"
+	| "PRIOR_FINDING_UNKNOWN"
+	| "PRIOR_FINDING_DUPLICATE"
+	| "PRIOR_FINDING_OMITTED"
+	| "PRIOR_FINDING_ITEM_MISSING"
+	| "PRIOR_FINDING_ITEM_UNEXPECTED"
+	| "NEW_FINDING_EVIDENCE_REQUIRED"
+	| "CRITICAL_LATE_REQUIRES_HUMAN"
+	| "PRIOR_DECISION_MISMATCH"
+	| "PRIOR_DECISION_NEW_EVIDENCE_REQUIRED";
+
+export interface ImplementationDiagnostic {
+	code: ImplementationDiagnosticCode;
+	severity: "error" | "info";
+	message: string;
+	itemId?: string;
+}
+
+export type ImplementationNextAction =
+	| "plan_amendment"
+	| "author_revision"
+	| "human_gate"
+	| "complete";
+
+/** Human choices for an implementation gate. Plan choices stay on the plan payload. */
+export type ImplementationDecisionChoice =
+	| "revise_plan"
+	| "authorize_amendment"
+	| "defer_accept_risk"
+	| "restore_simplification"
+	| "approve_higher_burden"
+	| "reduce_scope"
+	| "abort";
+
+export interface ResolvedPlanImpactSpan {
+	itemId: string;
+	heading: string;
+	staleText: string;
+	/** UTF-8 byte offset into the approved text anchor. */
+	start: number;
+	/** Exclusive UTF-8 byte offset. */
+	end: number;
+}
+
+export interface ImplementationFindingIdentity extends FindingIdentity {
+	phase: string;
+	planWorkItemIds: readonly string[];
+}
+
+export interface ImplementationGovernanceResult {
+	domain: "implementation";
+	phase: string;
+	reviewRound: number;
+	route: PlanReviewRoute;
+	nextAction: ImplementationNextAction;
+	hypotheticalEnforcedRoute?: PlanReviewRoute;
+	shortcutCandidate: boolean;
+	exemptionAuthorized: boolean;
+	actionableItems: VerdictItem[];
+	/**
+	 * Identities hashed with the admitted numeric phase. Later observation
+	 * writers reuse these instead of fingerprinting without a phase.
+	 */
+	findingIdentities: readonly ImplementationFindingIdentity[];
+	nonblockingMarkdown: string;
+	diagnostics: ImplementationDiagnostic[];
+}

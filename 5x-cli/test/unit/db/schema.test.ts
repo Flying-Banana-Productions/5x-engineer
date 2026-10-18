@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,12 +21,65 @@ afterEach(() => {
 });
 
 describe("runMigrations", () => {
+	test("v12 preserves prompt history and context while allowing supersession", () => {
+		const db = new Database(":memory:");
+		try {
+			for (const migration of _migrations.filter(
+				(entry) => entry.version <= 11,
+			)) {
+				migration.up(db);
+				db.exec(
+					`INSERT INTO schema_version (version) VALUES (${migration.version})`,
+				);
+			}
+			db.exec(
+				`INSERT INTO prompts (id, kind, message, context_version, context_json) VALUES ('open', 'choose', 'Gate', 1, '{"gateId":"old"}')`,
+			);
+			db.exec(
+				`INSERT INTO prompts (id, kind, message, answered_at, answer, answered_by) VALUES ('answered', 'input', 'Earlier', '2026-01-01', 'approved', 'terminal')`,
+			);
+			db.exec(
+				`INSERT INTO prompts (id, kind, message, abandoned_at, abandon_reason) VALUES ('abandoned', 'input', 'Earlier', '2026-01-01', 'run-terminal')`,
+			);
+			const before = db.query("SELECT * FROM prompts ORDER BY id").all();
+			runMigrations(db);
+			expect(db.query("SELECT * FROM prompts ORDER BY id").all()).toEqual(
+				before,
+			);
+			db.exec(
+				`UPDATE prompts SET abandoned_at = '2026-10-16', abandon_reason = 'superseded' WHERE id = 'open'`,
+			);
+			expect(
+				db
+					.query(
+						"SELECT answer, abandon_reason, context_json FROM prompts WHERE id = 'open'",
+					)
+					.get(),
+			).toEqual({
+				answer: null,
+				abandon_reason: "superseded",
+				context_json: '{"gateId":"old"}',
+			});
+			runMigrations(db);
+			expect(db.query("SELECT COUNT(*) AS n FROM prompts").get()).toEqual({
+				n: 3,
+			});
+			expect(() =>
+				db.exec(
+					`UPDATE prompts SET abandon_reason = 'unknown' WHERE id = 'open'`,
+				),
+			).toThrow();
+		} finally {
+			db.close();
+		}
+	});
+
 	test("fresh DB gets all migrations", () => {
 		const tmp = makeTmp();
 		try {
 			const db = getDb(tmp);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(10);
+			expect(getSchemaVersion(db)).toBe(12);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -37,7 +91,7 @@ describe("runMigrations", () => {
 			const db = getDb(tmp);
 			runMigrations(db);
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(10);
+			expect(getSchemaVersion(db)).toBe(12);
 		} finally {
 			rmSync(tmp, { recursive: true });
 		}
@@ -114,7 +168,7 @@ describe("runMigrations", () => {
       `);
 
 			expect(() => runMigrations(db)).toThrow(
-				"DB schema version v999 is newer than this CLI's maximum known version v10",
+				"DB schema version v999 is newer than this CLI's maximum known version v12",
 			);
 		} finally {
 			rmSync(tmp, { recursive: true });
@@ -133,7 +187,7 @@ describe("runMigrations", () => {
 			expect(getSchemaVersion(db)).toBe(1);
 
 			runMigrations(db);
-			expect(getSchemaVersion(db)).toBe(10);
+			expect(getSchemaVersion(db)).toBe(12);
 
 			// v1 tables exist
 			const columns = db.query("PRAGMA table_info(steps)").all() as Array<{
@@ -163,6 +217,6 @@ describe("getMaxKnownSchemaVersion", () => {
 	test("matches the last migration version", () => {
 		const last = _migrations[_migrations.length - 1]?.version ?? 0;
 		expect(getMaxKnownSchemaVersion()).toBe(last);
-		expect(getMaxKnownSchemaVersion()).toBe(10);
+		expect(getMaxKnownSchemaVersion()).toBe(12);
 	});
 });

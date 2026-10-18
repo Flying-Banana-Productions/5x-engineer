@@ -15,16 +15,38 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	composeImplementationReviewerRecord,
+	recordImplementationReviewerStepWithObservation,
+} from "../../../src/commands/implementation-review-context.js";
+import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import {
 	isNumericPhaseRef,
 	protocolValidate,
 } from "../../../src/commands/protocol.handler.js";
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
+import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
+import type { AgentProvider } from "../../../src/providers/types.js";
+import {
+	encodeImplementationReviewObservationPayload,
+	implementationReviewObservationKey,
+} from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import {
+	capturePhaseAuthorAdmission,
+	hashPlanBytes,
+	prepareImplementationReviewContext,
+} from "../../../src/review-governance/implementation-state.js";
+import {
+	prepareTextAmendmentGuard,
+	verifyGuardedPlanBytes,
+} from "../../../src/review-governance/plan-amendment.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
+	TEST_ORIGIN,
 } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -1722,3 +1744,1112 @@ describe("isNumericPhaseRef", () => {
 		expect(isNumericPhaseRef("pre-release-1.0")).toBe(false);
 	});
 });
+
+describe("protocol validate reviewer — implementation contract", () => {
+	const implementationItem = {
+		id: "I1",
+		title: "Wrong status",
+		action: "auto_fix",
+		reason: "The write failure is ignored.",
+		priority: "P1",
+		scopeClass: "implementation_defect",
+		effortDelta: 4,
+		architectureDelta: -4,
+		planWorkItemIds: ["W9"],
+	};
+
+	test("rejects implementation scope during a plan-phase review", async () => {
+		const dir = makeTmpDir();
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					phase: "plan",
+					startDir: dir,
+				}),
+			).rejects.toMatchObject({
+				code: "IMPLEMENTATION_CONTRACT_IN_PLAN_PHASE",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("rejects work-item ids that are not on the bound ledger", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		stubImplementationBinding(ctx, { mode: "enforced" });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [implementationItem],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "WORK_ITEM_UNKNOWN" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("rejects plan-contract fields in a bound implementation phase", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		stubImplementationBinding(ctx, { mode: "enforced" });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [
+					{
+						id: "R1",
+						title: "Polish the wording",
+						action: "auto_fix",
+						reason: "The approved sentence is still stale.",
+						scopeClass: "polish",
+					},
+				],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "PLAN_CONTRACT_IN_IMPLEMENTATION_PHASE",
+			});
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("accepts a structurally valid implementation verdict without a run or phase", async () => {
+		const dir = makeTmpDir();
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("uses the binding ledger when live config is advisory", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		stubImplementationBinding(ctx, { mode: "enforced", workItemIds: ["W1"] });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [implementationItem],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "WORK_ITEM_UNKNOWN" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("an advisory binding overrides enforced config", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		stubImplementationBinding(ctx, { mode: "advisory", workItemIds: ["W1"] });
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(false);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a compatibility record accepts a v1 implementation verdict", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.getImplementationBinding = () => null;
+		ctx.store.getImplementationCompatibility = () =>
+			({ id: "compat-1" }) as unknown as ReturnType<
+				typeof ctx.store.getImplementationCompatibility
+			>;
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [implementationItem],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("advisory mode with no binding warns that context is missing", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		ctx.store.getImplementationBinding = () => null;
+		ctx.store.getImplementationCompatibility = () => null;
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(true);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("enforced mode with no binding rejects a missing implementation context", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.getImplementationBinding = () => null;
+		ctx.store.getImplementationCompatibility = () => null;
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "IMPLEMENTATION_CONTEXT_MISSING" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a phase flag that conflicts with the envelope phase is rejected once", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+				phase: "3",
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "PHASE_CONFLICT" });
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a context error without --record stays advisory", async () => {
+		const dir = makeTmpDir();
+		const warnings: string[] = [];
+		try {
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await protocolValidate({
+				role: "reviewer",
+				input,
+				run: "run1",
+				phase: "2",
+				startDir: dir,
+				warn: (message) => warnings.push(message),
+				createReviewBudgetContext: async () => {
+					throw new RecordContextError("WORKTREE_MISSING", "missing");
+				},
+			});
+			expect(
+				warnings.some((message) =>
+					message.startsWith("IMPLEMENTATION_CONTEXT_MISSING:"),
+				),
+			).toBe(true);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("a context error with --record is a structured failure", async () => {
+		const dir = makeTmpDir();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const input = writeInput(dir, {
+				readiness: "not_ready",
+				items: [{ ...implementationItem, planWorkItemIds: ["W1"] }],
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					record: true,
+					step: "reviewer:review",
+					phase: "2",
+					startDir: dir,
+					createReviewBudgetContext: async () => {
+						throw new RecordContextError("WORKTREE_MISSING", "missing");
+					},
+				}),
+			).rejects.toMatchObject({ code: "WORKTREE_MISSING" });
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+function implementationVerdict() {
+	return {
+		readiness: "ready" as const,
+		items: [],
+		nonblocking: [
+			{
+				id: "n1",
+				title: "Old note",
+				reason: "Left from before.",
+				scopeClass: "pre_existing" as const,
+			},
+		],
+	};
+}
+
+function implementationBinding() {
+	return {
+		kind: "implementation-binding" as const,
+		version: 1 as const,
+		id: "binding-1",
+		executionRunId: "run1",
+		sourceRunId: "source",
+		sourceSnapshotId: "snap",
+		sourceBaselineId: "base",
+		approvedPlanCommit: "c".repeat(40),
+		approvedPlanHash: "sha256:plan",
+		approvedPlanBytes: "# Plan\n",
+		b0: 2,
+		governingB: 2,
+		mode: "enforced" as const,
+		thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+		ledger: {
+			estimateConfidence: "high" as const,
+			workItems: [
+				{
+					id: "W1",
+					title: "Work",
+					effort: 2 as const,
+					architectureDelta: 0 as const,
+					debtClaim: null,
+					addresses: [],
+					rationale: "Required",
+					line: 1,
+				},
+			],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		},
+		effectiveDecisions: [],
+		phaseMap: [{ id: "1", heading: "Phase 1" }],
+		debtTargets: [],
+		ledgerHash: "ledger",
+		decisionsHash: "decisions",
+		createdAt: "2026-01-01 00:00:00",
+	};
+}
+
+function gitHead(dir: string): string {
+	const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+		cwd: dir,
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (result.exitCode !== 0) {
+		throw new Error(result.stderr.toString());
+	}
+	return result.stdout.toString().trim();
+}
+
+function verdictProvider(structured: unknown): AgentProvider {
+	const result = {
+		text: "structured response",
+		structured,
+		sessionId: "session-implementation",
+		tokens: { in: 0, out: 0 },
+		durationMs: 0,
+	};
+	const session = {
+		id: result.sessionId,
+		run: async () => result,
+		async *runStreamed() {
+			yield { type: "done" as const, result };
+		},
+	};
+	return {
+		startSession: async () => session,
+		resumeSession: async () => session,
+		close: async () => {},
+	};
+}
+
+describe("protocol and invoke implementation recording", () => {
+	test("both entry points persist the same observation and durable authorization", async () => {
+		const dir = makeTmpDir();
+		const inputDir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const head = gitHead(dir);
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			ctx.store.saveImplementationBinding(implementationBinding(), TEST_ORIGIN);
+			const captured = capturePhaseAuthorAdmission({
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				preAuthorCommit: head,
+			});
+			expect(captured.status).toBe("captured");
+			const prepared = await prepareImplementationReviewContext({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				excludedPaths: [],
+				workdir: dir,
+			});
+			expect(prepared.status).toBe("ready");
+			if (prepared.status !== "ready") return;
+			const verdict = implementationVerdict();
+			const input = writeInput(inputDir, verdict);
+			const logs: string[] = [];
+			const originalLog = console.log;
+			console.log = (message?: unknown) => {
+				logs.push(String(message));
+			};
+			try {
+				await protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					step: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+					reviewContext: prepared.context.id,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				});
+			} finally {
+				console.log = originalLog;
+			}
+			const pendingEnvelope = JSON.parse(logs.at(-1) ?? "{}") as {
+				ok?: boolean;
+				data?: {
+					result?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+						};
+					};
+				};
+			};
+			expect(pendingEnvelope.ok).toBe(true);
+			expect(pendingEnvelope.data?.result?.governance?.route).toBe("complete");
+			expect(
+				pendingEnvelope.data?.result?.governance?.completionAuthorized,
+			).toBe(false);
+			expect(
+				ctx.recordStore
+					.listLines("run1", "steps")
+					.some(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"reviewer:commit",
+					),
+			).toBe(false);
+
+			const recordLogs: string[] = [];
+			console.log = (message?: unknown) => {
+				recordLogs.push(String(message));
+			};
+			try {
+				await protocolValidate({
+					role: "reviewer",
+					input,
+					run: "run1",
+					record: true,
+					step: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+					reviewContext: prepared.context.id,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				});
+				await invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-commit",
+						run: "run1",
+						phase: "1",
+						iteration: 1,
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`commit_hash=${head}`,
+							`review_path=${join(dir, "review.md")}`,
+							`plan_path=${join(dir, "plan.md")}`,
+							`review_template_path=${join(dir, "template.md")}`,
+							"run_id=run1",
+						],
+					},
+					{
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => verdictProvider(verdict),
+					},
+				);
+			} finally {
+				console.log = originalLog;
+			}
+			const protocolRecord = JSON.parse(recordLogs[0] ?? "{}") as {
+				data?: {
+					result?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+							gateCauses?: unknown[];
+						};
+					};
+				};
+			};
+			const invokeEnvelope = JSON.parse(recordLogs.at(-1) ?? "{}") as {
+				data?: {
+					result?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+							gateCauses?: unknown[];
+						};
+					};
+				};
+			};
+
+			const steps = ctx.recordStore
+				.listLines("run1", "steps")
+				.filter((line) => {
+					const name = (line.payload as { step_name?: string }).step_name;
+					return name === "reviewer:commit";
+				});
+			const observations = ctx.store.listImplementationReviews("run1");
+			expect(steps).toHaveLength(1);
+			expect(observations).toHaveLength(1);
+			const step = steps[0]?.payload as {
+				step_name?: string;
+				phase?: string;
+				iteration?: number;
+				result_json?: {
+					governance?: {
+						route?: string;
+						completionAuthorized?: boolean;
+						gateCauses?: unknown[];
+					};
+				};
+			};
+			expect(step.step_name).toBe("reviewer:commit");
+			expect(step.phase).toBe("1");
+			expect(step.iteration).toBe(1);
+			expect(protocolRecord.data?.result?.governance?.route).toBe("complete");
+			expect(
+				protocolRecord.data?.result?.governance?.completionAuthorized,
+			).toBe(true);
+			expect(invokeEnvelope.data?.result?.governance?.route).toBe(
+				protocolRecord.data?.result?.governance?.route,
+			);
+			expect(
+				invokeEnvelope.data?.result?.governance?.completionAuthorized,
+			).toBe(true);
+			expect(invokeEnvelope.data?.result?.governance?.gateCauses).toEqual(
+				protocolRecord.data?.result?.governance?.gateCauses,
+			);
+			expect(observations[0]?.route).toBe("complete");
+			expect(protocolRecord.data?.result?.governance?.gateCauses).toEqual(
+				observations[0]?.gateCauses,
+			);
+			expect(observations[0]?.stepKey).toEqual({
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 1,
+			});
+			expect(observations[0]?.completionAuthorized).toBe(true);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+			cleanupDir(inputDir);
+		}
+	});
+
+	test("author recording surfaces a blocking text-amendment failure", async () => {
+		const dir = makeTmpDir();
+		const inputDir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const markdown = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+## Design Decisions
+
+Keep the approved ledger.
+
+## Phase 1: Bind
+
+Bind execution to the approved plan.
+
+- [ ] Complete the phase
+
+## Acceptance
+
+The binding is unchanged.
+`;
+		try {
+			setupProjectDir(dir);
+			const committed = markdown.replace(
+				"Keep the approved ledger.",
+				"Keep another ledger.",
+			);
+			writeFileSync(join(dir, "plan.md"), committed);
+			Bun.spawnSync(["git", "add", "plan.md"], {
+				cwd: dir,
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "plan"], {
+				cwd: dir,
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const head = gitHead(dir);
+			const prepared = prepareTextAmendmentGuard({
+				id: "guard-1",
+				anchorBytes: markdown,
+				anchorCommit: "a".repeat(40),
+				parentLineageId: null,
+				allowedSpans: [
+					{
+						itemId: "R1",
+						heading: "Phase 1: Bind",
+						staleText: "Bind execution to the approved plan.",
+						start: Buffer.from(markdown, "utf8").indexOf(
+							Buffer.from("Bind execution to the approved plan."),
+						),
+						end:
+							Buffer.from(markdown, "utf8").indexOf(
+								Buffer.from("Bind execution to the approved plan."),
+							) + Buffer.byteLength("Bind execution to the approved plan."),
+					},
+				],
+			});
+			if (!prepared.ok) throw new Error(prepared.message);
+			const binding = implementationBinding();
+			binding.approvedPlanBytes = markdown;
+			binding.approvedPlanHash = hashPlanBytes(markdown);
+			binding.mode = "enforced";
+			ctx.store.saveImplementationBinding(binding, TEST_ORIGIN);
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
+					stepName: "reviewer:review",
+					phase: "1",
+					iteration: 0,
+				}),
+				payload: encodeImplementationReviewObservationPayload({
+					kind: "implementation-review",
+					version: 1,
+					id: "obs-1",
+					runId: "run1",
+					stepKey: {
+						stepName: "reviewer:review",
+						phase: "1",
+						iteration: 0,
+					},
+					bindingId: binding.id,
+					contextId: "ctx-1",
+					domain: "implementation",
+					phase: "1",
+					originalVerdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "R1",
+								title: "Stale wording",
+								action: "auto_fix",
+								reason: "The sentence is stale.",
+								scopeClass: "plan_defect",
+								priority: "P2",
+								effortDelta: 0,
+								architectureDelta: 0,
+								planImpact: {
+									kind: "text_only",
+									locations: [
+										{
+											heading: "Phase 1: Bind",
+											staleText: "Bind execution to the approved plan.",
+										},
+									],
+								},
+							},
+						],
+					},
+					outcomes: [],
+					route: "author_revision",
+					nextAction: "author_revision",
+					diagnostics: [],
+					claimObservations: [],
+					gateCauses: [],
+					telemetry: {
+						reviewCycles: 1,
+						fixCycles: 0,
+						reviewOriginatedCommits: 0,
+						qualityReruns: 0,
+						classCounts: {
+							implementation_defect: 0,
+							plan_defect: 1,
+							scope_expansion: 0,
+							pre_existing: 0,
+						},
+						planAmendments: 0,
+						addedPaths: [],
+						boundaryInventory: [],
+						effortVariance: 0,
+						architectureVariance: 0,
+					},
+					budgetInvariant: { W: 2, R: 0, B: 2, D: 0 },
+					completionAuthorized: false,
+					textGuard: prepared.guard,
+					createdAt: "2026-09-23 00:00:01",
+				}),
+				createdAt: "2026-09-23 00:00:01",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			ctx.executionContext.planPathInWorktreeExists = true;
+			ctx.executionContext.controlPlaneRoot = dir;
+			ctx.executionContext.run.plan_path = "plan.md";
+			const input = writeInput(inputDir, {
+				result: "needs_human",
+				reason: "amendment",
+				commit: head,
+			});
+			await expect(
+				protocolValidate({
+					role: "author",
+					input,
+					run: "run1",
+					record: true,
+					step: "author:implement",
+					phase: "1",
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "PLAN_AMENDMENT_OUT_OF_SPAN" });
+			expect(
+				verifyGuardedPlanBytes({
+					guard: prepared.guard,
+					committed: Buffer.from(committed, "utf8"),
+				}).ok,
+			).toBe(false);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+			cleanupDir(inputDir);
+		}
+	});
+
+	test("verified text plus a ready review records phase:complete without rebinding", async () => {
+		const dir = makeTmpDir();
+		const inputDir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		const original = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+## Design Decisions
+
+Keep the approved ledger.
+
+## Phase 1: Bind
+
+Bind execution to the approved plan.
+
+- [ ] Complete the phase
+
+## Acceptance
+
+The binding is unchanged.
+`;
+		const amended = original
+			.replace(
+				"Bind execution to the approved plan.",
+				"Bind the execution run to the approved plan.",
+			)
+			.replace("- [ ] Complete the phase", "- [x] Complete the phase");
+		try {
+			setupProjectDir(dir);
+			writeFileSync(join(dir, "plan.md"), amended);
+			Bun.spawnSync(["git", "add", "plan.md"], {
+				cwd: dir,
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "plan"], {
+				cwd: dir,
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const head = gitHead(dir);
+			const binding = implementationBinding();
+			binding.approvedPlanBytes = original;
+			binding.approvedPlanHash = hashPlanBytes(original);
+			ctx.store.saveImplementationBinding(binding, TEST_ORIGIN);
+			ctx.store.saveImplementationTextAmendment(
+				{
+					kind: "implementation-text-amendment",
+					version: 1,
+					id: "amend-1",
+					bindingId: binding.id,
+					executionRunId: "run1",
+					guardId: "guard-1",
+					sourceObservationId: "obs-text",
+					parentLineageId: null,
+					beforeCommit: "a".repeat(40),
+					afterCommit: head,
+					beforeBlobHash: hashPlanBytes(original),
+					afterBlobHash: hashPlanBytes(
+						original.replace(
+							"Bind execution to the approved plan.",
+							"Bind the execution run to the approved plan.",
+						),
+					),
+					authorizedPlanBytes: original.replace(
+						"Bind execution to the approved plan.",
+						"Bind the execution run to the approved plan.",
+					),
+					createdAt: "2026-09-23 00:00:00",
+				},
+				TEST_ORIGIN,
+			);
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+			ctx.executionContext.planPathInWorktreeExists = true;
+			ctx.executionContext.controlPlaneRoot = dir;
+			expect(
+				capturePhaseAuthorAdmission({
+					recordStore: ctx.recordStore,
+					origin: TEST_ORIGIN,
+					executionRunId: "run1",
+					bindingId: binding.id,
+					phase: "1",
+					preAuthorCommit: head,
+				}).status,
+			).toBe("captured");
+			const prepared = await prepareImplementationReviewContext({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: binding.id,
+				phase: "1",
+				excludedPaths: [],
+				workdir: dir,
+			});
+			expect(prepared.status).toBe("ready");
+			if (prepared.status !== "ready") return;
+			const verdict = implementationVerdict();
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 1,
+				verdict,
+				contextId: prepared.context.id,
+				codeContext: prepared.context
+					? {
+							baseCommit: prepared.context.baseCommit,
+							reviewedCommit: prepared.context.reviewedCommit,
+							patch: "",
+							patchHash: prepared.context.patchHash,
+							excludedPaths: prepared.context.excludedPaths,
+							hunks: prepared.context.hunks,
+							binaryPaths: prepared.context.binaryPaths,
+						}
+					: null,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			expect(composed.pending.route).toBe("complete");
+			await recordImplementationReviewerStepWithObservation(
+				{
+					run: "run1",
+					stepName: "reviewer:commit",
+					result: JSON.stringify(verdict),
+					phase: "1",
+					iteration: 1,
+					performer: { kind: "agent", role: "reviewer", provider: "cursor" },
+				},
+				composed.pending,
+				ctx,
+			);
+			expect(ctx.store.getImplementationBinding("run1")?.approvedPlanHash).toBe(
+				binding.approvedPlanHash,
+			);
+			const input = writeInput(inputDir, {
+				result: "complete",
+				commit: head,
+				phase: "1",
+			});
+			await protocolValidate({
+				role: "author",
+				input,
+				run: "run1",
+				record: true,
+				step: "phase:complete",
+				phase: "1",
+				plan: join(dir, "plan.md"),
+				startDir: dir,
+				createReviewBudgetContext: async () => ctx,
+			});
+			expect(ctx.store.getImplementationBinding("run1")?.id).toBe(binding.id);
+			expect(ctx.store.listImplementationReviews("run1")[0]?.route).toBe(
+				"complete",
+			);
+		} finally {
+			process.exitCode = 0;
+			ctx.db.close();
+			cleanupDir(dir);
+			cleanupDir(inputDir);
+		}
+	});
+
+	test("a paired collision is an error envelope before success", async () => {
+		const dir = makeTmpDir();
+		const inputDir = makeTmpDir();
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			const head = gitHead(dir);
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.store.saveImplementationBinding(implementationBinding(), TEST_ORIGIN);
+			capturePhaseAuthorAdmission({
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				preAuthorCommit: head,
+			});
+			const prepared = await prepareImplementationReviewContext({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				origin: TEST_ORIGIN,
+				executionRunId: "run1",
+				bindingId: "binding-1",
+				phase: "1",
+				excludedPaths: [],
+				workdir: dir,
+			});
+			expect(prepared.status).toBe("ready");
+			if (prepared.status !== "ready") return;
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 1,
+				verdict: implementationVerdict(),
+				contextId: prepared.context.id,
+				codeContext: prepared.diff,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
+					stepName: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+				}),
+				payload: {
+					...composed.pending,
+					completionAuthorized: false,
+					createdAt: "2026-01-01 00:00:00",
+				},
+				createdAt: "2026-01-01 00:00:00",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			await expect(
+				protocolValidate({
+					role: "reviewer",
+					input: writeInput(inputDir, implementationVerdict()),
+					run: "run1",
+					record: true,
+					step: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+					reviewContext: prepared.context.id,
+					startDir: dir,
+					createReviewBudgetContext: async () => ctx,
+				}),
+			).rejects.toMatchObject({ code: "RECORD_PAIR_CORRUPT" });
+			expect(
+				ctx.recordStore
+					.listLines("run1", "steps")
+					.some(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"reviewer:commit",
+					),
+			).toBe(false);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+			cleanupDir(inputDir);
+		}
+	});
+});
+
+function stubImplementationBinding(
+	ctx: ReturnType<typeof makeBudgetContext>,
+	binding: { mode: "advisory" | "enforced"; workItemIds?: string[] },
+): void {
+	ctx.store.getImplementationBinding = () =>
+		({
+			id: "binding-1",
+			mode: binding.mode,
+			phaseMap: [{ id: "2", heading: "Phase 2" }],
+			ledger: {
+				workItems: (binding.workItemIds ?? ["W1"]).map((id) => ({
+					id,
+					debtClaim: null,
+				})),
+			},
+			approvedPlanBytes: "# Plan\n",
+			approvedPlanHash: "sha256:unused",
+		}) as unknown as ReturnType<typeof ctx.store.getImplementationBinding>;
+	ctx.store.getImplementationCompatibility = () => null;
+	ctx.store.listImplementationTextAmendments = () => [];
+}

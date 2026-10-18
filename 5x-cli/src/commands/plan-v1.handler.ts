@@ -197,6 +197,44 @@ function sortPlanListRows(a: PlanListRow, b: PlanListRow): number {
 	return a.plan_path.localeCompare(b.plan_path);
 }
 
+/** Compact text-only labels; source metadata in the JSON envelope stays intact. */
+export function formatPlanListSources(plans: PlanListEntry[]): {
+	labels: string[];
+	details: string[];
+} {
+	const details: string[] = [];
+	const numbers = new Map<string, number>();
+	function numbered(kind: string, value: string): string {
+		const key = `${kind}:${value}`;
+		let number = numbers.get(key);
+		if (number === undefined) {
+			number = details.length + 1;
+			numbers.set(key, number);
+			details.push(value);
+		}
+		return `${kind} [${number}]`;
+	}
+	const labels = plans.map((p) => {
+		if (p.diverged || p.source === "diverged") return "diverged";
+		if (p.source_kind === "working-copy") {
+			let label = "local";
+			if (p.source === "worktree") {
+				// The plan column already identifies the file; identify its checkout
+				// here so multiple plans in the same worktree share one detail.
+				const path = p.source_path?.replace(/\\/g, "/");
+				const suffix = `/${p.plan_path.replace(/\\/g, "/")}`;
+				const checkout = path?.endsWith(suffix)
+					? path.slice(0, -suffix.length) || "/"
+					: path;
+				label = checkout ? numbered("worktree", checkout) : "worktree";
+			}
+			return `${label} (${p.source_dirty ? "dirty" : "clean"})`;
+		}
+		return p.source.length > 32 ? numbered("ref", p.source) : p.source;
+	});
+	return { labels, details };
+}
+
 /**
  * Human-readable text formatter for `plan list` output.
  *
@@ -217,17 +255,15 @@ export function formatPlanListText(data: {
 
 	console.log();
 
-	const rows = plans.map((p) => ({
+	const sources = formatPlanListSources(plans);
+	const rows = plans.map((p, index) => ({
 		planPath: p.plan_path,
 		status: p.diverged ? "diverged" : p.status,
 		progress: p.diverged ? "?" : `${p.completion_pct}%`,
 		phases: p.diverged ? "?" : `${p.phases_done}/${p.phases_total}`,
 		runs: String(p.runs_total),
 		activeRun: p.active_run ?? "-",
-		source:
-			p.source_kind === "working-copy"
-				? `${p.source_path} (${p.source_dirty ? "dirty" : "clean"})`
-				: p.source,
+		source: sources.labels[index] ?? p.source,
 	}));
 
 	type ColDef = { header: string; key: keyof (typeof rows)[0]; width: number };
@@ -252,6 +288,14 @@ export function formatPlanListText(data: {
 	for (const row of rows) {
 		const line = cols.map((c) => row[c.key].padEnd(c.width)).join("  ");
 		console.log(line);
+	}
+
+	if (sources.details.length > 0) {
+		console.log();
+		console.log("Sources:");
+		for (const [index, detail] of sources.details.entries()) {
+			console.log(`  [${index + 1}] ${detail}`);
+		}
 	}
 
 	const attributed = plans.filter(

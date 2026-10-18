@@ -1,5 +1,31 @@
 # 5x-cli Agent Guide
 
+## Workflow asset changes (internal 5x development)
+
+When changing a shipped execution or protocol contract, include an asset-impact
+check in the internal plan/review. For each surface below, identify the required
+change or explain why it is unaffected:
+
+- Document skeletons in `src/templates/default-artifacts.ts`.
+- Agent prompts in `src/templates/*.md`, including initial/continued variants.
+- Runtime-appended context and its native/invoke parity.
+- Workflow skills in `src/skills/base/`, across relevant delegation modes.
+- Installation, override resolution, upgrade, and harness synchronization paths.
+
+Completion requires checking the effective installed/rendered workflow against
+the contract, not only the bundled source. Run the focused asset acceptance suite:
+
+```bash
+bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts
+```
+
+Keep dynamic facts (review ranges, admitted findings, decisions, and due claims)
+owned by durable runtime context. Static prompts explain how to use that context;
+legacy fallback instructions must be explicitly limited to the compatibility
+path. Test consequential invariants and protocol examples rather than snapshotting
+every word. This checklist is for maintaining 5x itself; do not add it to the
+generic implementation-plan template for external projects.
+
 ## Harness freshness warnings
 
 When `5x run init` returns additive `warnings` / `harness_freshness` fields (or

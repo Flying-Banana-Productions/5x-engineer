@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 9
+version: 10
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:plan"
 variable_defaults:
@@ -42,6 +42,8 @@ repeated in `items[]`, exactly once and under the same stable ID; addressed
 findings must be absent from `items[]`.
 
 ## Instructions
+
+For an implementation-run amendment, assess the committed amendment against its supplied authorization and shared-design impact. A ready plan verdict alone does not attach the amendment to implementation lineage or approve implementation completion; the operator must complete the supported recovery/registration step.
 
 1. Read the updated plan at `{{plan_path}}` in full.
 2. Read any new changes in referenced implementation files if the plan mentions them.

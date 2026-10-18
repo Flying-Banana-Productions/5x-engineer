@@ -1,11 +1,14 @@
 import type { Command } from "@commander-js/extra-typings";
 import { outputError, outputSuccess } from "../output.js";
 import { resolveDbContext } from "./context.js";
+import { recoverImplementationPlanCommand } from "./implementation-recovery.handler.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
+	bindApprovedImplementation,
+	finishImplementationCorrections,
 	type SubmitPlanReviewDecisionPayload,
-	showPlanReviewGate,
-	submitPlanReviewDecision,
+	showReviewGate,
+	submitReviewDecision,
 } from "./review-decision.handler.js";
 import { requireAmbientRunId } from "./run-identity.js";
 
@@ -54,6 +57,7 @@ const JSON_FIELDS = new Set([
 	"approvedItemIds",
 	"approvedWorkItemIds",
 	"snapshotId",
+	"claimAdjustments",
 ]);
 
 export function registerReview(parent: Command) {
@@ -69,9 +73,12 @@ export function registerReview(parent: Command) {
 			"Show causes, allowed choices, required fields, and eligible finding identities",
 		)
 		.option("--run <id>", "Run id (otherwise ambient run resolution is used)")
+		.option("--phase <p>", "Implementation phase id")
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);
-			outputSuccess(await showPlanReviewGate(runId, { context }));
+			outputSuccess(
+				await showReviewGate(runId, { context }, { phase: opts.phase }),
+			);
 		});
 
 	review
@@ -121,6 +128,9 @@ export function registerReview(parent: Command) {
 			const jsonArg = scalar(opts.inputJson, "--input-json");
 			let payload: SubmitPlanReviewDecisionPayload;
 			let findingIds: string[] = [];
+			let claimAdjustments:
+				| Parameters<typeof submitReviewDecision>[0]["claimAdjustments"]
+				| undefined;
 			if (jsonArg !== undefined) {
 				const flagFields = [
 					opts.choice,
@@ -156,6 +166,13 @@ export function registerReview(parent: Command) {
 						`--input-json contains CLI-owned or unknown fields: ${unknown.join(", ")}`,
 					);
 				payload = raw as SubmitPlanReviewDecisionPayload;
+				claimAdjustments = (
+					raw as {
+						claimAdjustments?: NonNullable<
+							Parameters<typeof submitReviewDecision>[0]["claimAdjustments"]
+						>;
+					}
+				).claimAdjustments;
 			} else {
 				const choice = scalar(opts.choice, "--choice");
 				const rationale = scalar(opts.rationale, "--rationale");
@@ -184,8 +201,110 @@ export function registerReview(parent: Command) {
 				findingIds = opts.finding;
 			}
 			outputSuccess(
-				await submitPlanReviewDecision(
-					{ runId, gateId: opts.gate, payload, findingIds },
+				await submitReviewDecision(
+					{
+						runId,
+						gateId: opts.gate,
+						payload,
+						findingIds,
+						...(claimAdjustments ? { claimAdjustments } : {}),
+					},
+					{ context },
+				),
+			);
+		});
+
+	const implementation = review
+		.command("implementation")
+		.description("Bind execution to an approved plan review");
+	implementation
+		.command("bind")
+		.description(
+			"Bind an execution run to one approved plan-review source without capturing a new baseline",
+		)
+		.requiredOption("--run <id>", "Execution run id")
+		.requiredOption("--source-run <id>", "Approved plan-review run id")
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await bindApprovedImplementation(
+					{ executionRunId: runId, sourceRunId: opts.sourceRun },
+					{ context },
+				),
+			);
+		});
+
+	implementation
+		.command("recover-plan")
+		.description(
+			"Operator-confirmed amendment recovery at an unfinished frontier; repeatable with a new authorization and plan review; preserves binding/baseline and requires fresh implementation review",
+		)
+		.requiredOption("--run <id>", "Existing execution run")
+		.requiredOption("--phase <p>", "Earliest affected, unfinished phase")
+		.requiredOption(
+			"--authorization <id>",
+			"Accepted authorize_amendment decision",
+		)
+		.requiredOption(
+			"--snapshot <id>",
+			"Latest completed same-run plan review snapshot",
+		)
+		.requiredOption(
+			"--commit <sha>",
+			"Full recorded plan-amendment author commit",
+		)
+		.requiredOption(
+			"--confirm-scope <text>",
+			"Operator attestation: exact reviewed commit stays within authorization; include operating restrictions",
+		)
+		.requiredOption(
+			"--confirm-preserved-phases <text>",
+			"Operator attestation: shared/design changes do not invalidate earlier phase approvals",
+		)
+		.option("--dry-run", "Validate and preview without appending recovery")
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await recoverImplementationPlanCommand(
+					{
+						runId,
+						phase: opts.phase,
+						authorizationId: opts.authorization,
+						snapshotId: opts.snapshot,
+						commit: opts.commit,
+						scopeConfirmation: opts.confirmScope,
+						preservedPhaseConfirmation: opts.confirmPreservedPhases,
+						dryRun: opts.dryRun,
+					},
+					context,
+				),
+			);
+		});
+
+	const corrections = review
+		.command("corrections")
+		.description(
+			"Finish an eligible implementation correction with fresh quality",
+		);
+	corrections
+		.command("finish")
+		.description(
+			"Run the full layered quality configuration for one recorded correction. No gate override or passed flag is accepted.",
+		)
+		.requiredOption("--run <id>", "Execution run id")
+		.requiredOption("--phase <p>", "Implementation phase id")
+		.requiredOption("--review <observation-id>", "Originating observation id")
+		.requiredOption("--commit <sha>", "Recorded author correction commit")
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await finishImplementationCorrections(
+					{
+						runId,
+						phase: opts.phase,
+						observationId: opts.review,
+						commit: opts.commit,
+					},
 					{ context },
 				),
 			);

@@ -595,6 +595,88 @@ const migrations: Migration[] = [
 			`);
 		},
 	},
+	{
+		version: 11,
+		description:
+			"Project implementation bindings, observations, and domain-aware gates",
+		up(db) {
+			db.exec(`
+				ALTER TABLE review_decision_index ADD COLUMN domain TEXT NOT NULL DEFAULT 'plan';
+				ALTER TABLE review_decision_index ADD COLUMN phase TEXT;
+				ALTER TABLE review_decision_index ADD COLUMN binding_id TEXT;
+				ALTER TABLE review_decision_index ADD COLUMN observation_id TEXT;
+
+				ALTER TABLE review_gate_index ADD COLUMN domain TEXT NOT NULL DEFAULT 'plan';
+				ALTER TABLE review_gate_index ADD COLUMN phase TEXT;
+				ALTER TABLE review_gate_index ADD COLUMN binding_id TEXT;
+				ALTER TABLE review_gate_index ADD COLUMN observation_id TEXT;
+
+				CREATE TABLE implementation_binding_index (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					record_seq INTEGER NOT NULL,
+					source_run_id TEXT NOT NULL,
+					approved_plan_commit TEXT NOT NULL,
+					ledger_hash TEXT NOT NULL,
+					decisions_hash TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					origin_json TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
+				CREATE INDEX idx_implementation_bindings_run
+					ON implementation_binding_index(run_id, record_seq);
+
+				CREATE TABLE implementation_observation_index (
+					id TEXT PRIMARY KEY,
+					run_id TEXT NOT NULL REFERENCES runs(id),
+					record_idempotency_key TEXT NOT NULL UNIQUE,
+					record_seq INTEGER NOT NULL,
+					binding_id TEXT NOT NULL,
+					phase TEXT NOT NULL,
+					route TEXT NOT NULL,
+					next_action TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					origin_json TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				);
+				CREATE INDEX idx_implementation_observations_run
+					ON implementation_observation_index(run_id, phase, record_seq);
+			`);
+		},
+	},
+	{
+		version: 12,
+		description: "Allow superseded governance prompt notifications",
+		up(db) {
+			db.exec(`
+				CREATE TABLE prompts_v12 (
+					id TEXT PRIMARY KEY,
+					run_id TEXT REFERENCES runs(id),
+					kind TEXT NOT NULL CHECK (kind IN ('choose', 'confirm', 'input')),
+					message TEXT NOT NULL,
+					options_json TEXT,
+					default_value TEXT,
+					created_at TEXT NOT NULL DEFAULT (datetime('now')),
+					answered_at TEXT,
+					answer TEXT,
+					answered_by TEXT CHECK (answered_by IS NULL OR answered_by IN ('terminal', 'control-plane', 'default')),
+					abandoned_at TEXT,
+					abandon_reason TEXT CHECK (abandon_reason IS NULL OR abandon_reason IN ('timeout', 'interrupted', 'eof', 'non-interactive', 'run-terminal', 'superseded')),
+					context_version INTEGER,
+					context_json TEXT,
+					CHECK ((answered_at IS NULL AND answer IS NULL AND answered_by IS NULL) OR (answered_at IS NOT NULL AND answer IS NOT NULL AND answered_by IS NOT NULL)),
+					CHECK ((abandoned_at IS NULL AND abandon_reason IS NULL) OR (abandoned_at IS NOT NULL AND abandon_reason IS NOT NULL)),
+					CHECK (NOT (answered_at IS NOT NULL AND abandoned_at IS NOT NULL))
+				);
+				INSERT INTO prompts_v12 SELECT * FROM prompts;
+				DROP TABLE prompts;
+				ALTER TABLE prompts_v12 RENAME TO prompts;
+				CREATE INDEX idx_prompts_open_run ON prompts(run_id) WHERE answered_at IS NULL AND abandoned_at IS NULL;
+				CREATE INDEX idx_prompts_recent ON prompts(created_at DESC);
+			`);
+		},
+	},
 ];
 
 /**

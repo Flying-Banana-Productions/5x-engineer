@@ -9,7 +9,7 @@
 
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
 import {
 	getReviewerStepsForPhase,
@@ -18,6 +18,11 @@ import {
 } from "../db/operations-v1.js";
 import { getLatestCommit } from "../git.js";
 import { outputError } from "../output.js";
+import {
+	formatCodeReviewDiff,
+	formatCodeReviewDiffFailure,
+} from "../review-governance/code-diff.js";
+import { planRepoPath } from "../review-governance/implementation-state.js";
 import {
 	buildPlanReviewDiffContext,
 	formatPlanReviewDiffContext,
@@ -161,6 +166,66 @@ export function needsReviewDelta(templateName: string): boolean {
 		isPlanReviewTemplate(templateName) || isCommitReviewTemplate(templateName)
 	);
 }
+
+/**
+ * Repo-relative workflow evidence path for git status and diff pathspecs.
+ *
+ * Configured records and review directories are absolute under the canonical
+ * control-plane checkout. A mapped worktree reports the same git paths, so
+ * those directories are relativized against the control-plane root when they
+ * are not already inside the checkout where status runs. Paths that escape
+ * either root are omitted. Only the exact configured records directory,
+ * registered review directories, and plan file are candidates.
+ */
+function workflowEvidenceRepoPath(
+	path: string,
+	repoRoot: string,
+	controlPlaneRoot: string | undefined,
+): string | null {
+	if (!isAbsolute(path)) return planRepoPath(path, repoRoot);
+	const inCheckout = planRepoPath(path, repoRoot);
+	if (inCheckout) return inCheckout;
+	if (!controlPlaneRoot) return null;
+	return planRepoPath(path, controlPlaneRoot);
+}
+
+/**
+ * Paths that are workflow evidence, not implementation changes: run records,
+ * registered review artifacts, and the exact plan file.
+ */
+export function implementationExcludedPaths(input: {
+	repoRoot: string;
+	/** Canonical checkout that configured absolute paths were resolved against. */
+	controlPlaneRoot?: string;
+	planPath: string | null;
+	paths: Pick<
+		FiveXConfig["paths"],
+		"records" | "reviews" | "planReviews" | "runReviews"
+	>;
+}): string[] {
+	const candidates = [
+		input.paths.records,
+		input.paths.reviews,
+		input.paths.planReviews,
+		input.paths.runReviews,
+		input.planPath,
+	].filter((value): value is string => Boolean(value));
+	return [
+		...new Set(
+			candidates
+				.map((path) =>
+					workflowEvidenceRepoPath(
+						path,
+						input.repoRoot,
+						input.controlPlaneRoot,
+					),
+				)
+				.filter((path): path is string => Boolean(path)),
+		),
+	].sort();
+}
+
+export { formatCodeReviewDiff, formatCodeReviewDiffFailure };
 
 /**
  * Check whether an explicit `review_path` resolves outside the configured

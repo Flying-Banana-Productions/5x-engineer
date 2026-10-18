@@ -338,12 +338,12 @@ Implementation-review items inherit core `VerdictItem` fields (`id`, `title`, `a
 | `effortDelta` | Required integer `>= 0`; implementation-review variance telemetry only, never a second budget or new `E` calculation |
 | `architectureDelta` | Required signed integer; telemetry only. Negative values cannot mint debt credit after plan approval |
 | `planWorkItemIds` | Required nonempty array for `implementation_defect` and `plan_defect`; identifies the inherited approved scope |
-| `planImpact` | Required for `plan_defect`: `text_only` \| `design` \| `budget` |
+| `planImpact` | Required object for `plan_defect`: `{ kind: "text_only" \| "design" \| "budget", locations: [{ heading, staleText }] }`. `locations` is nonempty only for `text_only` |
 | `introducedBy` | Required for a new ordinary blocker in a continued review: `{ commitRange, diffHunk, explanation }` |
 | `lateDiscovery` | Only `critical_safety`; substitutes for `introducedBy` and forces a human route |
 | `priorDecisionId` + `newEvidence` | Required when re-raising a deferred or accepted-risk finding |
 
-`planImpact: text_only` is the narrow exemption from a human gate: the implementation remains within approved intent, architecture, acceptance criteria, and budget, but plan wording is factually stale. The author may apply the code fix and a non-structural plan-text correction in the same pass without plan re-review. The CLI snapshots the raw `Delivery Budget` table before that pass and requires it to be byte-identical afterward, including row IDs, scores, debt claims, and `Addresses`; any change invalidates the exemption and routes as a `design` or `budget` plan defect. `design` or `budget` always pauses implementation for a human decision and plan amendment/re-review. Any ambiguity about whether the exemption applies routes to the human.
+`planImpact.kind: "text_only"` is the narrow exemption from a human gate: the implementation remains within approved intent, architecture, acceptance criteria, and budget, but plan wording is factually stale. Each location's `staleText` must occur once under a unique heading at the approved text anchor. The author may replace only those spans, plus checklist checkboxes. The CLI snapshots the raw `Delivery Budget` table and the structural signature before that pass. Table bytes, phase headings, checklist identities, debt evidence, and acceptance or design sections stay protected. A successful verification appends a lineage record (before/after commit and blob hashes) and becomes the next text anchor; it does not re-bind or rescore the plan. Missing, ambiguous, overlapping, or out-of-span edits invalidate the exemption. `design` or `budget` always pauses implementation for a human decision and plan amendment/re-review.
 
 Continued implementation reviews use the same convergence protections as §5.2:
 
@@ -353,7 +353,7 @@ Continued implementation reviews use the same convergence protections as §5.2:
 - Route critical late safety discoveries directly to a human.
 - Record unrelated pre-existing observations as follow-up rather than extending the phase.
 
-Implementation `ready_with_corrections` is intentionally lighter than plan budgeting: it permits one final author pass without reviewer re-entry only when there is at most one P2 `implementation_defect`, the fix is mechanical, and it changes no API/schema/dependency/architecture boundary. After the author commits, the CLI runs the full configured quality gates. A pass proceeds directly to the phase gate; a failure invalidates the shortcut and returns to the normal quality-retry then reviewer-re-entry route. No agent is trusted to assert this post-review condition.
+Implementation `ready_with_corrections` is intentionally lighter than plan budgeting: it permits one final author pass without reviewer re-entry only when there is exactly one P2 `implementation_defect`, the fix is mechanical, architecture delta is zero, and boundary changes are an explicit empty list. After the author commits, `5x review corrections finish` runs the full configured quality gates in the mapped directory. A pass may carry that observation's existing claim assessments to the correction commit. A failure, skip, timeout, or later code change permanently invalidates the shortcut; a later quality pass still returns to reviewer re-entry. Empty or skipped quality configuration cannot earn the shortcut. No agent is trusted to assert this post-review condition.
 
 Plan-time architecture credit remains reconciled through §4.5. Implementation review may report additional simplification as telemetry, but it cannot mint new debt credit after plan approval; a material refactor first requires a plan/budget decision.
 
@@ -506,7 +506,7 @@ Implementation review adds one repeated flag per credited claim:
 
 No `--budget`, total, ceiling, or status flag exists. `5x protocol validate reviewer --run <id> --phase plan` loads run state, parses the current plan work-item table, de-duplicates incorporated finding IDs, and computes the budget result before recording.
 
-For a non-plan phase, validation selects the §5.5 implementation-item contract from recorded phase context, requires its four-class `scopeClass`, `priority`, effort/architecture telemetry, work-item linkage, and conditional `planImpact`. On continued reviews it validates `introducedBy` against the recorded fix commit range and actual code diff. It records telemetry without creating a second budget, and independently derives realized debt credit from any `--credit-realization` claims.
+For a non-plan phase, validation selects the §5.5 implementation-item contract from the recorded phase and binding, not from the agent's `reviewKind`. It requires the four-class `scopeClass`, `priority`, effort/architecture telemetry, approved work-item IDs, and a `planImpact` object on `plan_defect` only. `text_only` locations are resolved to unique literal spans; missing or ambiguous matches route to a human and do not authorize a replacement. On continued reviews it validates `introducedBy` against the recorded fix commit range and the complete file-qualified hunk. It records telemetry without creating a second budget. `--credit-realization` observations feed reconciliation: `realized` keeps the full approved negative magnitude, `partial` keeps a strictly smaller negative magnitude, and `not_realized` contributes zero. A waiver changes the approved envelope; it does not mark the historical measurement as physically realized.
 
 The recorded step is decorated by the CLI with deterministic output:
 
@@ -531,8 +531,13 @@ The control plane stores:
 - Implementation-review scope classifications and telemetry from §5.5.
 - Human budget/scope/risk decisions.
 - Cumulative gross effort, gross positive architecture burden, and eligible debt reduction.
+- The implementation execution binding: source run, snapshot, approved plan commit, and pinned mode.
+- The exact reviewed code range (`baseCommit`..`reviewedCommit`) and patch hash.
+- The active implementation gate, the latest quality-attempt outcome, due and reconciled claims, and review telemetry.
 
-The baseline is control-plane state, not merely editable plan prose. Local SQLite is its v2 materialization (`200-overview.md` §3a).
+`5x run state` includes `implementation_governance` only when an execution binding imposes obligations. It reports domain `implementation`, phase, binding source, reviewed range, active gate, quality-attempt status, and claims. Credit is displayed as separate fields: gross effort (`W`), inherited baseline and standard/effective/absolute ceilings, provisional credit, realized credit, and positive burden (`P`). Waived and `not_realized` claims contribute `realizedCredit: 0` and `physicallyRealized: false`. Plan-only runs keep the existing `review_budget` / `review_governance` objects and omit `implementation_governance`. Checked plan boxes remain a checklist report and do not authorize enforced advancement.
+
+The baseline is control-plane state, not merely editable plan prose. Local SQLite is its v2 materialization (`200-overview.md` §3a). Schema v10 stores plan-review closure context. Schema v11 adds rebuildable implementation binding and observation projections; RecordStore remains the authority, and a wiped index rebuilds to the same governing state.
 
 ### 6.5 Human gate
 
@@ -546,6 +551,18 @@ A budget, baseline, architecture-burden, or unrealized-credit gate presents expl
 The existing generic `continue-with-guidance` / `approve-override` choices may remain as CLI compatibility aliases, but the control-plane UI and recorded decision should preserve the specific tradeoff.
 
 Deferral and accepted-risk decisions record a stable decision ID, finding fingerprint, approved scope, rationale, and evidence available at the time. Those records are injected into every later plan and implementation review prompt for the run.
+
+Implementation gates use the same `review gate show --phase <p>` / `review decide` machinery with a distinct decision payload. Scope and plan choices are authorize amendment and re-review, defer an exact finding with accepted risk, or abort. Debt shortfalls offer restore the promised simplification, approve a higher burden, reduce remaining scope through an amendment, or abort. A waiver or reduction changes the approved post-state used for later credit; it does not rewrite the measured realization. Restoration does not mark a claim realized. Plan decisions stay on the plan-only predicate. Acceptance follows steps order within the domain and phase: a same-phase review before the human step is stale.
+
+Pinned-mode behavior:
+
+| Mode | Implementation effect |
+|---|---|
+| `off` | No binding. Existing v1 phase flow. |
+| `advisory` | Same observations and hypothetical routes. No shortcut and no new debt completion block. Structural contract errors still reject. |
+| `enforced` | Binding, exact range, text-guard lineage, quality shortcut rules, reconciliation, and gates block advancement. |
+
+An execution binding copies the source run's mode. Later config edits do not unpin it. The global default remains `advisory`.
 
 ---
 
@@ -569,7 +586,7 @@ singleArchitectureReviewPoints = 5
 ```
 
 - `mode = "off"` retains the v1 iteration-only behavior.
-- `mode = "advisory"` is the initial default. The CLI computes and records every result but does not change routing, giving the point rubric a measured calibration period.
+- `mode = "advisory"` is the initial default and stays the default. The CLI computes and records every result. Advisory implementation runs keep the observations without the no-review shortcut or debt completion blocks.
 - `mode = "enforced"` applies deterministic budget and architecture gates. Eligible intrinsic debt credit expands `E` automatically within its configured cap; all larger tradeoffs remain human-owned.
 - Personal/local overlays may tighten or relax defaults, following normal layered config rules.
 - Human decisions recorded on a run override configured ceilings for that run only.

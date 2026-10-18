@@ -306,3 +306,55 @@ describe("budget bands and human flags", () => {
 		});
 	});
 });
+
+test("plan derivation stays provisional when reconciliation supplies no override", () => {
+	const result = deriveBudget({
+		B0: 4,
+		B: 4,
+		I: null,
+		workItems: [workItem({ effort: 5, architectureDelta: 2 })],
+		findings: [finding({ effortDelta: 1 })],
+		assessments: [],
+		config,
+		semanticHumanRequired: false,
+	});
+	expect(result.provisionalCredit).toBe(result.N);
+	expect(result.realizedCredit).toBe(0);
+	expect(result.W).toBe(5);
+	expect(result.R).toBe(1);
+	expect(result.P).toBe(2);
+});
+
+test("reconciliation override replaces spendable N without netting effort or P", () => {
+	const result = deriveBudget({
+		B0: 20,
+		B: 20,
+		I: null,
+		workItems: [workItem({ effort: 8, architectureDelta: 2 })],
+		findings: [
+			finding({
+				effortDelta: 5,
+				architectureDelta: -5,
+				coupling: "intrinsic",
+			}),
+		],
+		assessments: [],
+		config,
+		semanticHumanRequired: false,
+		approvedClaimContribution: {
+			spendableN: 10,
+			provisionalN: 4,
+			realizedN: 6,
+			creditUnrealized: true,
+		},
+	});
+	expect(result.N).toBe(10);
+	expect(result.D).toBe(5);
+	expect(result.provisionalCredit).toBe(4);
+	expect(result.realizedCredit).toBe(6);
+	expect(result.W).toBe(8);
+	expect(result.R).toBe(5);
+	expect(result.P).toBe(2);
+	expect(result.budgetAlerts).toContain("credit_unrealized");
+	expect(result.requiresHuman).toBe(false);
+});

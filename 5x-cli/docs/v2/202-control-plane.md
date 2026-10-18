@@ -107,14 +107,25 @@ The control plane gets no new mutation surface where an existing idempotent prim
 | Record a human decision/override | `5x run record human:*` | `human:*` step |
 | Inspect a plan-review gate | exported `showPlanReviewGate` / `5x review gate show` | read-only derived record view |
 | Resolve a plan-review gate | exported `submitPlanReviewDecision` / `5x review decide` | paired `human:review-governance` step + governance decision line |
+| Inspect an implementation gate | exported `showReviewGate` / `5x review gate show --phase` | read-only derived record view |
+| Resolve an implementation gate | exported `submitReviewDecision` / `5x review decide` | paired human step + implementation decision line |
+| Bind an approved plan | exported `bindApprovedImplementation` | immutable implementation-binding record |
+| Finish an eligible correction | exported `finishImplementationCorrections` | correction-attempt record plus full quality evidence |
 | Re-run a quality gate | `5x quality run` | `quality:check` step |
 
 Plan-review gate prompts are notifications, not generic answer forms.
 `answerPrompt` rejects them with `REVIEW_GATE_DECISION_REQUIRED`; all CLI and
 future authenticated dashboard actions must call `submitPlanReviewDecision` so
 the RecordStore gate key remains the sole CAS authority. The exported redacted
-prompt view, `showPlanReviewGate`, and `submitPlanReviewDecision` are the
-dashboard handoff seams. This document does not define HTTP routes for them.
+prompt view, `showPlanReviewGate`, `submitPlanReviewDecision`, and the
+implementation read/action wrappers (`showReviewGate`, `submitReviewDecision`,
+`bindApprovedImplementation`, `finishImplementationCorrections`,
+`presentImplementationGovernance`) are the dashboard handoff seams. SQLite
+index constructors stay internal. Presentation and HTTP belong to
+`docs/v2/plan-inputs/10-plan-review-governance-dashboard.plan-input.md`. This
+document does not define HTTP routes for them. Coordinated output
+normalization stays with input 09. Implementation-budget calibration waits on
+later telemetry analysis.
 
 - _TODO:_ whether the HTTP API shells these commands or calls the handlers in-process. Leaning in-process (the server links the CLI lib) to avoid subprocess overhead, but must respect the same store interface so a remote server stays possible.
 - **Auth.** Extend the token / HttpOnly-cookie scheme already specified in `docs/10-dashboard.md` to cover write endpoints. _TODO:_ single-token sufficient for local v2; multi-user authz remains out of scope (and is a cloud-service concern, not v2).
@@ -152,6 +163,7 @@ Aborting a *run* (§3.4) is bookkeeping. Cancelling an *in-flight agent invocati
 
 - **`5x prompt` contract shift.** Terminal answering is preserved, so interactive use is unchanged. The shift matters only to callers that scripted around the old *block-on-terminal* behavior; documented in `101-cli-primitives.md` §7. Back-compatible in the common case (`200-overview.md` §4).
 - **Schema migration 6** adds `prompts` only. **Schema migration 7** adds `invocations` (opaque `handle_json`, no `pid`). No change to `runs` / `steps` / `plans` / `prompts` shape. Existing autoincrement tables are left as-is (local-only); all v2-new tables are UUID-keyed (constraint #2).
+- **Schema migration v10** projects plan-review closure context. **Schema migration v11** adds implementation binding and observation projections and extends gate/decision payloads with domain, phase, and binding identity. Both are rebuildable from RecordStore. Unknown future record versions are diagnosed and do not authorize enforced advancement.
 - **Dashboard.** `docs/10-dashboard.md` deprecated; its read path informs the v2 server, its read-only architecture does not. HTTP/UI remain out of scope for this slice.
 
 ---

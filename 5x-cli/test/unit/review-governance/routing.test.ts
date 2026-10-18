@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ReviewBudgetSnapshotRecord } from "../../../src/control-plane/review-budget-store.js";
-import type { ReviewerVerdict, VerdictItem } from "../../../src/protocol.js";
+import {
+	isPlanScopeClass,
+	type ReviewerVerdict,
+	type VerdictItem,
+} from "../../../src/protocol.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import type {
 	CreditAssessmentInput,
@@ -152,7 +156,9 @@ function route(input: {
 					id: entry.id,
 					effortDelta: entry.effortDelta ?? 0,
 					architectureDelta: entry.architectureDelta ?? 0,
-					scopeClass: entry.scopeClass,
+					scopeClass: isPlanScopeClass(entry.scopeClass)
+						? entry.scopeClass
+						: undefined,
 					coupling: entry.coupling,
 				})),
 			assessments: input.assessments ?? [],
@@ -689,7 +695,9 @@ function snapshot(
 		id: entry.id,
 		effortDelta: entry.effortDelta ?? 0,
 		architectureDelta: entry.architectureDelta ?? 0,
-		scopeClass: entry.scopeClass,
+		scopeClass: isPlanScopeClass(entry.scopeClass)
+			? entry.scopeClass
+			: undefined,
 		coupling: entry.coupling,
 	}));
 	return {

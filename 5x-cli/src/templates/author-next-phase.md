@@ -1,7 +1,7 @@
 ---
 name: author-next-phase
 description: Implement the next phase of a plan
-version: 2
+version: 3
 variables: [plan_path, phase_number, user_notes, run_id]
 step_name: "author:implement"
 variable_defaults:
@@ -34,6 +34,7 @@ The correct branch is already checked out in that directory — do not create, s
 - Keep commits focused — one logical change per commit where practical.
 - If a checklist item is ambiguous, implement the most reasonable interpretation.
 - If you encounter a design decision not covered by the plan, choose the simplest approach that satisfies the requirements and note your decision.
+- When an `Admitted implementation work` section is appended, stay inside its approved work-item IDs and phase scope. Checkbox toggles are allowed. Do not make structural plan amendments, add credit, or expand scope without an approved amendment workflow.
 
 ### Quality Checks
 

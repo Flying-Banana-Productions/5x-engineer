@@ -771,7 +771,7 @@ describe("progress resolution", () => {
 
 				const text = await run5x(dir, ["--text", "plan", "list"]);
 				expect(text.stdout).toContain("Source");
-				expect(text.stdout).toContain("alpha.md (clean)");
+				expect(text.stdout).toMatch(/alpha\.md\s+complete.*local \(clean\)/);
 			} finally {
 				cleanupDir(dir);
 			}

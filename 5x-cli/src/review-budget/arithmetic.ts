@@ -1,4 +1,5 @@
 import {
+	type ApprovedClaimContribution,
 	type BaselineDirection,
 	type BudgetAlert,
 	type BudgetBand,
@@ -156,6 +157,11 @@ export function deriveBudget(input: {
 	assessments: readonly CreditAssessmentInput[];
 	config: ReviewBudgetThresholds;
 	semanticHumanRequired: boolean;
+	/**
+	 * Set only by approved-credit reconciliation. Plan callers omit it and
+	 * keep provisional work-item and reviewer-finding credit.
+	 */
+	approvedClaimContribution?: ApprovedClaimContribution;
 }): DerivedBudgetResult {
 	assertNonNegative(input.B0, "B0");
 	assertNonNegative(input.B, "B");
@@ -171,7 +177,18 @@ export function deriveBudget(input: {
 		input.B,
 		input.config,
 	);
-	const N = eligibleN(input.workItems, input.findings, input.assessments);
+	const contribution = input.approvedClaimContribution;
+	if (contribution) {
+		assertNonNegative(contribution.spendableN, "spendableN");
+		assertNonNegative(contribution.provisionalN, "provisionalN");
+		assertNonNegative(contribution.realizedN, "realizedN");
+	}
+	const provisionalN = eligibleN(
+		input.workItems,
+		contribution ? [] : input.findings,
+		input.assessments,
+	);
+	const N = contribution ? contribution.spendableN : provisionalN;
 	const D = computeProvisionalD(input.B, N, input.config);
 	const E = computeEffectiveCeiling(S, D, A);
 	const pendingFindings = input.findings.filter(
@@ -211,11 +228,15 @@ export function deriveBudget(input: {
 	if (P >= positiveArchitectureLimit || singleArchitectureExceeded) {
 		budgetAlerts.push("positive_architecture_exceeded");
 	}
+	if (contribution?.creditUnrealized) {
+		budgetAlerts.push("credit_unrealized");
+	}
 
 	const requiresHuman =
 		budgetBand === "over_effective" ||
 		budgetBand === "over_absolute" ||
-		budgetAlerts.length > 0 ||
+		budgetAlerts.some((alert) => alert !== "credit_unrealized") ||
+		contribution?.materialCreditShortfall === true ||
 		input.semanticHumanRequired;
 
 	return {
@@ -231,6 +252,8 @@ export function deriveBudget(input: {
 		E,
 		A,
 		P,
+		provisionalCredit: contribution?.provisionalN ?? provisionalN,
+		realizedCredit: contribution?.realizedN ?? 0,
 		baselineDirection,
 		budgetBand,
 		budgetAlerts,

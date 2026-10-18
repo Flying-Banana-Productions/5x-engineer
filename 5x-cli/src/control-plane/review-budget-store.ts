@@ -4,8 +4,38 @@ import {
 	type CaptureKind,
 	decodeBudgetBaselinePayload,
 	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
+	decodeImplementationCompatibilityPayload,
+	decodeImplementationCorrectionAttemptPayload,
+	decodeImplementationCreditReconciliationPayload,
+	decodeImplementationPlanRecoveryPayload,
+	decodeImplementationReviewContextPayload,
+	decodeImplementationReviewObservationPayload,
+	decodeImplementationTextAmendmentPayload,
 	encodeBudgetBaselinePayload,
 	encodeBudgetSnapshotPayload,
+	encodeImplementationBindingPayload,
+	encodeImplementationCompatibilityPayload,
+	encodeImplementationCorrectionAttemptPayload,
+	encodeImplementationCreditReconciliationPayload,
+	encodeImplementationReviewContextPayload,
+	encodeImplementationTextAmendmentPayload,
+	type ImplementationBindingPayload,
+	type ImplementationCompatibilityPayload,
+	type ImplementationCorrectionAttemptPayload,
+	type ImplementationCreditReconciliationPayload,
+	type ImplementationPlanAmendmentPayload,
+	type ImplementationReviewContextPayload,
+	type ImplementationReviewObservationPayload,
+	type ImplementationReviewStepKey,
+	type ImplementationTextAmendmentPayload,
+	implementationBindingKey,
+	implementationCompatibilityKey,
+	implementationCorrectionAttemptKey,
+	implementationCreditReconciliationKey,
+	implementationReviewContextKey,
+	implementationReviewObservationKey,
+	implementationTextAmendmentKey,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
 import type {
@@ -104,6 +134,74 @@ export interface ReviewBudgetStore {
 		idempotencyKey: string,
 		derived?: DerivedBudgetResult,
 	): ReviewBudgetSnapshotRecord | null;
+	/**
+	 * Copied execution binding. Null when absent. Throws when the line exists
+	 * but is not a readable versioned binding. Never a plan snapshot.
+	 */
+	getImplementationBinding(runId: string): ImplementationBindingPayload | null;
+	getImplementationCompatibility(
+		runId: string,
+	): ImplementationCompatibilityPayload | null;
+	/** Authorized byte lineage in journal order, including explicit frontier recovery. */
+	listImplementationTextAmendments(
+		runId: string,
+		bindingId: string,
+	): ImplementationPlanAmendmentPayload[];
+	saveImplementationBinding(
+		payload: ImplementationBindingPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationBindingPayload };
+	saveImplementationCompatibility(
+		payload: ImplementationCompatibilityPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationCompatibilityPayload };
+	saveImplementationTextAmendment(
+		payload: ImplementationTextAmendmentPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationTextAmendmentPayload };
+	getImplementationReviewContext(
+		runId: string,
+		contextId: string,
+	): ImplementationReviewContextPayload | null;
+	listImplementationReviewContexts(
+		runId: string,
+		bindingId?: string,
+	): ImplementationReviewContextPayload[];
+	saveImplementationReviewContext(
+		payload: ImplementationReviewContextPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationReviewContextPayload };
+	/**
+	 * Implementation observations in record order. Plan snapshots are excluded.
+	 * A missing index still returns the authoritative lines.
+	 */
+	listImplementationReviews(
+		runId: string,
+	): ImplementationReviewObservationPayload[];
+	getImplementationReview(
+		runId: string,
+		stepKey: ImplementationReviewStepKey,
+	): ImplementationReviewObservationPayload | null;
+	/** Re-read one observation after a durable write. Does not append. */
+	projectImplementationReview(
+		runId: string,
+		idempotencyKey: string,
+	): ImplementationReviewObservationPayload | null;
+	listImplementationCorrectionAttempts(
+		runId: string,
+		observationId?: string,
+	): ImplementationCorrectionAttemptPayload[];
+	saveImplementationCorrectionAttempt(
+		payload: ImplementationCorrectionAttemptPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationCorrectionAttemptPayload };
+	listImplementationCreditReconciliations(
+		runId: string,
+	): ImplementationCreditReconciliationPayload[];
+	saveImplementationCreditReconciliation(
+		payload: ImplementationCreditReconciliationPayload,
+		origin: RecordOrigin,
+	): { created: boolean; payload: ImplementationCreditReconciliationPayload };
 }
 
 function baselineRecord(raw: unknown): ReviewBudgetBaseline {
@@ -349,6 +447,261 @@ export function createReviewBudgetStore(
 			const record = snapshotRecord(line.payload, derived ?? null);
 			projectSnapshotToIndex(runId, idempotencyKey, record);
 			return record;
+		},
+
+		getImplementationBinding(runId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationBindingKey(runId),
+			);
+			return line ? decodeImplementationBindingPayload(line.payload) : null;
+		},
+
+		getImplementationCompatibility(runId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationCompatibilityKey(runId),
+			);
+			return line
+				? decodeImplementationCompatibilityPayload(line.payload)
+				: null;
+		},
+
+		listImplementationTextAmendments(runId, bindingId) {
+			const amendments: ImplementationPlanAmendmentPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					(line.payload as { kind?: unknown } | null)?.kind ===
+					"implementation-plan-recovery"
+				) {
+					const decoded = decodeImplementationPlanRecoveryPayload(line.payload);
+					if (decoded.bindingId === bindingId) amendments.push(decoded);
+					continue;
+				}
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-text-amendment"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationTextAmendmentPayload(line.payload);
+				if (decoded.bindingId === bindingId) amendments.push(decoded);
+			}
+			return amendments;
+		},
+
+		saveImplementationBinding(payload, origin) {
+			const key = implementationBindingKey(payload.executionRunId);
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: key,
+				payload: encodeImplementationBindingPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationBindingPayload(result.line.payload),
+			};
+		},
+
+		saveImplementationCompatibility(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: implementationCompatibilityKey(payload.executionRunId),
+				payload: encodeImplementationCompatibilityPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationCompatibilityPayload(result.line.payload),
+			};
+		},
+
+		saveImplementationTextAmendment(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: implementationTextAmendmentKey(
+					payload.bindingId,
+					payload.id,
+				),
+				payload: encodeImplementationTextAmendmentPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationTextAmendmentPayload(result.line.payload),
+			};
+		},
+
+		getImplementationReviewContext(runId, contextId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationReviewContextKey(contextId),
+			);
+			return line
+				? decodeImplementationReviewContextPayload(line.payload)
+				: null;
+		},
+
+		listImplementationReviewContexts(runId, bindingId) {
+			const contexts: ImplementationReviewContextPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-review-context"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationReviewContextPayload(line.payload);
+				if (bindingId === undefined || decoded.bindingId === bindingId) {
+					contexts.push(decoded);
+				}
+			}
+			return contexts;
+		},
+
+		saveImplementationReviewContext(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.executionRunId,
+				stream: "budget",
+				idempotencyKey: implementationReviewContextKey(payload.id),
+				payload: encodeImplementationReviewContextPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationReviewContextPayload(result.line.payload),
+			};
+		},
+
+		listImplementationReviews(runId) {
+			const observations: ImplementationReviewObservationPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !== "implementation-review"
+				) {
+					continue;
+				}
+				observations.push(
+					decodeImplementationReviewObservationPayload(line.payload),
+				);
+			}
+			return observations;
+		},
+
+		getImplementationReview(runId, stepKey) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationReviewObservationKey(runId, stepKey),
+			);
+			return line
+				? decodeImplementationReviewObservationPayload(line.payload)
+				: null;
+		},
+
+		projectImplementationReview(runId, idempotencyKey) {
+			const line = recordStore.getLine(runId, "budget", idempotencyKey);
+			if (!line) return null;
+			return decodeImplementationReviewObservationPayload(line.payload);
+		},
+
+		listImplementationCorrectionAttempts(runId, observationId) {
+			const attempts: ImplementationCorrectionAttemptPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-correction-attempt"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationCorrectionAttemptPayload(
+					line.payload,
+				);
+				if (
+					observationId === undefined ||
+					decoded.observationId === observationId
+				) {
+					attempts.push(decoded);
+				}
+			}
+			return attempts;
+		},
+
+		saveImplementationCorrectionAttempt(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.runId,
+				stream: "budget",
+				idempotencyKey: implementationCorrectionAttemptKey(
+					payload.runId,
+					payload.id,
+				),
+				payload: encodeImplementationCorrectionAttemptPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationCorrectionAttemptPayload(
+					result.line.payload,
+				),
+			};
+		},
+
+		listImplementationCreditReconciliations(runId) {
+			const records: ImplementationCreditReconciliationPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					typeof line.payload !== "object" ||
+					line.payload === null ||
+					(line.payload as { kind?: unknown }).kind !==
+						"implementation-credit-reconciliation"
+				) {
+					continue;
+				}
+				records.push(
+					decodeImplementationCreditReconciliationPayload(line.payload),
+				);
+			}
+			return records;
+		},
+
+		saveImplementationCreditReconciliation(payload, origin) {
+			const result = recordStore.append({
+				runId: payload.runId,
+				stream: "budget",
+				idempotencyKey: implementationCreditReconciliationKey(
+					payload.runId,
+					payload.stepKey,
+				),
+				payload: encodeImplementationCreditReconciliationPayload(payload),
+				createdAt: payload.createdAt,
+				...recordedEnvelope(origin),
+			});
+			return {
+				created: result.created,
+				payload: decodeImplementationCreditReconciliationPayload(
+					result.line.payload,
+				),
+			};
 		},
 	};
 }

@@ -6,26 +6,43 @@ import type {
 } from "../control-plane/index.js";
 import type { PromptStore } from "../control-plane/store.js";
 import {
+	isReviewGatePromptContext,
 	REVIEW_GATE_PROMPT_CONTEXT_VERSION,
 	type ReviewGatePromptContext,
 } from "../control-plane/types.js";
-import { decodeBudgetSnapshotPayload } from "../review-budget/record-lines.js";
 import {
+	baselineIdempotencyKey,
+	decodeBudgetBaselinePayload,
+	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
+	decodeImplementationReviewObservationPayload,
+	type ImplementationObservationGateCause,
+	type ImplementationReviewObservationPayload,
+} from "../review-budget/record-lines.js";
+import {
+	decodeImplementationDecisionPayload,
 	decodeReviewDecisionPayload,
 	encodeReviewDecisionPayload,
 } from "./codec.js";
 import {
 	applyDecisionCauseCoverage,
+	applyImplementationDecisionCauseCoverage,
 	classifyDecisionAcceptance,
 	deriveGateId,
 	foldGoverningReviewState,
 	type GoverningReviewState,
 	governanceCorrectionKey,
 	governanceDecisionKey,
+	type ImplementationDecisionPayload,
 	listGovernanceDecisions,
+	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
-import type { ReviewDecisionRoute, ReviewGateCause } from "./types.js";
+import type {
+	ImplementationDecisionChoice,
+	ReviewDecisionRoute,
+	ReviewGateCause,
+} from "./types.js";
 
 export interface DerivedReviewGate {
 	gateId: string;
@@ -91,7 +108,7 @@ export function reviewGatePromptContext(input: {
 	gate: DerivedReviewGate;
 	baselineReestimatePending?: boolean;
 	eligibleFindings?: readonly { findingId: string; fingerprint: string }[];
-}): ReviewGatePromptContext {
+}): Extract<ReviewGatePromptContext, { type: "plan_review_gate" }> {
 	const causeFindings = unique(
 		input.gate.causes.flatMap((cause) =>
 			"finding" in cause
@@ -162,6 +179,35 @@ export function ensureReviewGatePrompt(input: {
 	});
 }
 
+export function ensureImplementationGatePrompt(input: {
+	promptStore: PromptStore;
+	gate: DerivedImplementationGate;
+	ledgerHash: string;
+	decisionsHash: string;
+}): ReturnType<PromptStore["createPrompt"]> {
+	const context = implementationGatePromptContext(input);
+	const existing = input.promptStore
+		.listOpenPrompts(input.gate.runId)
+		.find((prompt) => prompt.context?.gateId === input.gate.gateId);
+	if (existing) {
+		if (JSON.stringify(existing.context) === JSON.stringify(context))
+			return existing;
+		// Older CLI versions may have offered only abort for this same gate.
+		// Refresh the notification contract without changing its durable cause.
+		const retired = input.promptStore.abandonPrompt(existing.id, "superseded");
+		if (!retired.ok) return existing;
+	}
+	return input.promptStore.createPrompt({
+		runId: input.gate.runId,
+		kind: "choose",
+		message: `Implementation review requires a governance decision for gate ${input.gate.gateId}`,
+		options: context.allowedChoices,
+		defaultValue: null,
+		contextVersion: REVIEW_GATE_PROMPT_CONTEXT_VERSION,
+		context,
+	});
+}
+
 export function resolveGatePromptProjection(
 	promptStore: PromptStore,
 	runId: string,
@@ -189,16 +235,38 @@ export function repairReviewGatePrompts(
 	let repaired = 0;
 	for (const prompt of promptStore.listOpenPrompts(runId)) {
 		const context = prompt.context;
-		if (context?.type !== "plan_review_gate") continue;
+		if (!isReviewGatePromptContext(context)) continue;
+		if (context.type === "implementation_review_gate") {
+			const latest = implementationObservations(recordStore, runId)
+				.filter((observation) => observation.phase === context.phase)
+				.at(-1);
+			// A durable newer observation supersedes the notification, not history.
+			// Do not fabricate a human decision to answer a superseded gate.
+			if (
+				latest &&
+				latest.bindingId === context.bindingId &&
+				latest.id !== context.observationId
+			) {
+				try {
+					if (promptStore.abandonPrompt(prompt.id, "superseded").ok) repaired++;
+				} catch {
+					// The records-first repair can be retried after projection failure.
+				}
+				continue;
+			}
+		}
 		const line = recordStore.getLine(
 			runId,
 			"decisions",
 			governanceDecisionKey(context.gateId),
 		);
 		if (!line) continue;
-		let decision: ReviewDecisionPayload;
+		let decision: ReviewDecisionPayload | ImplementationDecisionPayload;
 		try {
-			decision = decodeReviewDecisionPayload(line.payload);
+			decision =
+				context.type === "implementation_review_gate"
+					? decodeImplementationDecisionPayload(line.payload)
+					: decodeReviewDecisionPayload(line.payload);
 		} catch {
 			continue;
 		}
@@ -248,12 +316,52 @@ export class ReviewGovernanceStoreError extends Error {
 	}
 }
 
+export interface DerivedImplementationGate {
+	domain: "implementation";
+	gateId: string;
+	runId: string;
+	observationId: string;
+	bindingId: string;
+	phase: string;
+	ledgerHash: string;
+	decisionsHash: string;
+	causes: ImplementationObservationGateCause[];
+	resolved: boolean;
+}
+
 export interface ReviewGovernanceStore {
 	getDecision(runId: string, decisionId: string): ReviewDecisionPayload | null;
 	listDecisions(runId: string): ReviewDecisionPayload[];
 	deriveOpenGate(runId: string): DerivedReviewGate | null;
 	resolveGate(input: ResolveReviewGateInput): ResolveReviewGateResult;
 	deriveGoverningState(runId: string, b0: number): GoverningReviewState;
+	deriveOpenImplementationGate(
+		runId: string,
+		phase: string,
+	): DerivedImplementationGate | null;
+}
+
+/**
+ * True when the run's baseline is pinned advisory. Advisory snapshots persist
+ * hypothetical enforced gate causes as diagnostics only; v1 routing stays
+ * authoritative, so no governance gate is ever open. A missing or unreadable
+ * baseline is not advisory evidence and keeps gate derivation fail-closed.
+ */
+export function isAdvisoryReviewRun(
+	recordStore: RecordStore,
+	runId: string,
+): boolean {
+	const line = recordStore.getLine(
+		runId,
+		"budget",
+		baselineIdempotencyKey(runId),
+	);
+	if (!line) return false;
+	try {
+		return decodeBudgetBaselinePayload(line.payload).mode === "advisory";
+	} catch {
+		return false;
+	}
 }
 
 function routeForChoice(
@@ -283,6 +391,7 @@ export function createReviewGovernanceStore(
 			return listGovernanceDecisions(recordStore, runId).decisions;
 		},
 		deriveOpenGate(runId) {
+			if (isAdvisoryReviewRun(recordStore, runId)) return null;
 			const snapshots = recordStore
 				.listLines(runId, "budget")
 				.flatMap((line) => {
@@ -415,5 +524,184 @@ export function createReviewGovernanceStore(
 				budget: recordStore.listLines(runId, "budget"),
 			});
 		},
+		deriveOpenImplementationGate(runId, phase) {
+			return deriveOpenImplementationGate(recordStore, runId, phase);
+		},
 	};
+}
+
+function implementationObservations(
+	recordStore: RecordStore,
+	runId: string,
+): ImplementationReviewObservationPayload[] {
+	return recordStore.listLines(runId, "budget").flatMap((line) => {
+		try {
+			return [decodeImplementationReviewObservationPayload(line.payload)];
+		} catch {
+			return [];
+		}
+	});
+}
+
+export function deriveOpenImplementationGate(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+): DerivedImplementationGate | null {
+	const observations = implementationObservations(recordStore, runId).filter(
+		(observation) => observation.phase === phase,
+	);
+	const latest = observations.at(-1);
+	if (!latest || latest.gateCauses.length === 0) return null;
+	const fingerprint = bindingFingerprint(recordStore, runId, latest.bindingId);
+	// Advisory bindings keep v1 routing; their gate causes are informational.
+	if (fingerprint.mode === "advisory") return null;
+	const decisions = listImplementationDecisions(recordStore, runId).decisions;
+	let causes = latest.gateCauses;
+	let predecessorGateId: string | undefined;
+	while (causes.length > 0) {
+		const gateId = deriveGateId({
+			runId,
+			snapshotId: latest.id,
+			causes,
+			...(predecessorGateId ? { predecessorGateId } : {}),
+			domain: "implementation",
+			phase,
+			bindingId: latest.bindingId,
+			observationId: latest.id,
+		});
+		const decision = decisions.find(
+			(candidate) =>
+				candidate.gateId === gateId &&
+				recordStore.getLine(runId, "decisions", governanceDecisionKey(gateId)),
+		);
+		if (!decision) {
+			return {
+				domain: "implementation",
+				gateId,
+				runId,
+				observationId: latest.id,
+				bindingId: latest.bindingId,
+				phase,
+				ledgerHash: fingerprint.ledgerHash,
+				decisionsHash: fingerprint.decisionsHash,
+				causes,
+				resolved: false,
+			};
+		}
+		// Scope and amendment decisions pause for a plan change. They do not
+		// leave the decided gate open, and they do not mint a successor.
+		if (
+			decision.choice === "revise_plan" ||
+			decision.choice === "authorize_amendment" ||
+			decision.choice === "reduce_scope"
+		)
+			return null;
+		const next = applyImplementationDecisionCauseCoverage(causes, decision);
+		if (next.length === 0) return null;
+		// A decision that covers nothing still advances. The successor is a
+		// different gate because it names this gate as its predecessor.
+		causes = next;
+		predecessorGateId = gateId;
+	}
+	return null;
+}
+
+function bindingFingerprint(
+	recordStore: RecordStore,
+	runId: string,
+	bindingId: string,
+): {
+	ledgerHash: string;
+	decisionsHash: string;
+	mode: "advisory" | "enforced" | null;
+} {
+	for (const line of recordStore.listLines(runId, "budget")) {
+		try {
+			const binding = decodeImplementationBindingPayload(line.payload);
+			if (binding.id === bindingId)
+				return {
+					ledgerHash: binding.ledgerHash,
+					decisionsHash: binding.decisionsHash,
+					mode: binding.mode,
+				};
+		} catch {
+			// Budget lines that are not bindings are skipped.
+		}
+	}
+	return { ledgerHash: "", decisionsHash: "", mode: null };
+}
+
+export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
+	ImplementationDecisionChoice,
+	string[]
+> = {
+	revise_plan: ["rationale"],
+	authorize_amendment: ["rationale", "findingRefs"],
+	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
+	restore_simplification: ["rationale", "claimAdjustments"],
+	approve_higher_burden: ["rationale", "claimAdjustments"],
+	reduce_scope: ["rationale", "claimAdjustments"],
+	abort: ["rationale"],
+};
+
+export function implementationGatePromptContext(input: {
+	gate: DerivedImplementationGate;
+	ledgerHash: string;
+	decisionsHash: string;
+}): ReviewGatePromptContext {
+	const eligibleFindings = input.gate.causes.flatMap((cause) =>
+		"findingId" in cause
+			? [{ findingId: cause.findingId, fingerprint: cause.fingerprint }]
+			: [],
+	);
+	return {
+		type: "implementation_review_gate",
+		gateId: input.gate.gateId,
+		observationId: input.gate.observationId,
+		bindingId: input.gate.bindingId,
+		phase: input.gate.phase,
+		causes: structuredClone(input.gate.causes),
+		eligibleFindings,
+		allowedChoices: allowedImplementationChoices(input.gate.causes),
+		requiredFieldsByChoice: structuredClone(
+			IMPLEMENTATION_DECISION_REQUIRED_FIELDS,
+		),
+		ledgerHash: input.ledgerHash,
+		decisionsHash: input.decisionsHash,
+	};
+}
+
+export function allowedImplementationChoices(
+	causes: readonly ImplementationObservationGateCause[],
+): ImplementationDecisionChoice[] {
+	const choices: ImplementationDecisionChoice[] = [];
+	if (causes.some((cause) => cause.kind === "inherited_budget"))
+		choices.push("revise_plan");
+	if (causes.some((cause) => cause.kind === "plan_amendment"))
+		choices.push("authorize_amendment");
+	if (
+		causes.some(
+			(cause) =>
+				cause.kind === "semantic_human" ||
+				cause.kind === "critical_safety" ||
+				cause.kind === "plan_amendment",
+		)
+	)
+		choices.push("defer_accept_risk");
+	// Claim choices require a shortfall whose claim ids scope validation and
+	// coverage can both accept. Inherited budgets can request plan revision;
+	// they cannot be waived by an unrelated claim decision.
+	if (
+		causes.some(
+			(cause) => cause.kind === "credit_shortfall" && cause.claimIds.length > 0,
+		)
+	)
+		choices.push(
+			"restore_simplification",
+			"approve_higher_burden",
+			"reduce_scope",
+		);
+	choices.push("abort");
+	return [...new Set(choices)];
 }

@@ -25,6 +25,15 @@ ReviewerVerdict fields:
   estimateConfidence (low|medium|high), failure, and lowestCostCorrection.
   coupling (intrinsic|adjacent|unrelated) is required for negative architectureDelta.
   requiresReviewerVerification is an optional boolean.
+  Implementation-review items use the admitted phase's scopeClass domain.
+  implementation_defect requires nonempty unique planWorkItemIds linking approved
+  work. plan_defect requires planImpact: {kind, locations: [{heading, staleText}]};
+  text_only locations must be nonempty, while design and budget route to a human.
+  boundaryChanges lists explicit boundary labels; omit it when impact is unknown.
+  mechanicalExplanation describes the mechanical correction. Implementation
+  architectureDelta accepts signed integers rather than plan-review magnitudes.
+  Implementation introducedBy evidence includes the diff --git line plus the
+  complete file-qualified @@ hunk from the supplied code commitRange.
   Optional creditClaim: {creditClaimId, targetPhase, minimalAlternativeEffortDelta,
   minimalAlternativeArchitectureDelta, before, after}; effort alternatives are
   0,1,2,3,5,8. Use this only for a finding's own claim, not an author-ledger DCn.
@@ -37,6 +46,8 @@ ReviewerVerdict fields:
   --prior-finding: {id, status: addressed|partially_addressed|still_open}; emit
   exactly the required IDs from governance context. Addressed IDs leave items;
   partial/open IDs remain once with the same identity and remaining effort.
+  --credit-realization: {creditClaimId, realization, realizedArchitectureDelta,
+  evidence}; report implementation credit realization with nonempty evidence.
 
 ${CLOSURE_EVIDENCE_HELP}
 

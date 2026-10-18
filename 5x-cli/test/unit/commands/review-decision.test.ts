@@ -30,6 +30,7 @@ import {
 function fixture(opts?: {
 	maxSteps?: number;
 	architecture?: "aggregate" | "individual";
+	mode?: "advisory" | "enforced";
 }) {
 	const ctx = makeBudgetContext({ maxSteps: opts?.maxSteps });
 	const promptStore = createMemoryPromptStore();
@@ -85,7 +86,7 @@ function fixture(opts?: {
 	ctx.store.captureBaseline({
 		runId: "run1",
 		captureKind: "initial",
-		mode: "enforced",
+		mode: opts?.mode ?? "enforced",
 		parsed: ledger,
 		configSnapshot: DEFAULT_REVIEW_BUDGET_CONFIG,
 		origin: TEST_ORIGIN,
@@ -344,6 +345,50 @@ describe("review decision action", () => {
 		}
 	});
 
+	test("advisory runs expose hypothetical causes but never open or decide a gate", async () => {
+		const { ctx, promptStore } = fixture({ mode: "advisory" });
+		try {
+			const snapshot = ctx.store.latestSnapshot("run1");
+			expect(snapshot?.effectiveGateCauses.length).toBeGreaterThan(0);
+			expect(
+				createReviewGovernanceStore(ctx.recordStore).deriveOpenGate("run1"),
+			).toBeNull();
+			const shown = await showPlanReviewGate("run1", {
+				context: ctx,
+				promptStore,
+			});
+			expect(shown).toEqual({
+				open: false,
+				mode: "advisory",
+				hypotheticalCauses: snapshot?.effectiveGateCauses ?? [],
+			});
+			expect(promptStore.listOpenPrompts("run1")).toHaveLength(0);
+			let error: unknown;
+			try {
+				await submitPlanReviewDecision(
+					{
+						runId: "run1",
+						gateId: "sha256:any",
+						payload: { choice: "retain_baseline", rationale: "retain" },
+					},
+					{ context: ctx, promptStore },
+				);
+			} catch (caught) {
+				error = caught;
+			}
+			expect(error).toBeInstanceOf(CliError);
+			expect((error as CliError).code).toBe("REVIEW_GATE_ADVISORY");
+			reindexReviewGovernance(ctx.recordStore, ctx.db, "run1");
+			expect(
+				ctx.db
+					.query("SELECT COUNT(*) AS n FROM review_gate_index WHERE run_id = ?")
+					.get("run1"),
+			).toEqual({ n: 0 });
+		} finally {
+			ctx.db.close();
+		}
+	});
+
 	test("show creates a typed notification and generic answer is rejected", async () => {
 		const { ctx, promptStore } = fixture();
 		const shown = await showPlanReviewGate("run1", {
@@ -477,6 +522,90 @@ describe("review decision action", () => {
 				),
 		).toHaveLength(1);
 		ctx.db.close();
+	});
+
+	test("same-intent loser observes the winner committed between the open-gate check and the re-read", async () => {
+		const { ctx, promptStore } = fixture();
+		try {
+			const shown = await showPlanReviewGate("run1", {
+				context: ctx,
+				promptStore,
+			});
+			if (!shown.open) throw new Error("expected gate");
+			const input = {
+				runId: "run1",
+				gateId: shown.gateId,
+				payload: {
+					choice: "retain_baseline" as const,
+					rationale: "Original estimate is authoritative",
+				},
+			};
+			const decisionKey = `decision:review-gate:${shown.gateId}`;
+			const originalListLines = ctx.recordStore.listLines.bind(ctx.recordStore);
+			const originalAppend = ctx.recordStore.atomicAppendIfAllNew.bind(
+				ctx.recordStore,
+			);
+			let hideBudgetFromOpenGateCheck = true;
+			let openGateCheckListedBudget = false;
+			let appends = 0;
+			ctx.recordStore.listLines = (runId, stream) => {
+				if (runId === "run1" && stream === "budget") {
+					openGateCheckListedBudget = true;
+					if (hideBudgetFromOpenGateCheck) return [];
+				}
+				return originalListLines(runId, stream);
+			};
+			ctx.recordStore.atomicAppendIfAllNew = (ops) => {
+				appends++;
+				return originalAppend(ops);
+			};
+			let winner:
+				| Awaited<ReturnType<typeof submitPlanReviewDecision>>
+				| undefined;
+			const loser = await submitPlanReviewDecision(input, {
+				context: ctx,
+				promptStore,
+				onOpenGateMiss: async () => {
+					// The open-gate check has already missed, and the winner has
+					// not committed yet. Publishing it here is the raced window
+					// before the loser's re-read.
+					expect(openGateCheckListedBudget).toBe(true);
+					expect(
+						ctx.recordStore.getLine("run1", "decisions", decisionKey),
+					).toBeNull();
+					hideBudgetFromOpenGateCheck = false;
+					winner = await submitPlanReviewDecision(input, {
+						context: ctx,
+						promptStore,
+					});
+				},
+			});
+			if (!winner)
+				throw new Error("expected winner to commit in the race window");
+			expect(winner.created).toBe(true);
+			expect(loser.created).toBe(false);
+			expect(loser.route).toBe(winner.route);
+			expect(loser.decision.decisionId).toBe(winner.decision.decisionId);
+			expect(loser.decision.decisionIntentHash).toBe(
+				winner.decision.decisionIntentHash,
+			);
+			expect(appends).toBe(1);
+			expect(ctx.recordStore.listLines("run1", "decisions")).toHaveLength(1);
+			expect(
+				ctx.recordStore
+					.listLines("run1", "steps")
+					.filter(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"human:review-governance",
+					),
+			).toHaveLength(1);
+			expect(promptStore.getPrompt(shown.promptId)?.answer).toBe(
+				winner.decision.decisionId,
+			);
+		} finally {
+			ctx.db.close();
+		}
 	});
 
 	test("authoritative records survive a lost SQLite index write and rebuild", async () => {

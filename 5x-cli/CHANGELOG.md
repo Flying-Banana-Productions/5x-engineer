@@ -9,6 +9,12 @@ source of truth for the corresponding GitHub Release.
 
 ### Features
 
+- **Implementation-review governance** — budgeted execution binds an approved
+  plan, reviews an exact code range, and reconciles inherited debt. Run state
+  reports binding, range, gate, quality attempt, claims, and telemetry, with
+  gross effort, ceilings, provisional credit, realized credit, and positive
+  burden kept separate. Advisory remains the default. Dashboard HTTP stays in
+  the plan-review governance dashboard follow-up.
 - **Plan-review governance** — exhaustive initial reviews now converge through
   evidence-checked closure reviews. Enforced, baseline-pinned runs derive
   deterministic complete/revision/final-correction/human-gate routes and expose

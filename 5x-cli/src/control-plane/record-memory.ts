@@ -255,7 +255,10 @@ class MemoryRecordStore implements RecordStore {
 		return results;
 	}
 
-	atomicAppendIfAllNew(ops: AppendOp[]): AtomicAppendIfAllNewResult {
+	atomicAppendIfAllNew(
+		ops: AppendOp[],
+		expectedKeys?: Partial<Record<RecordStream, string[]>>,
+	): AtomicAppendIfAllNewResult {
 		if (ops.length === 0) return { created: true, results: [] };
 		requireSingleRunAtomicAppend(ops);
 		requireUniqueAtomicAppendKeys(ops);
@@ -273,6 +276,17 @@ class MemoryRecordStore implements RecordStore {
 			if (existing) duplicates.push({ index, line: cloneLine(existing) });
 		}
 		if (duplicates.length > 0) return { created: false, duplicates };
+		for (const stream of Object.keys(expectedKeys ?? {}) as RecordStream[]) {
+			if (
+				JSON.stringify([...clone.streams[stream].lines.keys()]) !==
+				JSON.stringify(expectedKeys?.[stream])
+			) {
+				throw new RecordStoreError(
+					"RECORD_PRECONDITION_FAILED",
+					"Run history changed; repeat the recovery dry-run.",
+				);
+			}
+		}
 
 		const now = this.now();
 		const results = ops.map((op) => applyOp(clone, op, now));

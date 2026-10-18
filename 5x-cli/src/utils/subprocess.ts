@@ -49,7 +49,11 @@ export const subprocess = {
 	 * Strips GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE so git discovers
 	 * the repo from `cwd`, not from inherited env vars.
 	 */
-	async execGit(args: string[], workdir: string): Promise<ExecResult> {
+	async execGit(
+		args: string[],
+		workdir: string,
+		options?: { exact?: boolean },
+	): Promise<ExecResult> {
 		const proc = Bun.spawn(["git", ...args], {
 			cwd: workdir,
 			env: cleanEnv(),
@@ -64,7 +68,31 @@ export const subprocess = {
 		]);
 		// Blob reads must preserve whitespace, including a final newline.
 		return {
-			stdout: args[0] === "show" ? stdout : stdout.trim(),
+			stdout: options?.exact || args[0] === "show" ? stdout : stdout.trim(),
+			stderr: stderr.trim(),
+			exitCode,
+		};
+	},
+
+	/** Same as {@link execGit} but preserves stdout bytes, including invalid UTF-8. */
+	async execGitBytes(
+		args: string[],
+		workdir: string,
+	): Promise<{ stdout: Buffer; stderr: string; exitCode: number }> {
+		const proc = Bun.spawn(["git", ...args], {
+			cwd: workdir,
+			env: cleanEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).arrayBuffer(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return {
+			stdout: Buffer.from(stdout),
 			stderr: stderr.trim(),
 			exitCode,
 		};

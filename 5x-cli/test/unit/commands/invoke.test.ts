@@ -9,6 +9,7 @@
  * remain in test/integration/commands/invoke.test.ts.
  */
 
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
 	existsSync,
@@ -19,18 +20,33 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { composeImplementationReviewerRecord } from "../../../src/commands/implementation-review-context.js";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
+import { RecordContextError } from "../../../src/commands/record-context.js";
 import { templateRender } from "../../../src/commands/template.handler.js";
-import { _resetForTest, closeDb, getDb } from "../../../src/db/connection.js";
+import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
+import { runMigrations } from "../../../src/db/schema.js";
 import { createProvider } from "../../../src/providers/factory.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
+import {
+	encodeImplementationReviewObservationPayload,
+	implementationReviewObservationKey,
+} from "../../../src/review-budget/record-lines.js";
+import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import {
+	capturePhaseAuthorAdmission,
+	hashPlanBytes,
+	prepareImplementationReviewContext,
+} from "../../../src/review-governance/implementation-state.js";
+import { prepareTextAmendmentGuard } from "../../../src/review-governance/plan-amendment.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
 	seedPromptGovernanceContext,
+	TEST_ORIGIN,
 } from "./review-budget-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -50,6 +66,18 @@ function cleanupDir(dir: string): void {
 	try {
 		rmSync(dir, { recursive: true });
 	} catch {}
+}
+
+/** Per-test control-plane file. Never touches the process-wide getDb singleton. */
+function openPrivateControlPlaneDb(dir: string): Database {
+	const stateDir = join(dir, ".5x");
+	mkdirSync(stateDir, { recursive: true });
+	const db = new Database(join(stateDir, "5x.db"));
+	db.exec("PRAGMA busy_timeout=5000");
+	db.exec("PRAGMA journal_mode=WAL");
+	db.exec("PRAGMA foreign_keys=ON");
+	runMigrations(db);
+	return db;
 }
 
 function structuredProvider(structured: unknown): AgentProvider {
@@ -156,15 +184,15 @@ describe("invoke reviewer — plan read state", () => {
 				stderr: "pipe",
 			});
 		}
-		await initScaffold({ startDir: dir });
-		const planPath = join(dir, "plan.md");
-		writeFileSync(planPath, "# Provider-visible plan\n");
-		const db = getDb(dir);
-		createRunV1(db, { id: "run1", planPath });
-		closeDb();
-		_resetForTest();
-		const structured = humanGate
-			? `[sample.structured]
+		// Create the file first so initScaffold skips the process-wide singleton.
+		const db = openPrivateControlPlaneDb(dir);
+		try {
+			await initScaffold({ startDir: dir });
+			const planPath = join(dir, "plan.md");
+			writeFileSync(planPath, "# Provider-visible plan\n");
+			createRunV1(db, { id: "run1", planPath });
+			const structured = humanGate
+				? `[sample.structured]
 readiness = "not_ready"
 creditAssessments = []
 
@@ -185,7 +213,7 @@ independentEffortEstimate = 2
 confidence = "high"
 reason = "The original estimate remains sound."
 `
-			: `[sample.structured]
+				: `[sample.structured]
 readiness = "ready"
 items = []
 creditAssessments = []
@@ -195,9 +223,9 @@ independentEffortEstimate = 2
 confidence = "high"
 reason = "estimate"
 `;
-		writeFileSync(
-			join(dir, "5x.toml"),
-			`[author]
+			writeFileSync(
+				join(dir, "5x.toml"),
+				`[author]
 provider = "sample"
 model = "sample/test"
 
@@ -210,14 +238,19 @@ echo = false
 
 ${structured}
 `,
-		);
-		return planPath;
+			);
+			return { planPath, db };
+		} catch (error) {
+			db.close();
+			throw error;
+		}
 	}
 
 	async function invokeWithBudgetContext(
 		dir: string,
 		planPath: string,
 		effectivePlanPath: string,
+		db: Database,
 		onCreateProvider?: () => never,
 	) {
 		const ctx = makeBudgetContext();
@@ -235,6 +268,7 @@ ${structured}
 					workdir: dir,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					...(onCreateProvider
 						? { createProvider: async () => onCreateProvider() }
@@ -248,16 +282,24 @@ ${structured}
 
 	test("empty readable plan reaches budget parsing", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
 			const emptyPath = join(dir, "empty.md");
 			writeFileSync(emptyPath, "");
 			let providerCreations = 0;
 			await expect(
-				invokeWithBudgetContext(dir, planPath, emptyPath, () => {
-					providerCreations++;
-					throw new Error("provider must not be created before preflight");
-				}),
+				invokeWithBudgetContext(
+					dir,
+					setup.planPath,
+					emptyPath,
+					setup.db,
+					() => {
+						providerCreations++;
+						throw new Error("provider must not be created before preflight");
+					},
+				),
 			).rejects.toMatchObject({
 				code: "PLAN_REPAIR_REQUIRED",
 				detail: {
@@ -267,22 +309,27 @@ ${structured}
 			});
 			expect(providerCreations).toBe(0);
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
 
 	test("unreadable plan maps to PLAN_NOT_FOUND", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
 			await expect(
-				invokeWithBudgetContext(dir, planPath, join(dir, "missing.md")),
+				invokeWithBudgetContext(
+					dir,
+					setup.planPath,
+					join(dir, "missing.md"),
+					setup.db,
+				),
 			).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -290,8 +337,11 @@ ${structured}
 	test("continued reviewer opt-in captures once before provider and records the step snapshot", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			ctx.db.run(
@@ -312,6 +362,7 @@ ${structured}
 					optInBudgetBaseline: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					createProvider: async (role, config) => {
 						providerCreations++;
@@ -334,8 +385,7 @@ ${structured}
 			expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(1);
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -343,8 +393,11 @@ ${structured}
 	test("recording stays enforced and opens a gate after live config flips to advisory", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ mode: "enforced" });
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir, true);
+			const setup = await setupBudgetInvoke(dir, true);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			const seed = pendingSnapshot();
@@ -369,7 +422,7 @@ ${structured}
 					quiet: true,
 					workdir: dir,
 				},
-				{ createReviewBudgetContext: async () => ctx },
+				{ db, createReviewBudgetContext: async () => ctx },
 			);
 
 			const line = ctx.recordStore.listLines("run1", "steps")[0];
@@ -386,8 +439,7 @@ ${structured}
 			});
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -395,8 +447,11 @@ ${structured}
 	test("invoke and template handlers append byte-identical reviewer governance context", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext({ mode: "enforced" });
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			seedPromptGovernanceContext(ctx);
@@ -411,6 +466,7 @@ ${structured}
 					newSession: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					onRenderedPrompt: (prompt) => {
 						nativePrompt = prompt;
@@ -427,6 +483,7 @@ ${structured}
 					quiet: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					createProvider: async () =>
 						structuredProvider({
@@ -449,6 +506,7 @@ ${structured}
 					quiet: true,
 				},
 				{
+					db,
 					createReviewBudgetContext: async () => ctx,
 					createProvider: async () =>
 						structuredProvider({
@@ -481,8 +539,7 @@ ${structured}
 			);
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -490,8 +547,11 @@ ${structured}
 	test("provider schema follows the baselineAssessment contract the budget validator enforces", async () => {
 		const dir = makeTmpDir();
 		const ctx = makeBudgetContext();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			writeFileSync(planPath, budgetPlan);
 			ctx.executionContext.effectivePlanPath = planPath;
 			const schemas: Record<string, unknown>[] = [];
@@ -521,6 +581,7 @@ ${structured}
 						newSession: true,
 					},
 					{
+						db,
 						createReviewBudgetContext: async () => ctx,
 						createProvider: async () => {
 							const provider = structuredProvider(initialVerdict);
@@ -563,22 +624,28 @@ ${structured}
 
 			// A retry of the initial step may repeat its estimate.
 			await invoke(1);
-			const { ReviewerVerdictSchema } = await import(
+			const { reviewerVerdictSchemaFor } = await import(
 				"../../../src/protocol.js"
 			);
-			expect(schemas[2]).toEqual(ReviewerVerdictSchema);
+			expect(schemas[0]).toEqual(reviewerVerdictSchemaFor("required", "plan"));
+			expect(schemas[1]).toEqual(
+				reviewerVerdictSchemaFor("prohibited", "plan"),
+			);
+			expect(schemas[2]).toEqual(reviewerVerdictSchemaFor("optional", "plan"));
 		} finally {
 			ctx.db.close();
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
 
 	test("opt-in on an author invocation is rejected before provider creation", async () => {
 		const dir = makeTmpDir();
+		let db: Database | undefined;
 		try {
-			const planPath = await setupBudgetInvoke(dir);
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
 			let providerCreations = 0;
 			await expect(
 				invokeAgent(
@@ -592,6 +659,7 @@ ${structured}
 						optInBudgetBaseline: true,
 					},
 					{
+						db,
 						createProvider: async () => {
 							providerCreations++;
 							throw new Error("provider must not be created");
@@ -601,8 +669,7 @@ ${structured}
 			).rejects.toMatchObject({ code: "BUDGET_BASELINE_OPT_IN_INVALID" });
 			expect(providerCreations).toBe(0);
 		} finally {
-			closeDb();
-			_resetForTest();
+			db?.close();
 			cleanupDir(dir);
 		}
 	});
@@ -1286,4 +1353,719 @@ describe("invoke — worktree envelope fields (unit)", () => {
 			cleanupDir(dir);
 		}
 	});
+});
+
+describe("invoke implementation admission", () => {
+	test("sqlite-only budgeted author invoke requires approval before a provider", async () => {
+		const dir = makeTmpDir();
+		let db: Database | undefined;
+		try {
+			Bun.spawnSync(["git", "init"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const planPath = join(dir, "plan.md");
+			writeFileSync(
+				planPath,
+				`# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+- [ ] Bind
+`,
+			);
+			writeFileSync(
+				join(dir, "5x.toml"),
+				'[reviewBudget]\nmode = "advisory"\n',
+			);
+			// Private file DB so concurrent unit tests never open or close the
+			// process-wide singleton while another invoke still holds it.
+			db = openPrivateControlPlaneDb(dir);
+			createRunV1(db, { id: "run_admission01", planPath });
+			let providerCalls = 0;
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run_admission01",
+						workdir: dir,
+						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => {
+							throw new RecordContextError(
+								"RECORDS_UNAVAILABLE",
+								"sqlite-only run has no record home",
+							);
+						},
+						createProvider: async () => {
+							providerCalls += 1;
+							throw new Error("provider should not be created");
+						},
+					},
+				),
+			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
+			expect(providerCalls).toBe(0);
+		} finally {
+			db?.close();
+			cleanupDir(dir);
+		}
+	});
+});
+
+describe("invoke implementation review recording", () => {
+	function gitHead(dir: string): string {
+		const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		return result.stdout.toString().trim();
+	}
+
+	function verdict() {
+		return {
+			readiness: "ready" as const,
+			items: [],
+			nonblocking: [
+				{
+					id: "n1",
+					title: "Old note",
+					reason: "Left from before.",
+					scopeClass: "pre_existing" as const,
+				},
+			],
+		};
+	}
+
+	async function preparedContext(dir: string) {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.executionContext.effectiveWorkingDirectory = dir;
+		ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+		ctx.store.saveImplementationBinding(
+			{
+				kind: "implementation-binding",
+				version: 1,
+				id: "binding-1",
+				executionRunId: "run1",
+				sourceRunId: "source",
+				sourceSnapshotId: "snap",
+				sourceBaselineId: "base",
+				approvedPlanCommit: "c".repeat(40),
+				approvedPlanHash: "sha256:plan",
+				approvedPlanBytes: "# Plan\n",
+				b0: 2,
+				governingB: 2,
+				mode: "enforced",
+				thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+				ledger: {
+					estimateConfidence: "high",
+					workItems: [
+						{
+							id: "W1",
+							title: "Work",
+							effort: 2,
+							architectureDelta: 0,
+							debtClaim: null,
+							addresses: [],
+							rationale: "Required",
+							line: 1,
+						},
+					],
+					surface: {
+						subsystems: 1,
+						productionFiles: 1,
+						persistentOrExternalBoundaries: 0,
+					},
+				},
+				effectiveDecisions: [],
+				phaseMap: [{ id: "1", heading: "Phase 1" }],
+				debtTargets: [],
+				ledgerHash: "ledger",
+				decisionsHash: "decisions",
+				createdAt: "2026-01-01 00:00:00",
+			},
+			TEST_ORIGIN,
+		);
+		const head = gitHead(dir);
+		const captured = capturePhaseAuthorAdmission({
+			recordStore: ctx.recordStore,
+			origin: TEST_ORIGIN,
+			executionRunId: "run1",
+			bindingId: "binding-1",
+			phase: "1",
+			preAuthorCommit: head,
+		});
+		if (captured.status !== "captured") {
+			throw new Error(`pre-author capture ${captured.status}`);
+		}
+		const prepared = await prepareImplementationReviewContext({
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+			origin: TEST_ORIGIN,
+			executionRunId: "run1",
+			bindingId: "binding-1",
+			phase: "1",
+			excludedPaths: [],
+			workdir: dir,
+		});
+		if (prepared.status !== "ready") {
+			throw new Error(`${prepared.code}: ${prepared.message}`);
+		}
+		return { ctx, head, prepared };
+	}
+
+	test("invoke records the durable observation and rejects a pair collision", async () => {
+		const dir = makeTmpDir();
+		let db: Database | undefined;
+		try {
+			for (const args of [
+				["init"],
+				["config", "user.email", "test@test.com"],
+				["config", "user.name", "Test"],
+			] as const) {
+				Bun.spawnSync(["git", ...args], {
+					cwd: dir,
+					env: cleanGitEnv(),
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+			}
+			// Create the file first so initScaffold skips the process-wide singleton.
+			db = openPrivateControlPlaneDb(dir);
+			await initScaffold({ startDir: dir });
+			writeFileSync(join(dir, "plan.md"), "# Provider-visible plan\n");
+			createRunV1(db, { id: "run1", planPath: join(dir, "plan.md") });
+			writeFileSync(
+				join(dir, "5x.toml"),
+				`[author]
+provider = "sample"
+model = "sample/test"
+
+[reviewer]
+provider = "sample"
+model = "sample/test"
+`,
+			);
+			Bun.spawnSync(["git", "add", "-A"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			Bun.spawnSync(["git", "commit", "-m", "init"], {
+				cwd: dir,
+				env: cleanGitEnv(),
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const { ctx, head, prepared } = await preparedContext(dir);
+			const logs: string[] = [];
+			const originalLog = console.log;
+			console.log = (message?: unknown) => {
+				logs.push(String(message));
+			};
+			try {
+				await invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-commit",
+						run: "run1",
+						phase: "1",
+						iteration: 1,
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`commit_hash=${head}`,
+							`review_path=${join(dir, "docs/development/reviews/review.md")}`,
+							`plan_path=${join(dir, "plan.md")}`,
+							`review_template_path=${join(dir, "template.md")}`,
+							"run_id=run1",
+						],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => structuredProvider(verdict()),
+					},
+				);
+			} finally {
+				console.log = originalLog;
+			}
+			const envelope = JSON.parse(logs.at(-1) ?? "{}") as {
+				data?: {
+					result?: {
+						governance?: { route?: string; completionAuthorized?: boolean };
+					};
+				};
+			};
+			expect(envelope.data?.result?.governance?.route).toBe("complete");
+			expect(envelope.data?.result?.governance?.completionAuthorized).toBe(
+				true,
+			);
+			expect(ctx.store.listImplementationReviews("run1")).toHaveLength(1);
+			expect(
+				ctx.recordStore.listLines("run1", "steps").filter((line) => {
+					return (
+						(line.payload as { step_name?: string }).step_name ===
+						"reviewer:commit"
+					);
+				}),
+			).toHaveLength(1);
+
+			const composed = await composeImplementationReviewerRecord({
+				ctx,
+				runId: "run1",
+				stepName: "reviewer:commit",
+				phase: "1",
+				iteration: 2,
+				verdict: verdict(),
+				contextId: prepared.context.id,
+				codeContext: prepared.diff,
+			});
+			expect(composed.status).toBe("applied");
+			if (composed.status !== "applied") return;
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
+					stepName: "reviewer:commit",
+					phase: "1",
+					iteration: 2,
+				}),
+				payload: {
+					...composed.pending,
+					completionAuthorized: false,
+					createdAt: "2026-01-01 00:00:00",
+				},
+				createdAt: "2026-01-01 00:00:00",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			await expect(
+				invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-commit",
+						run: "run1",
+						phase: "1",
+						iteration: 2,
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`commit_hash=${head}`,
+							`review_path=${join(dir, "docs/development/reviews/review.md")}`,
+							`plan_path=${join(dir, "plan.md")}`,
+							`review_template_path=${join(dir, "template.md")}`,
+							"run_id=run1",
+						],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => structuredProvider(verdict()),
+					},
+				),
+			).rejects.toMatchObject({ code: "RECORD_PAIR_CORRUPT" });
+			ctx.db.close();
+		} finally {
+			db?.close();
+			cleanupDir(dir);
+		}
+	});
+});
+
+describe("invoke author text-amendment admission", () => {
+	const approved = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+## Design Decisions
+
+Keep the approved ledger.
+
+## Phase 1: Bind
+
+Bind execution to the approved plan.
+
+- [ ] Complete the phase
+
+## Acceptance
+
+The binding is unchanged.
+`;
+	const outOfSpan = approved.replace(
+		"Keep the approved ledger.",
+		"Keep another ledger.",
+	);
+
+	function stableStringify(value: unknown): string {
+		if (Array.isArray(value))
+			return `[${value.map(stableStringify).join(",")}]`;
+		if (value && typeof value === "object") {
+			return `{${Object.entries(value as Record<string, unknown>)
+				.filter(([, item]) => item !== undefined)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+				.join(",")}}`;
+		}
+		return JSON.stringify(value);
+	}
+
+	function git(dir: string, args: string[]): void {
+		const result = Bun.spawnSync(["git", ...args], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) {
+			throw new Error(
+				result.stderr.toString() || `git ${args.join(" ")} failed`,
+			);
+		}
+	}
+
+	function gitHead(dir: string): string {
+		const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+			cwd: dir,
+			env: cleanGitEnv(),
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+		return result.stdout.toString().trim();
+	}
+
+	async function setupAuthorInvoke(dir: string) {
+		for (const args of [
+			["init"],
+			["config", "user.email", "test@test.com"],
+			["config", "user.name", "Test"],
+		] as const) {
+			git(dir, [...args]);
+		}
+		const planPath = join(dir, "plan.md");
+		writeFileSync(planPath, approved);
+		writeFileSync(
+			join(dir, "5x.toml"),
+			`[author]
+provider = "sample"
+model = "sample/test"
+`,
+		);
+		// Private file DB so concurrent unit tests never open or close the
+		// process-wide singleton while another invoke still holds it.
+		const db = openPrivateControlPlaneDb(dir);
+		try {
+			createRunV1(db, { id: "run1", planPath });
+			git(dir, ["add", "-A"]);
+			git(dir, ["commit", "-m", "approved plan"]);
+
+			const ctx = makeBudgetContext({ mode: "enforced" });
+			const ledger = {
+				estimateConfidence: "high" as const,
+				workItems: [
+					{
+						id: "W1",
+						title: "Bind",
+						effort: 2 as const,
+						architectureDelta: 0 as const,
+						debtClaim: null,
+						addresses: [],
+						rationale: "Required",
+						line: 1,
+					},
+				],
+				surface: {
+					subsystems: 1,
+					productionFiles: 1,
+					persistentOrExternalBoundaries: 0,
+				},
+			};
+			const binding = {
+				kind: "implementation-binding" as const,
+				version: 1 as const,
+				id: "binding-1",
+				executionRunId: "run1",
+				sourceRunId: "source",
+				sourceSnapshotId: "snap",
+				sourceBaselineId: "base",
+				approvedPlanCommit: "c".repeat(40),
+				approvedPlanBytes: approved,
+				approvedPlanHash: hashPlanBytes(approved),
+				b0: 2,
+				governingB: 2,
+				mode: "enforced" as const,
+				thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+				ledger,
+				effectiveDecisions: [],
+				phaseMap: [{ id: "1", heading: "Phase 1: Bind" }],
+				debtTargets: [],
+				ledgerHash: hashPlanBytes(stableStringify(ledger)),
+				decisionsHash: hashPlanBytes(stableStringify([])),
+				createdAt: "2026-01-01 00:00:00",
+			};
+			ctx.store.saveImplementationBinding(binding, TEST_ORIGIN);
+			const stale = "Bind execution to the approved plan.";
+			const staleAt = Buffer.from(approved, "utf8").indexOf(Buffer.from(stale));
+			const prepared = prepareTextAmendmentGuard({
+				id: "guard-1",
+				anchorBytes: approved,
+				anchorCommit: "a".repeat(40),
+				parentLineageId: null,
+				allowedSpans: [
+					{
+						itemId: "R1",
+						heading: "Phase 1: Bind",
+						staleText: stale,
+						start: staleAt,
+						end: staleAt + Buffer.byteLength(stale),
+					},
+				],
+			});
+			if (!prepared.ok) throw new Error(prepared.message);
+			ctx.recordStore.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: implementationReviewObservationKey("run1", {
+					stepName: "reviewer:review",
+					phase: "1",
+					iteration: 0,
+				}),
+				payload: encodeImplementationReviewObservationPayload({
+					kind: "implementation-review",
+					version: 1,
+					id: "obs-1",
+					runId: "run1",
+					stepKey: {
+						stepName: "reviewer:review",
+						phase: "1",
+						iteration: 0,
+					},
+					bindingId: binding.id,
+					contextId: "ctx-1",
+					domain: "implementation",
+					phase: "1",
+					originalVerdict: {
+						readiness: "not_ready",
+						items: [
+							{
+								id: "R1",
+								title: "Stale wording",
+								action: "auto_fix",
+								reason: "The sentence is stale.",
+								scopeClass: "plan_defect",
+								priority: "P2",
+								effortDelta: 0,
+								architectureDelta: 0,
+								planImpact: {
+									kind: "text_only",
+									locations: [
+										{
+											heading: "Phase 1: Bind",
+											staleText: stale,
+										},
+									],
+								},
+							},
+						],
+					},
+					outcomes: [],
+					route: "author_revision",
+					nextAction: "author_revision",
+					diagnostics: [],
+					claimObservations: [],
+					gateCauses: [],
+					telemetry: {
+						reviewCycles: 1,
+						fixCycles: 0,
+						reviewOriginatedCommits: 0,
+						qualityReruns: 0,
+						classCounts: {
+							implementation_defect: 0,
+							plan_defect: 1,
+							scope_expansion: 0,
+							pre_existing: 0,
+						},
+						planAmendments: 0,
+						addedPaths: [],
+						boundaryInventory: [],
+						effortVariance: 0,
+						architectureVariance: 0,
+					},
+					budgetInvariant: { W: 2, R: 0, B: 2, D: 0 },
+					completionAuthorized: false,
+					textGuard: prepared.guard,
+					createdAt: "2026-09-23 00:00:01",
+				}),
+				createdAt: "2026-09-23 00:00:01",
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			ctx.executionContext.controlPlaneRoot = dir;
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = planPath;
+			ctx.executionContext.planPathInWorktreeExists = true;
+			ctx.executionContext.run.plan_path = planPath;
+			return { ctx, planPath, db };
+		} catch (error) {
+			db.close();
+			throw error;
+		}
+	}
+
+	function providerThatCommitsOutOfSpan(
+		dir: string,
+		planPath: string,
+		includeCommit: boolean,
+	): AgentProvider {
+		let authorCommit = "";
+		const result = {
+			text: "structured response",
+			structured: {
+				result: "needs_human" as const,
+				reason: "amendment",
+				...(includeCommit ? { commit: "" } : {}),
+			},
+			sessionId: "session-author-amendment",
+			tokens: { in: 0, out: 0 },
+			durationMs: 0,
+		};
+		const session = {
+			id: result.sessionId,
+			run: async () => {
+				writeFileSync(planPath, outOfSpan);
+				git(dir, ["add", "plan.md"]);
+				git(dir, ["commit", "-m", "out of span"]);
+				authorCommit = gitHead(dir);
+				writeFileSync(planPath, approved);
+				git(dir, ["add", "plan.md"]);
+				git(dir, ["commit", "-m", "restore approved"]);
+				writeFileSync(planPath, outOfSpan);
+				result.structured = {
+					result: "needs_human",
+					reason: "amendment",
+					...(includeCommit ? { commit: authorCommit } : {}),
+				};
+				return result;
+			},
+			async *runStreamed() {
+				yield { type: "done" as const, result: await session.run() };
+			},
+		};
+		return {
+			startSession: async () => session,
+			resumeSession: async () => session,
+			close: async () => {},
+		};
+	}
+
+	test("uses the author result commit and surfaces a typed amendment failure", async () => {
+		const dir = makeTmpDir();
+		const { ctx, planPath, db } = await setupAuthorInvoke(dir);
+		try {
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run1",
+						phase: "1",
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`plan_path=${planPath}`,
+							"phase_number=1",
+							"user_notes=x",
+							"run_id=run1",
+						],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () =>
+							providerThatCommitsOutOfSpan(dir, planPath, true),
+					},
+				),
+			).rejects.toMatchObject({ code: "PLAN_AMENDMENT_OUT_OF_SPAN" });
+			expect(
+				ctx.store.listImplementationTextAmendments("run1", "binding-1"),
+			).toHaveLength(0);
+		} finally {
+			ctx.db.close();
+			db.close();
+			cleanupDir(dir);
+		}
+	}, 30000);
+
+	test("falls back to HEAD when the author result omits commit", async () => {
+		const dir = makeTmpDir();
+		const { ctx, planPath, db } = await setupAuthorInvoke(dir);
+		try {
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run1",
+						phase: "1",
+						record: true,
+						quiet: true,
+						workdir: dir,
+						vars: [
+							`plan_path=${planPath}`,
+							"phase_number=1",
+							"user_notes=x",
+							"run_id=run1",
+						],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () =>
+							providerThatCommitsOutOfSpan(dir, planPath, false),
+					},
+				),
+			).rejects.toMatchObject({ code: "PLAN_AMENDMENT_DIRTY" });
+		} finally {
+			ctx.db.close();
+			db.close();
+			cleanupDir(dir);
+		}
+	}, 30000);
 });

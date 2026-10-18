@@ -37,6 +37,11 @@ timeout handling.
   review (Step 3)
 - Read `maxReviewIterations` and `maxQualityRetries` from
   `5x config show` — never hardcode limits
+- Surface `warnings` and `harness_freshness` from `5x run init`. Do not
+  suppress them. `harness.freshnessWarnings = "off"` is the only silence
+- Resume from the durable governance route, not local counters or reviewer prose
+- Generic `human:gate` and approve-override are not an enforced bypass.
+  Enforced gates use `5x review decide`
 - Phase count should not change during a run — if it does, flag to human
 - Run records are dirty again after every recording command (including the
   reviewer's `5x commit` and the verdict record). Before any human gate,
@@ -172,6 +177,26 @@ Confirm each role's path before delegating:
 If your chosen delegation path does not match the resolved
 `delegationMode` for that role, stop and correct before proceeding.
 
+Before the first author delegation of a phase, template render and invoke
+perform mandatory first-admission binding and capture pre-author HEAD.
+
+- Read `binding_id`, `source_run_id`, `pinned_mode`, and `pre_author_commit`
+  from that envelope. Reuse `pre_author_commit` for the phase. Do not
+  recapture HEAD after author work.
+- A successful envelope with no `binding_id` is recorded v1 compatibility
+  (no Delivery Budget, or mode `off`). Do not invent a binding.
+- `IMPLEMENTATION_APPROVAL_REQUIRED` means zero or multiple approved sources.
+  Stop and ask the human to select exactly one source, then run
+  `5x review implementation bind --run $FIVEX_RUN --source-run <plan-review>`.
+  Never continue that failure as v1.
+- A fresh session (`--new-session`) still receives the same implementation
+  governance context as continuation (`--continue-native` or `--session`).
+  `--new-session` selects the initial template; continuation selects the
+  closure template. When that context says `Review kind: closure`, follow
+  its closure rules (one `priorFindings` outcome per required ID via
+  `--prior-finding`) even on the initial template. Neither path drops
+  binding, claims, or decisions.
+
 ```bash
 INIT=$(5x run init --plan $PLAN_PATH --worktree)
 export FIVEX_RUN=$(echo "$INIT" | jq -r '.data.run_id')
@@ -226,6 +251,9 @@ RENDERED=$(5x template render author-next-phase \
   --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
+BINDING_ID=$(echo "$RENDERED" | jq -r '.data.binding_id // empty')
+PRE_AUTHOR=$(echo "$RENDERED" | jq -r '.data.pre_author_commit // empty')
+PINNED_MODE=$(echo "$RENDERED" | jq -r '.data.pinned_mode // empty')
 
 RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
 ```
@@ -238,6 +266,9 @@ RESULT=$(5x invoke author author-next-phase \
   --var phase_number=$PHASE_NUMBER \
   --record --record-step $STEP --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
+BINDING_ID=$(echo "$RESULT" | jq -r '.data.binding_id // empty')
+PRE_AUTHOR=$(echo "$RESULT" | jq -r '.data.pre_author_commit // empty')
+PINNED_MODE=$(echo "$RESULT" | jq -r '.data.pinned_mode // empty')
 
 STATUS=$(echo "$RESULT" | jq -r '.data.result.result')
 COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
@@ -368,13 +399,16 @@ RENDERED=$(5x template render reviewer-commit \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
+REVIEW_CONTEXT_ID=$(echo "$RENDERED" | jq -r '.data.review_context_id // empty')
+PINNED_MODE=$(echo "$RENDERED" | jq -r '.data.pinned_mode // empty')
 
 RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
         [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
 
-echo "$RESULT" | 5x protocol validate reviewer \
+VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
   --record --step $STEP --phase $PHASE \
-  --iteration $REVIEW_ITERATIONS
+  --iteration $REVIEW_ITERATIONS \
+  ${REVIEW_CONTEXT_ID:+--review-context "$REVIEW_CONTEXT_ID"})
 ```
 {{else}}
 Delegate to the reviewer via `5x invoke`:
@@ -398,6 +432,8 @@ RESULT=$(5x invoke reviewer reviewer-commit \
 READINESS=$(echo "$RESULT" | jq -r '.data.result.readiness')
 ITEM_COUNT=$(echo "$RESULT" | jq -r '.data.result.items | length')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
+REVIEW_CONTEXT_ID=$(echo "$RESULT" | jq -r '.data.review_context_id // empty')
+PINNED_MODE=$(echo "$RESULT" | jq -r '.data.pinned_mode // empty')
 ```
 {{/if}}
 
@@ -426,6 +462,41 @@ reuse in subsequent reviews.
 
 #### Step 4: Route the verdict
 
+Read the recorded governance fields. Do not recompute them from reviewer prose
+or from local `$REVIEW_ITERATIONS`.
+
+```bash
+{{#if reviewer_native}}
+# Native mode: governance, readiness, and items live on the validate envelope.
+ROUTE_JSON="$VALIDATED"
+READINESS=$(echo "$VALIDATED" | jq -r '.data.result.readiness // empty')
+ITEM_COUNT=$(echo "$VALIDATED" | jq -r '.data.result.items | length')
+{{else}}
+ROUTE_JSON="$RESULT"
+{{/if}}
+GOVERNANCE_ROUTE=$(echo "$ROUTE_JSON" | jq -r '.data.result.governance.route // empty')
+OBSERVATION_ID=$(echo "$ROUTE_JSON" | jq -r '.data.result.governance.observationId // empty')
+NEXT_ACTION=$(echo "$ROUTE_JSON" | jq -r '.data.result.governance.nextAction // empty')
+```
+
+When `PINNED_MODE` is `enforced`, that route is the only branch:
+
+- `complete` → Step 6.
+- `author_revision` → Step 5, then quality, then reviewer re-entry.
+- `final_corrections` → Step 5 limited to the eligible item, then
+  `5x review corrections finish --run $FIVEX_RUN --phase $PHASE --review $OBSERVATION_ID --commit $COMMIT`.
+  A passing finish goes to Step 6 with no reviewer re-entry. Any invalidation
+  returns to quality retry and then reviewer re-entry. A later pass does not
+  restore the shortcut.
+- `human_gate`, or `nextAction` `plan_amendment` → Step 5b. Do not treat
+  generic `human:gate` or approve-override as permission to continue.
+
+When `PINNED_MODE` is `advisory`, keep ordinary reviewer re-entry. Do not take
+the no-review shortcut and do not add debt-based completion blocks. Ignore
+advisory hypothetical routes for advancement.
+
+When `PINNED_MODE` is empty, use the legacy readiness route:
+
 **If `readiness: "ready"`:**
   Go to Step 6 (Phase gate).
 
@@ -450,7 +521,8 @@ If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
 Delegate to the code author via the Task tool:
 
 ```bash
-RENDERED=$(5x template render author-process-impl-review)
+RENDERED=$(5x template render author-process-impl-review \
+  --var phase_number=$PHASE_NUMBER)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
@@ -462,6 +534,7 @@ Delegate to the code author via `5x invoke`:
 ```bash
 STEP=author:process-impl-review
 RESULT=$(5x invoke author author-process-impl-review \
+  --var phase_number=$PHASE_NUMBER \
   --record --record-step $STEP --phase $PHASE \
   --iteration $REVIEW_ITERATIONS)
 
@@ -472,12 +545,64 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 {{/if}}
 
 Check the result:
-- `result: "complete"` — update $COMMIT, loop back to Step 2
-  (quality gates must pass again after changes).
+- `result: "complete"` — update $COMMIT. When Step 4 routed
+  `final_corrections`, do not loop back to review. Run
+  `5x review corrections finish --run $FIVEX_RUN --phase $PHASE --review $OBSERVATION_ID --commit $COMMIT`.
+  A passing finish goes to Step 6. Any invalidation returns to Step 2
+  (quality) and then Step 3 (reviewer re-entry). A later pass does not
+  restore the shortcut. Otherwise loop back to Step 2 (quality gates must
+  pass again after changes), then Step 3.
 - `result: "needs_human"` — go to Step 5a (Escalate).
 - `result: "failed"` — go to Step 5a (Escalate).
 
+#### Step 5b: Enforced review gate
+
+Run `5x review gate show --phase $PHASE`. Set `$GATE_ID` from `.data.gateId`.
+Present its causes and `allowedChoices`. Submit with `5x review decide --gate "$GATE_ID"`.
+
+Applicable bound architecture approvals suppress inherited architecture causes;
+raw budget alerts may remain as telemetry. Read `inheritedBudgetGovernance`
+and its suppressed-alert decision references from the recorded review response.
+An uncovered inherited-budget gate offers `revise_plan` with a rationale. This
+pauses for plan revision/review (`nextAction: plan_amendment`); it does not
+authorize new scope, change the binding, or authorize phase completion. Do not
+use claim-scoped `approve_higher_burden` to waive inherited architecture.
+
+After upgrading an active run affected by approval carryover, prepare a fresh
+review context through Step 3 and record a fresh review at the next unused
+iteration. Use that context's required prior outcomes; do not replay old outcomes
+or reuse the blocked review's iteration. Duplicate identities return the stored
+observation. A clean new durable review supersedes the old gate; show the gate
+again to repair its superseded notification, then verify `5x run state` readiness
+before normal phase completion. Preserve the original binding and history.
+Branch on the decision's `.data.route` (`complete`, `author_revision`,
+`final_corrections`, `human_gate`, `aborted`). A `plan_amendment` next action
+pauses for author amendment and plan re-review; it is not permission to
+implement new scope. Do not record a generic `human:gate` or approve-override
+for this gate. On restart, show the gate again and resume from its route.
+
+For an already-authorized, committed and ready-reviewed amendment on this same
+active run, an operator may use the narrow `5x review implementation recover-plan`
+path at an unfinished frontier. Inspect `--help`, then supply the original
+`--authorization`, latest plan `--snapshot`, full author `--commit`, and earliest
+affected `--phase`, with explicit operator `--confirm-scope` and
+`--confirm-preserved-phases` attestations. The latter must cover shared/design
+document effects on earlier phases; do not invent these confirmations from a
+freeform ready summary. Run with `--dry-run`, inspect the receipt, then repeat
+without it to accept. The command requires unchanged phase identities, work-item
+contracts/scores/surface, no debt claims, and no completed/approved affected phases.
+It preserves the original binding and budget baseline and supports repeated
+recoveries, each with a new authorization and plan review. If rejected, escalate
+for the full amendment workflow; never rebind
+or edit records to bypass it. After acceptance, render a fresh author context,
+fix all admitted findings, run ordinary quality gates, and prepare a fresh
+reviewer context at the next unused iteration. Keep prior findings and code
+range history. Recovery never completes a phase or clears operator restrictions.
+
 #### Step 5a: Escalate
+
+Legacy v1 escalations only. When `PINNED_MODE` is `enforced`, use Step 5b
+instead of this section.
 
 For each `human_required` review item (and any ambiguous context in
 $REASON), draft a concrete recommendation for how the author should resolve
@@ -604,6 +729,7 @@ Report to the human: all phases implemented and reviewed.
   run records directory (checkpoint with `5x commit --no-record` if it does)
 
 ### Phase boundary:
+- `5x plan phases` is a checklist report. Checked boxes alone are not enough for enforced implementation advancement. Read `implementation_governance` from `5x run state`; it is ready only when the phase is reviewed, due claims are reconciled, and no material gate is open.
 - BEFORE recording `phase:complete`, run `5x plan phases $PLAN_PATH` and confirm current phase shows `done: true`
 - If checklist is not updated, record `phase:checklist_mismatch` and escalate to human — do NOT record `phase:complete`
 - Phase count should not have changed since the run started

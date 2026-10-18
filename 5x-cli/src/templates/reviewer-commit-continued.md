@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit-continued
 description: Re-review revised implementation commits
-version: 2
+version: 5
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -10,14 +10,13 @@ variable_defaults:
   current_commit: ""
 ---
 
-The implementation at commit `{{commit_hash}}` has been revised since your last review. Re-review it now.
+The implementation at commit `{{commit_hash}}` has been revised since your last review. This is a closure review, not another exhaustive pass.
 
-## Context Since Last Review
+## Review Range Authority
 
-- Previous review commit: `{{previous_review_commit}}`
-- Current commit: `{{current_commit}}`
+When an `Implementation-review governance context` is supplied, use its full-diff retrieval command and exact recorded range. It starts at the previous reviewed code endpoint and ends at the recorded author commit. The durable context is the sole authority for endpoints; do not use a review-document commit or current HEAD as a substitute.
 
-Examine `git log --oneline {{previous_review_commit}}..{{current_commit}}` and the corresponding diffs to understand what changed. Focus your review on the new and modified code.
+Only without governance context, use the legacy workflow's previous commit `{{previous_review_commit}}` and current commit `{{current_commit}}` to inspect the revision. If those are unavailable, inspect the supplied implementation commit `{{commit_hash}}`. Focus on the new and modified code.
 
 Treat line numbers from your prior findings as potentially stale — re-anchor them against the current source. For each previously raised issue, decide whether it is **addressed**, **partially addressed**, or **still open**, and say so explicitly in the addendum below.
 
@@ -30,7 +29,7 @@ Treat line numbers from your prior findings as potentially stale — re-anchor t
 
 ## Instructions
 
-1. Examine the changes between `{{previous_review_commit}}` and `{{current_commit}}`.
+1. Examine the revision using the range authority above.
 2. Read the implementation plan at `{{plan_path}}` for context on what was intended.
 3. Walk through your prior findings and classify each one against the current state.
 4. Surface any new issues introduced by the revision.
@@ -47,6 +46,25 @@ Evaluate the implementation across these dimensions:
 - **Operability**: Error handling, logging, monitoring hooks, graceful degradation?
 - **Test strategy**: Are the tests sufficient? Do they test the right things? Edge cases covered?
 - **Plan compliance**: Does the work match the phase requirements in the implementation plan?
+
+### Closure rules
+
+Give exactly one `priorFindings` outcome for every id in `Required prior-finding outcome IDs`: `addressed`, `partially_addressed`, or `still_open`. Partial and open outcomes remain exactly once in `items[]`. Addressed outcomes leave `items[]`.
+
+A new ordinary blocker needs exact file-qualified hunk evidence (`introducedBy`) from the supplied range and a causal explanation. Critical late safety (`lateDiscovery: "critical_safety"` plus `lateDiscoveryEvidence`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred finding needs the same `priorDecisionId` and materially new `newEvidence`.
+
+Use the four classes and source-of-correction precedence from the initial review:
+
+- `implementation_defect` links approved `planWorkItemIds`.
+- `plan_defect` uses `planImpact: { "kind": "text_only" | "design" | "budget", "locations": [{ "heading": "...", "staleText": "..." }] }`. `text_only` locations are nonempty and each `staleText` occurs once under its heading in the approved text. Missing or ambiguous matches route to a human.
+- `scope_expansion` is never automatic.
+- Ordinary `pre_existing` notes stay in **Nonblocking follow-ups**, not `items[]`.
+
+Do not create new credit. The same `Implementation-review governance context` is appended on a fresh session and on continuation. It includes binding, source, approved work-item IDs, phase scope, full-diff retrieval, due claims, deferred decisions (title, rationale, decision ID, approved scope), and debt waivers. Assess the effective approved post-state.
+
+Applicable bound architecture approvals resolve inherited burden even when raw budget telemetry retains an alert. Use the runtime context's effective alerts and suppressed-alert decision references; do not reopen approved burden solely from raw alerts. New or increased architecture and boundary changes still require their own review and governance.
+
+In `enforced` mode this evidence is required. In `advisory` mode the same evidence is diagnostic. No context present means the broad v1 fallback: surface both prior and newly discovered blocking issues, and omit `priorFindings`, `--prior-finding`, and `introducedBy`.
 
 ### Issue Classification
 
@@ -105,4 +123,8 @@ Write your updated review to `{{review_path}}` and commit it:
 
     5x commit --run {{run_id}} --files {{review_path}} -m "review: update implementation review for <phase or context summary>"
 
-Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready` and `--item` flags. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.
+Produce your structured verdict by running `5x protocol emit reviewer` with `--ready` or `--no-ready`, `--prior-finding` for each required outcome, and `--item` flags. A text-only plan defect uses the object form:
+
+    --item '{"id":"I2","title":"Stale phase wording","action":"auto_fix","reason":"The approved sentence is stale.","priority":"P2","scopeClass":"plan_defect","planImpact":{"kind":"text_only","locations":[{"heading":"Phase 1: Approved execution binding","staleText":"exact unique sentence from the approved plan under that heading"}]},"effortDelta":0,"architectureDelta":0,"failure":"The author follows superseded wording.","lowestCostCorrection":"Replace that one sentence."}'
+
+Missing or ambiguous `staleText` matches route to a human. Do not emit `baselineAssessment`, `creditAssessments`, or `creditClaim`. Include the command's JSON output verbatim as your structured result. Do not wrap it in markdown fences.

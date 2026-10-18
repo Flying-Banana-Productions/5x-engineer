@@ -141,6 +141,10 @@ export function registerProtocol(parent: Command) {
 			"--invocation-log <path>",
 			"Retain session/model/token/cost metadata from a 5x invoke log when recording a corrected verdict (used with --record)",
 		)
+		.option(
+			"--review-context <id>",
+			"Prepared implementation review context id from template render or invoke",
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -158,6 +162,7 @@ export function registerProtocol(parent: Command) {
 				iteration: opts.iteration,
 				optInBudgetBaseline: opts.optInBudgetBaseline,
 				invocationLog: opts.invocationLog,
+				reviewContext: opts.reviewContext,
 			});
 		});
 
@@ -210,6 +215,12 @@ export function registerProtocol(parent: Command) {
 			collect,
 			[] as string[],
 		)
+		.option(
+			"--credit-realization <json>",
+			"Implementation credit realization as JSON (repeatable). Evidence must be nonempty; aggregates are CLI-derived.",
+			collect,
+			[] as string[],
+		)
 		.addHelpText(
 			"after",
 			"\nExamples:\n" +
@@ -224,6 +235,7 @@ export function registerProtocol(parent: Command) {
 				summary: opts.summary,
 				baselineAssessment: opts.baselineAssessment,
 				creditAssessment: opts.creditAssessment,
+				creditRealization: opts.creditRealization,
 				priorFinding: opts.priorFinding,
 			});
 		});

@@ -13,7 +13,7 @@ import type {
 	PromptKind,
 	PromptRecord,
 } from "./types.js";
-import { PromptStoreError } from "./types.js";
+import { isReviewGatePromptContext, PromptStoreError } from "./types.js";
 
 interface PromptSqlRow {
 	id: string;
@@ -129,7 +129,7 @@ class SqlitePromptStore implements PromptStore {
 
 	answerPrompt(id: string, answer: string, answeredBy: AnsweredBy): CasResult {
 		const current = this.requirePrompt(id);
-		if (current.context?.type === "plan_review_gate") {
+		if (isReviewGatePromptContext(current.context)) {
 			throw new PromptStoreError(
 				"REVIEW_GATE_DECISION_REQUIRED",
 				`review gate notifications must be resolved with 5x review decide --gate ${current.context.gateId}`,
@@ -147,7 +147,7 @@ class SqlitePromptStore implements PromptStore {
 
 	resolveReviewGatePrompt(id: string, decisionId: string): CasResult {
 		const current = this.requirePrompt(id);
-		if (current.context?.type !== "plan_review_gate") {
+		if (!isReviewGatePromptContext(current.context)) {
 			throw new PromptStoreError(
 				"PROMPT_CONTEXT_INVALID",
 				"only plan-review gate notifications may be resolved by a review decision",

@@ -301,6 +301,169 @@ describe("5x upgrade", () => {
 		},
 		{ timeout: 15000 },
 	);
+
+	test(
+		"forced upgrade and explicit prompt refresh deliver the implementation review contract",
+		async () => {
+			const project = await setupProject();
+			try {
+				const templatesDir = join(project.dir, ".5x", "templates");
+				const reviewPath = join(templatesDir, "review-template.md");
+				const promptsDir = join(templatesDir, "prompts");
+				mkdirSync(promptsDir, { recursive: true });
+				const stalePrompt = getDefaultTemplateRaw("reviewer-commit").replace(
+					"one exhaustive material pass",
+					"CUSTOM REVIEW POLICY",
+				);
+				writeFileSync(
+					reviewPath,
+					"# Old review\n\n- Improvement opportunity\n",
+				);
+				writeFileSync(join(promptsDir, "reviewer-commit.md"), stalePrompt);
+
+				const upgraded = await run5x(project, ["upgrade", "-f", "--no-sync"]);
+				expect(upgraded.exitCode).toBe(0);
+				expect(upgraded.stdout).toContain(
+					"Updated .5x/templates/review-template.md",
+				);
+				expect(upgraded.stdout).toContain("prompt overrides are preserved");
+				expect(upgraded.stdout).toContain(
+					"5x init --install-templates --force",
+				);
+				expect(
+					readFileSync(join(promptsDir, "reviewer-commit.md"), "utf-8"),
+				).toBe(stalePrompt);
+				const skeleton = readFileSync(reviewPath, "utf-8");
+				expect(skeleton).toContain("## Nonblocking follow-ups");
+				expect(skeleton).toContain("not admitted author work");
+				expect(skeleton).toContain("### Prior-finding outcomes");
+				expect(skeleton).toContain("partially_addressed / still_open");
+				expect(skeleton).toContain("Exact base..reviewed SHAs");
+				expect(skeleton).toContain("## Approved Credit Realization");
+				expect(skeleton).not.toContain("Improvement opportunity");
+
+				// Check both resolution paths: absent overrides and explicitly refreshed copies.
+				for (const installed of [false, true]) {
+					if (installed) {
+						const init = await run5x(project, [
+							"init",
+							"--install-templates",
+							"--force",
+						]);
+						expect(init.exitCode).toBe(0);
+					} else {
+						rmSync(promptsDir, { recursive: true });
+					}
+					for (const template of [
+						"reviewer-commit",
+						"reviewer-commit-continued",
+						"author-process-impl-review",
+					]) {
+						const rendered = await run5x(project, [
+							"template",
+							"render",
+							template,
+							"--var",
+							"commit_hash=abc",
+							"--var",
+							"plan_path=docs/development/plans/001-thing.md",
+							"--var",
+							"review_path=review.md",
+							"--var",
+							`review_template_path=${reviewPath}`,
+						]);
+						expect(rendered.exitCode).toBe(0);
+						const prompt = JSON.parse(rendered.stdout).data.prompt as string;
+						if (template.startsWith("reviewer-")) {
+							expect(prompt).toContain("sole authority for endpoints");
+							expect(prompt).toContain("full-diff retrieval command");
+							expect(prompt).not.toContain("git log --oneline");
+							expect(prompt).toContain("planWorkItemIds");
+							expect(prompt).toContain("suppressed-alert decision references");
+							expect(prompt).toContain("New or increased architecture");
+						} else {
+							expect(prompt).toContain(
+								"implement only those admitted findings",
+							);
+							expect(prompt).toContain(
+								"Do not treat the rest of the review Markdown as a work list",
+							);
+							expect(prompt).toContain(
+								"raw alert alone is not admitted author work",
+							);
+						}
+						if (template === "reviewer-commit") {
+							const args = [
+								...prompt.matchAll(/--(item|credit-realization) '([^']+)'/g),
+							].flatMap((match) => [`--${match[1]}`, match[2] as string]);
+							expect(args).toHaveLength(6);
+							const emitted = await run5x(project, [
+								"protocol",
+								"emit",
+								"reviewer",
+								"--no-ready",
+								...args,
+							]);
+							expect(emitted.exitCode).toBe(0);
+							const verdict = JSON.parse(emitted.stdout);
+							expect(verdict.items[0].planWorkItemIds).toEqual(["W1"]);
+							expect(verdict.items[1].planImpact.kind).toBe("text_only");
+							expect(verdict.creditRealizations[0].realization).toBe(
+								"realized",
+							);
+						}
+					}
+				}
+				expect(
+					(
+						await run5x(project, [
+							"harness",
+							"install",
+							"opencode",
+							"--scope",
+							"project",
+						])
+					).exitCode,
+				).toBe(0);
+				expect(
+					(
+						await run5x(project, [
+							"harness",
+							"sync",
+							"opencode",
+							"--scope",
+							"project",
+						])
+					).exitCode,
+				).toBe(0);
+				const skill = readFileSync(
+					join(
+						project.dir,
+						".opencode",
+						"skills",
+						"5x-phase-execution",
+						"SKILL.md",
+					),
+					"utf-8",
+				);
+				expect(skill).toContain(".data.result.governance.route");
+				expect(skill).toContain("5x review corrections finish");
+				expect(skill).toContain("5x review implementation recover-plan");
+				expect(skill).toContain("--confirm-preserved-phases");
+				expect(skill).toContain("Recovery never completes a phase");
+				expect(skill).toContain(
+					"supports repeated\nrecoveries, each with a new authorization and plan review",
+				);
+				expect(skill).toContain("5x review decide --gate");
+				expect(skill).toContain("revise_plan");
+				expect(skill).toContain("inheritedBudgetGovernance");
+				expect(skill).toContain("next unused");
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 30000 },
+	);
 });
 
 // ---------------------------------------------------------------------------

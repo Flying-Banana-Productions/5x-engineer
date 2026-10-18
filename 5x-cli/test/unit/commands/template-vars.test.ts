@@ -6,9 +6,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	checkPlanPathOverrideMismatch,
 	checkReviewPathMismatch,
+	implementationExcludedPaths,
 	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
@@ -407,6 +411,69 @@ describe("resolveInternalTemplateVariables — review-path re-rooting", () => {
 		);
 
 		expect(vars.run_id).toBe("run_xyz789");
+	});
+
+	test("maps canonical workflow dirs into the mapped worktree", () => {
+		const root = mkdtempSync(join(tmpdir(), "5x-exclude-"));
+		try {
+			const worktree = join(root, ".5x", "worktrees", "feature");
+			mkdirSync(join(root, "docs", "development", "runs"), { recursive: true });
+			mkdirSync(join(root, "docs", "development", "reviews"), {
+				recursive: true,
+			});
+			mkdirSync(join(worktree, "docs", "development", "plans"), {
+				recursive: true,
+			});
+			const excluded = implementationExcludedPaths({
+				repoRoot: worktree,
+				controlPlaneRoot: root,
+				planPath: join(worktree, "docs", "development", "plans", "gov.md"),
+				paths: {
+					records: join(root, "docs", "development", "runs"),
+					reviews: join(root, "docs", "development", "reviews"),
+					planReviews: join(root, "docs", "development", "plan-reviews"),
+					runReviews: join(root, "docs", "development", "run-reviews"),
+				},
+			});
+			expect(excluded).toEqual([
+				"docs/development/plan-reviews",
+				"docs/development/plans/gov.md",
+				"docs/development/reviews",
+				"docs/development/run-reviews",
+				"docs/development/runs",
+			]);
+			expect(excluded.some((path) => path.includes(".5x/worktrees"))).toBe(
+				false,
+			);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("drops workflow paths that escape the checkout", () => {
+		const root = mkdtempSync(join(tmpdir(), "5x-exclude-escape-"));
+		try {
+			mkdirSync(join(root, "docs"), { recursive: true });
+			const outside = mkdtempSync(join(tmpdir(), "5x-exclude-out-"));
+			try {
+				const excluded = implementationExcludedPaths({
+					repoRoot: root,
+					controlPlaneRoot: root,
+					planPath: "../secret.md",
+					paths: {
+						records: "docs/../outside",
+						reviews: join(outside, "reviews"),
+						planReviews: undefined,
+						runReviews: undefined,
+					},
+				});
+				expect(excluded).toEqual([]);
+			} finally {
+				rmSync(outside, { recursive: true, force: true });
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	test("run_id variable is absent when runId is not provided", () => {

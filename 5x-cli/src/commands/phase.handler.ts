@@ -118,6 +118,20 @@ function qualityPayloadSucceeded(raw: string): boolean {
 	return parsed.passed === true || parsed.skipped === true;
 }
 
+/**
+ * `phase finish` resumes a succeeded step whose name starts with `quality:`.
+ * `phaseFinishCore` always passes a `quality:` name, so this check does not
+ * filter other step kinds at that call site. Correction attempts are a
+ * separate record and are not read as proof.
+ */
+export function isPreReviewQualityCache(
+	stepName: string,
+	raw: string,
+): boolean {
+	if (!stepName.startsWith("quality:")) return false;
+	return qualityPayloadSucceeded(raw);
+}
+
 function failForward(
 	steps: PhaseFinishStep[],
 	failing: PhaseFinishStep["name"],
@@ -207,7 +221,10 @@ export async function phaseFinishCore(
 		phase: params.phase,
 		iteration: params.iteration,
 	});
-	if (existingQuality && qualityPayloadSucceeded(existingQuality.result_json)) {
+	if (
+		existingQuality &&
+		isPreReviewQualityCache(qualityStepName, existingQuality.result_json)
+	) {
 		steps[0] = {
 			name: "quality",
 			status: "completed",
@@ -319,6 +336,8 @@ export async function phaseFinishCore(
 			status: authorComplete ? "completed" : "skipped",
 		};
 	} else if (
+		// Checklist skip does not disable implementation governance. Author
+		// admission and phase:complete still consult the boundary predicate.
 		params.phaseChecklistValidate === false ||
 		!isNumericPhaseRef(params.phase)
 	) {

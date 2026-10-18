@@ -17,6 +17,7 @@ import {
 	assertReviewerVerdict,
 	type BaselineAssessment,
 	type CreditAssessment,
+	type CreditRealization,
 	type ReviewerVerdict,
 	rejectCliOwnedBudgetFields,
 	type VerdictItem,
@@ -37,6 +38,7 @@ export interface ProtocolEmitReviewerParams {
 	summary?: string;
 	baselineAssessment?: string;
 	creditAssessment?: string[];
+	creditRealization?: string[];
 	priorFinding?: string[];
 	stdinData?: string;
 }
@@ -95,6 +97,7 @@ export async function protocolEmitReviewer(
 		summary,
 		baselineAssessment: baselineAssessmentJson,
 		creditAssessment: creditAssessmentJsonStrings,
+		creditRealization: creditRealizationJsonStrings,
 		priorFinding: priorFindingJsonStrings,
 		stdinData,
 	} = params;
@@ -219,6 +222,21 @@ export async function protocolEmitReviewer(
 								rec.requiresReviewerVerification as boolean,
 						}
 					: {}),
+				...(rec.planWorkItemIds !== undefined
+					? { planWorkItemIds: rec.planWorkItemIds as string[] }
+					: {}),
+				...(rec.planImpact !== undefined
+					? { planImpact: rec.planImpact as VerdictItem["planImpact"] }
+					: {}),
+				...(rec.boundaryChanges !== undefined
+					? {
+							boundaryChanges:
+								rec.boundaryChanges as VerdictItem["boundaryChanges"],
+						}
+					: {}),
+				...(rec.mechanicalExplanation !== undefined
+					? { mechanicalExplanation: rec.mechanicalExplanation as string }
+					: {}),
 			};
 			items.push(item);
 		}
@@ -278,6 +296,34 @@ export async function protocolEmitReviewer(
 		creditAssessments.push(assessment);
 	}
 
+	const creditRealizations: CreditRealization[] = [];
+	for (const [index, raw] of (creditRealizationJsonStrings ?? []).entries()) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			outputError(
+				"INVALID_JSON",
+				`--credit-realization at index ${index} is not valid JSON.`,
+			);
+		}
+		if (!isObjectShape(parsed)) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				`--credit-realization at index ${index} must be a JSON object.`,
+			);
+		}
+		try {
+			rejectCliOwnedBudgetFields(parsed);
+		} catch (err) {
+			outputError(
+				"INVALID_STRUCTURED_OUTPUT",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+		creditRealizations.push(parsed as unknown as CreditRealization);
+	}
+
 	const priorFindings: PriorFindingOutcome[] = [];
 	for (const [index, raw] of (priorFindingJsonStrings ?? []).entries()) {
 		let parsed: unknown;
@@ -320,6 +366,7 @@ export async function protocolEmitReviewer(
 		...(summary ? { summary } : {}),
 		...(baselineAssessment ? { baselineAssessment } : {}),
 		...(creditAssessments.length > 0 ? { creditAssessments } : {}),
+		...(creditRealizations.length > 0 ? { creditRealizations } : {}),
 		...(priorFindings.length > 0 ? { priorFindings } : {}),
 	};
 

@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
-import { outputError, outputSuccess } from "../output.js";
+import { CliError, outputError, outputSuccess } from "../output.js";
 import { parsePlan } from "../parsers/plan.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import {
@@ -20,11 +20,33 @@ import {
 	readInvocationLogSummary,
 } from "../providers/log-writer.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import type {
+	ImplementationBindingPayload,
+	ImplementationCreditReconciliationPayload,
+} from "../review-budget/record-lines.js";
+import type { CodeDiffContext } from "../review-governance/code-diff.js";
+import {
+	canonicalPhaseId,
+	readImplementationCodeClosure,
+	validateImplementationReview,
+	verdictUsesImplementationContract,
+	verdictUsesPlanContract,
+} from "../review-governance/implementation.js";
+import {
+	admitAuthorTextAmendmentFromGit,
+	verifyImplementationReviewContext,
+} from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import {
+	composeImplementationReviewerRecord,
+	implementationGovernanceDecoration,
+	type PendingImplementationObservation,
+	recordImplementationReviewerStepWithObservation,
+} from "./implementation-review-context.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
@@ -65,6 +87,8 @@ export interface ProtocolValidateParams {
 	startDir?: string;
 	env?: NodeJS.Dict<string>;
 	optInBudgetBaseline?: boolean;
+	/** Prepared implementation review context. Does not manufacture endpoints. */
+	reviewContext?: string;
 	/**
 	 * Invoke NDJSON log whose session/model/token/cost metadata the recorded
 	 * step retains — recovery for a verdict `5x invoke` rejected after the
@@ -117,6 +141,22 @@ function stripOptionalJsonFence(input: string): string {
  * envelope and unwrap `.data.result`. Otherwise treat it as raw structured JSON
  * (direct native subagent output).
  */
+function envelopeString(value: unknown, key: string): string | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		return undefined;
+	const field = (value as Record<string, unknown>)[key];
+	return typeof field === "string" ? field : undefined;
+}
+
+function envelopeReviewDomain(value: unknown): string | undefined {
+	const domain = envelopeString(value, "domain");
+	if (domain === "plan" || domain === "implementation") return domain;
+	const reviewKind = envelopeString(value, "reviewKind");
+	if (reviewKind === "plan" || reviewKind === "implementation")
+		return reviewKind;
+	return undefined;
+}
+
 function extractResult(parsed: unknown): unknown {
 	if (
 		parsed &&
@@ -520,8 +560,196 @@ export async function protocolValidate(
 
 	let budgetContext: ReviewBudgetCommandContext | undefined;
 	let pendingSnapshot: PendingBudgetSnapshot | undefined;
+	let pendingImplementation: PendingImplementationObservation | undefined;
+	let pendingCreditReconciliation:
+		| ImplementationCreditReconciliationPayload
+		| undefined;
+	let implementationRecordContext: ReviewBudgetCommandContext | undefined;
+	let implementationBinding: ImplementationBindingPayload | null = null;
 	const warn =
 		params.warn ?? ((message: string) => console.error(`Warning: ${message}`));
+	if (role === "reviewer") {
+		const verdict = validated as ReviewerVerdict;
+		const envelopePhase = envelopeString(validated, "phase");
+		const envelopeDomain = envelopeReviewDomain(validated);
+		const phase = params.phase ?? envelopePhase;
+		const phaseId = phase ? canonicalPhaseId(phase) : null;
+		// Phase flag/envelope conflicts are rejected inside
+		// validateImplementationReview. Plan contracts are included only for a
+		// known non-plan phase; standalone plan verdicts stay on the plan path.
+		const contextualImplementationReview =
+			params.reviewContext !== undefined ||
+			verdictUsesImplementationContract(verdict) ||
+			(verdictUsesPlanContract(verdict) &&
+				phaseId !== null &&
+				phaseId !== "plan");
+		if (contextualImplementationReview) {
+			let phaseIds: string[] | undefined;
+			let workItemIds: string[] | undefined;
+			let creditClaimIds: string[] | undefined;
+			let approvedPlanBytes: string | undefined;
+			let approvedPlanHash: string | undefined;
+			let amendments:
+				| ReturnType<
+						ReviewBudgetCommandContext["store"]["listImplementationTextAmendments"]
+				  >
+				| undefined;
+			let mode: "off" | "advisory" | "enforced" = "advisory";
+			let compatibility = false;
+			let priorReviewCount = 0;
+			let codeClosure:
+				| ReturnType<typeof readImplementationCodeClosure>
+				| undefined;
+			let codeContext: CodeDiffContext | null | undefined;
+			if (params.run && phaseId && phaseId !== "plan") {
+				const contextFactory =
+					params.createReviewBudgetContext ?? createReviewBudgetContext;
+				try {
+					const implementationContext = await contextFactory(
+						{ runId: params.run, startDir: params.startDir },
+						warn,
+					);
+					const binding = implementationContext.store.getImplementationBinding(
+						params.run,
+					);
+					const compat =
+						implementationContext.store.getImplementationCompatibility(
+							params.run,
+						);
+					if (binding) {
+						implementationBinding = binding;
+						implementationRecordContext = implementationContext;
+						mode = binding.mode;
+						phaseIds = binding.phaseMap.map((entry) => entry.id);
+						workItemIds = binding.ledger.workItems.map((item) => item.id);
+						creditClaimIds = binding.ledger.workItems.flatMap((item) =>
+							item.debtClaim ? [item.debtClaim.debtClaimId] : [],
+						);
+						approvedPlanBytes = binding.approvedPlanBytes;
+						approvedPlanHash = binding.approvedPlanHash;
+						amendments =
+							implementationContext.store.listImplementationTextAmendments(
+								params.run,
+								binding.id,
+							);
+						codeClosure = readImplementationCodeClosure(
+							implementationContext.recordStore,
+							params.run,
+							phaseId,
+						);
+						priorReviewCount = codeClosure.priorReviewCount;
+						if (params.reviewContext) {
+							const verified = await verifyImplementationReviewContext({
+								store: implementationContext.store,
+								executionRunId: params.run,
+								bindingId: binding.id,
+								phase: phaseId,
+								reviewContextId: params.reviewContext,
+								workdir:
+									implementationContext.executionContext
+										.effectiveWorkingDirectory,
+							});
+							if (verified.status === "error") {
+								outputError(verified.code, verified.message);
+							}
+							codeContext = verified.diff;
+						} else if (mode === "enforced" && priorReviewCount > 0) {
+							codeContext = null;
+						}
+					} else if (compat) {
+						compatibility = true;
+						mode = "off";
+					} else {
+						mode = implementationContext.config.reviewBudget.mode;
+					}
+				} catch (err) {
+					if (!params.record && err instanceof RecordContextError) {
+						mode = "advisory";
+					} else if (err instanceof RecordContextError) {
+						outputError(err.code, err.message, err.detail);
+					} else {
+						throw err;
+					}
+				}
+			}
+			if (params.reviewContext && codeContext === undefined) {
+				outputError(
+					"IMPLEMENTATION_REVIEW_CONTEXT_NOT_FOUND",
+					`Review context ${params.reviewContext} was not prepared for this run. Render the reviewer template instead of manufacturing endpoints.`,
+				);
+			}
+			const composed =
+				implementationBinding && codeContext && params.reviewContext
+					? await composeImplementationReviewerRecord({
+							ctx: implementationRecordContext as ReviewBudgetCommandContext,
+							runId: params.run as string,
+							stepName: recordStepName ?? params.step ?? "reviewer:review",
+							phase: phase ?? "",
+							iteration: params.iteration,
+							verdict,
+							contextId: params.reviewContext,
+							codeContext,
+							envelopePhase,
+							envelopeDomain,
+							sessionId: invocation?.sessionId,
+						})
+					: null;
+			if (composed?.status === "error") {
+				outputError(composed.code, composed.message, composed.detail);
+			}
+			if (composed?.status === "applied") {
+				pendingImplementation = composed.pending;
+				pendingCreditReconciliation = composed.reconciliation;
+				for (const item of composed.diagnostics) {
+					warn(`${item.code}: ${item.message}`);
+				}
+			} else if (
+				params.record &&
+				implementationBinding?.mode === "enforced" &&
+				codeContext === undefined
+			) {
+				outputError(
+					"IMPLEMENTATION_REVIEW_CONTEXT_REQUIRED",
+					"Enforced implementation recording requires the prepared review context. Render the reviewer template instead of manufacturing endpoints.",
+				);
+			} else {
+				const reviewed = validateImplementationReview({
+					verdict,
+					phase,
+					envelopePhase,
+					envelopeDomain,
+					mode,
+					compatibility,
+					phaseIds,
+					workItemIds,
+					creditClaimIds,
+					approvedPlanBytes,
+					approvedPlanHash,
+					amendments,
+					hasRun: Boolean(params.run),
+					priorReviewCount,
+					sessionId: invocation?.sessionId,
+					...(codeContext !== undefined
+						? {
+								codeContext,
+								priorCodeFindings: codeClosure?.priorCodeFindings,
+								priorCodeDecisions: codeClosure?.priorCodeDecisions,
+							}
+						: {}),
+				});
+				if (!reviewed.valid) {
+					outputError(
+						reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
+						reviewed.fatalMessage ??
+							"Implementation review contract was rejected.",
+					);
+				}
+				for (const item of reviewed.diagnostics) {
+					warn(`${item.code}: ${item.message}`);
+				}
+			}
+		}
+	}
 	if (role === "reviewer" && resolvedPhase === "plan" && params.run) {
 		const contextFactory =
 			params.createReviewBudgetContext ?? createReviewBudgetContext;
@@ -638,6 +866,116 @@ export async function protocolValidate(
 		}
 	}
 
+	if (role === "author" && params.record && params.run && recordStepName) {
+		const authorPhase = resolvedPhase ?? params.phase;
+		if (authorPhase && authorPhase !== "plan") {
+			try {
+				const contextFactory =
+					params.createReviewBudgetContext ?? createReviewBudgetContext;
+				const authorContext = await contextFactory(
+					{ runId: params.run, startDir: params.startDir },
+					warn,
+				);
+				const authorBinding = authorContext.store.getImplementationBinding(
+					params.run,
+				);
+				if (authorBinding) {
+					const planPath = authorContext.executionContext.run.plan_path;
+					const readPath =
+						authorContext.executionContext.planPathInWorktreeExists &&
+						existsSync(authorContext.executionContext.effectivePlanPath)
+							? authorContext.executionContext.effectivePlanPath
+							: planPath;
+					const worktreePlanBytes = existsSync(readPath)
+						? readFileSync(readPath)
+						: null;
+					const authorCommit =
+						validated &&
+						typeof validated === "object" &&
+						"commit" in validated &&
+						typeof (validated as { commit?: unknown }).commit === "string"
+							? (validated as { commit: string }).commit
+							: undefined;
+					const admitted = await admitAuthorTextAmendmentFromGit({
+						store: authorContext.store,
+						binding: authorBinding,
+						origin: authorContext.originFor(performer),
+						phase: authorPhase,
+						workdir: authorContext.executionContext.effectiveWorkingDirectory,
+						planPath,
+						repoRoot: authorContext.executionContext.controlPlaneRoot,
+						worktreePlanBytes,
+						authorCommit,
+					});
+					if (admitted.status === "failed") {
+						if (admitted.blocking) {
+							outputError(admitted.code, admitted.message);
+						}
+						warn(`${admitted.code}: ${admitted.message}`);
+					}
+				}
+			} catch (err) {
+				if (err instanceof CliError) throw err;
+				// A run with no execution binding keeps ordinary author recording.
+			}
+		}
+	}
+
+	// Implementation completion is authorized only by the durable observation.
+	// Record that pair before the success envelope so a failed write cannot
+	// publish a route that was never stored.
+	let implementationRecorded = false;
+	if (
+		pendingImplementation &&
+		implementationRecordContext &&
+		params.record &&
+		recordStepName
+	) {
+		try {
+			const written = await recordImplementationReviewerStepWithObservation(
+				{
+					run: params.run as string,
+					stepName: recordStepName,
+					result: JSON.stringify(validated),
+					phase: resolvedPhase,
+					iteration: params.iteration,
+					...(invocation
+						? {
+								sessionId: invocation.sessionId,
+								model: invocation.model,
+								durationMs: invocation.durationMs,
+								tokensIn: invocation.tokens.in,
+								tokensOut: invocation.tokens.out,
+								costUsd: invocation.costUsd,
+								logPath: resolve(params.invocationLog as string),
+							}
+						: {}),
+					performer,
+				},
+				pendingImplementation,
+				implementationRecordContext,
+				pendingCreditReconciliation,
+			);
+			if (written.observation) {
+				validated = {
+					...(validated as Record<string, unknown>),
+					governance: implementationGovernanceDecoration(written.observation),
+				};
+			}
+			implementationRecorded = true;
+		} catch (err) {
+			if (err instanceof RecordError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
+	} else if (pendingImplementation) {
+		validated = {
+			...(validated as Record<string, unknown>),
+			governance: implementationGovernanceDecoration(pendingImplementation),
+		};
+	}
+
 	// -----------------------------------------------------------------------
 	// Output validated result
 	// -----------------------------------------------------------------------
@@ -654,7 +992,7 @@ export async function protocolValidate(
 	// side effect — errors go to stderr (never outputError, which would
 	// write a second envelope to stdout).
 	// -----------------------------------------------------------------------
-	if (params.record && recordStepName) {
+	if (params.record && recordStepName && !implementationRecorded) {
 		try {
 			const recordParams = {
 				// params.run is guaranteed non-null here: prerequisite check above

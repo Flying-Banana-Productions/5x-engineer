@@ -17,7 +17,8 @@
  * the run row surfaced once — not a check in this file.
  */
 
-import { readFileSync } from "node:fs";
+import type { Database } from "bun:sqlite";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -33,6 +34,7 @@ import {
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	extractPipeContext,
 	isStdinPiped,
@@ -42,8 +44,7 @@ import {
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
-	ReviewerVerdictSchema,
-	reviewerVerdictSchemaFor,
+	reviewerProviderSchema,
 } from "../protocol.js";
 import { createProvider as defaultCreateProvider } from "../providers/factory.js";
 import {
@@ -58,12 +59,37 @@ import type {
 	RunResult,
 } from "../providers/types.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import type { ImplementationCreditReconciliationPayload } from "../review-budget/record-lines.js";
+import {
+	CodeDiffError,
+	readHeadCommit,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
 import {
 	appendPlanReviewPromptContext,
+	buildImplementationReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
+	formatImplementationAuthorContext,
+	formatImplementationReviewerContext,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
+import {
+	canonicalPhaseId,
+	readImplementationCodeClosure,
+	validateImplementationReview,
+} from "../review-governance/implementation.js";
+import { evaluateStoredImplementationBoundary } from "../review-governance/implementation-boundary.js";
+import {
+	admitAuthorTextAmendmentFromGit,
+	capturePhaseAuthorAdmission,
+	ensureImplementationAdmission,
+	isImplementationAuthorTemplate,
+	PRE_AUTHOR_STEP_NAME,
+	prepareImplementationReviewContext,
+	readImplementationBinding,
+	verifyImplementationReviewContext,
+} from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -72,6 +98,12 @@ import {
 	controlPlaneStatePath,
 	resolveControlPlaneRoot,
 } from "./control-plane.js";
+import {
+	composeImplementationReviewerRecord,
+	implementationGovernanceDecoration,
+	type PendingImplementationObservation,
+	recordImplementationReviewerStepWithObservation,
+} from "./implementation-review-context.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
 import { RecordContextError } from "./record-context.js";
 import {
@@ -92,7 +124,10 @@ import {
 } from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
+	formatCodeReviewDiff,
 	hasStdinVarFlag,
+	implementationExcludedPaths,
+	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
 	type PriorReviewIdentity,
@@ -115,6 +150,8 @@ export interface InvokeAgentDeps {
 	createReviewBudgetContext?: typeof createReviewBudgetContext;
 	warn?: (message: string) => void;
 	onRenderedPrompt?: (prompt: string) => void;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	db?: Database;
 }
 
 export interface InvokeParams {
@@ -158,6 +195,12 @@ interface InvokeResult {
 	worktree_path?: string;
 	/** Effective plan path in the worktree (if resolved). */
 	worktree_plan_path?: string;
+	/** Prepared code-review context. Invoke keeps this and does not ask the agent to echo it. */
+	review_context_id?: string;
+	binding_id?: string;
+	source_run_id?: string;
+	pinned_mode?: "advisory" | "enforced";
+	pre_author_commit?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,10 +320,12 @@ export async function invokeAgent(
 	let runDb: ReturnType<typeof getDb> | undefined;
 
 	{
-		const db = getDb(
-			controlPlane.controlPlaneRoot,
-			controlPlaneDbPath(controlPlane.controlPlaneRoot, stateDir),
-		);
+		const db =
+			deps?.db ??
+			getDb(
+				controlPlane.controlPlaneRoot,
+				controlPlaneDbPath(controlPlane.controlPlaneRoot, stateDir),
+			);
 		runDb = db;
 		try {
 			runMigrations(db);
@@ -404,6 +449,10 @@ export async function invokeAgent(
 		? resolve(params.workdir)
 		: (effectiveWorkdir ?? projectRoot);
 	let budgetContext: ReviewBudgetCommandContext | undefined;
+	let pendingImplementation: PendingImplementationObservation | undefined;
+	let pendingCreditReconciliation:
+		| ImplementationCreditReconciliationPayload
+		| undefined;
 	const warn =
 		deps?.warn ?? ((message: string) => console.error(`Warning: ${message}`));
 	let reviewKind: "initial" | "closure" | undefined;
@@ -430,6 +479,17 @@ export async function invokeAgent(
 		((params.session || params.template.endsWith("-continued")) &&
 			!params.newSession);
 	let reviewDiffAppend: string | null = null;
+	let implementationReviewContextId: string | undefined;
+	let preparedReviewContext: {
+		id: string;
+		baseCommit: string;
+		reviewedCommit: string;
+		excludedPaths: string[];
+	} | null = null;
+	let preAuthorCommit: string | null = null;
+	let boundId: string | undefined;
+	let boundSourceRunId: string | undefined;
+	let boundMode: "advisory" | "enforced" | undefined;
 	if (
 		wantContinued &&
 		runDb &&
@@ -498,6 +558,132 @@ export async function invokeAgent(
 			"BUDGET_BASELINE_OPT_IN_INVALID",
 			"--opt-in-budget-baseline is valid only for a plan-reviewer invocation",
 		);
+	}
+	if (
+		params.run &&
+		resolvedPlanPath &&
+		isImplementationAuthorTemplate(resolved.selectedTemplateName)
+	) {
+		let markdown: string | null = null;
+		try {
+			markdown = readFileSync(resolvedPlanPath, "utf-8");
+		} catch {
+			markdown = null;
+		}
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: projectRoot }, warn);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
+			if (parsed?.ok && config.reviewBudget.mode !== "off") {
+				outputError(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+				);
+			}
+		}
+		if (budgetContext) {
+			const admission = await ensureImplementationAdmission({
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+				executionRunId: params.run,
+				planPath: budgetContext.executionContext.run.plan_path,
+				planMarkdown: markdown,
+				configuredMode: config.reviewBudget.mode,
+				origin: budgetContext.originFor({ kind: "system", role: "cli" }),
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+				controlPlaneRoot: budgetContext.executionContext.controlPlaneRoot,
+			});
+			if (
+				admission.status === "approval_required" ||
+				admission.status === "error"
+			) {
+				outputError(admission.code, admission.message, admission.detail);
+			}
+			if (admission.status === "bound") {
+				const phase = canonicalPhaseId(
+					params.phase ?? mergedVars.phase_number ?? "",
+				);
+				if (phase && phase !== "plan") {
+					const boundary = evaluateStoredImplementationBoundary({
+						store: budgetContext.store,
+						recordStore: budgetContext.recordStore,
+						runId: params.run,
+						intent: "advance",
+						phase,
+						mode: admission.binding.mode,
+						currentPlanBytes: markdown,
+						headCommit: null,
+						hasImplementationHistory: true,
+						hasDeliveryBudget: true,
+					});
+					if (boundary.status === "deny") {
+						outputError(
+							boundary.code ?? "IMPLEMENTATION_BOUNDARY_BLOCKED",
+							boundary.message ?? "Implementation boundary denied advancement.",
+							boundary.readiness,
+						);
+					}
+				}
+				if (!phase || phase === "plan") {
+					outputError(
+						"UNKNOWN_PHASE",
+						"Implementation author admission requires numeric phase_number before delegation.",
+					);
+				}
+				const git = workdirCodeDiffGit(
+					budgetContext.executionContext.effectiveWorkingDirectory,
+				);
+				let head: string;
+				try {
+					head = await readHeadCommit(git);
+				} catch (error) {
+					outputError(
+						error instanceof CodeDiffError ? error.code : "CODE_DIFF_GIT_ERROR",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+				const captured = capturePhaseAuthorAdmission({
+					recordStore: budgetContext.recordStore,
+					origin: budgetContext.originFor({ kind: "system", role: "cli" }),
+					executionRunId: params.run,
+					bindingId: admission.binding.id,
+					phase,
+					preAuthorCommit: head,
+				});
+				if (captured.status === "error") {
+					outputError(captured.code, captured.message);
+				}
+				if (captured.status === "captured" || captured.status === "reused") {
+					preAuthorCommit = captured.admission.preAuthorCommit;
+					boundId = admission.binding.id;
+					boundSourceRunId = admission.binding.sourceRunId;
+					boundMode = admission.binding.mode;
+				}
+				if (captured.status !== "skipped") {
+					try {
+						await recordStepInternal(
+							{
+								run: params.run,
+								stepName: PRE_AUTHOR_STEP_NAME,
+								phase,
+								iteration: 0,
+								result: JSON.stringify(captured.admission),
+								performer: { kind: "system", role: "cli" },
+							},
+							budgetContext,
+						);
+					} catch (error) {
+						if (error instanceof RecordError) {
+							outputError(error.code, error.message, error.detail);
+						}
+						throw error;
+					}
+				}
+			}
+		}
 	}
 	const roleConfig = config[role] as Record<string, unknown>;
 	const providerName =
@@ -586,8 +772,87 @@ export async function invokeAgent(
 			if (!(err instanceof RecordContextError)) throw err;
 		}
 	}
+	let codeDiffAppend = "";
+	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: invocationWorkdir }, warn);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+		const binding = budgetContext
+			? readImplementationBinding(budgetContext.store, params.run)
+			: null;
+		if (binding && budgetContext) {
+			const git = workdirCodeDiffGit(
+				budgetContext.executionContext.effectiveWorkingDirectory,
+			);
+			const rootResult = await git.exec(["rev-parse", "--show-toplevel"]);
+			if (rootResult.exitCode !== 0) {
+				outputError(
+					"CODE_DIFF_GIT_ERROR",
+					rootResult.stderr || "Could not resolve the git repository root.",
+				);
+			}
+			const prepared = await prepareImplementationReviewContext({
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+				origin: budgetContext.originFor({ kind: "system", role: "cli" }),
+				executionRunId: params.run,
+				bindingId: binding.id,
+				phase: params.phase ?? mergedVars.phase_number ?? "",
+				excludedPaths: implementationExcludedPaths({
+					repoRoot: rootResult.stdout.trim(),
+					controlPlaneRoot: budgetContext.executionContext.controlPlaneRoot,
+					planPath: resolvedPlanPath,
+					paths: config.paths,
+				}),
+				git,
+			});
+			if (prepared.status === "error") {
+				outputError(prepared.code, prepared.message);
+			}
+			implementationReviewContextId = prepared.context.id;
+			preparedReviewContext = prepared.context;
+			boundId = binding.id;
+			boundSourceRunId = binding.sourceRunId;
+			boundMode = binding.mode;
+			codeDiffAppend = formatCodeReviewDiff({
+				contextId: prepared.context.id,
+				diff: prepared.diff,
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+			});
+		}
+	}
+	if (
+		params.run &&
+		budgetContext &&
+		(isCommitReviewTemplate(resolved.selectedTemplateName) ||
+			isImplementationAuthorTemplate(resolved.selectedTemplateName))
+	) {
+		const implementationContext = buildImplementationReviewPromptContext({
+			runId: params.run,
+			phase: params.phase ?? mergedVars.phase_number ?? "",
+			store: budgetContext.store,
+			recordStore: budgetContext.recordStore,
+			reviewContext: preparedReviewContext,
+			workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+			sessionId: params.newSession ? "new" : params.session,
+		});
+		if (implementationContext) {
+			governanceAppend = isImplementationAuthorTemplate(
+				resolved.selectedTemplateName,
+			)
+				? formatImplementationAuthorContext(implementationContext)
+				: formatImplementationReviewerContext(implementationContext);
+			boundId = implementationContext.bindingId;
+			boundSourceRunId = implementationContext.sourceRunId;
+			boundMode = implementationContext.mode;
+		}
+	}
 	const renderedPrompt = appendPlanReviewPromptContext({
-		prompt: resolved.prompt,
+		prompt: resolved.prompt + codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});
@@ -674,7 +939,8 @@ export async function invokeAgent(
 		params.recordStep ?? resolved.stepName ?? "reviewer:plan";
 	// Generate against the same contract the budget validator will apply:
 	// an initial active review must carry baselineAssessment, a closure
-	// review must not. Off/v1-compatible runs keep the generic schema.
+	// review must not. Plan prompts constrain architecture magnitudes; numeric
+	// implementation phases keep unrestricted integer telemetry.
 	const baselineContract =
 		role === "reviewer" && recordPhase === "plan" && budgetContext
 			? planReviewBaselineAssessmentContract(budgetContext, runId, {
@@ -683,12 +949,17 @@ export async function invokeAgent(
 					iteration: params.iteration,
 				})
 			: undefined;
+	const admittedPhase = recordPhase ? canonicalPhaseId(recordPhase) : null;
 	const outputSchema =
 		role === "author"
 			? AuthorStatusSchema
-			: baselineContract
-				? reviewerVerdictSchemaFor(baselineContract)
-				: ReviewerVerdictSchema;
+			: reviewerProviderSchema({
+					phaseId: admittedPhase,
+					baselineAssessment: baselineContract,
+					planReviewTemplate: isPlanReviewTemplate(
+						resolved.selectedTemplateName,
+					),
+				});
 	const quiet = params.quiet ?? false;
 	const showReasoning = params.showReasoning ?? false;
 	const forceStderr = params.stderr ?? false;
@@ -807,6 +1078,85 @@ export async function invokeAgent(
 				}
 
 				structured = validation.value;
+				if (
+					role === "reviewer" &&
+					implementationReviewContextId &&
+					budgetContext
+				) {
+					const phase = canonicalPhaseId(recordPhase ?? "");
+					const binding = budgetContext.store.getImplementationBinding(runId);
+					if (binding && phase && phase !== "plan") {
+						const verified = await verifyImplementationReviewContext({
+							store: budgetContext.store,
+							executionRunId: runId,
+							bindingId: binding.id,
+							phase,
+							reviewContextId: implementationReviewContextId,
+							workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+						});
+						if (verified.status === "error") {
+							outputError(verified.code, verified.message);
+						}
+						const composed = await composeImplementationReviewerRecord({
+							ctx: budgetContext,
+							runId,
+							stepName: budgetStepName,
+							phase,
+							iteration: params.iteration,
+							verdict: structured as ReviewerVerdict,
+							contextId: implementationReviewContextId,
+							codeContext: verified.diff,
+						});
+						if (composed.status === "error") {
+							outputError(composed.code, composed.message, composed.detail);
+						}
+						if (composed.status === "applied") {
+							pendingImplementation = composed.pending;
+							pendingCreditReconciliation = composed.reconciliation;
+							for (const item of composed.diagnostics) {
+								warn(`${item.code}: ${item.message}`);
+							}
+						} else {
+							const closure = readImplementationCodeClosure(
+								budgetContext.recordStore,
+								runId,
+								phase,
+							);
+							const reviewed = validateImplementationReview({
+								verdict: structured as ReviewerVerdict,
+								phase,
+								mode: binding.mode,
+								phaseIds: binding.phaseMap.map((entry) => entry.id),
+								workItemIds: binding.ledger.workItems.map((item) => item.id),
+								creditClaimIds: binding.ledger.workItems.flatMap((item) =>
+									item.debtClaim ? [item.debtClaim.debtClaimId] : [],
+								),
+								approvedPlanBytes: binding.approvedPlanBytes,
+								approvedPlanHash: binding.approvedPlanHash,
+								amendments:
+									budgetContext.store.listImplementationTextAmendments(
+										runId,
+										binding.id,
+									),
+								hasRun: true,
+								priorReviewCount: closure.priorReviewCount,
+								codeContext: verified.diff,
+								priorCodeFindings: closure.priorCodeFindings,
+								priorCodeDecisions: closure.priorCodeDecisions,
+							});
+							if (!reviewed.valid) {
+								outputError(
+									reviewed.fatalCode ?? "INVALID_STRUCTURED_OUTPUT",
+									reviewed.fatalMessage ??
+										"Implementation review contract was rejected.",
+								);
+							}
+							for (const item of reviewed.diagnostics) {
+								warn(`${item.code}: ${item.message}`);
+							}
+						}
+					}
+				}
 			},
 		});
 	} finally {
@@ -943,6 +1293,101 @@ export async function invokeAgent(
 		}
 	}
 
+	let implementationRecorded = false;
+	if (pendingImplementation && budgetContext) {
+		const stepName = params.recordStep ?? resolved.stepName ?? budgetStepName;
+		if (params.record) {
+			try {
+				const written = await recordImplementationReviewerStepWithObservation(
+					{
+						run: params.run,
+						stepName,
+						result: JSON.stringify(structured),
+						phase: params.phase ?? variables.phase_number,
+						iteration: params.iteration,
+						sessionId: runResult.sessionId,
+						model,
+						durationMs: runResult.durationMs,
+						tokensIn: runResult.tokens.in,
+						tokensOut: runResult.tokens.out,
+						costUsd: runResult.costUsd ?? undefined,
+						logPath: logPath ?? undefined,
+						performer: {
+							kind: "agent",
+							role,
+							provider: providerName,
+						},
+					},
+					pendingImplementation,
+					budgetContext,
+					pendingCreditReconciliation,
+				);
+				if (written.observation) {
+					structured = {
+						...(structured as Record<string, unknown>),
+						governance: implementationGovernanceDecoration(written.observation),
+					};
+				}
+				implementationRecorded = true;
+			} catch (err) {
+				if (err instanceof RecordError) {
+					outputError(err.code, err.message, err.detail);
+				}
+				throw err;
+			}
+		} else {
+			structured = {
+				...(structured as Record<string, unknown>),
+				governance: implementationGovernanceDecoration(pendingImplementation),
+			};
+		}
+	}
+
+	if (role === "author" && params.record && budgetContext && params.run) {
+		const authorPhase = canonicalPhaseId(
+			params.phase ?? variables.phase_number ?? "",
+		);
+		const authorBinding = budgetContext.store.getImplementationBinding(
+			params.run,
+		);
+		if (authorBinding && authorPhase && authorPhase !== "plan") {
+			const planPath = budgetContext.executionContext.run.plan_path;
+			const readPath =
+				resolvedPlanPath && existsSync(resolvedPlanPath)
+					? resolvedPlanPath
+					: planPath;
+			const worktreePlanBytes = existsSync(readPath)
+				? readFileSync(readPath)
+				: null;
+			const authorCommit =
+				structured &&
+				typeof structured === "object" &&
+				"commit" in structured &&
+				typeof (structured as { commit?: unknown }).commit === "string"
+					? (structured as { commit: string }).commit
+					: undefined;
+			const admitted = await admitAuthorTextAmendmentFromGit({
+				store: budgetContext.store,
+				binding: authorBinding,
+				origin: budgetContext.originFor({
+					kind: "agent",
+					role,
+					provider: providerName,
+				}),
+				phase: authorPhase,
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+				planPath,
+				repoRoot: budgetContext.executionContext.controlPlaneRoot,
+				worktreePlanBytes,
+				authorCommit,
+			});
+			if (admitted.status === "failed") {
+				if (admitted.blocking) outputError(admitted.code, admitted.message);
+				warn(`${admitted.code}: ${admitted.message}`);
+			}
+		}
+	}
+
 	const output: InvokeResult = {
 		run_id: params.run,
 		step_name: resolved.stepName,
@@ -961,6 +1406,13 @@ export async function invokeAgent(
 		...(resolvedPlanPath && resolvedWorktreePath && planPathInWorktreeExists
 			? { worktree_plan_path: resolvedPlanPath }
 			: {}),
+		...(implementationReviewContextId
+			? { review_context_id: implementationReviewContextId }
+			: {}),
+		...(boundId ? { binding_id: boundId } : {}),
+		...(boundSourceRunId ? { source_run_id: boundSourceRunId } : {}),
+		...(boundMode ? { pinned_mode: boundMode } : {}),
+		...(preAuthorCommit ? { pre_author_commit: preAuthorCommit } : {}),
 	};
 
 	outputSuccess(output);
@@ -969,7 +1421,7 @@ export async function invokeAgent(
 	// IMPORTANT: outputSuccess() has already written the primary envelope above.
 	// All errors from here must go to stderr — never outputError() (which would
 	// write a second JSON envelope to stdout, corrupting the stream).
-	if (params.record) {
+	if (params.record && !implementationRecorded) {
 		const stepName = params.recordStep ?? resolved.stepName;
 		if (!stepName) {
 			console.error(

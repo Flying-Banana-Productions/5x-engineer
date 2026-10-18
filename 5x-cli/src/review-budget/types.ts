@@ -121,6 +121,20 @@ export interface CreditAssessmentInput {
 	coupling: CouplingClass;
 }
 
+/**
+ * Reconciliation-owned claim contribution. Plan review omits this and keeps
+ * provisional `N`. Missing due credit is not included in `spendableN`.
+ */
+export interface ApprovedClaimContribution {
+	spendableN: number;
+	provisionalN: number;
+	realizedN: number;
+	/** Shortfall exists. Informational unless `materialCreditShortfall` is set. */
+	creditUnrealized?: boolean;
+	/** Unrealized magnitude or recomputed ceiling makes the shortfall a gate. */
+	materialCreditShortfall?: boolean;
+}
+
 export interface DerivedBudgetResult {
 	B0: number;
 	B: number;
@@ -134,6 +148,10 @@ export interface DerivedBudgetResult {
 	E: number;
 	A: number;
 	P: number;
+	/** Future or still-provisional credit magnitude. Plan review sets this to `N`. */
+	provisionalCredit?: number;
+	/** Due credit that reconciliation has realized. Plan review leaves this at 0. */
+	realizedCredit?: number;
 	baselineDirection: BaselineDirection | null;
 	budgetBand: BudgetBand;
 	budgetAlerts: BudgetAlert[];

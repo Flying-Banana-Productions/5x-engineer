@@ -133,20 +133,45 @@ import {
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
 import type {
-	BaselineDirection,
-	BudgetAlert,
-	BudgetBand,
-	ReviewBudgetMode,
+	ImplementationBindingPayload,
+	ImplementationCorrectionAttemptPayload,
+	ImplementationCreditClaimRecord,
+	ImplementationCreditReconciliationPayload,
+	ImplementationReviewContextPayload,
+	ImplementationReviewObservationPayload,
+} from "../review-budget/record-lines.js";
+import {
+	type BaselineDirection,
+	type BudgetAlert,
+	type BudgetBand,
+	isCompleteDebtClaimEvidence,
+	type ReviewBudgetMode,
 } from "../review-budget/types.js";
+import {
+	changedCodePaths,
+	isCodeAncestor,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
 import {
 	type GoverningReviewState,
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
+import { canonicalPhaseId } from "../review-governance/implementation.js";
+import {
+	evaluateStoredImplementationBoundary,
+	type ImplementationGovernanceReadiness,
+} from "../review-governance/implementation-boundary.js";
+import {
+	ensureImplementationAdmission,
+	isImplementationAuthorAdmission,
+} from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
 	createReviewGovernanceStore,
+	type DerivedImplementationGate,
+	deriveOpenImplementationGate,
 } from "../review-governance/store.js";
 import type {
 	ReviewDecisionRoute,
@@ -1144,6 +1169,387 @@ export function tryBuildReviewGovernanceState(
 	}
 }
 
+export interface ImplementationGovernanceClaimView {
+	creditClaimId: string;
+	phase: string;
+	status: ImplementationCreditClaimRecord["status"] | "unassessed";
+	due: boolean;
+	reconciled: boolean;
+	approvedArchitectureDelta: number;
+	/** Approved envelope after a waiver or reduction. Not a measured post-state. */
+	effectiveApprovedMagnitude: number;
+	/** Measured post-state. Null when the claim has not been assessed. */
+	measuredArchitectureDelta: number | null;
+	/**
+	 * Spendable realized magnitude. Zero for waived, not_realized, pending,
+	 * future, and unassessed claims.
+	 */
+	realizedCredit: number;
+	/** True only when measured simplification was actually retained. */
+	physicallyRealized: boolean;
+	waiverDecisionId: string | null;
+}
+
+export interface ImplementationGovernanceCreditView {
+	grossEffort: number;
+	inheritedBaseline: number;
+	standardCeiling: number;
+	effectiveCeiling: number;
+	absoluteCeiling: number;
+	provisionalCredit: number;
+	realizedCredit: number;
+	positiveBurden: number;
+}
+
+/** Run-state read model. Readiness fields stay; presentation is additive. */
+export interface ImplementationGovernanceState
+	extends ImplementationGovernanceReadiness {
+	domain: "implementation";
+	phase: string | null;
+	binding: {
+		id: string;
+		sourceRunId: string;
+		sourceSnapshotId: string;
+		sourceBaselineId: string;
+		approvedPlanCommit: string;
+		mode: "advisory" | "enforced";
+	} | null;
+	reviewedRange: {
+		phase: string;
+		contextId: string;
+		baseCommit: string;
+		reviewedCommit: string;
+		patchHash: string;
+	} | null;
+	activeGate: {
+		gateId: string;
+		phase: string;
+		observationId: string;
+		bindingId: string;
+		causes: DerivedImplementationGate["causes"];
+	} | null;
+	qualityAttempt: {
+		id: string;
+		observationId: string;
+		phase: string;
+		outcome: ImplementationCorrectionAttemptPayload["outcome"];
+		shortcutInvalidated: boolean;
+		qualityPassed: boolean;
+		qualitySkipped: boolean;
+		qualityTimedOut: boolean;
+	} | null;
+	claims: ImplementationGovernanceClaimView[];
+	telemetry: {
+		phase: string;
+		reviewCycles: number;
+		fixCycles: number;
+		reviewOriginatedCommits: number;
+		qualityReruns: number;
+		classCounts: ImplementationReviewObservationPayload["telemetry"]["classCounts"];
+		planAmendments: number;
+		addedPaths: string[];
+		effortVariance: number;
+		architectureVariance: number;
+	} | null;
+	credit: ImplementationGovernanceCreditView | null;
+}
+
+function phaseOrdinal(
+	phaseMap: readonly { id: string }[],
+	phaseId: string,
+): number {
+	return phaseMap.findIndex((phase) => phase.id === phaseId);
+}
+
+function approvedIntrinsicClaims(binding: ImplementationBindingPayload): Array<{
+	creditClaimId: string;
+	phase: string;
+	approvedArchitectureDelta: number;
+}> {
+	const claims = [];
+	for (const item of binding.ledger.workItems) {
+		if (item.architectureDelta >= 0) continue;
+		const claim = item.debtClaim;
+		if (!isCompleteDebtClaimEvidence(claim)) continue;
+		if (claim.coupling !== "intrinsic") continue;
+		const target = binding.debtTargets.find(
+			(entry) => entry.claimId === claim.debtClaimId,
+		);
+		if (!target || phaseOrdinal(binding.phaseMap, target.phaseId) < 0) continue;
+		claims.push({
+			creditClaimId: claim.debtClaimId,
+			phase: target.phaseId,
+			approvedArchitectureDelta: item.architectureDelta,
+		});
+	}
+	return claims;
+}
+
+function latestClaimRecord(
+	reconciliations: readonly ImplementationCreditReconciliationPayload[],
+	bindingId: string,
+	creditClaimId: string,
+): ImplementationCreditClaimRecord | undefined {
+	for (const record of [...reconciliations].reverse()) {
+		if (record.bindingId !== bindingId) continue;
+		const claim = record.claims.find(
+			(entry) => entry.creditClaimId === creditClaimId,
+		);
+		if (claim) return claim;
+	}
+	return undefined;
+}
+
+function claimView(
+	claim: ReturnType<typeof approvedIntrinsicClaims>[number],
+	record: ImplementationCreditClaimRecord | undefined,
+	due: boolean,
+): ImplementationGovernanceClaimView {
+	const status = record?.status ?? "unassessed";
+	const measured = record?.realizedArchitectureDelta ?? null;
+	const effective =
+		record?.effectiveApprovedMagnitude ??
+		Math.abs(claim.approvedArchitectureDelta);
+	const spendable =
+		status === "realized" || status === "partial"
+			? Math.min(Math.abs(measured ?? 0), effective)
+			: 0;
+	return {
+		creditClaimId: claim.creditClaimId,
+		phase: claim.phase,
+		status,
+		due,
+		reconciled:
+			status === "realized" ||
+			status === "partial" ||
+			status === "not_realized" ||
+			status === "waived",
+		approvedArchitectureDelta: claim.approvedArchitectureDelta,
+		effectiveApprovedMagnitude: effective,
+		measuredArchitectureDelta: measured,
+		realizedCredit: spendable,
+		physicallyRealized: spendable > 0,
+		waiverDecisionId: record?.waiverDecisionId ?? null,
+	};
+}
+
+function creditView(
+	binding: ImplementationBindingPayload,
+	reconciliations: readonly ImplementationCreditReconciliationPayload[],
+): ImplementationGovernanceCreditView {
+	const latest = [...reconciliations]
+		.reverse()
+		.find((record) => record.bindingId === binding.id);
+	if (latest) {
+		return {
+			grossEffort: latest.budget.W,
+			inheritedBaseline: latest.budget.B,
+			standardCeiling: latest.budget.S,
+			effectiveCeiling: latest.budget.E,
+			absoluteCeiling: latest.budget.A,
+			provisionalCredit: latest.budget.provisionalCredit,
+			realizedCredit: latest.budget.realizedCredit,
+			positiveBurden: latest.budget.P,
+		};
+	}
+	const derived = deriveBudget({
+		B0: binding.b0,
+		B: binding.governingB,
+		I: null,
+		workItems: binding.ledger.workItems,
+		findings: [],
+		assessments: [],
+		config: binding.thresholds,
+		semanticHumanRequired: false,
+	});
+	const provisionalCredit = approvedIntrinsicClaims(binding).reduce(
+		(sum, claim) => sum + Math.abs(claim.approvedArchitectureDelta),
+		0,
+	);
+	return {
+		grossEffort: derived.W,
+		inheritedBaseline: derived.B,
+		standardCeiling: derived.S,
+		effectiveCeiling: derived.E,
+		absoluteCeiling: derived.A,
+		provisionalCredit,
+		realizedCredit: 0,
+		positiveBurden: derived.P,
+	};
+}
+
+/**
+ * Add binding, range, gate, quality, claim, and credit detail to readiness.
+ * Waived and not-realized claims contribute zero realized credit.
+ */
+export function presentImplementationGovernance(input: {
+	readiness: ImplementationGovernanceReadiness;
+	binding: ImplementationBindingPayload | null;
+	contexts: readonly ImplementationReviewContextPayload[];
+	observations: readonly ImplementationReviewObservationPayload[];
+	reconciliations: readonly ImplementationCreditReconciliationPayload[];
+	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
+	activeGate: DerivedImplementationGate | null;
+}): ImplementationGovernanceState {
+	const binding = input.binding;
+	const observations = binding
+		? input.observations.filter((row) => row.bindingId === binding.id)
+		: [];
+	const latestObservation = observations.at(-1);
+	const context = latestObservation
+		? input.contexts.find((row) => row.id === latestObservation.contextId)
+		: undefined;
+	const focusPhase =
+		latestObservation?.phase ?? binding?.phaseMap[0]?.id ?? null;
+	const focusIndex =
+		binding && focusPhase ? phaseOrdinal(binding.phaseMap, focusPhase) : -1;
+	const attempt = [...input.correctionAttempts]
+		.reverse()
+		.find(
+			(row) =>
+				binding !== null &&
+				row.bindingId === binding.id &&
+				(latestObservation === undefined ||
+					row.observationId === latestObservation.id),
+		);
+	const telemetry = latestObservation?.telemetry;
+	return {
+		...input.readiness,
+		domain: "implementation",
+		phase: focusPhase,
+		binding: binding
+			? {
+					id: binding.id,
+					sourceRunId: binding.sourceRunId,
+					sourceSnapshotId: binding.sourceSnapshotId,
+					sourceBaselineId: binding.sourceBaselineId,
+					approvedPlanCommit: binding.approvedPlanCommit,
+					mode: binding.mode,
+				}
+			: null,
+		reviewedRange:
+			context && latestObservation
+				? {
+						phase: latestObservation.phase,
+						contextId: context.id,
+						baseCommit: context.baseCommit,
+						reviewedCommit: context.reviewedCommit,
+						patchHash: context.patchHash,
+					}
+				: null,
+		activeGate: input.activeGate
+			? {
+					gateId: input.activeGate.gateId,
+					phase: input.activeGate.phase,
+					observationId: input.activeGate.observationId,
+					bindingId: input.activeGate.bindingId,
+					causes: structuredClone(input.activeGate.causes),
+				}
+			: null,
+		qualityAttempt: attempt
+			? {
+					id: attempt.id,
+					observationId: attempt.observationId,
+					phase: attempt.phase,
+					outcome: attempt.outcome,
+					shortcutInvalidated: attempt.shortcutInvalidated,
+					qualityPassed: attempt.qualityPassed,
+					qualitySkipped: attempt.qualitySkipped,
+					qualityTimedOut: attempt.qualityTimedOut,
+				}
+			: null,
+		claims: binding
+			? approvedIntrinsicClaims(binding).map((claim) =>
+					claimView(
+						claim,
+						latestClaimRecord(
+							input.reconciliations,
+							binding.id,
+							claim.creditClaimId,
+						),
+						focusIndex >= 0 &&
+							phaseOrdinal(binding.phaseMap, claim.phase) <= focusIndex,
+					),
+				)
+			: [],
+		telemetry:
+			telemetry && latestObservation
+				? {
+						phase: latestObservation.phase,
+						reviewCycles: telemetry.reviewCycles,
+						fixCycles: telemetry.fixCycles,
+						reviewOriginatedCommits: telemetry.reviewOriginatedCommits,
+						qualityReruns: telemetry.qualityReruns,
+						classCounts: { ...telemetry.classCounts },
+						planAmendments: telemetry.planAmendments,
+						addedPaths: [...telemetry.addedPaths],
+						effortVariance: telemetry.effortVariance,
+						architectureVariance: telemetry.architectureVariance,
+					}
+				: null,
+		credit: binding ? creditView(binding, input.reconciliations) : null,
+	};
+}
+
+function openImplementationGate(
+	recordStore: RecordStore,
+	runId: string,
+	binding: ImplementationBindingPayload | null,
+): DerivedImplementationGate | null {
+	if (!binding) return null;
+	for (const phase of binding.phaseMap) {
+		const gate = deriveOpenImplementationGate(recordStore, runId, phase.id);
+		if (gate) return gate;
+	}
+	return null;
+}
+
+function tryPresentImplementationGovernance(
+	input: {
+		readiness: ImplementationGovernanceReadiness;
+		store: ReviewBudgetStore;
+		recordStore: RecordStore;
+		runId: string;
+	},
+	warn: (message: string) => void,
+): ImplementationGovernanceState | undefined {
+	try {
+		const binding = input.store.getImplementationBinding(input.runId);
+		const observations = binding
+			? input.store.listImplementationReviews(input.runId)
+			: [];
+		const contexts = observations.flatMap((observation) => {
+			const context = input.store.getImplementationReviewContext(
+				input.runId,
+				observation.contextId,
+			);
+			return context ? [context] : [];
+		});
+		return presentImplementationGovernance({
+			readiness: input.readiness,
+			binding,
+			contexts,
+			observations,
+			reconciliations: binding
+				? input.store.listImplementationCreditReconciliations(input.runId)
+				: [],
+			correctionAttempts: binding
+				? input.store.listImplementationCorrectionAttempts(input.runId)
+				: [],
+			activeGate: openImplementationGate(
+				input.recordStore,
+				input.runId,
+				binding,
+			),
+		});
+	} catch (error) {
+		warn(
+			`Unable to read implementation governance detail for run ${input.runId}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return undefined;
+	}
+}
+
 function tryDeriveGoverningReviewState(
 	recordStore: RecordStore,
 	runId: string,
@@ -1391,6 +1797,7 @@ export function formatStateText(data: {
 	exported_by?: RecordOrigin;
 	review_budget?: ReviewBudgetState;
 	review_governance?: ReviewGovernanceState;
+	implementation_governance?: ImplementationGovernanceState;
 }): void {
 	const { run, steps, summary } = data;
 
@@ -1464,6 +1871,59 @@ export function formatStateText(data: {
 			console.log(
 				`Governance diagnostics: ${governance.diagnostics.join("; ")}`,
 			);
+	}
+	if (data.implementation_governance?.executionObligations) {
+		const governance = data.implementation_governance;
+		const ready = governance.phases
+			.filter((phase) => phase.ready)
+			.map((phase) => phase.phase);
+		console.log(
+			`Implementation governance: domain=${governance.domain} phase=${governance.phase ?? "none"} obligations=yes checklist_sufficient=no ready=${ready.join(",") || "none"}${governance.planDrifted ? " plan_drift=yes" : ""}`,
+		);
+		if (governance.binding) {
+			console.log(
+				`Implementation binding: id=${governance.binding.id} source_run=${governance.binding.sourceRunId} source_snapshot=${governance.binding.sourceSnapshotId} mode=${governance.binding.mode}`,
+			);
+		}
+		if (governance.reviewedRange) {
+			const range = governance.reviewedRange;
+			console.log(
+				`Implementation range: ${range.baseCommit.slice(0, 12)}..${range.reviewedCommit.slice(0, 12)} phase=${range.phase}`,
+			);
+		}
+		if (governance.activeGate) {
+			console.log(
+				`Implementation gate: ${governance.activeGate.gateId} phase=${governance.activeGate.phase}`,
+			);
+		}
+		if (governance.qualityAttempt) {
+			const attempt = governance.qualityAttempt;
+			console.log(
+				`Implementation quality: outcome=${attempt.outcome} invalidated=${attempt.shortcutInvalidated ? "yes" : "no"} passed=${attempt.qualityPassed ? "yes" : "no"}`,
+			);
+		}
+		if (governance.credit) {
+			const credit = governance.credit;
+			console.log(
+				`Implementation credit: gross_effort=${credit.grossEffort} baseline=${credit.inheritedBaseline} standard=${credit.standardCeiling} effective=${credit.effectiveCeiling} absolute=${credit.absoluteCeiling} provisional=${credit.provisionalCredit} realized=${credit.realizedCredit} positive_burden=${credit.positiveBurden}`,
+			);
+		}
+		if (governance.claims.length > 0) {
+			const claims = governance.claims
+				.map((claim) => {
+					const physical =
+						claim.status === "waived" || claim.status === "not_realized"
+							? " not_physically_realized"
+							: "";
+					const measured =
+						claim.measuredArchitectureDelta === null
+							? "none"
+							: String(claim.measuredArchitectureDelta);
+					return `${claim.creditClaimId}=${claim.status} measured=${measured} credit=${claim.realizedCredit}${physical}`;
+				})
+				.join("; ");
+			console.log(`Implementation claims: ${claims}`);
+		}
 	}
 
 	if (steps.length === 0) {
@@ -2189,6 +2649,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			const budget = computeStepBudget(summary.total_steps, maxSteps);
 			let reviewBudget: ReviewBudgetState | undefined;
 			let reviewGovernance: ReviewGovernanceState | undefined;
+			let implementationGovernance: ImplementationGovernanceState | undefined;
 			// No live run context exists here; anchor current policy to the known
 			// plan, while durable baselines below continue to pin their own policy.
 			const { config: planConfig } = await resolveLayeredConfig(
@@ -2277,6 +2738,74 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						},
 						warn,
 					);
+					const archivedPlan = existsSync(planPath)
+						? readFileSync(planPath, "utf-8")
+						: null;
+					const hasImplementationHistory = gitRecord.steps.some((step) =>
+						isNumericImplementationPhase(step.phase),
+					);
+					let archivedEvidence = hasImplementationHistory;
+					if (!archivedEvidence) {
+						try {
+							archivedEvidence =
+								archivedBudgetStore.getImplementationBinding(
+									gitRecord.summary.id,
+								) !== null ||
+								archivedBudgetStore.getImplementationCompatibility(
+									gitRecord.summary.id,
+								) !== null;
+						} catch {
+							archivedEvidence = false;
+						}
+					}
+					if (archivedEvidence) {
+						let archivedHead: string | null = null;
+						try {
+							archivedHead = await getLatestCommit(projectRoot);
+						} catch {
+							archivedHead = null;
+						}
+						try {
+							const codeEquivalentCommits = archivedHead
+								? await equivalentReviewedCommits({
+										store: archivedBudgetStore,
+										runId: gitRecord.summary.id,
+										headCommit: archivedHead,
+										workdir: projectRoot,
+										intent: "run_complete",
+									})
+								: [];
+							const readiness = evaluateStoredImplementationBoundary({
+								store: archivedBudgetStore,
+								recordStore: records,
+								runId: gitRecord.summary.id,
+								intent: "run_complete",
+								mode: planConfig.reviewBudget.mode,
+								currentPlanBytes: archivedPlan,
+								headCommit: archivedHead,
+								codeEquivalentCommits,
+								hasImplementationHistory,
+								hasDeliveryBudget: archivedPlan
+									? parseDeliveryBudget(archivedPlan).ok
+									: false,
+							}).readiness;
+							if (readiness.executionObligations) {
+								implementationGovernance = tryPresentImplementationGovernance(
+									{
+										readiness,
+										store: archivedBudgetStore,
+										recordStore: records,
+										runId: gitRecord.summary.id,
+									},
+									warn,
+								);
+							}
+						} catch (error) {
+							warn(
+								`Unable to read implementation boundary for run ${gitRecord.summary.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
 				}
 			}
 			outputSuccess(
@@ -2296,6 +2825,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					steps_remaining: budget.remaining,
 					...(reviewBudget ? { review_budget: reviewBudget } : {}),
 					...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
+					...(implementationGovernance
+						? { implementation_governance: implementationGovernance }
+						: {}),
 					...progressFields,
 					...envelopeAttribution(gitRecord.summary),
 				},
@@ -2374,6 +2906,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 	});
 	let reviewBudget: ReviewBudgetState | undefined;
 	let reviewGovernance: ReviewGovernanceState | undefined;
+	let implementationGovernance: ImplementationGovernanceState | undefined;
 	{
 		const warn =
 			params.warn ??
@@ -2477,6 +3010,74 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						mode: configuredMode,
 						enforcement_implemented: false,
 					};
+		if (hasRecordRun) {
+			const hasImplementationHistory = implementationHistoryPresent(
+				db,
+				recordContext.recordStore,
+				run.id,
+			);
+			let implementationEvidence = hasImplementationHistory;
+			if (!implementationEvidence) {
+				try {
+					implementationEvidence =
+						reviewStore.getImplementationBinding(run.id) !== null ||
+						reviewStore.getImplementationCompatibility(run.id) !== null;
+				} catch {
+					// The plan budget reader already reports an unreadable budget stream.
+				}
+			}
+			if (implementationEvidence) {
+				let headCommit: string | null = null;
+				try {
+					headCommit = await getLatestCommit(
+						recordContext.executionContext.effectiveWorkingDirectory,
+					);
+				} catch {
+					headCommit = null;
+				}
+				try {
+					const codeEquivalentCommits = headCommit
+						? await equivalentReviewedCommits({
+								store: reviewStore,
+								runId: run.id,
+								headCommit,
+								workdir:
+									recordContext.executionContext.effectiveWorkingDirectory,
+								intent: "run_complete",
+							})
+						: [];
+					const readiness = evaluateStoredImplementationBoundary({
+						store: reviewStore,
+						recordStore: recordContext.recordStore,
+						runId: run.id,
+						intent: "run_complete",
+						mode: configuredMode,
+						currentPlanBytes: currentPlanMarkdown ?? null,
+						headCommit,
+						codeEquivalentCommits,
+						hasImplementationHistory,
+						hasDeliveryBudget: currentPlanMarkdown
+							? parseDeliveryBudget(currentPlanMarkdown).ok
+							: false,
+					}).readiness;
+					if (readiness.executionObligations) {
+						implementationGovernance = tryPresentImplementationGovernance(
+							{
+								readiness,
+								store: reviewStore,
+								recordStore: recordContext.recordStore,
+								runId: run.id,
+							},
+							warn,
+						);
+					}
+				} catch (error) {
+					warn(
+						`Unable to read implementation boundary for run ${run.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+		}
 	}
 
 	outputSuccess(
@@ -2496,6 +3097,9 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 			steps_remaining: budget.remaining,
 			...(reviewBudget ? { review_budget: reviewBudget } : {}),
 			...(reviewGovernance ? { review_governance: reviewGovernance } : {}),
+			...(implementationGovernance
+				? { implementation_governance: implementationGovernance }
+				: {}),
 			...progressFields,
 			...(diskSummary ? envelopeAttribution(diskSummary) : {}),
 		},
@@ -2869,6 +3473,75 @@ export async function finalizeAndWritePreparedStep(
 	}
 }
 
+export interface ImplementationActivityStep {
+	stepName: string;
+	phase: string | null;
+	iteration: number | null;
+	headCommit: string | null;
+}
+
+function activityPhaseKey(phase: string | null): string | null {
+	if (!phase) return null;
+	return canonicalPhaseId(phase);
+}
+
+/**
+ * Review, fix, and quality counts for one implementation phase. Identities are
+ * the durable step tuples already on the record stream. The pending reviewer
+ * is counted once when that tuple is not already present.
+ */
+export function deriveImplementationActivityTelemetry(input: {
+	steps: readonly ImplementationActivityStep[];
+	phase: string;
+	pendingReviewer?: { stepName: string; iteration: number | null };
+}): {
+	reviewCycles: number;
+	fixCycles: number;
+	reviewOriginatedCommits: number;
+	qualityReruns: number;
+} {
+	const phase = activityPhaseKey(input.phase);
+	const samePhase = (step: ImplementationActivityStep) =>
+		activityPhaseKey(step.phase) === phase;
+	const reviewerKeys = new Set<string>();
+	const authorCommits = new Set<string>();
+	const reviewCommits = new Set<string>();
+	let seenReview = false;
+	let fixCycles = 0;
+	let qualityChecks = 0;
+	for (const step of input.steps) {
+		if (!samePhase(step)) continue;
+		if (step.stepName.startsWith("reviewer:")) {
+			seenReview = true;
+			reviewerKeys.add(
+				`${step.stepName}:${activityPhaseKey(step.phase) ?? ""}:${step.iteration ?? ""}`,
+			);
+			if (step.headCommit && !authorCommits.has(step.headCommit)) {
+				reviewCommits.add(step.headCommit);
+			}
+		} else if (step.stepName.startsWith("author:")) {
+			if (step.headCommit) {
+				authorCommits.add(step.headCommit);
+				reviewCommits.delete(step.headCommit);
+			}
+			if (seenReview) fixCycles += 1;
+		} else if (step.stepName.startsWith("quality:")) {
+			qualityChecks += 1;
+		}
+	}
+	const pending = input.pendingReviewer;
+	if (pending) {
+		const key = `${pending.stepName}:${phase ?? ""}:${pending.iteration ?? ""}`;
+		if (!reviewerKeys.has(key)) reviewerKeys.add(key);
+	}
+	return {
+		reviewCycles: reviewerKeys.size,
+		fixCycles,
+		reviewOriginatedCommits: reviewCommits.size,
+		qualityReruns: Math.max(0, qualityChecks - 1),
+	};
+}
+
 /**
  * Record a step in the database. Pure persistence — no stdout, no CliError.
  * Throws RecordError on validation failures (caller decides how to surface).
@@ -2879,12 +3552,371 @@ export async function finalizeAndWritePreparedStep(
  * context resolution — critical for `5x commit` where re-discovery from cwd
  * could target the wrong control-plane.
  */
+function isNumericImplementationPhase(
+	phase: string | null | undefined,
+): boolean {
+	if (!phase) return false;
+	const id = canonicalPhaseId(phase);
+	return id !== null && id !== "plan";
+}
+
+function implementationHistoryPresent(
+	db: Database,
+	recordStore: RecordStore,
+	runId: string,
+): boolean {
+	if (
+		getSteps(db, runId).some((step) => isNumericImplementationPhase(step.phase))
+	) {
+		return true;
+	}
+	try {
+		return recordStore.listLines(runId, "steps").some((line) => {
+			const payload = line.payload as { phase?: unknown };
+			return (
+				typeof payload.phase === "string" &&
+				isNumericImplementationPhase(payload.phase)
+			);
+		});
+	} catch {
+		return false;
+	}
+}
+
+function hasImplementationBinding(
+	recordStore: RecordStore,
+	runId: string,
+): boolean {
+	try {
+		return (
+			createReviewBudgetStore(recordStore).getImplementationBinding(runId) !==
+			null
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Reviewed commits that differ from HEAD only by excluded workflow paths.
+ * A git failure leaves the commit unmatched so enforced freshness still denies.
+ */
+async function equivalentReviewedCommits(input: {
+	store: ReviewBudgetStore;
+	runId: string;
+	headCommit: string;
+	workdir: string;
+	intent: "phase_complete" | "run_complete" | "advance";
+	phase?: string;
+}): Promise<string[]> {
+	if (input.intent === "advance") return [];
+	let binding: ReturnType<ReviewBudgetStore["getImplementationBinding"]>;
+	try {
+		binding = input.store.getImplementationBinding(input.runId);
+	} catch {
+		return [];
+	}
+	if (!binding) return [];
+	const phaseId =
+		input.intent === "run_complete"
+			? binding.phaseMap.at(-1)?.id
+			: (canonicalPhaseId(input.phase ?? "") ?? input.phase);
+	if (!phaseId) return [];
+	const reviewedCommits: string[] = [];
+	let excludedPaths: string[] = [];
+	try {
+		const observation = [...input.store.listImplementationReviews(input.runId)]
+			.reverse()
+			.find((row) => row.bindingId === binding?.id && row.phase === phaseId);
+		if (observation) {
+			const context = input.store.getImplementationReviewContext(
+				input.runId,
+				observation.contextId,
+			);
+			if (context?.reviewedCommit) {
+				reviewedCommits.push(context.reviewedCommit);
+				excludedPaths = context.excludedPaths;
+			}
+		}
+		const reconciliation = [
+			...input.store.listImplementationCreditReconciliations(input.runId),
+		]
+			.reverse()
+			.find((row) => row.bindingId === binding?.id && row.phase === phaseId);
+		if (
+			reconciliation?.reviewedCommit &&
+			!reviewedCommits.includes(reconciliation.reviewedCommit)
+		) {
+			reviewedCommits.push(reconciliation.reviewedCommit);
+		}
+	} catch {
+		return [];
+	}
+	const git = workdirCodeDiffGit(input.workdir);
+	const equivalent: string[] = [];
+	for (const commit of reviewedCommits) {
+		if (commit === input.headCommit) continue;
+		try {
+			if (!(await isCodeAncestor(git, commit, input.headCommit))) continue;
+			const paths = await changedCodePaths(
+				git,
+				commit,
+				input.headCommit,
+				excludedPaths,
+			);
+			if (paths.length === 0) equivalent.push(commit);
+		} catch {
+			// Unresolved ancestry is not a freshness match.
+		}
+	}
+	return equivalent;
+}
+
+async function enforceImplementationBoundary(input: {
+	intent: "phase_complete" | "run_complete" | "advance";
+	phase?: string;
+	runId: string;
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	recordStore: RecordStore;
+}): Promise<ImplementationGovernanceReadiness | null> {
+	const run = getRunV1(input.db, input.runId);
+	if (!run) return null;
+	let planMarkdown: string | null = null;
+	let headCommit: string | null = null;
+	let workdir: string | undefined;
+	if (input.controlPlane) {
+		const ctxResult = resolveRunExecutionContext(input.db, input.runId, {
+			controlPlaneRoot: input.controlPlane.controlPlaneRoot,
+		});
+		if (ctxResult.ok) {
+			workdir = ctxResult.context.effectiveWorkingDirectory;
+			const readPath =
+				ctxResult.context.planPathInWorktreeExists &&
+				existsSync(ctxResult.context.effectivePlanPath)
+					? ctxResult.context.effectivePlanPath
+					: run.plan_path;
+			if (existsSync(readPath)) {
+				try {
+					planMarkdown = readFileSync(readPath, "utf8");
+				} catch {
+					planMarkdown = null;
+				}
+			}
+			try {
+				headCommit = await getLatestCommit(
+					ctxResult.context.effectiveWorkingDirectory,
+				);
+			} catch {
+				headCommit = null;
+			}
+		}
+	} else if (existsSync(run.plan_path)) {
+		try {
+			planMarkdown = readFileSync(run.plan_path, "utf8");
+		} catch {
+			planMarkdown = null;
+		}
+	}
+	const parsed = planMarkdown ? parseDeliveryBudget(planMarkdown) : null;
+	const store = createReviewBudgetStore(input.recordStore);
+	const codeEquivalentCommits =
+		headCommit && workdir
+			? await equivalentReviewedCommits({
+					store,
+					runId: input.runId,
+					headCommit,
+					workdir,
+					intent: input.intent,
+					phase: input.phase,
+				})
+			: [];
+	const boundary = evaluateStoredImplementationBoundary({
+		store,
+		recordStore: input.recordStore,
+		runId: input.runId,
+		intent: input.intent,
+		...(input.phase
+			? { phase: canonicalPhaseId(input.phase) ?? input.phase }
+			: {}),
+		mode: input.config.reviewBudget?.mode ?? "advisory",
+		currentPlanBytes: planMarkdown,
+		headCommit,
+		...(codeEquivalentCommits.length > 0 ? { codeEquivalentCommits } : {}),
+		hasImplementationHistory: implementationHistoryPresent(
+			input.db,
+			input.recordStore,
+			input.runId,
+		),
+		hasDeliveryBudget: parsed?.ok === true,
+	});
+	if (boundary.status === "deny") {
+		throw new RecordError(
+			boundary.code ?? "IMPLEMENTATION_BOUNDARY_BLOCKED",
+			boundary.message ?? "Implementation boundary denied this transition.",
+			{ diagnostics: boundary.diagnostics, readiness: boundary.readiness },
+		);
+	}
+	return boundary.readiness;
+}
+
+async function enforceFirstImplementationAdmission(input: {
+	params: RunRecordParams & { run: string; stepName: string; result?: string };
+	db: Database;
+	config: FiveXConfig;
+	controlPlane?: ControlPlaneResult;
+	recordStore: RecordStore;
+	originFor: (performer: RecordPerformer) => RecordOrigin;
+	/** Seal path. Does not attribute admission to a fabricated phase. */
+	force?: boolean;
+}): Promise<void> {
+	const admitsGovernance =
+		input.force === true ||
+		isImplementationAuthorAdmission(
+			input.params.stepName,
+			input.params.phase,
+		) ||
+		input.params.stepName === "phase:complete";
+	if (!admitsGovernance) {
+		return;
+	}
+	const run = getRunV1(input.db, input.params.run);
+	if (!run) return;
+	let planMarkdown: string | null = null;
+	let workdir: string | undefined;
+	let controlPlaneRoot: string | undefined;
+	if (input.controlPlane) {
+		controlPlaneRoot = input.controlPlane.controlPlaneRoot;
+		const ctxResult = resolveRunExecutionContext(input.db, input.params.run, {
+			controlPlaneRoot,
+		});
+		if (!ctxResult.ok) {
+			throw new RecordError(
+				ctxResult.error.code,
+				ctxResult.error.message,
+				ctxResult.error.detail,
+			);
+		}
+		const ctx = ctxResult.context;
+		workdir = ctx.effectiveWorkingDirectory;
+		// Identity stays the canonical plan path. Current bytes come from the
+		// mapped worktree copy when that file exists, so drift follows the
+		// checkout the author edits. A mapping that only relocates execution
+		// (for example quality cwd) may not contain the plan; fall back to
+		// the canonical file, the same rule as plan-phases reads.
+		const readPath =
+			ctx.planPathInWorktreeExists && existsSync(ctx.effectivePlanPath)
+				? ctx.effectivePlanPath
+				: run.plan_path;
+		if (existsSync(readPath)) {
+			try {
+				planMarkdown = readFileSync(readPath, "utf8");
+			} catch {
+				planMarkdown = null;
+			}
+		}
+	} else if (existsSync(run.plan_path)) {
+		try {
+			planMarkdown = readFileSync(run.plan_path, "utf8");
+		} catch {
+			planMarkdown = null;
+		}
+	}
+	const store = createReviewBudgetStore(input.recordStore);
+	const admission = await ensureImplementationAdmission({
+		store,
+		recordStore: input.recordStore,
+		executionRunId: input.params.run,
+		planPath: run.plan_path,
+		planMarkdown,
+		configuredMode: input.config.reviewBudget?.mode ?? "advisory",
+		origin: input.originFor({ kind: "system", role: "cli" }),
+		...(workdir ? { workdir } : {}),
+		...(controlPlaneRoot ? { controlPlaneRoot } : {}),
+	});
+	if (
+		admission.status === "approval_required" ||
+		admission.status === "error"
+	) {
+		throw new RecordError(admission.code, admission.message, admission.detail);
+	}
+}
+
 export async function recordStepInternal(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
 	dbContext?: RecordStepContext,
 ): Promise<RecordStepResult & { max_steps: number }> {
 	const writer = await resolveRecordWriter(params, dbContext);
 	const { db, config, controlPlane, recordStore, originFor } = writer;
+	if (
+		params.stepName === "phase:complete" &&
+		params.phase &&
+		hasImplementationBinding(recordStore, params.run)
+	) {
+		const phaseId = canonicalPhaseId(params.phase) ?? params.phase;
+		const steps = getSteps(db, params.run);
+		const existing = [...steps]
+			.reverse()
+			.find(
+				(step) =>
+					step.step_name === "phase:complete" &&
+					(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId,
+			);
+		const reopened =
+			existing !== undefined &&
+			steps.some(
+				(step) =>
+					step.id > existing.id &&
+					(step.step_name === "run:reopen" ||
+						((step.step_name.startsWith("author:") ||
+							step.step_name.startsWith("reviewer:")) &&
+							(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId)),
+			);
+		if (existing && !reopened) {
+			const after = computeRunSummary(db, params.run);
+			return {
+				step_id: existing.id,
+				step_name: existing.step_name,
+				phase: existing.phase,
+				iteration: existing.iteration,
+				recorded: false,
+				total_steps: after.total_steps,
+				max_steps: getMaxStepsPerRun(
+					config as unknown as Record<string, unknown>,
+				),
+			};
+		}
+	}
+	await enforceFirstImplementationAdmission({
+		params,
+		db,
+		config,
+		controlPlane,
+		recordStore,
+		originFor,
+	});
+	if (params.stepName === "phase:complete") {
+		await enforceImplementationBoundary({
+			intent: "phase_complete",
+			...(params.phase ? { phase: params.phase } : {}),
+			runId: params.run,
+			db,
+			config,
+			controlPlane,
+			recordStore,
+		});
+	} else if (isImplementationAuthorAdmission(params.stepName, params.phase)) {
+		await enforceImplementationBoundary({
+			intent: "advance",
+			...(params.phase ? { phase: params.phase } : {}),
+			runId: params.run,
+			db,
+			config,
+			controlPlane,
+			recordStore,
+		});
+	}
 
 	const preparedOutcome = await prepareRecordStepAppend(params, {
 		db,
@@ -3230,6 +4262,58 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 			"UNSUPPORTED_FORMAT_VERSION",
 			`This CLI writes run.json format_version ${RUN_RECORD_FORMAT_VERSION} and cannot complete a run whose summary is format_version ${summary.format_version}. Use a CLI that understands that format, or do not complete this run with this binary.`,
 		);
+	}
+
+	if (status === "completed") {
+		try {
+			const budgetStore = createReviewBudgetStore(recordCtx.recordStore);
+			let hasBinding = false;
+			try {
+				hasBinding =
+					budgetStore.getImplementationBinding(runId) !== null ||
+					budgetStore.getImplementationCompatibility(runId) !== null;
+			} catch {
+				hasBinding = true;
+			}
+			const hasHistory = implementationHistoryPresent(
+				db,
+				recordCtx.recordStore,
+				runId,
+			);
+			if (!hasBinding && hasHistory) {
+				await enforceFirstImplementationAdmission({
+					params: { run: runId, stepName: "run:complete" },
+					db,
+					config,
+					controlPlane,
+					recordStore: recordCtx.recordStore,
+					originFor: recordCtx.originFor,
+					force: true,
+				});
+			}
+			let boundAfterAdmission = false;
+			try {
+				boundAfterAdmission =
+					budgetStore.getImplementationBinding(runId) !== null;
+			} catch {
+				boundAfterAdmission = true;
+			}
+			if (hasHistory || boundAfterAdmission) {
+				await enforceImplementationBoundary({
+					intent: "run_complete",
+					runId,
+					db,
+					config,
+					controlPlane,
+					recordStore: recordCtx.recordStore,
+				});
+			}
+		} catch (err) {
+			if (err instanceof RecordError) {
+				outputError(err.code, err.message, err.detail);
+			}
+			throw err;
+		}
 	}
 
 	const stepName = status === "completed" ? "run:complete" : "run:abort";

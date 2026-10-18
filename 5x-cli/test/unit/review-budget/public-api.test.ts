@@ -51,22 +51,26 @@ describe("review-budget public API", () => {
 		expect(source).not.toContain('from "bun:sqlite"');
 	});
 
-	test("does not leak implementation-review governance fields", () => {
-		for (const relative of [
-			"../../../src/review-budget/types.ts",
-			"../../../src/protocol.ts",
-			"../../../src/commands/protocol.ts",
-		]) {
-			const source = readFileSync(join(import.meta.dir, relative), "utf8");
-			expect(source).not.toMatch(/credit[-_A-Za-z]*realization/i);
-			expect(source).not.toContain("planImpact");
-		}
+	test("keeps plan-budget types free of implementation realization fields", () => {
 		const types = readFileSync(
 			join(import.meta.dir, "../../../src/review-budget/types.ts"),
 			"utf8",
 		);
+		expect(types).not.toMatch(/credit[-_A-Za-z]*realization/i);
+		expect(types).not.toContain("planImpact");
 		expect(types).toContain(
 			'export type PlanScopeClass =\n\t| "acceptance_required"\n\t| "risk_reduction"\n\t| "polish";',
 		);
+		const protocol = readFileSync(
+			join(import.meta.dir, "../../../src/protocol.ts"),
+			"utf8",
+		);
+		expect(protocol).toMatch(/credit[-_A-Za-z]*realization/i);
+		expect(protocol).toContain("planImpact");
+		const command = readFileSync(
+			join(import.meta.dir, "../../../src/commands/protocol.ts"),
+			"utf8",
+		);
+		expect(command).toMatch(/credit[-_A-Za-z]*realization/i);
 	});
 });

@@ -9,18 +9,38 @@
  * - describe: Show detailed metadata for a specific template
  */
 
+import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import {
+	CodeDiffError,
+	readHeadCommit,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
 import {
 	appendPlanReviewPromptContext,
+	buildImplementationReviewPromptContext,
 	buildPlanReviewPromptContext,
 	formatAuthorGoverningDecisions,
+	formatImplementationAuthorContext,
+	formatImplementationReviewerContext,
 	formatReviewerGovernanceContext,
 } from "../review-governance/context.js";
+import { canonicalPhaseId } from "../review-governance/implementation.js";
+import { evaluateStoredImplementationBoundary } from "../review-governance/implementation-boundary.js";
+import {
+	capturePhaseAuthorAdmission,
+	ensureImplementationAdmission,
+	isImplementationAuthorTemplate,
+	PRE_AUTHOR_STEP_NAME,
+	prepareImplementationReviewContext,
+	readImplementationBinding,
+} from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
 import {
 	getTemplateSource,
@@ -41,8 +61,12 @@ import {
 } from "./review-budget-context.js";
 import { resolveRunExecutionContext } from "./run-context.js";
 import { outputAmbientError, resolveAmbientRunId } from "./run-identity.js";
+import { RecordError, recordStepInternal } from "./run-v1.handler.js";
 import { validateSessionContinuity } from "./session-check.js";
 import {
+	formatCodeReviewDiff,
+	implementationExcludedPaths,
+	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
 	type PriorReviewIdentity,
@@ -81,6 +105,11 @@ export interface TemplateRenderOutput {
 	run_id?: string;
 	plan_path?: string;
 	worktree_root?: string;
+	review_context_id?: string;
+	binding_id?: string;
+	source_run_id?: string;
+	pinned_mode?: "advisory" | "enforced";
+	pre_author_commit?: string;
 }
 
 export interface TemplateRenderDeps {
@@ -88,6 +117,66 @@ export interface TemplateRenderDeps {
 	readPlan?: (path: string) => string;
 	warn?: (message: string) => void;
 	onRenderedPrompt?: (prompt: string) => void;
+	/** Injected DB — skips the process-wide `getDb` singleton (tests). */
+	db?: Database;
+}
+
+async function capturePreAuthorHead(input: {
+	runId: string;
+	phase: string | undefined;
+	bindingId: string;
+	context: ReviewBudgetCommandContext;
+}): Promise<string | null> {
+	const phase = canonicalPhaseId(input.phase ?? "");
+	if (!phase || phase === "plan") {
+		outputError(
+			"UNKNOWN_PHASE",
+			"Implementation author admission requires numeric phase_number before delegation.",
+		);
+	}
+	const git = workdirCodeDiffGit(
+		input.context.executionContext.effectiveWorkingDirectory,
+	);
+	let head: string;
+	try {
+		head = await readHeadCommit(git);
+	} catch (error) {
+		outputError(
+			error instanceof CodeDiffError ? error.code : "CODE_DIFF_GIT_ERROR",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+	const captured = capturePhaseAuthorAdmission({
+		recordStore: input.context.recordStore,
+		origin: input.context.originFor({ kind: "system", role: "cli" }),
+		executionRunId: input.runId,
+		bindingId: input.bindingId,
+		phase,
+		preAuthorCommit: head,
+	});
+	if (captured.status === "error") {
+		outputError(captured.code, captured.message);
+	}
+	if (captured.status === "skipped") return null;
+	try {
+		await recordStepInternal(
+			{
+				run: input.runId,
+				stepName: PRE_AUTHOR_STEP_NAME,
+				phase,
+				iteration: 0,
+				result: JSON.stringify(captured.admission),
+				performer: { kind: "system", role: "cli" },
+			},
+			input.context,
+		);
+	} catch (error) {
+		if (error instanceof RecordError) {
+			outputError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
+	return captured.admission.preAuthorCommit;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +206,8 @@ export async function templateRender(
 	const projectRoot = controlPlane.controlPlaneRoot;
 	const stateDir = controlPlane.stateDir;
 
-	const db = getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
+	const db =
+		deps?.db ?? getDb(projectRoot, controlPlaneDbPath(projectRoot, stateDir));
 	runDb = db;
 	try {
 		runMigrations(db);
@@ -288,6 +378,93 @@ export async function templateRender(
 			: null;
 	}
 
+	let preAuthorCommit: string | null = null;
+	let boundSourceRunId: string | undefined;
+	let boundMode: "advisory" | "enforced" | undefined;
+	let boundId: string | undefined;
+	if (
+		params.run &&
+		resolvedPlanPath &&
+		isImplementationAuthorTemplate(params.template)
+	) {
+		let markdown: string | null = null;
+		try {
+			markdown = (
+				deps?.readPlan ?? ((path: string) => readFileSync(path, "utf-8"))
+			)(resolvedPlanPath);
+		} catch {
+			markdown = null;
+		}
+		try {
+			renderBudgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: projectRoot }, warn);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
+			if (parsed?.ok && config.reviewBudget.mode !== "off") {
+				outputError(
+					"IMPLEMENTATION_APPROVAL_REQUIRED",
+					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+				);
+			}
+		}
+		if (renderBudgetContext) {
+			const admission = await ensureImplementationAdmission({
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+				executionRunId: params.run,
+				planPath: renderBudgetContext.executionContext.run.plan_path,
+				planMarkdown: markdown,
+				configuredMode: config.reviewBudget.mode,
+				origin: renderBudgetContext.originFor({ kind: "system", role: "cli" }),
+				workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
+				controlPlaneRoot: renderBudgetContext.executionContext.controlPlaneRoot,
+			});
+			if (
+				admission.status === "approval_required" ||
+				admission.status === "error"
+			) {
+				outputError(admission.code, admission.message, admission.detail);
+			}
+			if (admission.status === "bound") {
+				const phase = canonicalPhaseId(
+					explicitVars.phase_number ?? mergedVars.phase_number ?? "",
+				);
+				if (phase && phase !== "plan") {
+					const boundary = evaluateStoredImplementationBoundary({
+						store: renderBudgetContext.store,
+						recordStore: renderBudgetContext.recordStore,
+						runId: params.run,
+						intent: "advance",
+						phase,
+						mode: admission.binding.mode,
+						currentPlanBytes: markdown,
+						headCommit: null,
+						hasImplementationHistory: true,
+						hasDeliveryBudget: true,
+					});
+					if (boundary.status === "deny") {
+						outputError(
+							boundary.code ?? "IMPLEMENTATION_BOUNDARY_BLOCKED",
+							boundary.message ?? "Implementation boundary denied advancement.",
+							boundary.readiness,
+						);
+					}
+				}
+				preAuthorCommit = await capturePreAuthorHead({
+					runId: params.run,
+					phase: explicitVars.phase_number ?? mergedVars.phase_number,
+					bindingId: admission.binding.id,
+					context: renderBudgetContext,
+				});
+				boundId = admission.binding.id;
+				boundSourceRunId = admission.binding.sourceRunId;
+				boundMode = admission.binding.mode;
+			}
+		}
+	}
+
 	// -----------------------------------------------------------------------
 	// Resolve and render template (shared helper)
 	// -----------------------------------------------------------------------
@@ -390,8 +567,104 @@ export async function templateRender(
 	// Post-render: append the review diff block (continued plan reviews only),
 	// then the ## Context block when --run resolves a worktree.
 	// -----------------------------------------------------------------------
+	let reviewContextId: string | undefined;
+	let preparedReviewContext: ReturnType<
+		ReviewBudgetCommandContext["store"]["getImplementationReviewContext"]
+	> = null;
+	let codeDiffAppend = "";
+	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
+		try {
+			renderBudgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)(
+				{ runId: params.run, startDir: resolvedWorktreeRoot ?? projectRoot },
+				warn,
+			);
+		} catch (err) {
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+		const binding = renderBudgetContext
+			? readImplementationBinding(renderBudgetContext.store, params.run)
+			: null;
+		if (binding && renderBudgetContext) {
+			const workdir =
+				renderBudgetContext.executionContext.effectiveWorkingDirectory;
+			const git = workdirCodeDiffGit(workdir);
+			const rootResult = await git.exec(["rev-parse", "--show-toplevel"]);
+			if (rootResult.exitCode !== 0) {
+				outputError(
+					"CODE_DIFF_GIT_ERROR",
+					rootResult.stderr || "Could not resolve the git repository root.",
+				);
+			}
+			const prepared = await prepareImplementationReviewContext({
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+				origin: renderBudgetContext.originFor({ kind: "system", role: "cli" }),
+				executionRunId: params.run,
+				bindingId: binding.id,
+				phase:
+					explicitVars.phase_number ??
+					mergedVars.phase_number ??
+					resolved.variables.phase_number ??
+					"",
+				excludedPaths: implementationExcludedPaths({
+					repoRoot: rootResult.stdout.trim(),
+					controlPlaneRoot:
+						renderBudgetContext.executionContext.controlPlaneRoot,
+					planPath: resolvedPlanPath,
+					paths: config.paths,
+				}),
+				git,
+			});
+			if (prepared.status === "error") {
+				outputError(prepared.code, prepared.message);
+			}
+			reviewContextId = prepared.context.id;
+			preparedReviewContext = prepared.context;
+			boundId = binding.id;
+			boundSourceRunId = binding.sourceRunId;
+			boundMode = binding.mode;
+			codeDiffAppend = formatCodeReviewDiff({
+				contextId: prepared.context.id,
+				diff: prepared.diff,
+				workdir,
+			});
+		}
+	}
+	const implementationPhase =
+		explicitVars.phase_number ??
+		mergedVars.phase_number ??
+		resolved.variables.phase_number ??
+		"";
+	if (
+		params.run &&
+		renderBudgetContext &&
+		(isCommitReviewTemplate(resolved.selectedTemplateName) ||
+			isImplementationAuthorTemplate(resolved.selectedTemplateName))
+	) {
+		const implementationContext = buildImplementationReviewPromptContext({
+			runId: params.run,
+			phase: implementationPhase,
+			store: renderBudgetContext.store,
+			recordStore: renderBudgetContext.recordStore,
+			reviewContext: preparedReviewContext,
+			workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
+			sessionId: params.newSession ? "new" : params.session,
+		});
+		if (implementationContext) {
+			governanceAppend = isImplementationAuthorTemplate(
+				resolved.selectedTemplateName,
+			)
+				? formatImplementationAuthorContext(implementationContext)
+				: formatImplementationReviewerContext(implementationContext);
+			boundId = implementationContext.bindingId;
+			boundSourceRunId = implementationContext.sourceRunId;
+			boundMode = implementationContext.mode;
+		}
+	}
 	prompt = appendPlanReviewPromptContext({
-		prompt,
+		prompt: prompt + codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});
@@ -427,6 +700,11 @@ export async function templateRender(
 		...(resolvedWorktreeRoot && params.run
 			? { worktree_root: resolvedWorktreeRoot }
 			: {}),
+		...(reviewContextId ? { review_context_id: reviewContextId } : {}),
+		...(boundId ? { binding_id: boundId } : {}),
+		...(boundSourceRunId ? { source_run_id: boundSourceRunId } : {}),
+		...(boundMode ? { pinned_mode: boundMode } : {}),
+		...(preAuthorCommit ? { pre_author_commit: preAuthorCommit } : {}),
 	};
 
 	outputSuccess(output);

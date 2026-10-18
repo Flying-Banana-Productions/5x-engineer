@@ -38,7 +38,9 @@ export interface GitCommitResult {
 async function run(
 	args: string[],
 	workdir: string,
+	options?: { exact?: boolean },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	if (options?.exact) return subprocess.execGit(args, workdir, options);
 	return subprocess.execGit(args, workdir);
 }
 
@@ -642,9 +644,11 @@ export async function gitShowFile(
 	workdir: string,
 	commit: string,
 	path: string,
-	opts: { strict?: boolean } = {},
+	opts: { strict?: boolean; exact?: boolean } = {},
 ): Promise<string | null> {
-	const result = await run(["show", `${commit}:${path}`], workdir);
+	const result = opts.exact
+		? await run(["show", `${commit}:${path}`], workdir, { exact: true })
+		: await run(["show", `${commit}:${path}`], workdir);
 	if (result.exitCode !== 0) {
 		if (opts.strict) {
 			// A missing path is a valid lifecycle state; an unreadable object or
@@ -664,6 +668,29 @@ export async function gitShowFile(
 			if (tree.exitCode !== 0 || tree.stdout.split("\0").includes(path)) {
 				throw new Error(result.stderr || `Could not read ${commit}:${path}`);
 			}
+		}
+		return null;
+	}
+	return result.stdout;
+}
+
+/** `git show commit:path` as raw bytes. Null if the path is missing. */
+export async function gitShowFileBytes(
+	workdir: string,
+	commit: string,
+	path: string,
+): Promise<Buffer | null> {
+	const result = await subprocess.execGitBytes(
+		["show", `${commit}:${path}`],
+		workdir,
+	);
+	if (result.exitCode !== 0) {
+		const tree = await run(
+			["ls-tree", "-r", "--name-only", "-z", commit, "--", `:(literal)${path}`],
+			workdir,
+		);
+		if (tree.exitCode !== 0 || tree.stdout.split("\0").includes(path)) {
+			throw new Error(result.stderr || `Could not read ${commit}:${path}`);
 		}
 		return null;
 	}
