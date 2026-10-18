@@ -105,3 +105,32 @@ The author ledger totals 31 (W1–W6) and claims no debt credit, so there are no
 - [ ] Authorization scope defined mechanically (P1.1)
 - [ ] File inventory includes routing and SQLite projection modules (P2.1)
 - [x] Test tiers and asset acceptance suite follow `AGENTS.md`
+
+---
+
+## Addendum: Closure review of v1.2 (`9b5e7a1..fad3194`)
+
+**Scope:** Closure of P1.1 and P2.1 only, against the plan diff. Static review.
+
+### Prior finding outcomes
+
+- **P1.1 — addressed.** Decision 2 now defines a structured `amendmentScope` on the version-1 `authorize_amendment` payload:
+  - **Fields:** `predecessorRevisionId`, `earliestAffectedPhase`, `reopenCompletedPhases`, an exhaustive `claimEdits`, and an exhaustive `resolutionRefs`.
+  - **Recording:** one-to-one flags with no defaulted keys.
+  - **Registration:** accepted only for the intersection of the authorization scope and the reviewer assessment, with no clamping of a broader assessment.
+  - **Authorization lifecycle:** single-use per predecessor, with identical retry returning the recorded winner.
+  - **Selectors:** plain `--resolves` stays source-only, and the phase-qualified form is aligned with the assessment reference shape.
+  - **Legacy compatibility:** historical decisions that omit the field keep their intent hashes, and they cannot authorize `amend`.
+  - **Tests:** negative cases are listed in Phase 2 and in the Tests table.
+- **P2.1 — addressed.** `routing.ts` and `sqlite-index.ts` are in Files Touched, the surface count is 32, and both are attributed to W3/W4 and to Phase 0, Phase 3 and the tests.
+
+### New revision-causal blockers
+
+None. The scope object extends the existing version-1 decision payload. The plan states that this adds no SQLite migration and no additional persistent schema, and it assigns Phase 0 to confirm decode behavior for decisions with and without the field.
+
+### Nonblocking follow-ups
+
+- Phase 0 should check the claim that omitting `amendmentScope` leaves historical intent hashes unchanged. The decision intent hash canonicalization in `decisions.ts` is the place to look.
+- Whether `earliestAffectedPhase` may be later than the source observation's phase is implied but not stated. It is harmless, because a narrower authorization only restricts.
+
+**Readiness:** Ready.
