@@ -2,8 +2,8 @@
 
 **Version:** 1.2
 **Created:** October 8, 2026
-**Status:** Draft — revised after the v1.1 plan review; pending re-review
-**Execution order:** Review and approve this plan against merged plan 210, then execute this follow-up in a separate implementation branch.
+**Status:** Approved — v1.2 closure review ready on October 18, 2026 (run `run_8e69ccbe08a9`)
+**Execution order:** Execute this approved follow-up against merged plan 210 in a separate implementation branch.
 
 ## Executive Summary
 
