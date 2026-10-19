@@ -96,3 +96,19 @@ For a second recovery at the same frontier, which is the `a15d7b9` scenario, the
 
 - The governance range is `4af6e20..4af6e20`, and its exclusions cover every path this commit touches. As a result, the reviewed-diff evidence for a verification-only phase is empty by construction. Later phases should check that the range endpoint advances to their implementation commits.
 - The retirement inventory lists production and guidance files only. `test/unit/commands/implementation-recovery.test.ts` and `implementation-completion.test.ts` hold the recovery regression scenarios that Decision 9 says to reuse under `amend`. Phase 2 and Phase 4 should port them, not delete them.
+
+---
+
+## Addendum (2026-10-19) — Closure review of P2.1
+
+**Reviewed:** `58693e25be1ff39342c674774a81ce1f447c975b` (change since `e66fe17`: one bullet in `phase-0-verification.md`; no product code)
+
+### What's addressed (✅)
+- **P2.1 — repeated-recovery attribution rule**: Addressed. The bullet now states that each recovery's invalidation sets equal the cumulative prefix set: binding contexts and observations on phases at or after R's frontier, taken from R's predecessor authorized bytes. It says a repeated id at the same frontier is not "extra", and defines "missing" and "extra" against that set. It cites `81eddb4`, `a15d7b9` and `implementation-recovery.ts:412-418`, which I verified earlier. Phase 1 can implement a single equality check.
+
+### Remaining concerns
+- None.
+
+### Updated readiness
+- **Phase 0 completion:** ✅
+- **Ready for next phase:** ✅ Phase 1 should add a repeated same-frontier recovery fixture, as noted in the original review.
