@@ -8,8 +8,13 @@ import {
 	RUN_RECORD_FORMAT_VERSION,
 	reindexReviewBudget,
 } from "../../../src/control-plane/index.js";
+import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
+import {
+	encodeImplementationSemanticAmendmentPayload,
+	type ImplementationSemanticAmendmentPayload,
+} from "../../../src/review-budget/record-lines.js";
 import {
 	type BaselineAssessment,
 	DEFAULT_REVIEW_BUDGET_CONFIG,
@@ -142,6 +147,51 @@ describe("review budget index rebuild", () => {
 			reindexReviewBudget(records, index, "empty");
 			expect(index.getBaseline("empty")).toBeNull();
 			expect(index.listSnapshots("empty")).toEqual([]);
+
+			const amendment: ImplementationSemanticAmendmentPayload = {
+				kind: "implementation-plan-amendment",
+				version: 1,
+				id: "rev-1",
+				bindingId: "binding-1",
+				executionRunId: "run1",
+				predecessorRevisionId: "binding-1",
+				authorizationId: "11111111-1111-4111-8111-111111111111",
+				humanStep: { idempotencyKey: "step:human" },
+				approvalStep: { idempotencyKey: "step:approval" },
+				parentLineageId: null,
+				beforeCommit: "a".repeat(40),
+				afterCommit: "b".repeat(40),
+				beforeBlobHash: `sha256:${"ab".repeat(32)}`,
+				afterBlobHash: `sha256:${"cd".repeat(32)}`,
+				approvedPlanCommit: "b".repeat(40),
+				approvedPlanHash: `sha256:${"cd".repeat(32)}`,
+				approvedPlanBytes: "plan",
+				earliestAffectedPhase: "2",
+				preservedPhases: [],
+				resolvedFindings: [],
+				claimEdits: [],
+				invalidatedContextIds: [],
+				invalidatedObservationIds: [],
+				intentDigest: `sha256:${"ef".repeat(32)}`,
+				createdAt: "2026-10-19T00:00:00.000Z",
+			};
+			records.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: "budget:implementation-plan-amendment:binding-1:rev-1",
+				payload: encodeImplementationSemanticAmendmentPayload(amendment),
+				...recordedEnvelope(origin),
+			});
+			records.append({
+				runId: "run1",
+				stream: "budget",
+				idempotencyKey: "budget:implementation-plan-amendment:future",
+				payload: { kind: "implementation-plan-amendment", version: 2 },
+				...recordedEnvelope(origin),
+			});
+			reindexReviewBudget(records, index, "run1");
+			expect(index.listSnapshots("run1")).toHaveLength(1);
+			expect(index.getBaseline("run1")?.id).toBe(rebuiltBaseline?.id);
 		} finally {
 			db.close();
 		}

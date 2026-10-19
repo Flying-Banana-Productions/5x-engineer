@@ -58,6 +58,8 @@ const PRIORITY_MAP: Record<string, VerdictItem["priority"]> = {
  * - Passes through already-conforming input unchanged, including
  *   implementation fields (`planImpact`, `planWorkItemIds`,
  *   `boundaryChanges`, `creditRealizations`, `nonblocking`)
+ * - Passes `amendmentAssessment` through unchanged. Missing keys, lists,
+ *   and booleans are not defaulted, and a ready summary is not carry.
  */
 export function normalizeReviewerVerdict(input: unknown): object {
 	const record = asRecord(input);

@@ -135,6 +135,7 @@ export function verdictUsesImplementationContract(
 export function verdictUsesPlanContract(verdict: ReviewerVerdict): boolean {
 	if (verdict.baselineAssessment !== undefined) return true;
 	if (verdict.creditAssessments !== undefined) return true;
+	if (verdict.amendmentAssessment !== undefined) return true;
 	return verdict.items.some(
 		(item) =>
 			isPlanScopeClass(item.scopeClass) || item.creditClaim !== undefined,

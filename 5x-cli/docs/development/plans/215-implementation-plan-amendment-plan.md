@@ -218,12 +218,12 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 **Completion gate:** Pure record/assessment codecs and effective revision fold reconstruct valid lineage and reject ambiguous or corrupt authority without changing existing runs.
 
-- [ ] Define amendment payload, initial/current revision identities, portable evidence references, strict codecs, and rebuild kind handling.
-- [ ] Add optional revision qualification to implementation evidence; omitted fields use initial-revision fallback only absent intervening legacy recovery, otherwise use Decision 9's causal attribution.
-- [ ] Add plan-only `amendmentAssessment` schema/help/normalization and reviewer prompt context containing trusted predecessor/hash/diff.
-- [ ] Implement effective execution/finding/evidence fold with explicit carry, invalidation and amendment-resolution dispositions.
-- [ ] Fold original-format and repeated frontier recovery receipts as explicitly legacy revisions; reconstruct evidence between boundaries without synthetic reviewer assessments or history rewrites.
-- [ ] Cover unknown versions, missing causal pairs, forked predecessor chains, wrong hashes, phase identity changes, and old-run compatibility, including former-contract recovery decisions that omit `amendmentScope`. Omitted `amendmentScope` leaves historical decision intent hashes unchanged.
+- [x] Define amendment payload, initial/current revision identities, portable evidence references, strict codecs, and rebuild kind handling.
+- [x] Add optional revision qualification to implementation evidence; omitted fields use initial-revision fallback only absent intervening legacy recovery, otherwise use Decision 9's causal attribution.
+- [x] Add plan-only `amendmentAssessment` schema/help/normalization and reviewer prompt context containing trusted predecessor/hash/diff.
+- [x] Implement effective execution/finding/evidence fold with explicit carry, invalidation and amendment-resolution dispositions.
+- [x] Fold original-format and repeated frontier recovery receipts as explicitly legacy revisions; reconstruct evidence between boundaries without synthetic reviewer assessments or history rewrites.
+- [x] Cover unknown versions, missing causal pairs, forked predecessor chains, wrong hashes, phase identity changes, and old-run compatibility, including former-contract recovery decisions that omit `amendmentScope`. Omitted `amendmentScope` leaves historical decision intent hashes unchanged.
 
 ## Phase 2: Provenance Validation and Registration (W2)
 

@@ -4,6 +4,7 @@ import type {
 	RecordStore,
 	StepRecordPayload,
 } from "../control-plane/index.js";
+import { type AmendmentScope, parseAmendmentScope } from "../protocol.js";
 import {
 	decodeBudgetSnapshotPayload,
 	decodeImplementationReviewObservationPayload,
@@ -542,6 +543,11 @@ export interface ImplementationDecisionPayload {
 	rationale: string;
 	evidence: string[];
 	claimAdjustments: ImplementationClaimAdjustment[];
+	/**
+	 * Present only on new `authorize_amendment` decisions. Omission keeps the
+	 * historical intent-hash field set. Do not store null or `{}`.
+	 */
+	amendmentScope?: AmendmentScope;
 	ledgerHash: string;
 	decisionsHash: string;
 	supersedesDecisionId?: string;
@@ -594,6 +600,9 @@ export function createImplementationDecision(
 		decisionsHash: input.decisionsHash,
 		...(input.supersedesDecisionId
 			? { supersedesDecisionId: input.supersedesDecisionId }
+			: {}),
+		...(input.amendmentScope !== undefined
+			? { amendmentScope: structuredClone(input.amendmentScope) }
 			: {}),
 	};
 	return validateImplementationDecision({
@@ -678,6 +687,14 @@ export function validateImplementationDecision(
 		input.claimAdjustments.length > 0
 	)
 		throw new TypeError("authorize_amendment rejects claim adjustments");
+	if (
+		input.choice !== "authorize_amendment" &&
+		input.amendmentScope !== undefined
+	)
+		throw new TypeError("amendmentScope is only valid on authorize_amendment");
+	if (input.amendmentScope !== undefined) {
+		input.amendmentScope = parseAmendmentScope(input.amendmentScope);
+	}
 	if (input.choice === "abort" && input.claimAdjustments.length > 0)
 		throw new TypeError("abort cannot change approved credit");
 	if (
@@ -736,6 +753,9 @@ export function validateImplementationDecision(
 		ledgerHash: input.ledgerHash,
 		decisionsHash: input.decisionsHash,
 		supersedesDecisionId: input.supersedesDecisionId,
+		...(input.amendmentScope !== undefined
+			? { amendmentScope: input.amendmentScope }
+			: {}),
 	});
 	if (expected !== input.decisionIntentHash)
 		throw new TypeError("decisionIntentHash does not match decision fields");
