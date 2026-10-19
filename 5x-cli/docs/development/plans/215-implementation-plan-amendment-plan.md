@@ -207,12 +207,12 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 **Completion gate:** Actual integrated plan-210 interfaces, paired append semantics and serialization permit this design; implementation begins only after this plan is reviewed and approved.
 
-- [ ] Verify plan 210 is completed and merged; record the integrated commit and interface reconciliation in run records, not unapproved structural plan edits.
-- [ ] Confirm binding, closure, gate, text-lineage, credit and archived-state readers; inventory raw record scans that need effective-revision semantics, including the `sqlite-index.ts` gate-chain copy and the `routing.ts` final-correction branch.
-- [ ] Reconcile legacy recovery codecs/keys, repeated recovery and text-lineage ordering; specify deterministic cross-stream causal evidence attribution and fail-closed ambiguity diagnostics before implementing the fold.
-- [ ] Confirm upgrade can discover active/completed/archived authoritative records without SQLite or source worktrees; inventory retirement of recovery-only command/handler/state branches while retaining historical decoding.
-- [ ] Verify atomic append plus existing mutation lock/CAS covers approval/predecessor revalidation; resolve any gap by revising this plan before implementation.
-- [ ] Verify the reviewed impact assessment contract, phase-qualified resolution selectors, and version-1 `amendmentScope` codec fit existing protocol/parser conventions. Confirm historical decisions that omit `amendmentScope` still decode and that no SQLite migration is needed.
+- [x] Verify plan 210 is completed and merged; record the integrated commit and interface reconciliation in run records, not unapproved structural plan edits.
+- [x] Confirm binding, closure, gate, text-lineage, credit and archived-state readers; inventory raw record scans that need effective-revision semantics, including the `sqlite-index.ts` gate-chain copy and the `routing.ts` final-correction branch.
+- [x] Reconcile legacy recovery codecs/keys, repeated recovery and text-lineage ordering; specify deterministic cross-stream causal evidence attribution and fail-closed ambiguity diagnostics before implementing the fold.
+- [x] Confirm upgrade can discover active/completed/archived authoritative records without SQLite or source worktrees; inventory retirement of recovery-only command/handler/state branches while retaining historical decoding.
+- [x] Verify atomic append plus existing mutation lock/CAS covers approval/predecessor revalidation; resolve any gap by revising this plan before implementation.
+- [x] Verify the reviewed impact assessment contract, phase-qualified resolution selectors, and version-1 `amendmentScope` codec fit existing protocol/parser conventions. Confirm historical decisions that omit `amendmentScope` still decode and that no SQLite migration is needed.
 
 ## Phase 1: Revision Records and Reviewed Impact Contract (W1, W3)
 
