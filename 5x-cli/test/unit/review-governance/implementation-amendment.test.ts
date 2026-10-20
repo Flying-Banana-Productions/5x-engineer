@@ -8,7 +8,8 @@ import {
 	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
-import type { VerdictItem } from "../../../src/protocol.js";
+import type { AmendmentClaimEdit, VerdictItem } from "../../../src/protocol.js";
+import { REVIEWER_PROTOCOL_HELP } from "../../../src/protocol-help.js";
 import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
@@ -21,10 +22,7 @@ import {
 	implementationBindingKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
-import {
-	computeImplementationDecisionIntentHash,
-	createImplementationDecision,
-} from "../../../src/review-governance/decisions.js";
+import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
 import { fingerprintImplementationVerdictItem } from "../../../src/review-governance/fingerprint.js";
 import {
 	foldEffectiveExecution,
@@ -144,6 +142,10 @@ function observation(input: {
 	phase: string;
 	iteration: number;
 	items?: VerdictItem[];
+	priorFindings?: Array<{
+		id: string;
+		status: "addressed" | "partially_addressed" | "still_open";
+	}>;
 	completionAuthorized?: boolean;
 	revisionId?: string;
 }): ImplementationReviewObservationPayload {
@@ -164,8 +166,9 @@ function observation(input: {
 		originalVerdict: {
 			readiness: "not_ready",
 			items: input.items ?? [],
+			...(input.priorFindings ? { priorFindings: input.priorFindings } : {}),
 		},
-		outcomes: [],
+		outcomes: input.priorFindings ?? [],
 		route: "human_gate",
 		nextAction: "human_gate",
 		diagnostics: [],
@@ -255,6 +258,15 @@ function decision(input: {
 	phase: string;
 	scope?: boolean;
 	fingerprint?: string;
+	predecessorRevisionId?: string;
+	earliestAffectedPhase?: string;
+	claimEdits?: AmendmentClaimEdit[];
+	resolutionRefs?: Array<{
+		phase: string;
+		observationId: string;
+		findingId: string;
+		fingerprint: string;
+	}>;
 }) {
 	return createImplementationDecision({
 		decisionId: input.id,
@@ -278,11 +290,11 @@ function decision(input: {
 		...(input.scope
 			? {
 					amendmentScope: {
-						predecessorRevisionId: "binding-1",
-						earliestAffectedPhase: "2",
+						predecessorRevisionId: input.predecessorRevisionId ?? "binding-1",
+						earliestAffectedPhase: input.earliestAffectedPhase ?? "2",
 						reopenCompletedPhases: false,
-						claimEdits: [],
-						resolutionRefs: [],
+						claimEdits: input.claimEdits ?? [],
+						resolutionRefs: input.resolutionRefs ?? [],
 					},
 				}
 			: {}),
@@ -362,6 +374,180 @@ function step(
 	};
 }
 
+function semanticAmendment(input: {
+	bytes: string;
+	authorizationId: string;
+	beforeHash: string;
+	preserved?: Array<{ phaseId: string; reason: string }>;
+	resolvedFindings?: ImplementationSemanticAmendmentPayload["resolvedFindings"];
+	claimEdits?: ImplementationSemanticAmendmentPayload["claimEdits"];
+	earliestAffectedPhase?: string;
+	invalidatedContextIds?: string[];
+	invalidatedObservationIds?: string[];
+}): ImplementationSemanticAmendmentPayload {
+	return {
+		kind: "implementation-plan-amendment",
+		version: 1,
+		id: "rev-1",
+		bindingId: "binding-1",
+		executionRunId: runId,
+		predecessorRevisionId: "binding-1",
+		authorizationId: input.authorizationId,
+		humanStep: { idempotencyKey: "step:human" },
+		approvalStep: { idempotencyKey: "step:approval" },
+		parentLineageId: null,
+		beforeCommit: COMMIT,
+		afterCommit: COMMIT,
+		beforeBlobHash: input.beforeHash,
+		afterBlobHash: hashPlanBytes(input.bytes),
+		approvedPlanCommit: COMMIT,
+		approvedPlanHash: hashPlanBytes(input.bytes),
+		approvedPlanBytes: input.bytes,
+		earliestAffectedPhase: input.earliestAffectedPhase ?? "2",
+		preservedPhases: input.preserved ?? [
+			{ phaseId: "1", reason: "phase section unchanged" },
+		],
+		resolvedFindings: input.resolvedFindings ?? [],
+		claimEdits: input.claimEdits ?? [],
+		invalidatedContextIds: input.invalidatedContextIds ?? ["ctx-obs-2"],
+		invalidatedObservationIds: input.invalidatedObservationIds ?? ["obs-2"],
+		intentDigest: digest("register"),
+		createdAt: "2026-10-19T00:00:00.000Z",
+	};
+}
+
+function foldSemantic(input: {
+	base?: string;
+	amended: string;
+	authorization: ReturnType<typeof decision>;
+	observations?: ImplementationReviewObservationPayload[];
+	contexts?: Array<ReturnType<typeof context>>;
+	preserved?: Array<{ phaseId: string; reason: string }>;
+	resolvedFindings?: ImplementationSemanticAmendmentPayload["resolvedFindings"];
+	claimEdits?: ImplementationSemanticAmendmentPayload["claimEdits"];
+	earliestAffectedPhase?: string;
+	invalidatedContextIds?: string[];
+	invalidatedObservationIds?: string[];
+}) {
+	const base = input.base ?? PLAN;
+	const approved = binding(base);
+	const contexts = input.contexts ?? [context("ctx-obs-2", "2")];
+	const observations = input.observations ?? [
+		observation({
+			id: "obs-2",
+			phase: "2",
+			iteration: 1,
+			items: [item("R7", "Providers")],
+		}),
+	];
+	const payload = semanticAmendment({
+		bytes: input.amended,
+		authorizationId: input.authorization.decisionId,
+		beforeHash: approved.approvedPlanHash,
+		preserved: input.preserved,
+		resolvedFindings: input.resolvedFindings,
+		claimEdits: input.claimEdits,
+		earliestAffectedPhase: input.earliestAffectedPhase,
+		invalidatedContextIds: input.invalidatedContextIds,
+		invalidatedObservationIds: input.invalidatedObservationIds,
+	});
+	return foldEffectiveExecution({
+		recordStore: storeWith({
+			budget: [
+				{ key: implementationBindingKey(runId), payload: approved },
+				...contexts.map((entry) => ({ key: entry.id, payload: entry })),
+				...observations.map((entry) => ({
+					key: entry.id,
+					payload: encodeImplementationReviewObservationPayload(entry),
+				})),
+				{
+					key: "budget:implementation-plan-amendment:binding-1:rev-1",
+					payload: encodeImplementationSemanticAmendmentPayload(payload),
+				},
+			],
+			decisions: [
+				{
+					key: input.authorization.decisionId,
+					payload: input.authorization,
+				},
+			],
+		}),
+		runId,
+	});
+}
+
+function correction(id: string, observationId: string, phase: string) {
+	return {
+		kind: "implementation-correction-attempt" as const,
+		version: 1 as const,
+		id,
+		runId,
+		observationId,
+		phase,
+		bindingId: "binding-1",
+		authorCommit: COMMIT,
+		tree: "tree",
+		qualityConfigDigest: digest("quality"),
+		executionDirectory: "/tmp",
+		outcome: "passed" as const,
+		shortcutInvalidated: false,
+		reason: "",
+		qualityPassed: true,
+		qualitySkipped: false,
+		qualityTimedOut: false,
+		qualityResults: [],
+		architectureDelta: 0,
+		boundaryChanges: [],
+		changedPaths: [],
+		inventoryClean: true,
+		boundaryUncertain: false,
+		sourceObservationId: observationId,
+		assessedCommit: COMMIT,
+		destinationCommit: COMMIT,
+		carriedClaims: [],
+		qualityRerun: 0,
+		createdAt: "2026-10-19T00:00:00.000Z",
+	};
+}
+
+function credit(id: string, observationId: string, phase: string) {
+	return {
+		kind: "implementation-credit-reconciliation" as const,
+		version: 1 as const,
+		id,
+		runId,
+		stepKey: { stepName: "reviewer:credit", phase, iteration: 1 },
+		bindingId: "binding-1",
+		observationId,
+		phase,
+		reviewedCommit: COMMIT,
+		claims: [],
+		pendingClaimIds: [],
+		supersedesId: null,
+		supersedesObservationId: null,
+		budget: {
+			W: 2,
+			R: 0,
+			B: 4,
+			P: 0,
+			N: 0,
+			D: 0,
+			E: 0,
+			S: 0,
+			A: 0,
+			provisionalCredit: 0,
+			realizedCredit: 0,
+			budgetBand: "within_standard" as const,
+			budgetAlerts: [],
+			requiresHuman: false,
+		},
+		creditUnrealized: false,
+		material: false,
+		completionSatisfied: false,
+		createdAt: "2026-10-19T00:00:00.000Z",
+	};
+}
+
 describe("amendment codecs", () => {
 	test("round-trips a semantic amendment and keeps omitted revisions absent", () => {
 		const payload: ImplementationSemanticAmendmentPayload = {
@@ -416,6 +602,55 @@ describe("amendment codecs", () => {
 				encodeImplementationReviewObservationPayload(qualified),
 			).revisionId,
 		).toBe("binding-1");
+	});
+
+	test("rejects duplicate preserved phases, findings, and claim edits", () => {
+		const payload = semanticAmendment({
+			bytes: PLAN,
+			authorizationId: "11111111-1111-4111-8111-111111111111",
+			beforeHash: hashPlanBytes(PLAN),
+			invalidatedContextIds: [],
+			invalidatedObservationIds: [],
+		});
+		expect(() =>
+			decodeImplementationSemanticAmendmentPayload({
+				...payload,
+				preservedPhases: [
+					...payload.preservedPhases,
+					...payload.preservedPhases,
+				],
+			}),
+		).toThrow("preservedPhases repeats 1");
+		const finding = {
+			phase: "2",
+			observationId: "obs-2",
+			findingId: "R7",
+			fingerprint: digest("finding"),
+			reason: "scope",
+		};
+		expect(() =>
+			decodeImplementationSemanticAmendmentPayload({
+				...payload,
+				resolvedFindings: [finding, { ...finding }],
+			}),
+		).toThrow("resolvedFindings repeats R7");
+		const edit = { creditClaimId: "DC0", effect: "withdraw" as const };
+		expect(() =>
+			decodeImplementationSemanticAmendmentPayload({
+				...payload,
+				claimEdits: [edit, { ...edit }],
+			}),
+		).toThrow("claimEdits repeats DC0 withdraw");
+	});
+
+	test("tells reviewers to copy the predecessor and hash and to review the diff", () => {
+		expect(REVIEWER_PROTOCOL_HELP).toContain(
+			"predecessor revision and reviewed plan hash",
+		);
+		expect(REVIEWER_PROTOCOL_HELP).toContain("review the plan diff");
+		expect(REVIEWER_PROTOCOL_HELP).not.toContain(
+			"reviewed plan hash, and plan diff",
+		);
 	});
 });
 
@@ -630,8 +865,18 @@ describe("effective revision fold", () => {
 			folded.evidence.find((entry) => entry.recordId === "text-1"),
 		).toMatchObject({ revisionId: "recovery-1", applicability: "applicable" });
 		expect(
-			folded.findings.find((finding) => finding.findingId === "R7")?.status,
-		).toBe("pending");
+			folded.findings.find((finding) => finding.findingId === "R7"),
+		).toBeUndefined();
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R9"),
+		).toMatchObject({
+			status: "pending",
+			observationId: "obs-2b",
+			phase: "2",
+		});
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "obs-2b"),
+		).toMatchObject({ applicability: "invalidated" });
 		expect(
 			folded.evidence.find((entry) => entry.kind === "reviewer:impl"),
 		).toMatchObject({ revisionId: "binding-1" });
@@ -866,6 +1111,14 @@ describe("effective revision fold", () => {
 			phase: "2",
 			scope: true,
 			fingerprint,
+			resolutionRefs: [
+				{
+					phase: "2",
+					observationId: "obs-2",
+					findingId: "R7",
+					fingerprint,
+				},
+			],
 		});
 		const payload: ImplementationSemanticAmendmentPayload = {
 			kind: "implementation-plan-amendment",
@@ -970,6 +1223,9 @@ describe("effective revision fold", () => {
 		expect(prompt).toContain("binding-1");
 		expect(prompt).toContain(hashPlanBytes(changed));
 		expect(prompt).toContain("Honor offsets");
+		expect(prompt).toContain(
+			"Copy the predecessor and hash into amendmentAssessment, and review the diff.",
+		);
 		const budget = createReviewBudgetStore(records);
 		expect(budget.readEffectiveImplementationRevision(runId)).toMatchObject({
 			ok: true,
@@ -995,6 +1251,458 @@ describe("effective revision fold", () => {
 			createReviewBudgetStore(empty).readEffectiveImplementationRevision(runId),
 		).toBeNull();
 	});
+
+	test("preserves an earlier phase when only a shared design section changes", () => {
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111121",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+		});
+		const folded = foldSemantic({
+			amended: PLAN.replace(
+				"Keep the binding.",
+				"Keep the binding and the ledger.",
+			),
+			authorization,
+		});
+		expect(folded.ok).toBe(true);
+		if (!folded.ok) return;
+		expect(folded.currentRevisionId).toBe("rev-1");
+		expect(folded.dispositions[0]?.preservedPhases).toEqual([
+			{ phaseId: "1", reason: "phase section unchanged" },
+		]);
+	});
+
+	test("rejects a preserved phase that changed beyond checkbox state", () => {
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111122",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+		});
+		const folded = foldSemantic({
+			amended: PLAN.replace("- [ ] Stable types", "- [ ] Stable contracts"),
+			authorization,
+		});
+		expect(folded.ok).toBe(false);
+		if (folded.ok) return;
+		expect(folded.diagnostic.message).toContain(
+			"Preserved phase 1 changed beyond checkbox state.",
+		);
+	});
+
+	test("rejects a changed linked claim contract on a preserved phase", () => {
+		const claimPlan = PLAN.replace(
+			"| W1 | Foundation | 2 | 0 | - | - | Required |",
+			[
+				"| W1 | Foundation | 2 | 0 | - | - | Required |",
+				"| W2 | Claim | 2 | -1 | DC0 (`intrinsic`) | - | Credit |",
+			].join("\n"),
+		).replace(
+			"### Surface Snapshot",
+			[
+				"### Debt Claims",
+				"",
+				"#### DC0",
+				"",
+				"- Target phase: 1",
+				"- Minimal-compliant effort delta: 0",
+				"- Minimal-compliant architecture delta: 0",
+				"- Before: two parsers",
+				"- After: one parser",
+				"",
+				"### Surface Snapshot",
+			].join("\n"),
+		);
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111123",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+		});
+		const folded = foldSemantic({
+			base: claimPlan,
+			amended: claimPlan.replace(
+				"| W2 | Claim | 2 | -1 | DC0 (`intrinsic`) | - | Credit |",
+				"| W2 | Claim | 3 | -1 | DC0 (`intrinsic`) | - | Credit |",
+			),
+			authorization,
+		});
+		expect(folded.ok).toBe(false);
+		if (folded.ok) return;
+		expect(folded.diagnostic.message).toContain(
+			"Preserved phase 1 changed a linked claim contract.",
+		);
+	});
+
+	test("rejects a changed work-item contract named by a preserved phase", () => {
+		const named = PLAN.replace(
+			"## Phase 1: Foundation",
+			"## Phase 1: Foundation (W1)",
+		);
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111124",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+		});
+		const folded = foldSemantic({
+			base: named,
+			amended: named.replace(
+				"| W1 | Foundation | 2 | 0 | - | - | Required |",
+				"| W1 | Foundation | 8 | 3 | - | - | Expanded |",
+			),
+			authorization,
+		});
+		expect(folded.ok).toBe(false);
+		if (folded.ok) return;
+		expect(folded.diagnostic.message).toContain(
+			"Preserved phase 1 changed a linked work-item contract.",
+		);
+	});
+
+	test("rejects a semantic amendment outside the consumed amendmentScope", () => {
+		const resolved = item("R7", "Providers");
+		const fingerprint = fingerprintImplementationVerdictItem(resolved, "2");
+		const resolvedFinding = {
+			phase: "2",
+			observationId: "obs-2",
+			findingId: "R7",
+			fingerprint,
+			reason: "scope changed",
+		};
+		const observations = [
+			observation({
+				id: "obs-2",
+				phase: "2",
+				iteration: 1,
+				items: [resolved],
+			}),
+		];
+		const amended = PLAN.replace("Read digits", "Honor offsets");
+		const predecessor = foldSemantic({
+			amended,
+			observations,
+			authorization: decision({
+				id: "11111111-1111-4111-8111-111111111125",
+				observationId: "obs-2",
+				phase: "2",
+				scope: true,
+				predecessorRevisionId: "some-other-revision",
+			}),
+		});
+		expect(predecessor.ok).toBe(false);
+		if (!predecessor.ok) {
+			expect(predecessor.diagnostic.message).toContain(
+				"does not match amendment predecessor binding-1",
+			);
+		}
+		const boundary = foldSemantic({
+			amended,
+			observations,
+			authorization: decision({
+				id: "11111111-1111-4111-8111-111111111126",
+				observationId: "obs-2",
+				phase: "2",
+				scope: true,
+				earliestAffectedPhase: "3",
+			}),
+		});
+		expect(boundary.ok).toBe(false);
+		if (!boundary.ok) {
+			expect(boundary.diagnostic.message).toContain(
+				"Amendment boundary 2 is earlier than authorized phase 3.",
+			);
+		}
+		const claim = foldSemantic({
+			amended,
+			observations,
+			authorization: decision({
+				id: "11111111-1111-4111-8111-111111111127",
+				observationId: "obs-2",
+				phase: "2",
+				scope: true,
+			}),
+			claimEdits: [{ creditClaimId: "DC0", effect: "withdraw" }],
+		});
+		expect(claim.ok).toBe(false);
+		if (!claim.ok) {
+			expect(claim.diagnostic.message).toContain(
+				"Claim edit DC0 withdraw is outside amendmentScope.",
+			);
+		}
+		const finding = foldSemantic({
+			amended,
+			observations,
+			authorization: decision({
+				id: "11111111-1111-4111-8111-111111111128",
+				observationId: "obs-2",
+				phase: "2",
+				scope: true,
+			}),
+			resolvedFindings: [resolvedFinding],
+		});
+		expect(finding.ok).toBe(false);
+		if (!finding.ok) {
+			expect(finding.diagnostic.message).toContain(
+				"Resolved finding R7 is outside amendmentScope.",
+			);
+		}
+	});
+
+	test("keeps one original finding identity and applies amendment resolution", () => {
+		const r1 = item("R1", "first");
+		const r2 = item("R2", "second");
+		const r4 = item("R4", "original wording");
+		const r5 = item("R5", "partial");
+		const r2Fingerprint = fingerprintImplementationVerdictItem(r2, "1");
+		const r4Fingerprint = fingerprintImplementationVerdictItem(r4, "1");
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111129",
+			observationId: "obs-b",
+			phase: "1",
+			scope: true,
+			resolutionRefs: [
+				{
+					phase: "1",
+					observationId: "obs-a",
+					findingId: "R2",
+					fingerprint: r2Fingerprint,
+				},
+			],
+		});
+		const folded = foldSemantic({
+			amended: PLAN.replace("Read digits", "Honor offsets"),
+			authorization,
+			contexts: [],
+			observations: [
+				observation({
+					id: "obs-a",
+					phase: "1",
+					iteration: 1,
+					items: [r1, r2, r4, r5],
+				}),
+				observation({
+					id: "obs-b",
+					phase: "1",
+					iteration: 2,
+					items: [item("R3", "third"), item("R4", "reworded later")],
+					priorFindings: [
+						{ id: "R1", status: "addressed" },
+						{ id: "R2", status: "still_open" },
+						{ id: "R4", status: "still_open" },
+						{ id: "R5", status: "partially_addressed" },
+					],
+				}),
+			],
+			invalidatedContextIds: [],
+			invalidatedObservationIds: [],
+			resolvedFindings: [
+				{
+					phase: "1",
+					observationId: "obs-a",
+					findingId: "R2",
+					fingerprint: r2Fingerprint,
+					reason: "scope changed",
+				},
+			],
+		});
+		expect(folded.ok).toBe(true);
+		if (!folded.ok) return;
+		expect(folded.findings).toHaveLength(4);
+		expect(folded.findings.map((finding) => finding.findingId).sort()).toEqual([
+			"R2",
+			"R3",
+			"R4",
+			"R5",
+		]);
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R1"),
+		).toBeUndefined();
+		expect(
+			folded.findings.filter((finding) => finding.findingId === "R4"),
+		).toHaveLength(1);
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R4"),
+		).toMatchObject({
+			observationId: "obs-a",
+			fingerprint: r4Fingerprint,
+			status: "pending",
+		});
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R2"),
+		).toMatchObject({
+			observationId: "obs-a",
+			fingerprint: r2Fingerprint,
+			status: "amendment_resolved",
+			reason: "scope changed",
+		});
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R5"),
+		).toMatchObject({ observationId: "obs-a", status: "pending" });
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R3"),
+		).toMatchObject({ observationId: "obs-b", status: "pending" });
+	});
+
+	test("labels corrections and credits invalidated with their observation", () => {
+		const approved = binding();
+		const amended = PLAN.replace("[ ] Read digits", "[x] Read digits");
+		const kept = item("R7", "Providers");
+		const phaseOne = observation({
+			id: "obs-1",
+			phase: "1",
+			iteration: 1,
+			items: [item("R1", "Foundation")],
+			completionAuthorized: true,
+		});
+		const phaseTwo = observation({
+			id: "obs-2",
+			phase: "2",
+			iteration: 1,
+			items: [kept],
+			completionAuthorized: true,
+		});
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111130",
+			observationId: "obs-2",
+			phase: "2",
+		});
+		const recovered = recovery({
+			id: "recovery-1",
+			authorizationId: authorization.decisionId,
+			parent: null,
+			beforeHash: approved.approvedPlanHash,
+			beforeCommit: approved.approvedPlanCommit,
+			bytes: amended,
+			phase: "2",
+			contexts: ["ctx-obs-2"],
+			observations: ["obs-2"],
+		});
+		const folded = foldEffectiveExecution({
+			recordStore: storeWith({
+				budget: [
+					{ key: implementationBindingKey(runId), payload: approved },
+					{ key: "ctx-1", payload: context("ctx-obs-1", "1") },
+					{ key: "obs-1", payload: phaseOne },
+					{ key: "corr-1", payload: correction("corr-1", "obs-1", "1") },
+					{ key: "credit-1", payload: credit("credit-1", "obs-1", "1") },
+					{ key: "ctx-2", payload: context("ctx-obs-2", "2") },
+					{ key: "obs-2", payload: phaseTwo },
+					{ key: "corr-2", payload: correction("corr-2", "obs-2", "2") },
+					{ key: "credit-2", payload: credit("credit-2", "obs-2", "2") },
+					{
+						key: "budget:implementation-plan-recovery:binding-1",
+						payload: recovered,
+					},
+				],
+				decisions: [{ key: authorization.decisionId, payload: authorization }],
+			}),
+			runId,
+		});
+		expect(folded.ok).toBe(true);
+		if (!folded.ok) return;
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "corr-1"),
+		).toMatchObject({ applicability: "applicable", certifies: true });
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "credit-1"),
+		).toMatchObject({ applicability: "applicable", certifies: true });
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "corr-2"),
+		).toMatchObject({ applicability: "invalidated", certifies: false });
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "credit-2"),
+		).toMatchObject({ applicability: "invalidated", certifies: false });
+		expect(
+			folded.evidence.find(
+				(entry) => entry.recordId === authorization.decisionId,
+			),
+		).toMatchObject({ applicability: "invalidated" });
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R7"),
+		).toMatchObject({
+			status: "pending",
+			observationId: "obs-2",
+			fingerprint: fingerprintImplementationVerdictItem(kept, "2"),
+		});
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "obs-2"),
+		).toMatchObject({ applicability: "invalidated", certifies: false });
+	});
+
+	test("keeps an invalidated finding that a later round still carries", () => {
+		const kept = item("R7", "Providers");
+		const fingerprint = fingerprintImplementationVerdictItem(kept, "2");
+		const approved = binding();
+		const amended = PLAN.replace("Read digits", "Honor offsets");
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111131",
+			observationId: "obs-2",
+			phase: "2",
+		});
+		const recovered = recovery({
+			id: "recovery-1",
+			authorizationId: authorization.decisionId,
+			parent: null,
+			beforeHash: approved.approvedPlanHash,
+			beforeCommit: approved.approvedPlanCommit,
+			bytes: amended,
+			phase: "2",
+			contexts: ["ctx-obs-2"],
+			observations: ["obs-2"],
+		});
+		const folded = foldEffectiveExecution({
+			recordStore: storeWith({
+				budget: [
+					{ key: implementationBindingKey(runId), payload: approved },
+					{ key: "ctx-2", payload: context("ctx-obs-2", "2") },
+					{
+						key: "obs-2",
+						payload: observation({
+							id: "obs-2",
+							phase: "2",
+							iteration: 1,
+							items: [kept],
+						}),
+					},
+					{
+						key: "budget:implementation-plan-recovery:binding-1",
+						payload: recovered,
+					},
+					{
+						key: "obs-2b",
+						payload: observation({
+							id: "obs-2b",
+							phase: "2",
+							iteration: 2,
+							items: [item("R9", "Between")],
+							priorFindings: [{ id: "R7", status: "still_open" }],
+						}),
+					},
+				],
+				decisions: [{ key: authorization.decisionId, payload: authorization }],
+			}),
+			runId,
+		});
+		expect(folded.ok).toBe(true);
+		if (!folded.ok) return;
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R7"),
+		).toMatchObject({
+			status: "pending",
+			observationId: "obs-2",
+			fingerprint,
+			phase: "2",
+		});
+		expect(
+			folded.findings.find((finding) => finding.findingId === "R9"),
+		).toMatchObject({ observationId: "obs-2b", status: "pending" });
+		expect(
+			folded.evidence.find((entry) => entry.recordId === "obs-2"),
+		).toMatchObject({ applicability: "invalidated" });
+	});
 });
 
 describe("former-contract decision hashes", () => {
@@ -1007,23 +1715,7 @@ describe("former-contract decision hashes", () => {
 		expect(historical.amendmentScope).toBeUndefined();
 		expect(JSON.stringify(historical)).not.toContain("amendmentScope");
 		expect(historical.decisionIntentHash).toBe(
-			computeImplementationDecisionIntentHash({
-				kind: historical.kind,
-				version: historical.version,
-				gateId: historical.gateId,
-				observationId: historical.observationId,
-				bindingId: historical.bindingId,
-				phase: historical.phase,
-				domain: historical.domain,
-				choice: historical.choice,
-				findingRefs: historical.findingRefs,
-				rationale: historical.rationale,
-				evidence: historical.evidence,
-				claimAdjustments: historical.claimAdjustments,
-				ledgerHash: historical.ledgerHash,
-				decisionsHash: historical.decisionsHash,
-				supersedesDecisionId: historical.supersedesDecisionId,
-			}),
+			"sha256:24fe14675ecc9e06fe62893ac3cea7a2d8e9a8021d13490d98f41aa7d2d7d862",
 		);
 		const scoped = decision({
 			id: "11111111-1111-4111-8111-111111111120",

@@ -51,10 +51,6 @@ import {
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { normalizeCheckboxMarkers } from "./plan-amendment.js";
-import {
-	PROTECTED_PLAN_SECTION_TITLES,
-	planHeadingSpans,
-} from "./plan-markdown.js";
 
 export function initialRevisionId(bindingId: string): string {
 	return bindingId;
@@ -153,6 +149,8 @@ interface SeenRecord {
 	completionAuthorized: boolean;
 	observationId?: string;
 	findings: ObservedFinding[];
+	/** Closure outcomes from the observation verdict. Absent on other evidence. */
+	priorFindings?: ReadonlyArray<{ id: string; status: string }>;
 }
 
 interface OpenBoundary {
@@ -228,20 +226,6 @@ function phaseSection(
 	).trim();
 }
 
-function protectedText(markdown: string): string {
-	const parts: string[] = [];
-	for (const heading of planHeadingSpans(markdown)) {
-		if (!PROTECTED_PLAN_SECTION_TITLES.has(heading.text.toLowerCase()))
-			continue;
-		parts.push(
-			normalizeCheckboxMarkers(
-				markdown.slice(heading.lineStart, heading.sectionEnd),
-			),
-		);
-	}
-	return parts.join("\n");
-}
-
 function mapPhase(label: string, phaseIds: readonly string[]): string | null {
 	const trimmed = label.trim();
 	const prefixed = trimmed.match(/^phase[\s-]+(\d+(?:\.\d+)?)$/i);
@@ -269,6 +253,79 @@ function claimContract(ledger: ParsedDeliveryBudget, phaseId: string): string {
 	);
 }
 
+/** Work-item ids named by a preserved phase heading or section body. */
+function namedWorkItemIds(section: string): string[] {
+	const ids: string[] = [];
+	const seenIds = new Set<string>();
+	for (const match of section.matchAll(/\b(W\d+)\b/g)) {
+		const id = match[1];
+		if (!id || seenIds.has(id)) continue;
+		seenIds.add(id);
+		ids.push(id);
+	}
+	return ids;
+}
+
+function workItemContract(ledger: ParsedDeliveryBudget, id: string): string {
+	const item = ledger.workItems.find((entry) => entry.id === id);
+	if (!item) return "missing";
+	return JSON.stringify({
+		id: item.id,
+		title: item.title,
+		effort: item.effort,
+		architectureDelta: item.architectureDelta,
+		debtClaim: item.debtClaim,
+		addresses: item.addresses,
+		rationale: item.rationale,
+	});
+}
+
+/**
+ * Open finding ids for one observation. Same rule as `openCodeFindings`:
+ * latest items, plus still-open or partial prior outcomes, minus addressed.
+ */
+function openFindingIds(
+	items: readonly { findingId: string }[],
+	priorFindings: readonly { id: string; status: string }[],
+): string[] {
+	const outcomes = new Map<string, string>();
+	for (const outcome of priorFindings) {
+		if (outcome.id) outcomes.set(outcome.id, outcome.status);
+	}
+	const ids: string[] = [];
+	const seenIds = new Set<string>();
+	const add = (id: string) => {
+		if (!id || seenIds.has(id) || outcomes.get(id) === "addressed") return;
+		seenIds.add(id);
+		ids.push(id);
+	};
+	for (const item of items) add(item.findingId);
+	for (const [id, status] of outcomes) {
+		if (status === "still_open" || status === "partially_addressed") add(id);
+	}
+	return ids;
+}
+
+function resolutionFor(
+	identity: ObservedFinding,
+	group: readonly SeenRecord[],
+	resolutions: ReadonlyMap<string, AmendmentResolvedFinding>,
+): AmendmentResolvedFinding | undefined {
+	for (const observation of group) {
+		const resolved = resolutions.get(
+			`${identity.phase}\u0000${observation.id}\u0000${identity.findingId}`,
+		);
+		if (!resolved) continue;
+		const recorded = observation.findings.some(
+			(finding) =>
+				finding.findingId === identity.findingId &&
+				finding.fingerprint === resolved.fingerprint,
+		);
+		if (recorded) return resolved;
+	}
+	return undefined;
+}
+
 function unique(ids: readonly string[]): Set<string> | null {
 	const set = new Set(ids);
 	return set.size === ids.length ? set : null;
@@ -288,8 +345,9 @@ export function formatAmendmentReviewPromptContext(input: {
 		"## Trusted Amendment Review Context",
 		"",
 		"The CLI supplies the predecessor revision, reviewed plan hash, and plan diff.",
-		"Copy those values into amendmentAssessment. Do not infer preserved phases,",
-		"finding resolution, or claim effects from readiness, summary, or rationale.",
+		"Copy the predecessor and hash into amendmentAssessment, and review the diff.",
+		"Do not infer preserved phases, finding resolution, or claim effects from",
+		"readiness, summary, or rationale.",
 		"",
 		`Predecessor revision: \`${input.predecessorRevisionId}\``,
 		`Reviewed plan hash: \`${input.reviewedPlanHash}\``,
@@ -607,6 +665,7 @@ export function foldEffectiveExecution(input: {
 				);
 			}
 			stepKeys.set(stepKey, observation.id);
+			const verdictPrior = observation.originalVerdict.priorFindings;
 			const duplicate = remember({
 				id: observation.id,
 				phase: observation.phase,
@@ -615,6 +674,7 @@ export function foldEffectiveExecution(input: {
 				recordId: line.idempotencyKey,
 				completionAuthorized: observation.completionAuthorized,
 				findings,
+				priorFindings: verdictPrior ?? observation.outcomes,
 			});
 			if (duplicate) return duplicate;
 			continue;
@@ -911,18 +971,6 @@ export function foldEffectiveExecution(input: {
 					lineage.id,
 				);
 			}
-			if (
-				lineage.preservedPhases.length > 0 &&
-				protectedText(authorizedBytes) !==
-					protectedText(lineage.approvedPlanBytes)
-			) {
-				return fail(
-					"budget",
-					line.idempotencyKey,
-					"A shared design, acceptance, or scope section changed, so earlier phases cannot be preserved.",
-					lineage.id,
-				);
-			}
 			const beforeLedger = parseDeliveryBudget(authorizedBytes);
 			const afterLedger = parseDeliveryBudget(lineage.approvedPlanBytes);
 			if (!beforeLedger.ok || !afterLedger.ok) {
@@ -957,6 +1005,24 @@ export function foldEffectiveExecution(input: {
 						lineage.id,
 					);
 				}
+				const section = phaseSection(
+					authorizedBytes,
+					predecessorPlan.phases,
+					index,
+				);
+				for (const workItemId of namedWorkItemIds(section)) {
+					if (
+						workItemContract(beforeLedger.value, workItemId) !==
+						workItemContract(afterLedger.value, workItemId)
+					) {
+						return fail(
+							"budget",
+							line.idempotencyKey,
+							`Preserved phase ${phaseId} changed a linked work-item contract.`,
+							lineage.id,
+						);
+					}
+				}
 			}
 			for (const finding of lineage.resolvedFindings) {
 				const observation = seen.find(
@@ -975,6 +1041,72 @@ export function foldEffectiveExecution(input: {
 						"budget",
 						line.idempotencyKey,
 						`Resolved finding ${finding.findingId} is not on ${finding.phase}/${finding.observationId}.`,
+						lineage.id,
+					);
+				}
+			}
+			const scope = decision.amendmentScope;
+			if (!scope) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Authorization ${decision.decisionId} omits amendmentScope and cannot authorize a semantic amendment.`,
+					lineage.id,
+				);
+			}
+			if (scope.predecessorRevisionId !== lineage.predecessorRevisionId) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Authorization ${decision.decisionId} predecessor ${scope.predecessorRevisionId} does not match amendment predecessor ${lineage.predecessorRevisionId}.`,
+					lineage.id,
+				);
+			}
+			const authorizedPhase = phaseIds.indexOf(scope.earliestAffectedPhase);
+			if (authorizedPhase < 0) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Authorized phase ${scope.earliestAffectedPhase} is not in the predecessor plan.`,
+					lineage.id,
+				);
+			}
+			if (frontierIndex < authorizedPhase) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Amendment boundary ${frontier} is earlier than authorized phase ${scope.earliestAffectedPhase}.`,
+					lineage.id,
+				);
+			}
+			for (const edit of lineage.claimEdits) {
+				const allowed = scope.claimEdits.some(
+					(candidate) =>
+						candidate.creditClaimId === edit.creditClaimId &&
+						candidate.effect === edit.effect,
+				);
+				if (!allowed) {
+					return fail(
+						"budget",
+						line.idempotencyKey,
+						`Claim edit ${edit.creditClaimId} ${edit.effect} is outside amendmentScope.`,
+						lineage.id,
+					);
+				}
+			}
+			for (const finding of lineage.resolvedFindings) {
+				const allowed = scope.resolutionRefs.some(
+					(ref) =>
+						ref.phase === finding.phase &&
+						ref.observationId === finding.observationId &&
+						ref.findingId === finding.findingId &&
+						ref.fingerprint === finding.fingerprint,
+				);
+				if (!allowed) {
+					return fail(
+						"budget",
+						line.idempotencyKey,
+						`Resolved finding ${finding.findingId} is outside amendmentScope.`,
 						lineage.id,
 					);
 				}
@@ -1202,16 +1334,23 @@ export function foldEffectiveExecution(input: {
 		if (record.kind === "observation" && !invalidated) {
 			applicableObservations.add(record.id);
 		}
+		const citedInvalidated =
+			record.observationId !== undefined &&
+			invalidatedObservations.has(record.observationId);
 		const citedApplicable =
 			record.observationId !== undefined &&
 			applicableObservations.has(record.observationId) &&
-			!invalidatedObservations.has(record.observationId);
+			!citedInvalidated;
+		const dependentInvalidated =
+			(record.kind === "correction" || record.kind === "credit") &&
+			citedInvalidated;
 		evidence.push({
 			stream: "budget",
 			recordId: record.recordId,
 			kind: record.kind,
 			revisionId: record.revisionId,
-			applicability: invalidated ? "invalidated" : "applicable",
+			applicability:
+				invalidated || dependentInvalidated ? "invalidated" : "applicable",
 			certifies:
 				record.kind === "observation"
 					? !invalidated && record.completionAuthorized
@@ -1256,16 +1395,39 @@ export function foldEffectiveExecution(input: {
 	}
 
 	const findings: EffectiveFinding[] = [];
+	const observationsByPhase = new Map<string, SeenRecord[]>();
 	for (const record of seen) {
 		if (record.kind !== "observation" || !selectedIds.has(record.revisionId)) {
 			continue;
 		}
-		for (const finding of record.findings) {
-			const resolved = resolutions.get(
-				`${finding.phase}\u0000${finding.observationId}\u0000${finding.findingId}`,
-			);
+		const group = observationsByPhase.get(record.phase);
+		if (group) group.push(record);
+		else observationsByPhase.set(record.phase, [record]);
+	}
+	for (const group of observationsByPhase.values()) {
+		const latest = group[group.length - 1];
+		if (!latest) continue;
+		const originals = new Map<string, ObservedFinding>();
+		for (const observation of group) {
+			for (const finding of observation.findings) {
+				if (!originals.has(finding.findingId)) {
+					originals.set(finding.findingId, finding);
+				}
+			}
+		}
+		for (const findingId of openFindingIds(
+			latest.findings,
+			latest.priorFindings ?? [],
+		)) {
+			const identity = originals.get(findingId);
+			if (!identity) continue;
+			const resolved = resolutionFor(identity, group, resolutions);
 			findings.push({
-				...finding,
+				phase: identity.phase,
+				observationId: identity.observationId,
+				findingId: identity.findingId,
+				fingerprint: identity.fingerprint,
+				recordedRevisionId: identity.recordedRevisionId,
 				status: resolved ? "amendment_resolved" : "pending",
 				...(resolved ? { reason: resolved.reason } : {}),
 			});

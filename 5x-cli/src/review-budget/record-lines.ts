@@ -564,73 +564,99 @@ export function decodeImplementationSemanticAmendmentPayload(
 			value.earliestAffectedPhase,
 			"earliestAffectedPhase",
 		),
-		preservedPhases: value.preservedPhases.map((entry, index) => {
-			const phase = object(entry, `preservedPhases[${index}]`);
-			rejectUnknownKeys(
-				phase,
-				new Set(["phaseId", "reason"]),
-				`preservedPhases[${index}]`,
-			);
-			return {
-				phaseId: stringField(
+		preservedPhases: (() => {
+			const seen = new Set<string>();
+			return value.preservedPhases.map((entry, index) => {
+				const phase = object(entry, `preservedPhases[${index}]`);
+				rejectUnknownKeys(
+					phase,
+					new Set(["phaseId", "reason"]),
+					`preservedPhases[${index}]`,
+				);
+				const phaseId = stringField(
 					phase.phaseId,
 					`preservedPhases[${index}].phaseId`,
-				),
-				reason: stringField(phase.reason, `preservedPhases[${index}].reason`),
-			};
-		}),
-		resolvedFindings: value.resolvedFindings.map((entry, index) => {
-			const finding = object(entry, `resolvedFindings[${index}]`);
-			rejectUnknownKeys(
-				finding,
-				new Set([
-					"phase",
-					"observationId",
-					"findingId",
-					"fingerprint",
-					"reason",
-				]),
-				`resolvedFindings[${index}]`,
-			);
-			return {
-				phase: stringField(finding.phase, `resolvedFindings[${index}].phase`),
-				observationId: stringField(
-					finding.observationId,
-					`resolvedFindings[${index}].observationId`,
-				),
-				findingId: stringField(
-					finding.findingId,
-					`resolvedFindings[${index}].findingId`,
-				),
-				fingerprint: stringField(
-					finding.fingerprint,
-					`resolvedFindings[${index}].fingerprint`,
-				),
-				reason: stringField(
-					finding.reason,
-					`resolvedFindings[${index}].reason`,
-				),
-			};
-		}),
-		claimEdits: value.claimEdits.map((entry, index) => {
-			const claim = object(entry, `claimEdits[${index}]`);
-			rejectUnknownKeys(
-				claim,
-				new Set(["creditClaimId", "effect"]),
-				`claimEdits[${index}]`,
-			);
-			const effect = stringField(claim.effect, `claimEdits[${index}].effect`);
-			if (!CLAIM_EFFECTS.has(effect)) {
-				throw new TypeError(`claimEdits[${index}].effect is invalid`);
-			}
-			return {
-				creditClaimId: stringField(
+				);
+				if (seen.has(phaseId)) {
+					throw new TypeError(`preservedPhases repeats ${phaseId}`);
+				}
+				seen.add(phaseId);
+				return {
+					phaseId,
+					reason: stringField(phase.reason, `preservedPhases[${index}].reason`),
+				};
+			});
+		})(),
+		resolvedFindings: (() => {
+			const seen = new Set<string>();
+			return value.resolvedFindings.map((entry, index) => {
+				const finding = object(entry, `resolvedFindings[${index}]`);
+				rejectUnknownKeys(
+					finding,
+					new Set([
+						"phase",
+						"observationId",
+						"findingId",
+						"fingerprint",
+						"reason",
+					]),
+					`resolvedFindings[${index}]`,
+				);
+				const resolved = {
+					phase: stringField(finding.phase, `resolvedFindings[${index}].phase`),
+					observationId: stringField(
+						finding.observationId,
+						`resolvedFindings[${index}].observationId`,
+					),
+					findingId: stringField(
+						finding.findingId,
+						`resolvedFindings[${index}].findingId`,
+					),
+					fingerprint: stringField(
+						finding.fingerprint,
+						`resolvedFindings[${index}].fingerprint`,
+					),
+					reason: stringField(
+						finding.reason,
+						`resolvedFindings[${index}].reason`,
+					),
+				};
+				const key = `${resolved.phase}\u0000${resolved.observationId}\u0000${resolved.findingId}`;
+				if (seen.has(key)) {
+					throw new TypeError(`resolvedFindings repeats ${resolved.findingId}`);
+				}
+				seen.add(key);
+				return resolved;
+			});
+		})(),
+		claimEdits: (() => {
+			const seen = new Set<string>();
+			return value.claimEdits.map((entry, index) => {
+				const claim = object(entry, `claimEdits[${index}]`);
+				rejectUnknownKeys(
+					claim,
+					new Set(["creditClaimId", "effect"]),
+					`claimEdits[${index}]`,
+				);
+				const effect = stringField(claim.effect, `claimEdits[${index}].effect`);
+				if (!CLAIM_EFFECTS.has(effect)) {
+					throw new TypeError(`claimEdits[${index}].effect is invalid`);
+				}
+				const creditClaimId = stringField(
 					claim.creditClaimId,
 					`claimEdits[${index}].creditClaimId`,
-				),
-				effect: effect as AmendmentClaimEdit["effect"],
-			};
-		}),
+				);
+				const key = `${creditClaimId}\u0000${effect}`;
+				if (seen.has(key)) {
+					throw new TypeError(`claimEdits repeats ${creditClaimId} ${effect}`);
+				}
+				seen.add(key);
+				return {
+					creditClaimId,
+					effect: effect as AmendmentClaimEdit["effect"],
+				};
+			});
+		})(),
 		invalidatedContextIds: recoveryStringArray(
 			value.invalidatedContextIds,
 			"invalidatedContextIds",

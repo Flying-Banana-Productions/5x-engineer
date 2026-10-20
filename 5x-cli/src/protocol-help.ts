@@ -55,8 +55,8 @@ ReviewerVerdict fields:
   [{creditClaimId, effect: withdraw|reduce_magnitude|edit_contract}]. Empty
   arrays are explicit. Do not omit a list, and do not infer carry, finding
   resolution, or claim effects from readiness, summary, or rationale. Copy the
-  predecessor revision, reviewed plan hash, and plan diff from the trusted
-  amendment review context.
+  predecessor revision and reviewed plan hash from the trusted amendment
+  review context, and review the plan diff.
 
 ${CLOSURE_EVIDENCE_HELP}
 
