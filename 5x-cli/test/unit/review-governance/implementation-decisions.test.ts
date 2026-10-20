@@ -22,6 +22,7 @@ import {
 	deriveGateId,
 	foldGoverningReviewState,
 	type ImplementationDecisionPayload,
+	implementationObservationGateId,
 } from "../../../src/review-governance/decisions.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import {
@@ -648,6 +649,45 @@ describe("implementation review decisions", () => {
 		expect(repairReviewGatePrompts(store, prompts, runId)).toBe(1);
 		expect(prompts.listOpenPrompts(runId)).toHaveLength(0);
 		expect(deriveOpenImplementationGate(store, runId, "1")).toBeNull();
+	});
+
+	test("a stored revision changes the gate id and the rebuilt index matches it", () => {
+		const store = seed();
+		appendObservation(store, observation({ revisionId: "rev-2" }));
+		const gate = deriveOpenImplementationGate(store, runId, "1");
+		if (!gate) throw new Error("expected gate");
+		const withoutRevision = implementationObservationGateId({
+			runId,
+			phase: "1",
+			bindingId: "binding-1",
+			observationId: "obs-1",
+			causes: observation().gateCauses,
+		});
+		expect(gate.gateId).not.toBe(withoutRevision);
+		expect(gate.gateId).toBe(
+			implementationObservationGateId({
+				runId,
+				phase: "1",
+				bindingId: "binding-1",
+				observationId: "obs-1",
+				causes: observation().gateCauses,
+				revisionId: "rev-2",
+			}),
+		);
+		const db = new Database(":memory:");
+		try {
+			runMigrations(db);
+			db.exec(
+				"INSERT INTO runs(id, plan_path) VALUES ('run-impl', '/plan.md')",
+			);
+			reindexReviewGovernance(store, db, runId);
+			const row = db
+				.query("SELECT gate_id FROM review_gate_index WHERE run_id = ?")
+				.get(runId) as { gate_id: string } | null;
+			expect(row?.gate_id).toBe(gate.gateId);
+		} finally {
+			db.close();
+		}
 	});
 
 	test("wiped index rebuild matches the live implementation projection", () => {

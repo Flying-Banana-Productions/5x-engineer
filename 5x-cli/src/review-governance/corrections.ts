@@ -578,6 +578,21 @@ export async function finishImplementationCorrection(
 			message: `Implementation observation ${input.observationId} is not recorded for phase ${input.phase}.`,
 		};
 	}
+	const folded = input.store.readEffectiveImplementationRevision(input.runId);
+	if (folded && !folded.ok) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: folded.diagnostic.message,
+		};
+	}
+	if (folded?.ok && folded.invalidatedObservationIds.includes(observation.id)) {
+		return {
+			status: "error",
+			code: "CORRECTION_OBSERVATION_STALE",
+			message: `Implementation observation ${observation.id} does not certify the current revision.`,
+		};
+	}
 	const eligibility = evaluateImplementationCorrectionEligibility(
 		observation.originalVerdict,
 	);
@@ -897,6 +912,9 @@ export async function finishImplementationCorrection(
 			timedOut: gateTimedOut(result),
 		})),
 		architectureDelta: proof ? 0 : inventory.architectureDelta,
+		...(folded?.ok && folded.currentRevisionId !== folded.initialRevisionId
+			? { revisionId: folded.currentRevisionId }
+			: {}),
 		boundaryChanges: proof ? [] : inventory.boundaryChanges,
 		changedPaths: inventory.changedPaths,
 		inventoryClean: proof,

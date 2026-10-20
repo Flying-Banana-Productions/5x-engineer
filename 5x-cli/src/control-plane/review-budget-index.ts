@@ -8,6 +8,7 @@ import {
 	decodeImplementationPlanRecoveryPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
+	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import type { RecordStore } from "./record-store.js";
@@ -222,6 +223,7 @@ export function reindexReviewBudget(
 			kind === "implementation-compatibility" ||
 			kind === "implementation-text-amendment" ||
 			kind === "implementation-plan-recovery" ||
+			kind === "implementation-plan-amendment" ||
 			kind === "implementation-review-context" ||
 			kind === "implementation-review" ||
 			kind === "implementation-correction-attempt"
@@ -233,6 +235,8 @@ export function reindexReviewBudget(
 					decodeImplementationCompatibilityPayload(line.payload);
 				} else if (kind === "implementation-plan-recovery") {
 					decodeImplementationPlanRecoveryPayload(line.payload);
+				} else if (kind === "implementation-plan-amendment") {
+					decodeImplementationSemanticAmendmentPayload(line.payload);
 				} else if (kind === "implementation-text-amendment") {
 					decodeImplementationTextAmendmentPayload(line.payload);
 				} else if (kind === "implementation-review-context") {

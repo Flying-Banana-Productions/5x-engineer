@@ -601,7 +601,13 @@ singleArchitectureReviewPoints = 5
 - An existing plan entering a new review run gets an author preflight that adds an estimate before the baseline is captured.
 - A run already mid-review has no trustworthy original baseline. It remains on v1 routing unless the human explicitly opts in and approves a baseline; the CLI must not infer one from an already-expanded plan.
 
-### 8.2 Staged rollout
+### 8.2 Amended runs and historical recovery
+
+An amended implementation run keeps the original binding, `B0`, governing `B`, and pinned mode. The effective revision is a later `implementation-plan-amendment` record. Execute that run only with a CLI that understands the amendment record and `amendmentScope`. Older binaries may report drift or ignore the unfamiliar record and must not execute the run. There is no schema migration and no journal rewrite.
+
+`5x review implementation recover-plan` is retired. Committed `implementation-plan-recovery` receipts remain readable as legacy revisions. `5x upgrade` discovers them on active, completed, and aborted runs without an index or source worktree, reports lineage validity, and does not synthesize an approval or resume the run. The final legacy revision can be the predecessor of a new-format amendment; the old decision cannot authorize that amendment by itself.
+
+### 8.3 Staged rollout
 
 1. **Advisory (initial default):** add template and prompt fields; deterministically record forecasts and deltas without changing routing.
 2. **Measured:** compare forecast growth, iteration count, human escalations, and approved-plan outcomes across real plans.

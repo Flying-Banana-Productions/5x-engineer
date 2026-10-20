@@ -48,6 +48,18 @@ ReviewerVerdict fields:
   partial/open IDs remain once with the same identity and remaining effort.
   --credit-realization: {creditClaimId, realization, realizedArchitectureDelta,
   evidence}; report implementation credit realization with nonempty evidence.
+  amendmentAssessment is plan-domain only. Implementation verdicts must omit it.
+  When present, every key is required: predecessorRevisionId, reviewedPlanHash,
+  earliestAffectedPhase, preservedPhases [{phaseId, reason}], resolvedFindings
+  [{phase, observationId, findingId, fingerprint, reason}], and claimEdits
+  [{creditClaimId, effect: withdraw|reduce_magnitude|edit_contract}]. Empty
+  arrays are explicit. Do not omit a list, and do not infer carry, finding
+  resolution, or claim effects from readiness, summary, or rationale. Copy the
+  predecessor revision and reviewed plan hash from the trusted amendment
+  review context, and review the plan diff. A final correction that changes
+  that hash requires a new assessment; do not reuse the previous one. Initial
+  plan reviews keep the ordinary final-correction shortcut. Rationale is not
+  amendmentScope.
 
 ${CLOSURE_EVIDENCE_HELP}
 

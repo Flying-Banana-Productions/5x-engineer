@@ -9,6 +9,16 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("normalizeReviewerVerdict", () => {
+	test("does not default a partial amendmentAssessment", () => {
+		const result = normalizeReviewerVerdict({
+			readiness: "ready",
+			items: [],
+			amendmentAssessment: { predecessorRevisionId: "binding-1" },
+		}) as { amendmentAssessment: Record<string, unknown> };
+		expect(result.amendmentAssessment.claimEdits).toBeUndefined();
+		expect(result.amendmentAssessment.preservedPhases).toBeUndefined();
+	});
+
 	test("canonical input passes through unchanged", () => {
 		const input = {
 			readiness: "not_ready",

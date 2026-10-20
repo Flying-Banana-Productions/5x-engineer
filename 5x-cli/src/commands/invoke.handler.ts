@@ -69,6 +69,7 @@ import {
 	appendPlanReviewPromptContext,
 	buildImplementationReviewPromptContext,
 	buildPlanReviewPromptContext,
+	EffectiveRevisionReadError,
 	formatAuthorGoverningDecisions,
 	formatImplementationAuthorContext,
 	formatImplementationReviewerContext,
@@ -102,6 +103,7 @@ import {
 	composeImplementationReviewerRecord,
 	implementationGovernanceDecoration,
 	type PendingImplementationObservation,
+	readEffectiveImplementationReviewAnchor,
 	recordImplementationReviewerStepWithObservation,
 } from "./implementation-review-context.js";
 import { validateStructuredOutput } from "./protocol-helpers.js";
@@ -831,15 +833,25 @@ export async function invokeAgent(
 		(isCommitReviewTemplate(resolved.selectedTemplateName) ||
 			isImplementationAuthorTemplate(resolved.selectedTemplateName))
 	) {
-		const implementationContext = buildImplementationReviewPromptContext({
-			runId: params.run,
-			phase: params.phase ?? mergedVars.phase_number ?? "",
-			store: budgetContext.store,
-			recordStore: budgetContext.recordStore,
-			reviewContext: preparedReviewContext,
-			workdir: budgetContext.executionContext.effectiveWorkingDirectory,
-			sessionId: params.newSession ? "new" : params.session,
-		});
+		let implementationContext: ReturnType<
+			typeof buildImplementationReviewPromptContext
+		>;
+		try {
+			implementationContext = buildImplementationReviewPromptContext({
+				runId: params.run,
+				phase: params.phase ?? mergedVars.phase_number ?? "",
+				store: budgetContext.store,
+				recordStore: budgetContext.recordStore,
+				reviewContext: preparedReviewContext,
+				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
+				sessionId: params.newSession ? "new" : params.session,
+			});
+		} catch (error) {
+			if (error instanceof EffectiveRevisionReadError) {
+				outputError(error.code, error.message);
+			}
+			throw error;
+		}
 		if (implementationContext) {
 			governanceAppend = isImplementationAuthorTemplate(
 				resolved.selectedTemplateName,
@@ -1122,22 +1134,29 @@ export async function invokeAgent(
 								runId,
 								phase,
 							);
+							const anchor = readEffectiveImplementationReviewAnchor({
+								store: budgetContext.store,
+								runId,
+								binding,
+							});
+							if (!anchor.ok) {
+								outputError(
+									"IMPLEMENTATION_EVIDENCE_MALFORMED",
+									anchor.message,
+								);
+							}
 							const reviewed = validateImplementationReview({
 								verdict: structured as ReviewerVerdict,
 								phase,
 								mode: binding.mode,
 								phaseIds: binding.phaseMap.map((entry) => entry.id),
-								workItemIds: binding.ledger.workItems.map((item) => item.id),
-								creditClaimIds: binding.ledger.workItems.flatMap((item) =>
+								workItemIds: anchor.ledger.workItems.map((item) => item.id),
+								creditClaimIds: anchor.ledger.workItems.flatMap((item) =>
 									item.debtClaim ? [item.debtClaim.debtClaimId] : [],
 								),
-								approvedPlanBytes: binding.approvedPlanBytes,
-								approvedPlanHash: binding.approvedPlanHash,
-								amendments:
-									budgetContext.store.listImplementationTextAmendments(
-										runId,
-										binding.id,
-									),
+								approvedPlanBytes: anchor.approvedPlanBytes,
+								approvedPlanHash: anchor.approvedPlanHash,
+								amendments: [],
 								hasRun: true,
 								priorReviewCount: closure.priorReviewCount,
 								codeContext: verified.diff,

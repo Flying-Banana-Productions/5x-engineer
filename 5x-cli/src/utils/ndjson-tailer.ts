@@ -266,11 +266,11 @@ export class NdjsonTailer {
 	 * Async iterator interface — yields TaggedLine entries as they appear.
 	 */
 	async *[Symbol.asyncIterator](): AsyncIterableIterator<TaggedLine> {
-		// Do an initial poll to pick up existing content
-		this.drainPoll();
+		// Do an initial poll to pick up existing content. A shutdown that
+		// already drained lines into `pending` must still yield them.
+		if (!this.aborted) this.drainPoll();
 
-		while (!this.done) {
-			// Yield any buffered lines
+		while (this.pending.length > 0 || !this.done) {
 			while (this.pending.length > 0) {
 				const line = this.pending.shift();
 				if (line) yield line;
@@ -279,23 +279,23 @@ export class NdjsonTailer {
 			if (this.done) break;
 
 			// Wait for next poll to produce lines
-			yield* await new Promise<TaggedLine[]>((resolve) => {
+			const lines = await new Promise<TaggedLine[]>((resolve) => {
 				// If we already have pending lines (from a poll that fired between
 				// the while check and here), resolve immediately
 				if (this.pending.length > 0 || this.done) {
-					const lines = this.pending.splice(0);
-					resolve(lines);
+					resolve(this.pending.splice(0));
 					return;
 				}
 
 				this.resolve = (result) => {
 					if (result.done) {
-						resolve([]);
+						resolve(this.pending.splice(0));
 					} else {
 						resolve([result.value, ...this.pending.splice(0)]);
 					}
 				};
 			});
+			for (const line of lines) yield line;
 		}
 	}
 
@@ -344,6 +344,9 @@ export class NdjsonTailer {
 	/** Clean up watcher, interval, and signal iterator completion. */
 	private cleanup(): void {
 		if (this.aborted) return;
+		// SIGINT can arrive in the gap after a log line is on disk and before
+		// the next poll. Read that line first; marking aborted skips poll().
+		this.drainPoll();
 		this.aborted = true;
 		this.done = true;
 
@@ -356,11 +359,16 @@ export class NdjsonTailer {
 			this.interval = null;
 		}
 
-		// Wake up any waiting iterator
+		// Wake up any waiting iterator, including a line drained just above.
 		if (this.resolve) {
 			const r = this.resolve;
 			this.resolve = null;
-			r({ value: undefined as unknown as TaggedLine, done: true });
+			if (this.pending.length > 0) {
+				const first = this.pending.shift() as TaggedLine;
+				r({ value: first, done: false });
+			} else {
+				r({ value: undefined as unknown as TaggedLine, done: true });
+			}
 		}
 	}
 }

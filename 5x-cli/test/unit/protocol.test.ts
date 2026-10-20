@@ -72,6 +72,55 @@ describe("assertReviewerVerdict", () => {
 		expect(verdictBaselineAssessment).toEqual(baselineAssessment);
 	});
 
+	test("accepts a complete plan amendment assessment and rejects implementation use", () => {
+		const assessment = {
+			predecessorRevisionId: "binding-1",
+			reviewedPlanHash: "sha256:abc",
+			earliestAffectedPhase: "2",
+			preservedPhases: [{ phaseId: "1", reason: "unchanged" }],
+			resolvedFindings: [],
+			claimEdits: [],
+		};
+		expect(() =>
+			assertReviewerVerdict(
+				{ readiness: "ready", items: [], amendmentAssessment: assessment },
+				"REVIEW",
+			),
+		).not.toThrow();
+		expect(() =>
+			assertReviewerVerdict(
+				{
+					readiness: "ready",
+					items: [],
+					amendmentAssessment: { predecessorRevisionId: "binding-1" },
+				} as unknown as ReviewerVerdict,
+				"REVIEW",
+			),
+		).toThrow("missing");
+		expect(() =>
+			assertReviewerVerdict(
+				{
+					readiness: "not_ready",
+					items: [
+						{
+							id: "R1",
+							title: "Fix",
+							action: "auto_fix",
+							reason: "Broken",
+							priority: "P1",
+							scopeClass: "implementation_defect",
+							planWorkItemIds: ["W1"],
+							effortDelta: 1,
+							architectureDelta: 0,
+						},
+					],
+					amendmentAssessment: assessment,
+				},
+				"REVIEW",
+			),
+		).toThrow("cannot supply amendmentAssessment");
+	});
+
 	test("passes for ready + empty items", () => {
 		const verdict: ReviewerVerdict = {
 			readiness: "ready",

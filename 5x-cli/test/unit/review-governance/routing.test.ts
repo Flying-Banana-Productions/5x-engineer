@@ -136,6 +136,8 @@ function route(input: {
 	findings?: FindingDelta[];
 	assessments?: CreditAssessmentInput[];
 	closure?: ClosureValidationResult;
+	amendmentReassessment?: boolean;
+	amendmentAssessment?: NonNullable<ReviewerVerdict["amendmentAssessment"]>;
 }) {
 	const items = input.items ?? [item()];
 	return derivePlanReviewGovernance({
@@ -144,7 +146,11 @@ function route(input: {
 		verdict: {
 			readiness: input.readiness ?? "not_ready",
 			items,
+			...(input.amendmentAssessment
+				? { amendmentAssessment: input.amendmentAssessment }
+				: {}),
 		},
+		...(input.amendmentReassessment ? { amendmentReassessment: true } : {}),
 		budget: input.budget ?? budget(),
 		closure: input.closure ?? closure,
 		governingState: input.state ?? state(),
@@ -267,6 +273,52 @@ describe("derivePlanReviewGovernance", () => {
 			expect(result.route).toBe("human_gate");
 			expect(result.gateCauses[0]?.kind).toBe(kind);
 		}
+	});
+
+	test("withholds final corrections when an amendment review changed bytes", () => {
+		const assessment = {
+			predecessorRevisionId: "binding-1",
+			reviewedPlanHash: "sha256:amended",
+			earliestAffectedPhase: "2",
+			preservedPhases: [{ phaseId: "1", reason: "unchanged" }],
+			resolvedFindings: [],
+			claimEdits: [],
+		};
+		const withheld = route({
+			readiness: "ready_with_corrections",
+			amendmentReassessment: true,
+		});
+		expect(withheld.route).toBe("author_revision");
+		expect(withheld.normalizedReadiness).toBe("not_ready");
+		expect(withheld.amendmentReassessment).toBe(true);
+		const fromVerdict = route({
+			readiness: "ready_with_corrections",
+			amendmentAssessment: assessment,
+		});
+		expect(fromVerdict.route).toBe("author_revision");
+		const initial = route({
+			readiness: "ready_with_corrections",
+		});
+		expect(initial.route).toBe("final_corrections");
+		expect(initial.amendmentReassessment).toBeUndefined();
+		const recorded = derivePlanReviewGovernance({
+			mode: "enforced",
+			reviewKind: "closure",
+			verdict: {
+				readiness: "ready_with_corrections",
+				items: [item()],
+				governance: { amendmentReassessment: true },
+			} as ReviewerVerdict,
+			budget: budget(),
+			closure,
+			governingState: state(),
+			budgetContext: {
+				workItems: ledger.workItems,
+				findings: [],
+				assessments: [],
+			},
+		});
+		expect(recorded.route).toBe("author_revision");
 	});
 
 	test("normalizes invalid final corrections and accepts the strict shortcut", () => {

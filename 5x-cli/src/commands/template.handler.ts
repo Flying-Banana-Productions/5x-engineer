@@ -26,6 +26,7 @@ import {
 	appendPlanReviewPromptContext,
 	buildImplementationReviewPromptContext,
 	buildPlanReviewPromptContext,
+	EffectiveRevisionReadError,
 	formatAuthorGoverningDecisions,
 	formatImplementationAuthorContext,
 	formatImplementationReviewerContext,
@@ -643,15 +644,25 @@ export async function templateRender(
 		(isCommitReviewTemplate(resolved.selectedTemplateName) ||
 			isImplementationAuthorTemplate(resolved.selectedTemplateName))
 	) {
-		const implementationContext = buildImplementationReviewPromptContext({
-			runId: params.run,
-			phase: implementationPhase,
-			store: renderBudgetContext.store,
-			recordStore: renderBudgetContext.recordStore,
-			reviewContext: preparedReviewContext,
-			workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
-			sessionId: params.newSession ? "new" : params.session,
-		});
+		let implementationContext: ReturnType<
+			typeof buildImplementationReviewPromptContext
+		>;
+		try {
+			implementationContext = buildImplementationReviewPromptContext({
+				runId: params.run,
+				phase: implementationPhase,
+				store: renderBudgetContext.store,
+				recordStore: renderBudgetContext.recordStore,
+				reviewContext: preparedReviewContext,
+				workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
+				sessionId: params.newSession ? "new" : params.session,
+			});
+		} catch (error) {
+			if (error instanceof EffectiveRevisionReadError) {
+				outputError(error.code, error.message);
+			}
+			throw error;
+		}
 		if (implementationContext) {
 			governanceAppend = isImplementationAuthorTemplate(
 				resolved.selectedTemplateName,
