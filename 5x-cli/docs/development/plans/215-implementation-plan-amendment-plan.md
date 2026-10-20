@@ -255,15 +255,15 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 **Completion gate:** Every orchestration path and current/archived reader agrees on effective revision, pending fixes and readiness; documented workflow is executable after a restart/rebuild.
 
-- [ ] Present original/effective provenance and amendment history, affected phases, retained evidence, resolved/pending findings and credit differences in state and registration output.
-- [ ] Add upgrade discovery/validation/reporting for legacy recoveries across active/completed/archived authoritative records; repeat safely without journal conversion, synthetic approval, run resumption or automatic project commits.
-- [ ] Update author/reviewer templates and phase-execution/plan-review skills across supported delegation modes with authorize → amend → assess → register → resume, including structured `amendmentScope` recording. Rationale prose is not scope.
-- [ ] Replace misleading bind/drift remediation with actual supported commands and amendment-assessment requirements; document toolchain compatibility and initial binding distinction.
-- [ ] Add deterministic Player Desk-shaped acceptance: unchanged Phase 1, affected Phase 2+, R7 scope-resolution, seven retained fixes, DC1 withdrawal, DC0 conservative carry, and unchanged baseline.
-- [ ] Verify read-only dry-run/state against recorded fixtures, index rebuild/source-worktree removal, repeated amendments and interleaved guarded text amendments.
-- [ ] Exercise a deterministic legacy-to-new lifecycle: repeated frontier recoveries, intervening reviews, earlier phase completion and text amendments → upgrade/rebuild with identical historical authority → resume → register a new-format amendment against the final legacy predecessor; malformed/ambiguous histories fail closed.
-- [ ] Verify the effective installed/rendered asset contract, including retired recovery guidance and amendment reassessment, using `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`.
-- [ ] Run focused suites, `bun run typecheck`, `bun run lint`, and the full configured quality gates before final review; complete only after all work items and acceptance cases pass.
+- [x] Present original/effective provenance and amendment history, affected phases, retained evidence, resolved/pending findings and credit differences in state and registration output.
+- [x] Add upgrade discovery/validation/reporting for legacy recoveries across active/completed/archived authoritative records; repeat safely without journal conversion, synthetic approval, run resumption or automatic project commits.
+- [x] Update author/reviewer templates and phase-execution/plan-review skills across supported delegation modes with authorize → amend → assess → register → resume, including structured `amendmentScope` recording. Rationale prose is not scope.
+- [x] Replace misleading bind/drift remediation with actual supported commands and amendment-assessment requirements; document toolchain compatibility and initial binding distinction.
+- [x] Add deterministic Player Desk-shaped acceptance: unchanged Phase 1, affected Phase 2+, R7 scope-resolution, seven retained fixes, DC1 withdrawal, DC0 conservative carry, and unchanged baseline.
+- [x] Verify read-only dry-run/state against recorded fixtures, index rebuild/source-worktree removal, repeated amendments and interleaved guarded text amendments.
+- [x] Exercise a deterministic legacy-to-new lifecycle: repeated frontier recoveries, intervening reviews, earlier phase completion and text amendments → upgrade/rebuild with identical historical authority → resume → register a new-format amendment against the final legacy predecessor; malformed/ambiguous histories fail closed.
+- [x] Verify the effective installed/rendered asset contract, including retired recovery guidance and amendment reassessment, using `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`.
+- [x] Run focused suites, `bun run typecheck`, `bun run lint`, and the full configured quality gates before final review; complete only after all work items and acceptance cases pass.
 
 ## Files Touched
 

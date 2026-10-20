@@ -166,6 +166,57 @@ export type EffectiveExecutionResult =
 	| EffectiveExecution
 	| { ok: false; diagnostic: RevisionFoldDiagnostic };
 
+export interface RevisionHistoryEntry {
+	id: string;
+	kind: EffectiveRevision["kind"];
+	predecessorId: string | null;
+	earliestAffectedPhase: string | null;
+	authorizationId: string | null;
+}
+
+/** Operator view of original binding provenance versus the effective revision. */
+export interface RevisionProvenance {
+	ok: true;
+	completionAuthorized: false;
+	original: {
+		bindingId: string;
+		sourceRunId: string;
+		sourceSnapshotId: string;
+		sourceBaselineId: string;
+		approvedPlanCommit: string;
+		approvedPlanHash: string;
+		initialRevisionId: string;
+		b0: number;
+		governingB: number;
+		mode: ImplementationBindingPayload["mode"];
+	};
+	effective: {
+		revisionId: string;
+		kind: EffectiveRevision["kind"];
+		predecessorId: string | null;
+		approvedPlanHash: string;
+		earliestAffectedPhase: string | null;
+		authorizationId: string | null;
+		legacy: NonNullable<EffectiveRevision["legacy"]> | null;
+	};
+	history: RevisionHistoryEntry[];
+	affectedPhases: string[];
+	retainedEvidence: RevisionEvidence[];
+	pendingFindings: EffectiveFinding[];
+	resolvedFindings: EffectiveFinding[];
+	creditDifferences: AmendmentClaimEdit[];
+	/** Claims with no edit on the effective revision. Affected-phase evidence still does not certify. */
+	unchangedClaimIds: string[];
+	baselineUnchanged: true;
+}
+
+export interface RevisionProvenanceFailure {
+	ok: false;
+	completionAuthorized: false;
+	original: RevisionProvenance["original"];
+	diagnostic: RevisionFoldDiagnostic;
+}
+
 interface ObservedFinding {
 	phase: string;
 	observationId: string;
@@ -2081,6 +2132,7 @@ export interface ImplementationAmendmentRegistration {
 		claimEdits: AmendmentClaimEdit[];
 		resolvedFindings: AmendmentResolvedFinding[];
 	};
+	provenance: RevisionProvenance;
 	step: {
 		idempotencyKey: string;
 		iteration: number;
@@ -2161,6 +2213,247 @@ function resultObject(
 	if (!result || typeof result !== "object" || Array.isArray(result))
 		return null;
 	return result as Record<string, unknown>;
+}
+
+function originalProvenance(
+	binding: ImplementationBindingPayload,
+): RevisionProvenance["original"] {
+	return {
+		bindingId: binding.id,
+		sourceRunId: binding.sourceRunId,
+		sourceSnapshotId: binding.sourceSnapshotId,
+		sourceBaselineId: binding.sourceBaselineId,
+		approvedPlanCommit: binding.approvedPlanCommit,
+		approvedPlanHash: binding.approvedPlanHash,
+		initialRevisionId: initialRevisionId(binding.id),
+		b0: binding.b0,
+		governingB: binding.governingB,
+		mode: binding.mode,
+	};
+}
+
+function historyEntry(revision: EffectiveRevision): RevisionHistoryEntry {
+	return {
+		id: revision.id,
+		kind: revision.kind,
+		predecessorId: revision.predecessorId,
+		earliestAffectedPhase: revision.earliestAffectedPhase ?? null,
+		authorizationId: revision.authorizationId ?? null,
+	};
+}
+
+function affectedPhaseIds(
+	phaseMap: readonly { id: string }[],
+	earliest: string | null,
+): string[] {
+	if (!earliest) return [];
+	const index = phaseMap.findIndex((phase) => phase.id === earliest);
+	if (index < 0) return [];
+	return phaseMap.slice(index).map((phase) => phase.id);
+}
+
+function ledgerClaimIds(binding: ImplementationBindingPayload): string[] {
+	const ids: string[] = [];
+	for (const item of binding.ledger.workItems) {
+		const claimId = item.debtClaim?.debtClaimId;
+		if (claimId && !ids.includes(claimId)) ids.push(claimId);
+	}
+	return ids;
+}
+
+function creditEditsFor(
+	execution: EffectiveExecution,
+	revisionId: string,
+): AmendmentClaimEdit[] {
+	return (
+		execution.dispositions.find((entry) => entry.revisionId === revisionId)
+			?.claimEdits ?? []
+	);
+}
+
+/**
+ * Separate the immutable binding from the selected revision. Registration
+ * success is never implementation completion.
+ */
+export function presentRevisionProvenance(input: {
+	binding: ImplementationBindingPayload;
+	execution: EffectiveExecution;
+}): RevisionProvenance {
+	const selected =
+		input.execution.revisions.find(
+			(revision) => revision.id === input.execution.currentRevisionId,
+		) ?? input.execution.revisions.at(-1);
+	if (!selected) {
+		throw new TypeError("Effective execution has no revision.");
+	}
+	const creditDifferences = creditEditsFor(input.execution, selected.id);
+	const edited = new Set(creditDifferences.map((edit) => edit.creditClaimId));
+	return {
+		ok: true,
+		completionAuthorized: false,
+		original: originalProvenance(input.binding),
+		effective: {
+			revisionId: selected.id,
+			kind: selected.kind,
+			predecessorId: selected.predecessorId,
+			approvedPlanHash: selected.approvedPlanHash,
+			earliestAffectedPhase: selected.earliestAffectedPhase ?? null,
+			authorizationId: selected.authorizationId ?? null,
+			legacy: selected.legacy ?? null,
+		},
+		history: input.execution.revisions.map(historyEntry),
+		affectedPhases: affectedPhaseIds(
+			input.binding.phaseMap,
+			selected.earliestAffectedPhase ?? null,
+		),
+		retainedEvidence: input.execution.evidence.filter(
+			(entry) => entry.applicability !== "invalidated",
+		),
+		pendingFindings: input.execution.findings.filter(
+			(finding) => finding.status === "pending",
+		),
+		resolvedFindings: input.execution.findings.filter(
+			(finding) => finding.status === "amendment_resolved",
+		),
+		creditDifferences,
+		unchangedClaimIds: ledgerClaimIds(input.binding).filter(
+			(claimId) => !edited.has(claimId),
+		),
+		baselineUnchanged: true,
+	};
+}
+
+export function readRevisionProvenance(input: {
+	binding: ImplementationBindingPayload;
+	recordStore: RecordStore;
+	runId: string;
+}): RevisionProvenance | RevisionProvenanceFailure {
+	const folded = foldEffectiveExecution({
+		recordStore: input.recordStore,
+		runId: input.runId,
+	});
+	if (!folded.ok) {
+		return {
+			ok: false,
+			completionAuthorized: false,
+			original: originalProvenance(input.binding),
+			diagnostic: folded.diagnostic,
+		};
+	}
+	return presentRevisionProvenance({
+		binding: input.binding,
+		execution: folded,
+	});
+}
+
+function presentRegistrationProvenance(input: {
+	binding: ImplementationBindingPayload;
+	execution: EffectiveExecution;
+	amendmentId: string;
+	predecessorRevisionId: string;
+	approvedPlanHash: string;
+	earliestAffectedPhase: string;
+	authorizationId: string;
+	affectedPhases: readonly string[];
+	pendingFindings: ReadonlyArray<{
+		phase: string;
+		observationId: string;
+		findingId: string;
+		fingerprint: string;
+	}>;
+	resolvedFindings: readonly AmendmentResolvedFinding[];
+	claimEdits: readonly AmendmentClaimEdit[];
+	invalidatedObservationIds: readonly string[];
+	invalidatedContextIds: readonly string[];
+}): RevisionProvenance {
+	const recorded = input.execution.revisions.some(
+		(revision) => revision.id === input.amendmentId,
+	);
+	if (recorded && input.execution.currentRevisionId === input.amendmentId) {
+		const live = presentRevisionProvenance({
+			binding: input.binding,
+			execution: input.execution,
+		});
+		return {
+			...live,
+			affectedPhases: [...input.affectedPhases],
+			creditDifferences: [...input.claimEdits],
+			unchangedClaimIds: ledgerClaimIds(input.binding).filter(
+				(claimId) =>
+					!input.claimEdits.some((edit) => edit.creditClaimId === claimId),
+			),
+		};
+	}
+	const invalidatedObservations = new Set(input.invalidatedObservationIds);
+	const invalidatedContexts = new Set(input.invalidatedContextIds);
+	const history = input.execution.revisions.map(historyEntry);
+	if (!recorded) {
+		history.push({
+			id: input.amendmentId,
+			kind: "implementation_plan_amendment",
+			predecessorId: input.predecessorRevisionId,
+			earliestAffectedPhase: input.earliestAffectedPhase,
+			authorizationId: input.authorizationId,
+		});
+	}
+	const recordedRevision = new Map(
+		input.execution.findings.map((finding) => [
+			`${finding.phase}\u0000${finding.observationId}\u0000${finding.findingId}`,
+			finding.recordedRevisionId,
+		]),
+	);
+	return {
+		ok: true,
+		completionAuthorized: false,
+		original: originalProvenance(input.binding),
+		effective: {
+			revisionId: input.amendmentId,
+			kind: "implementation_plan_amendment",
+			predecessorId: input.predecessorRevisionId,
+			approvedPlanHash: input.approvedPlanHash,
+			earliestAffectedPhase: input.earliestAffectedPhase,
+			authorizationId: input.authorizationId,
+			legacy: null,
+		},
+		history,
+		affectedPhases: [...input.affectedPhases],
+		retainedEvidence: input.execution.evidence.filter((entry) => {
+			if (entry.applicability === "invalidated") return false;
+			if (
+				entry.observationId !== undefined &&
+				invalidatedObservations.has(entry.observationId)
+			) {
+				return false;
+			}
+			return !invalidatedContexts.has(entry.recordId);
+		}),
+		pendingFindings: input.pendingFindings.map((finding) => ({
+			...finding,
+			recordedRevisionId:
+				recordedRevision.get(
+					`${finding.phase}\u0000${finding.observationId}\u0000${finding.findingId}`,
+				) ?? input.predecessorRevisionId,
+			status: "pending" as const,
+		})),
+		resolvedFindings: input.resolvedFindings.map((finding) => ({
+			phase: finding.phase,
+			observationId: finding.observationId,
+			findingId: finding.findingId,
+			fingerprint: finding.fingerprint,
+			recordedRevisionId:
+				recordedRevision.get(
+					`${finding.phase}\u0000${finding.observationId}\u0000${finding.findingId}`,
+				) ?? input.predecessorRevisionId,
+			status: "amendment_resolved" as const,
+			reason: finding.reason,
+		})),
+		creditDifferences: [...input.claimEdits],
+		unchangedClaimIds: ledgerClaimIds(input.binding).filter(
+			(claimId) =>
+				!input.claimEdits.some((edit) => edit.creditClaimId === claimId),
+		),
+		baselineUnchanged: true,
+	};
 }
 
 /** Validate and, unless dry-run, durably append one semantic amendment. */
@@ -2801,6 +3094,21 @@ export async function registerImplementationAmendment(
 			claimEdits: assessment.claimEdits,
 			resolvedFindings: assessment.resolvedFindings,
 		},
+		provenance: presentRegistrationProvenance({
+			binding,
+			execution: folded,
+			amendmentId,
+			predecessorRevisionId: scope.predecessorRevisionId,
+			approvedPlanHash: approvedHash,
+			earliestAffectedPhase: assessment.earliestAffectedPhase,
+			authorizationId: authorization.decisionId,
+			affectedPhases: affected,
+			pendingFindings,
+			resolvedFindings: assessment.resolvedFindings,
+			claimEdits: assessment.claimEdits,
+			invalidatedObservationIds,
+			invalidatedContextIds,
+		}),
 		step: {
 			idempotencyKey: stepKey,
 			iteration,

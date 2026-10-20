@@ -162,6 +162,9 @@ import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	foldEffectiveExecution,
 	phaseReopenedByRevision,
+	type RevisionProvenance,
+	type RevisionProvenanceFailure,
+	readRevisionProvenance,
 } from "../review-governance/implementation-amendment.js";
 import {
 	evaluateStoredImplementationBoundary,
@@ -1257,6 +1260,11 @@ export interface ImplementationGovernanceState
 		architectureVariance: number;
 	} | null;
 	credit: ImplementationGovernanceCreditView | null;
+	/**
+	 * Original binding provenance versus the effective revision. Absent when
+	 * the caller did not supply a record store. Never implementation completion.
+	 */
+	revision?: RevisionProvenance | RevisionProvenanceFailure;
 }
 
 function phaseOrdinal(
@@ -1395,6 +1403,8 @@ export function presentImplementationGovernance(input: {
 	reconciliations: readonly ImplementationCreditReconciliationPayload[];
 	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
 	activeGate: DerivedImplementationGate | null;
+	recordStore?: RecordStore;
+	runId?: string;
 }): ImplementationGovernanceState {
 	const binding = input.binding;
 	const observations = binding
@@ -1493,6 +1503,15 @@ export function presentImplementationGovernance(input: {
 					}
 				: null,
 		credit: binding ? creditView(binding, input.reconciliations) : null,
+		...(binding && input.recordStore && input.runId
+			? {
+					revision: readRevisionProvenance({
+						binding,
+						recordStore: input.recordStore,
+						runId: input.runId,
+					}),
+				}
+			: {}),
 	};
 }
 
@@ -1546,6 +1565,8 @@ function tryPresentImplementationGovernance(
 				input.runId,
 				binding,
 			),
+			recordStore: input.recordStore,
+			runId: input.runId,
 		});
 	} catch (error) {
 		warn(
@@ -1888,6 +1909,42 @@ export function formatStateText(data: {
 		if (governance.binding) {
 			console.log(
 				`Implementation binding: id=${governance.binding.id} source_run=${governance.binding.sourceRunId} source_snapshot=${governance.binding.sourceSnapshotId} mode=${governance.binding.mode}`,
+			);
+		}
+		if (governance.revision?.ok) {
+			const revision = governance.revision;
+			const history = revision.history
+				.map((entry) => `${entry.kind}:${entry.id}`)
+				.join(" -> ");
+			const pending = revision.pendingFindings
+				.map((finding) => finding.findingId)
+				.join(",");
+			const resolved = revision.resolvedFindings
+				.map((finding) => finding.findingId)
+				.join(",");
+			const credits =
+				revision.creditDifferences
+					.map((edit) => `${edit.creditClaimId}=${edit.effect}`)
+					.join(",") || "none";
+			console.log(
+				`Implementation provenance: original_binding=${revision.original.bindingId} original_source=${revision.original.sourceRunId} original_commit=${revision.original.approvedPlanCommit} original_hash=${revision.original.approvedPlanHash} effective_revision=${revision.effective.revisionId} effective_kind=${revision.effective.kind} effective_hash=${revision.effective.approvedPlanHash} completion_authorized=no`,
+			);
+			console.log(`Implementation history: ${history}`);
+			console.log(
+				`Implementation affected phases: ${revision.affectedPhases.join(",") || "none"}`,
+			);
+			console.log(
+				`Implementation retained evidence: ${revision.retainedEvidence.length}`,
+			);
+			console.log(
+				`Implementation findings: pending=${pending || "none"} resolved=${resolved || "none"}`,
+			);
+			console.log(
+				`Implementation credit differences: ${credits} unchanged=${revision.unchangedClaimIds.join(",") || "none"} baseline_unchanged=yes`,
+			);
+		} else if (governance.revision) {
+			console.log(
+				`Implementation provenance: original_binding=${governance.revision.original.bindingId} lineage=invalid completion_authorized=no diagnostic=${governance.revision.diagnostic.message}`,
 			);
 		}
 		if (governance.reviewedRange) {

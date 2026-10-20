@@ -262,12 +262,17 @@ describe("implementation review skill branches", () => {
 				);
 			}
 			expect(content).toContain("5x review corrections finish");
-			expect(content).toContain("5x review implementation recover-plan");
-			expect(content).toContain("--confirm-preserved-phases");
-			expect(content).toContain("Recovery never completes a phase");
 			expect(content).toContain(
-				"supports repeated\nrecoveries, each with a new authorization and plan review",
+				"authorize → amend → assess → register → resume",
 			);
+			expect(content).toContain("amendmentScope");
+			expect(content).toContain("Rationale prose is not scope");
+			expect(content).toContain("exact hash");
+			expect(content).toContain("5x review implementation amend");
+			expect(content).toContain("Registration does not complete a phase");
+			expect(content).toContain("recover-plan` is retired");
+			expect(content).not.toContain("--confirm-preserved-phases");
+			expect(content).not.toContain("5x review implementation recover-plan\n");
 			expect(content).toContain("5x review decide --gate");
 			expect(content).toContain("revise_plan");
 			expect(content).toContain("inheritedBudgetGovernance");
@@ -283,6 +288,24 @@ describe("implementation review skill branches", () => {
 			expect(content).toContain("--continue-native");
 			expect(content).not.toContain("baselineAssessment");
 			expect(content).not.toContain("projectedEffort");
+		}
+	});
+
+	test("plan skills require structured scope in every delegation mode", () => {
+		for (const { context } of roleCases) {
+			for (const name of ["5x-plan", "5x-plan-review"] as const) {
+				const content = renderSkillByName(name, context).content;
+				expect(content).toContain(
+					"authorize → amend → assess → register → resume",
+				);
+				expect(content).toContain("amendmentScope");
+				expect(content).toContain("Rationale prose is not scope");
+				expect(content).toContain("exact hash");
+				expect(content).not.toContain("--confirm-preserved-phases");
+				expect(content).not.toContain(
+					"5x review implementation recover-plan\n",
+				);
+			}
 		}
 	});
 

@@ -56,7 +56,10 @@ ReviewerVerdict fields:
   arrays are explicit. Do not omit a list, and do not infer carry, finding
   resolution, or claim effects from readiness, summary, or rationale. Copy the
   predecessor revision and reviewed plan hash from the trusted amendment
-  review context, and review the plan diff.
+  review context, and review the plan diff. A final correction that changes
+  that hash requires a new assessment; do not reuse the previous one. Initial
+  plan reviews keep the ordinary final-correction shortcut. Rationale is not
+  amendmentScope.
 
 ${CLOSURE_EVIDENCE_HELP}
 

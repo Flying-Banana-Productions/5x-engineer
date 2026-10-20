@@ -604,7 +604,7 @@ async function admitExistingBinding(
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_BINDING_CONFLICT",
-			message: `Run ${input.executionRunId} is already bound to ${binding.sourceRunId}; bind cannot replace that source. A same-run semantic change uses \`5x review implementation amend --help\` after a scoped authorization and amendment assessment.`,
+			message: `Run ${input.executionRunId} is already bound to source ${binding.sourceRunId}. \`5x review implementation bind\` attaches that initial source and cannot replace it. A semantic change requires structured amendmentScope on authorize_amendment, an amendmentAssessment of the exact plan hash, then \`5x review implementation amend\`. Rationale prose is not scope. Registration does not approve implementation completion. Older CLIs must not execute an amended run.`,
 			detail: {
 				bindingId: binding.id,
 				sourceRunId: binding.sourceRunId,
@@ -631,7 +631,8 @@ async function admitExistingBinding(
 			detail: {
 				bindingId: binding.id,
 				chainValid: false,
-				amendmentHelp: "5x review implementation amend --help",
+				amendmentHelp:
+					"5x review implementation amend after a scoped authorize_amendment and an exact-hash amendmentAssessment. 5x review implementation bind is only the initial source attachment. Older CLIs must not execute an amended run.",
 			},
 		};
 	}
@@ -659,7 +660,7 @@ async function admitExistingBinding(
 				bindingId: binding.id,
 				chainValid: amendments.ok && drift.chainValid,
 				amendmentHelp:
-					"5x review implementation amend --help (scoped authorization and amendment assessment)",
+					"5x review implementation amend after a scoped authorize_amendment and an exact-hash amendmentAssessment. Rationale prose is not scope. 5x review implementation bind does not repair drift. Older CLIs must not execute an amended run.",
 			},
 		};
 	}
@@ -1120,7 +1121,7 @@ export async function bindImplementationExecution(input: {
 			code: "IMPLEMENTATION_PLAN_DRIFT",
 			message:
 				drift.reason ??
-				"The execution plan differs from the approved plan bytes. Checkbox-only edits are ignored; other edits require amendment.",
+				"The execution plan differs from the approved plan bytes. Checkbox-only edits are ignored. `5x review implementation bind` only attaches the initial source; semantic edits require an amendmentAssessment after that binding exists.",
 		};
 	}
 	const decisions = assessed.approval.decisions;

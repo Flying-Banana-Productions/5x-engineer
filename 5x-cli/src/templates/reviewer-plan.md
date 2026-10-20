@@ -25,7 +25,7 @@ You are a Staff Engineer reviewing the implementation plan at `{{plan_path}}`.
    a known finding to a later review round.
 4. Write your review to `{{review_path}}`.
 
-When reviewing an implementation-run amendment, assess the exact committed amendment against its supplied authorization and shared-design impact. A ready verdict approves the plan only. It does not attach amended bytes to an existing implementation binding or approve implementation completion; the operator must complete the supported recovery/registration step.
+When reviewing an implementation-run amendment, copy the predecessor revision and reviewed plan hash from the trusted amendment context into `amendmentAssessment` and assess that exact committed hash, including shared-design impact. A ready verdict approves the plan document only. It does not attach the bytes, resolve findings, edit claims, or approve implementation completion. Rationale prose is not `amendmentScope`. If a later final-corrections pass changes the assessed bytes, this assessment is stale and must be replaced by a continued review of the new exact hash. Initial plan reviews keep the ordinary final-correction shortcut.
 
 ### Review Perspective
 
