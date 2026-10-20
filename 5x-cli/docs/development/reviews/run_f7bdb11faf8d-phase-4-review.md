@@ -6,7 +6,7 @@
 **Local verification:**
 - Focused asset suite plus the new acceptance file: `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts test/unit/review-governance/implementation-amendment-acceptance.test.ts` gives 33 pass, 0 fail.
 - `bun run typecheck` is clean. `bun run lint` is clean (454 files, no fixes).
-- Full suite: `bun run test` was started but had not finished when this review was committed. No full-suite result is claimed here; the author's closure must show it passing.
+- Full suite: `bun run test` gives 3949 pass, 0 fail across 257 files (finished after the first commit of this review).
 - Probe 1 (P1.1): I made a temporary copy of the Player Desk acceptance test that logs output after the second amendment. `repeated.provenance.unchangedClaimIds` was `["DC0","DC1"]`. `presentImplementationGovernance(...).revision` gave `creditDifferences: []` and `unchangedClaimIds: ["DC0","DC1"]`, even though DC1 was withdrawn by the first amendment. I deleted the copy afterwards.
 - Probe 2 (P1.2): I made a temporary copy of the git-history discovery test that commits a malformed `steps.jsonl` next to a valid recovery. `discoverLegacyRecoveryLineage` reported `lineageValid: true`, `resumeCompatible: true`, `diagnostic: null`. I deleted the copy afterwards.
 
