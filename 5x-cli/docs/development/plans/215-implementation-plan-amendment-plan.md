@@ -242,14 +242,14 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 **Completion gate:** A registered amendment permits correctly scoped author admission but cannot reuse affected completion authority or obsolete credit.
 
-- [ ] Route author admission, render/invoke/protocol paths and text-lineage replay through effective state without resetting binding/pre-author identities.
-- [ ] Replace recovery-specific authority/routing branches with the canonical fold and remove the independent `recover-plan` mutation path; preserve historical acceptance and allow legacy-to-new revision predecessors.
-- [ ] In `routing.ts`, withhold `final_corrections` when an amendment review's assessed bytes changed, and require continued scoped reassessment on native and invoke paths. Initial plan reviews retain the existing shortcut. `run-v1.handler.ts` only reads the persisted route.
-- [ ] Refresh revision-qualified code contexts even for unchanged endpoints; retain original continued-review range history and round counts.
-- [ ] Carry unresolved findings; suppress only explicitly amendment-resolved identities; preserve unchanged accepted decisions with recorded applicability.
-- [ ] Include revision in gate/decision/shortcut authority in both `store.ts` and `sqlite-index.ts`, using the same derivation inputs, and prevent stale guards, contexts, decisions and correction attempts from certifying affected phases. A rebuild must project the same gate identities and readiness.
-- [ ] Recompute approved budget under pinned B0/B/mode/thresholds; withdraw or edit a reserved claim only when both the authorization and the assessment enumerate that effect, and invalidate changed claim contracts without minting credit.
-- [ ] Apply carry/invalidation to phase advancement, completed-phase progress, phase completion and final run sealing; no bypass through old checklist/progress records.
+- [x] Route author admission, render/invoke/protocol paths and text-lineage replay through effective state without resetting binding/pre-author identities.
+- [x] Replace recovery-specific authority/routing branches with the canonical fold and remove the independent `recover-plan` mutation path; preserve historical acceptance and allow legacy-to-new revision predecessors.
+- [x] In `routing.ts`, withhold `final_corrections` when an amendment review's assessed bytes changed, and require continued scoped reassessment on native and invoke paths. Initial plan reviews retain the existing shortcut. `run-v1.handler.ts` only reads the persisted route.
+- [x] Refresh revision-qualified code contexts even for unchanged endpoints; retain original continued-review range history and round counts.
+- [x] Carry unresolved findings; suppress only explicitly amendment-resolved identities; preserve unchanged accepted decisions with recorded applicability.
+- [x] Include revision in gate/decision/shortcut authority in both `store.ts` and `sqlite-index.ts`, using the same derivation inputs, and prevent stale guards, contexts, decisions and correction attempts from certifying affected phases. A rebuild must project the same gate identities and readiness.
+- [x] Recompute approved budget under pinned B0/B/mode/thresholds; withdraw or edit a reserved claim only when both the authorization and the assessment enumerate that effect, and invalidate changed claim contracts without minting credit.
+- [x] Apply carry/invalidation to phase advancement, completed-phase progress, phase completion and final run sealing; no bypass through old checklist/progress records.
 
 ## Phase 4: State, Guidance and End-to-End Acceptance (W6)
 

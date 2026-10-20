@@ -1,5 +1,6 @@
 import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import type {
 	ImplementationBindingPayload,
@@ -27,6 +28,7 @@ import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
 } from "./implementation.js";
+import type { EffectiveExecution } from "./implementation-amendment.js";
 import {
 	listRecordedImplementationReviews,
 	readImplementationBinding,
@@ -288,9 +290,10 @@ function dueClaimsForPhase(
 	binding: ImplementationBindingPayload,
 	phaseId: string,
 	waivers: readonly ImplementationWaiverContext[],
+	ledger: ImplementationBindingPayload["ledger"] = binding.ledger,
 ): ImplementationDueClaimContext[] {
 	const claims: ImplementationDueClaimContext[] = [];
-	for (const item of binding.ledger.workItems) {
+	for (const item of ledger.workItems) {
 		if (item.architectureDelta >= 0) continue;
 		const claim = item.debtClaim;
 		if (!isCompleteDebtClaimEvidence(claim) || claim.coupling !== "intrinsic") {
@@ -352,10 +355,29 @@ export function buildImplementationReviewPromptContext(input: {
 	const steps = input.recordStore.listLines(input.runId, "steps");
 	const budget = input.recordStore.listLines(input.runId, "budget");
 	const listed = listImplementationDecisions(input.recordStore, input.runId);
+	const folded = input.store.readEffectiveImplementationRevision(input.runId);
+	const execution: EffectiveExecution | null = folded?.ok ? folded : null;
+	const invalidatedDecisions = new Set(
+		execution?.evidence
+			.filter(
+				(entry) =>
+					entry.stream === "decisions" && entry.applicability === "invalidated",
+			)
+			.map((entry) => entry.recordId) ?? [],
+	);
+	const editedClaims = new Set(
+		execution?.dispositions.flatMap((entry) =>
+			entry.claimEdits.map((edit) => edit.creditClaimId),
+		) ?? [],
+	);
 	const accepted = listed.decisions.filter(
 		(decision) =>
 			decision.bindingId === binding.id &&
-			classifyDecisionAcceptance({ decision, steps, budget }).accepted,
+			!invalidatedDecisions.has(decision.decisionId) &&
+			classifyDecisionAcceptance({ decision, steps, budget }).accepted &&
+			decision.claimAdjustments.every(
+				(adjustment) => !editedClaims.has(adjustment.creditClaimId),
+			),
 	);
 	const superseded = supersededIds(accepted);
 	const active = accepted.filter(
@@ -408,27 +430,31 @@ export function buildImplementationReviewPromptContext(input: {
 		},
 	);
 	const latest = observations.at(-1) ?? null;
-	const recovery = input.store
-		.listImplementationTextAmendments(input.runId, binding.id)
-		.findLast(
-			(entry) =>
-				entry.kind === "implementation-plan-recovery" &&
-				entry.phase === phaseId,
-		);
-	const recoveredAuthorization =
-		recovery?.kind === "implementation-plan-recovery"
-			? active.find(
-					(decision) => decision.decisionId === recovery.authorizationId,
-				)
-			: undefined;
-	const recoveredFindingIds = new Set(
-		recoveredAuthorization?.findingRefs.map((finding) => finding.findingId) ??
-			[],
+	const legacy = execution?.revisions.findLast(
+		(entry) =>
+			entry.kind === "legacy_frontier_recovery" &&
+			entry.earliestAffectedPhase === phaseId &&
+			entry.legacy !== undefined,
+	);
+	const pendingFindingIds = new Set(
+		execution?.findings
+			.filter(
+				(finding) => finding.phase === phaseId && finding.status === "pending",
+			)
+			.map((finding) => finding.findingId) ?? [],
+	);
+	const resolvedFindingIds = new Set(
+		execution?.findings
+			.filter(
+				(finding) =>
+					finding.phase === phaseId && finding.status === "amendment_resolved",
+			)
+			.map((finding) => finding.findingId) ?? [],
 	);
 	const resumingRecovery =
-		recovery?.kind === "implementation-plan-recovery" &&
-		latest &&
-		recovery.invalidatedObservationIds.includes(latest.id);
+		execution !== null &&
+		latest !== null &&
+		execution.invalidatedObservationIds.includes(latest.id);
 	const eligibility = latest
 		? evaluateImplementationCorrectionEligibility(latest.originalVerdict)
 		: null;
@@ -446,14 +472,16 @@ export function buildImplementationReviewPromptContext(input: {
 		) {
 			return [];
 		}
+		if (deferredFindingIds.has(item.id) || resolvedFindingIds.has(item.id)) {
+			return [];
+		}
 		if (
 			item.scopeClass === "plan_defect" &&
 			item.planImpact?.kind !== "text_only" &&
-			!recoveredFindingIds.has(item.id)
+			!pendingFindingIds.has(item.id)
 		) {
 			return [];
 		}
-		if (deferredFindingIds.has(item.id)) return [];
 		if (finalCorrection && item.id !== eligibility?.itemId) return [];
 		return [
 			{
@@ -461,13 +489,19 @@ export function buildImplementationReviewPromptContext(input: {
 				title: item.title,
 				scopeClass: item.scopeClass ?? "",
 				priority: item.priority ?? "",
-				action: recoveredFindingIds.has(item.id) ? "auto_fix" : item.action,
+				action: item.action,
 				reason: item.reason,
 				planWorkItemIds: [...(item.planWorkItemIds ?? [])],
 			},
 		];
 	});
-	const workItemsForPhase = binding.ledger.workItems.filter((item) =>
+	const parsedLedger = execution
+		? parseDeliveryBudget(execution.approvedPlanBytes)
+		: null;
+	const effectiveLedger = parsedLedger?.ok
+		? parsedLedger.value
+		: binding.ledger;
+	const workItemsForPhase = effectiveLedger.workItems.filter((item) =>
 		binding.debtTargets.some(
 			(target) =>
 				target.phaseId === phaseId &&
@@ -475,14 +509,14 @@ export function buildImplementationReviewPromptContext(input: {
 		),
 	);
 	return {
-		...(recovery?.kind === "implementation-plan-recovery"
+		...(legacy?.legacy
 			? {
 					planRecovery: {
-						id: recovery.id,
-						commit: recovery.afterCommit,
-						authorizationId: recovery.authorizationId,
-						scope: recovery.scopeConfirmation,
-						preservedPhases: recovery.preservedPhaseConfirmation,
+						id: legacy.id,
+						commit: legacy.legacy.commit,
+						authorizationId: legacy.authorizationId ?? "",
+						scope: legacy.legacy.scopeConfirmation,
+						preservedPhases: legacy.legacy.preservedPhaseConfirmation,
 					},
 				}
 			: {}),
@@ -493,7 +527,7 @@ export function buildImplementationReviewPromptContext(input: {
 				B0: binding.b0,
 				B: binding.governingB,
 				I: null,
-				workItems: binding.ledger.workItems,
+				workItems: effectiveLedger.workItems,
 				findings: [],
 				assessments: [],
 				config: binding.thresholds,
@@ -507,7 +541,7 @@ export function buildImplementationReviewPromptContext(input: {
 		approvedPlanCommit: binding.approvedPlanCommit,
 		phaseId,
 		phaseHeading: phase?.heading ?? "",
-		approvedWorkItemIds: binding.ledger.workItems.map((item) => item.id),
+		approvedWorkItemIds: effectiveLedger.workItems.map((item) => item.id),
 		phaseScope: [
 			...(phase ? [`${phase.id}: ${phase.heading}`] : []),
 			...workItemsForPhase.map((item) => `${item.id}: ${item.title}`),
@@ -521,8 +555,15 @@ export function buildImplementationReviewPromptContext(input: {
 					...(input.workdir ? { workdir: input.workdir } : {}),
 				})
 			: null,
-		requiredOutcomeIds: closure.priorCodeFindings.map((finding) => finding.id),
-		dueClaims: dueClaimsForPhase(binding, phaseId, waivers),
+		requiredOutcomeIds: execution
+			? execution.findings
+					.filter(
+						(finding) =>
+							finding.phase === phaseId && finding.status === "pending",
+					)
+					.map((finding) => finding.findingId)
+			: closure.priorCodeFindings.map((finding) => finding.id),
+		dueClaims: dueClaimsForPhase(binding, phaseId, waivers, effectiveLedger),
 		deferredOrAcceptedRisks: [...importedRisks(binding), ...risks],
 		debtWaivers: waivers,
 		authorRoute: resumingRecovery ? "author_revision" : (latest?.route ?? null),

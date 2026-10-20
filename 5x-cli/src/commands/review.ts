@@ -1,7 +1,6 @@
 import type { Command } from "@commander-js/extra-typings";
 import { outputError, outputSuccess } from "../output.js";
 import { resolveDbContext } from "./context.js";
-import { recoverImplementationPlanCommand } from "./implementation-recovery.handler.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
 	amendImplementationPlanCommand,
@@ -343,53 +342,6 @@ export function registerReview(parent: Command) {
 				await bindApprovedImplementation(
 					{ executionRunId: runId, sourceRunId: opts.sourceRun },
 					{ context },
-				),
-			);
-		});
-
-	implementation
-		.command("recover-plan")
-		.description(
-			"Operator-confirmed amendment recovery at an unfinished frontier; repeatable with a new authorization and plan review; preserves binding/baseline and requires fresh implementation review",
-		)
-		.requiredOption("--run <id>", "Existing execution run")
-		.requiredOption("--phase <p>", "Earliest affected, unfinished phase")
-		.requiredOption(
-			"--authorization <id>",
-			"Accepted authorize_amendment decision",
-		)
-		.requiredOption(
-			"--snapshot <id>",
-			"Latest completed same-run plan review snapshot",
-		)
-		.requiredOption(
-			"--commit <sha>",
-			"Full recorded plan-amendment author commit",
-		)
-		.requiredOption(
-			"--confirm-scope <text>",
-			"Operator attestation: exact reviewed commit stays within authorization; include operating restrictions",
-		)
-		.requiredOption(
-			"--confirm-preserved-phases <text>",
-			"Operator attestation: shared/design changes do not invalidate earlier phase approvals",
-		)
-		.option("--dry-run", "Validate and preview without appending recovery")
-		.action(async (opts) => {
-			const { runId, context } = await contextFor(opts.run);
-			outputSuccess(
-				await recoverImplementationPlanCommand(
-					{
-						runId,
-						phase: opts.phase,
-						authorizationId: opts.authorization,
-						snapshotId: opts.snapshot,
-						commit: opts.commit,
-						scopeConfirmation: opts.confirmScope,
-						preservedPhaseConfirmation: opts.confirmPreservedPhases,
-						dryRun: opts.dryRun,
-					},
-					context,
 				),
 			);
 		});

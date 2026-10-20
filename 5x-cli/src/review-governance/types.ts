@@ -209,6 +209,11 @@ export interface PlanReviewGovernanceResult {
 	findingOutcomes: Array<FindingIdentity & { status: PriorFindingStatus }>;
 	diagnostics: ClosureDiagnostic[];
 	hypotheticalEnforcedRoute?: PlanReviewRoute;
+	/**
+	 * Set when an amendment review's assessed bytes changed. Routing withholds
+	 * `final_corrections` and a later recompute keeps that requirement.
+	 */
+	amendmentReassessment?: boolean;
 }
 
 export type FinalCorrectionFailure =

@@ -325,6 +325,26 @@ describe("approved credit reconciliation", () => {
 		});
 	});
 
+	test("a withdrawn claim stays reserved and contributes no credit", () => {
+		const source = binding();
+		const result = reconcile({
+			binding: source,
+			effectiveLedger: {
+				...source.ledger,
+				workItems: [],
+			},
+			claimEdits: [{ creditClaimId: "DC1", effect: "withdraw" }],
+			realizations: [realized("DC1", -3)],
+		});
+		expect(result).toMatchObject({
+			status: "rejected",
+			code: "CREDIT_CLAIM_UNKNOWN",
+		});
+		if (result.status === "rejected") {
+			expect(result.message).toContain("withdrawn");
+		}
+	});
+
 	test("independently recorded binding evidence rejects a hash or id mismatch", () => {
 		const source = binding();
 		const recorded = {

@@ -11,6 +11,7 @@ import { CliError } from "../../../src/output.js";
 import type { ImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { encodeImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import {
 	deriveOpenImplementationGate,
@@ -97,7 +98,7 @@ function seed(mode: "advisory" | "enforced" = "enforced") {
 			sourceSnapshotId: "snap",
 			sourceBaselineId: "base",
 			approvedPlanCommit: "c".repeat(40),
-			approvedPlanHash: "sha256:plan",
+			approvedPlanHash: hashPlanBytes("# Plan\n"),
 			approvedPlanBytes: "# Plan\n",
 			b0: 5,
 			governingB: 5,

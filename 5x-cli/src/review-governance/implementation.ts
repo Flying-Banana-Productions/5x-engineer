@@ -31,6 +31,7 @@ import {
 	type ReviewDecisionPayload,
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
+import { foldEffectiveExecution } from "./implementation-amendment.js";
 import { detectPlanDrift } from "./implementation-state.js";
 import {
 	planDefectBlocksShortcut,
@@ -708,9 +709,22 @@ export function readImplementationCodeClosure(
 		}
 	}
 	const latest = verdicts.at(-1);
+	const folded = binding
+		? foldEffectiveExecution({ recordStore, runId })
+		: null;
+	const pendingFindings =
+		folded?.ok === true
+			? folded.findings
+					.filter(
+						(finding) =>
+							finding.phase === phaseId && finding.status === "pending",
+					)
+					.map((finding) => ({ id: finding.findingId }))
+			: null;
 	return {
 		priorReviewCount,
-		priorCodeFindings: latest ? openCodeFindings(latest) : [],
+		priorCodeFindings:
+			pendingFindings ?? (latest ? openCodeFindings(latest) : []),
 		priorCodeDecisions: codeClosureDecisions(
 			listGovernanceDecisions(recordStore, runId).decisions,
 		),

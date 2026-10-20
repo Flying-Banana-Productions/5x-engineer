@@ -439,6 +439,11 @@ export function deriveGateId(input: {
 	phase?: string;
 	bindingId?: string;
 	observationId?: string;
+	/**
+	 * Included only when the stored observation has the field. Attributed
+	 * revisions are not substituted, so historical gate ids stay stable.
+	 */
+	revisionId?: string;
 }): string {
 	const value = canonical({
 		runId: input.runId,
@@ -451,10 +456,38 @@ export function deriveGateId(input: {
 					phase: input.phase,
 					bindingId: input.bindingId,
 					observationId: input.observationId,
+					...(input.revisionId !== undefined
+						? { revisionId: input.revisionId }
+						: {}),
 				}
 			: {}),
 	});
 	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+/** Same gate identity inputs for live derivation and index rebuild. */
+export function implementationObservationGateId(input: {
+	runId: string;
+	phase: string;
+	bindingId: string;
+	observationId: string;
+	causes: readonly ImplementationObservationGateCause[];
+	predecessorGateId?: string;
+	revisionId?: string;
+}): string {
+	return deriveGateId({
+		runId: input.runId,
+		snapshotId: input.observationId,
+		causes: input.causes,
+		...(input.predecessorGateId
+			? { predecessorGateId: input.predecessorGateId }
+			: {}),
+		domain: "implementation",
+		phase: input.phase,
+		bindingId: input.bindingId,
+		observationId: input.observationId,
+		...(input.revisionId !== undefined ? { revisionId: input.revisionId } : {}),
+	});
 }
 
 export function governanceDecisionKey(gateId: string): string {

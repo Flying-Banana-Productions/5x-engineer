@@ -95,6 +95,12 @@ export interface EffectiveRevision {
 	earliestAffectedPhase?: string;
 	/** Legacy revisions are not given a synthetic reviewer assessment. */
 	amendmentAssessment: null;
+	/** Operator attestations copied from a historical recovery receipt. */
+	legacy?: {
+		scopeConfirmation: string;
+		preservedPhaseConfirmation: string;
+		commit: string;
+	};
 }
 
 export interface RegisteredDisposition {
@@ -144,6 +150,16 @@ export interface EffectiveExecution {
 	dispositions: RegisteredDisposition[];
 	evidence: RevisionEvidence[];
 	findings: EffectiveFinding[];
+	/**
+	 * Authorized plan at the selected prefix, including text amendments
+	 * recorded during that revision. Not a second byte chain.
+	 */
+	approvedPlanBytes: string;
+	approvedPlanHash: string;
+	/** Lineage parent at the end of the selected prefix. */
+	lineageParentId: string | null;
+	invalidatedContextIds: string[];
+	invalidatedObservationIds: string[];
 }
 
 export type EffectiveExecutionResult =
@@ -546,6 +562,18 @@ export function foldEffectiveExecution(input: {
 	let authorizedBytes = binding.approvedPlanBytes;
 	let authorizedHash = binding.approvedPlanHash;
 	let parent: string | null = null;
+	const authorizedAt = new Map<
+		string,
+		{ bytes: string; hash: string; parentId: string | null }
+	>();
+	const rememberAuthorized = () => {
+		authorizedAt.set(currentRevisionId, {
+			bytes: authorizedBytes,
+			hash: authorizedHash,
+			parentId: parent,
+		});
+	};
+	rememberAuthorized();
 
 	const revisionIds = () => new Set(revisions.map((revision) => revision.id));
 
@@ -822,6 +850,7 @@ export function foldEffectiveExecution(input: {
 			authorizedBytes = bytes;
 			authorizedHash = afterHash;
 			parent = lineage.id;
+			rememberAuthorized();
 			continue;
 		}
 
@@ -1160,6 +1189,15 @@ export function foldEffectiveExecution(input: {
 			authorizationId: lineage.authorizationId,
 			earliestAffectedPhase: frontier,
 			amendmentAssessment: null,
+			...(lineage.kind === "implementation-plan-recovery"
+				? {
+						legacy: {
+							scopeConfirmation: lineage.scopeConfirmation,
+							preservedPhaseConfirmation: lineage.preservedPhaseConfirmation,
+							commit: lineage.afterCommit,
+						},
+					}
+				: {}),
 		});
 		boundaries.push({
 			id: lineage.id,
@@ -1172,6 +1210,7 @@ export function foldEffectiveExecution(input: {
 		authorizedBytes = bytes;
 		authorizedHash = afterHash;
 		parent = lineage.id;
+		rememberAuthorized();
 	}
 
 	const observationById = new Map(
@@ -1480,7 +1519,60 @@ export function foldEffectiveExecution(input: {
 		),
 		evidence,
 		findings,
+		approvedPlanBytes:
+			authorizedAt.get(selected.id)?.bytes ?? selected.approvedPlanBytes,
+		approvedPlanHash:
+			authorizedAt.get(selected.id)?.hash ?? selected.approvedPlanHash,
+		lineageParentId: authorizedAt.get(selected.id)?.parentId ?? null,
+		invalidatedContextIds: [...invalidatedContexts],
+		invalidatedObservationIds: [...invalidatedObservations],
 	};
+}
+
+/** Omitted on the initial revision so ordinary gate ids stay unchanged. */
+export function revisionStamp(
+	execution: Pick<
+		EffectiveExecution,
+		"currentRevisionId" | "initialRevisionId"
+	>,
+): string | undefined {
+	return execution.currentRevisionId === execution.initialRevisionId
+		? undefined
+		: execution.currentRevisionId;
+}
+
+/**
+ * True when a bound run is reviewing plan bytes that are not the effective
+ * approved revision. Unbound plan reviews are not amendment reassessments.
+ */
+export function planBytesDifferFromEffectiveRevision(input: {
+	recordStore: RecordStore;
+	runId: string;
+	planBytes: string;
+}): boolean {
+	const folded = foldEffectiveExecution({
+		recordStore: input.recordStore,
+		runId: input.runId,
+	});
+	if (!folded.ok) return false;
+	return hashPlanBytes(input.planBytes) !== folded.approvedPlanHash;
+}
+
+export function phaseReopenedByRevision(input: {
+	phaseMap: readonly { id: string }[];
+	execution: EffectiveExecution;
+	phaseId: string;
+}): boolean {
+	const revision = input.execution.revisions.find(
+		(entry) => entry.id === input.execution.currentRevisionId,
+	);
+	const boundary = revision?.earliestAffectedPhase;
+	if (!boundary) return false;
+	const ids = input.phaseMap.map((phase) => phase.id);
+	const boundaryIndex = ids.indexOf(boundary);
+	const phaseIndex = ids.indexOf(input.phaseId);
+	if (boundaryIndex < 0 || phaseIndex < 0) return true;
+	return phaseIndex >= boundaryIndex;
 }
 
 function canonicalIntent(value: unknown): string {

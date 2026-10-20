@@ -104,7 +104,7 @@ function binding(input?: {
 		sourceSnapshotId: "snap",
 		sourceBaselineId: "base",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		approvedPlanBytes: "# Plan\n",
 		b0: governingB,
 		governingB,

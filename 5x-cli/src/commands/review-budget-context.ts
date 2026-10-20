@@ -38,6 +38,7 @@ import {
 } from "../review-budget/record-lines.js";
 import { applyPlanReviewGovernance } from "../review-governance/apply.js";
 import { validateClosureReview } from "../review-governance/closure.js";
+import { planBytesDifferFromEffectiveRevision } from "../review-governance/implementation-amendment.js";
 import {
 	buildPlanReviewDiffContext,
 	PlanDiffError,
@@ -345,6 +346,13 @@ export async function composePlanReviewerRecord(input: {
 			}
 		}
 	}
+	const amendmentReassessment =
+		input.verdict.amendmentAssessment !== undefined ||
+		planBytesDifferFromEffectiveRevision({
+			recordStore: input.ctx.recordStore,
+			runId: input.runId,
+			planBytes: input.planMarkdown,
+		});
 	const composed = applyPlanReviewGovernance({
 		verdict: input.verdict,
 		budgetResult: budget,
@@ -354,6 +362,7 @@ export async function composePlanReviewerRecord(input: {
 		mode: activeBaseline.mode,
 		...(diffContext ? { diffContext } : {}),
 		...(diffContextFailure ? { diffContextFailure } : {}),
+		...(amendmentReassessment ? { amendmentReassessment: true } : {}),
 	});
 	return composed.status === "error"
 		? { ...composed, detail: { diagnostics: composed.diagnostics } }

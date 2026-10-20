@@ -7,6 +7,7 @@
  * it cannot invent assessments or clear a shortfall.
  */
 
+import type { AmendmentClaimEdit } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import type {
 	ImplementationBindingPayload,
@@ -19,6 +20,7 @@ import type {
 } from "../review-budget/record-lines.js";
 import {
 	isCompleteDebtClaimEvidence,
+	type ParsedDeliveryBudget,
 	type ParsedWorkItem,
 } from "../review-budget/types.js";
 import { deriveInheritedBudgetGovernance } from "./architecture-approval.js";
@@ -83,6 +85,13 @@ export interface CreditReconciliationInput {
 	stepKey?: ImplementationReviewStepKey;
 	supersedesId?: string | null;
 	createdAt?: string;
+	/**
+	 * Approved plan after registered amendments. Omitted revisions keep the
+	 * binding ledger. Effects apply only when registration recorded them.
+	 */
+	effectiveLedger?: ParsedDeliveryBudget;
+	claimEdits?: readonly AmendmentClaimEdit[];
+	invalidatedObservationIds?: ReadonlySet<string>;
 }
 
 export interface CreditReconciliationRejection {
@@ -225,8 +234,17 @@ function carriedAssessment(
 		) {
 			continue;
 		}
+		if (input.invalidatedObservationIds?.has(prior.observationId)) continue;
 		const claim = prior.claims.find((item) => item.creditClaimId === claimId);
 		if (!claim) continue;
+		const edited = input.claimEdits?.some(
+			(edit) =>
+				edit.creditClaimId === claimId &&
+				(edit.effect === "edit_contract" ||
+					edit.effect === "reduce_magnitude" ||
+					edit.effect === "withdraw"),
+		);
+		if (edited) continue;
 		const proof = attempts.some((attempt) =>
 			proofCarries(attempt, prior, input.reviewedCommit, input.binding.id),
 		);
@@ -238,6 +256,7 @@ function carriedAssessment(
 
 function approvedClaims(
 	binding: ImplementationBindingPayload,
+	ledger: ParsedDeliveryBudget = binding.ledger,
 ): ApprovedClaim[] | CreditReconciliationRejection {
 	const seenTargets = new Set<string>();
 	for (const target of binding.debtTargets) {
@@ -258,7 +277,7 @@ function approvedClaims(
 		}
 	}
 	const claims: ApprovedClaim[] = [];
-	for (const item of binding.ledger.workItems) {
+	for (const item of ledger.workItems) {
 		const claim = eligibleClaim(item);
 		if (!claim) continue;
 		const target = binding.debtTargets.find(
@@ -517,8 +536,16 @@ export function reconcileApprovedCredits(
 			message: `Phase ${input.phase} is not in the binding phase map.`,
 		};
 	}
-	const approved = approvedClaims(input.binding);
+	const approved = approvedClaims(
+		input.binding,
+		input.effectiveLedger ?? input.binding.ledger,
+	);
 	if (!Array.isArray(approved)) return approved;
+	const withdrawn = new Set(
+		(input.claimEdits ?? [])
+			.filter((edit) => edit.effect === "withdraw")
+			.map((edit) => edit.creditClaimId),
+	);
 	const approvedById = new Map(
 		approved.map((claim) => [claim.creditClaimId, claim]),
 	);
@@ -532,6 +559,13 @@ export function reconcileApprovedCredits(
 			};
 		}
 		seen.add(realization.creditClaimId);
+		if (withdrawn.has(realization.creditClaimId)) {
+			return {
+				status: "rejected",
+				code: "CREDIT_CLAIM_UNKNOWN",
+				message: `Credit realization ${realization.creditClaimId} names a withdrawn claim. The id stays reserved and contributes no credit.`,
+			};
+		}
 		const claim = approvedById.get(realization.creditClaimId);
 		if (!claim) {
 			return {
@@ -819,7 +853,7 @@ export function reconcileApprovedCredits(
 		B0: input.binding.b0,
 		B: input.binding.governingB,
 		I: null,
-		workItems: input.binding.ledger.workItems,
+		workItems: (input.effectiveLedger ?? input.binding.ledger).workItems,
 		findings: [],
 		assessments: [],
 		config: input.binding.thresholds,

@@ -14,6 +14,7 @@ import {
 	getRunV1,
 	recordStep,
 } from "../db/operations-v1.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	isImplementationScopeClass,
 	type ReviewerVerdict,
@@ -392,6 +393,23 @@ export async function composeImplementationReviewerRecord(input: {
 	if (!binding) {
 		return { status: "skipped", reason: "not_implementation" };
 	}
+	const folded = input.ctx.store.readEffectiveImplementationRevision(
+		input.runId,
+	);
+	const bytesChanged =
+		folded?.ok === true &&
+		folded.approvedPlanBytes !== binding.approvedPlanBytes;
+	const effectiveLedger = bytesChanged
+		? parseDeliveryBudget(folded.approvedPlanBytes)
+		: null;
+	if (bytesChanged && effectiveLedger && !effectiveLedger.ok) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: "The effective approved ledger could not be parsed.",
+		};
+	}
+	const ledger = effectiveLedger?.ok ? effectiveLedger.value : binding.ledger;
 	const phaseId = canonicalPhaseId(input.phase);
 	if (!phaseId || phaseId === "plan") {
 		return {
@@ -462,12 +480,16 @@ export async function composeImplementationReviewerRecord(input: {
 		envelopeDomain: input.envelopeDomain,
 		mode: binding.mode,
 		phaseIds: binding.phaseMap.map((entry) => entry.id),
-		workItemIds: binding.ledger.workItems.map((item) => item.id),
-		creditClaimIds: binding.ledger.workItems.flatMap((item) =>
+		workItemIds: ledger.workItems.map((item) => item.id),
+		creditClaimIds: ledger.workItems.flatMap((item) =>
 			item.debtClaim ? [item.debtClaim.debtClaimId] : [],
 		),
-		approvedPlanBytes: binding.approvedPlanBytes,
-		approvedPlanHash: binding.approvedPlanHash,
+		approvedPlanBytes: folded?.ok
+			? folded.approvedPlanBytes
+			: binding.approvedPlanBytes,
+		approvedPlanHash: folded?.ok
+			? folded.approvedPlanHash
+			: binding.approvedPlanHash,
 		amendments: input.ctx.store.listImplementationTextAmendments(
 			input.runId,
 			binding.id,
@@ -503,7 +525,7 @@ export async function composeImplementationReviewerRecord(input: {
 		B0: binding.b0,
 		B: binding.governingB,
 		I: null,
-		workItems: binding.ledger.workItems,
+		workItems: ledger.workItems,
 		findings: [],
 		assessments: [],
 		config: binding.thresholds,
@@ -528,16 +550,33 @@ export async function composeImplementationReviewerRecord(input: {
 		input.runId,
 		binding.id,
 	);
+	const semanticAmendments = folded?.ok
+		? input.ctx.store.listImplementationSemanticAmendments(
+				input.runId,
+				binding.id,
+			)
+		: [];
+	const lineageTail = folded?.ok
+		? [...textAmendments, ...semanticAmendments].find(
+				(entry) => entry.id === folded.lineageParentId,
+			)
+		: undefined;
 	const anchor = detectPlanDrift({
-		approvedPlanBytes: binding.approvedPlanBytes,
-		approvedPlanHash: binding.approvedPlanHash,
-		amendments: textAmendments,
-		currentPlanBytes: binding.approvedPlanBytes,
+		approvedPlanBytes: folded?.ok
+			? folded.approvedPlanBytes
+			: binding.approvedPlanBytes,
+		approvedPlanHash: folded?.ok
+			? folded.approvedPlanHash
+			: binding.approvedPlanHash,
+		amendments: folded?.ok ? [] : textAmendments,
+		currentPlanBytes: folded?.ok
+			? folded.approvedPlanBytes
+			: binding.approvedPlanBytes,
 	});
 	let exemptionAuthorized = reviewed.governance.exemptionAuthorized;
 	let textGuard: PendingImplementationObservation["textGuard"];
 	if (exemptionAuthorized && reviewed.spans.length > 0) {
-		if (textAmendments.length > 0 && !anchor.chainValid) {
+		if (!folded?.ok && textAmendments.length > 0 && !anchor.chainValid) {
 			exemptionAuthorized = false;
 			reviewed.governance.diagnostics.push({
 				code: "PLAN_IMPACT_NOT_AUTHORIZED",
@@ -546,7 +585,11 @@ export async function composeImplementationReviewerRecord(input: {
 					"The text-amendment lineage is unverified. A text guard cannot be snapshotted.",
 			});
 		} else {
-			const parent = anchor.chainValid ? textAmendments.at(-1) : undefined;
+			const parent = folded?.ok
+				? lineageTail
+				: anchor.chainValid
+					? textAmendments.at(-1)
+					: undefined;
 			const preparedGuard = prepareTextAmendmentGuard({
 				id: createReviewBudgetId(),
 				anchorBytes: anchor.authorizedBytes,
@@ -707,6 +750,13 @@ export async function composeImplementationReviewerRecord(input: {
 			bindingId: binding.id,
 		}),
 		stepKey,
+		...(folded?.ok ? { effectiveLedger: ledger } : {}),
+		...(folded?.ok
+			? {
+					claimEdits: folded.dispositions.flatMap((entry) => entry.claimEdits),
+					invalidatedObservationIds: new Set(folded.invalidatedObservationIds),
+				}
+			: {}),
 	});
 	if (reconciled.status === "rejected") {
 		return {
@@ -744,6 +794,9 @@ export async function composeImplementationReviewerRecord(input: {
 		inheritedBudgetGovernance,
 		completionAuthorized: false,
 		...(textGuard ? { textGuard } : {}),
+		...(folded?.ok && folded.currentRevisionId !== folded.initialRevisionId
+			? { revisionId: folded.currentRevisionId }
+			: {}),
 	};
 	return {
 		status: "applied",

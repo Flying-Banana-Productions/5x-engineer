@@ -160,6 +160,10 @@ import {
 } from "../review-governance/decisions.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
+	foldEffectiveExecution,
+	phaseReopenedByRevision,
+} from "../review-governance/implementation-amendment.js";
+import {
 	evaluateStoredImplementationBoundary,
 	type ImplementationGovernanceReadiness,
 } from "../review-governance/implementation-boundary.js";
@@ -3879,7 +3883,22 @@ export async function recordStepInternal(
 							step.step_name.startsWith("reviewer:")) &&
 							(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId)),
 			);
-		if (existing && !reopened) {
+		const folded = foldEffectiveExecution({
+			recordStore,
+			runId: params.run,
+		});
+		const binding = createReviewBudgetStore(
+			recordStore,
+		).getImplementationBinding(params.run);
+		const revisionReopened =
+			!folded.ok ||
+			(binding !== null &&
+				phaseReopenedByRevision({
+					phaseMap: binding.phaseMap,
+					execution: folded,
+					phaseId,
+				}));
+		if (existing && !reopened && !revisionReopened) {
 			const after = computeRunSummary(db, params.run);
 			return {
 				step_id: existing.id,

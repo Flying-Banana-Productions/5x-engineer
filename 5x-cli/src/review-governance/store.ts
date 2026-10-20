@@ -34,10 +34,12 @@ import {
 	governanceCorrectionKey,
 	governanceDecisionKey,
 	type ImplementationDecisionPayload,
+	implementationObservationGateId,
 	listGovernanceDecisions,
 	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
+import { foldEffectiveExecution } from "./implementation-amendment.js";
 import type {
 	ImplementationDecisionChoice,
 	ReviewDecisionRoute,
@@ -548,8 +550,20 @@ export function deriveOpenImplementationGate(
 	runId: string,
 	phase: string,
 ): DerivedImplementationGate | null {
+	const folded = foldEffectiveExecution({ recordStore, runId });
+	const unbound =
+		!folded.ok &&
+		folded.diagnostic.message.includes("No implementation binding is recorded");
+	// A bound journal that cannot be folded has no certifying gate. An
+	// unbound observation fixture keeps the pre-revision projection.
+	if (!folded.ok && !unbound) return null;
+	const invalidated = folded.ok
+		? new Set(folded.invalidatedObservationIds)
+		: null;
 	const observations = implementationObservations(recordStore, runId).filter(
-		(observation) => observation.phase === phase,
+		(observation) =>
+			observation.phase === phase &&
+			(invalidated === null || !invalidated.has(observation.id)),
 	);
 	const latest = observations.at(-1);
 	if (!latest || latest.gateCauses.length === 0) return null;
@@ -560,15 +574,16 @@ export function deriveOpenImplementationGate(
 	let causes = latest.gateCauses;
 	let predecessorGateId: string | undefined;
 	while (causes.length > 0) {
-		const gateId = deriveGateId({
+		const gateId = implementationObservationGateId({
 			runId,
-			snapshotId: latest.id,
-			causes,
-			...(predecessorGateId ? { predecessorGateId } : {}),
-			domain: "implementation",
 			phase,
 			bindingId: latest.bindingId,
 			observationId: latest.id,
+			causes,
+			...(predecessorGateId ? { predecessorGateId } : {}),
+			...(latest.revisionId !== undefined
+				? { revisionId: latest.revisionId }
+				: {}),
 		});
 		const decision = decisions.find(
 			(candidate) =>
