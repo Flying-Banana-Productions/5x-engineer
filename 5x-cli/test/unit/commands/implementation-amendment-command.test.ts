@@ -403,90 +403,84 @@ function fixture(options?: {
 
 const inputFor = (built: ReturnType<typeof fixture>) => built.input;
 
+// Each fixture spawns ~20 git processes and the handler spawns more. Under
+// `bun test --concurrent` on macOS, Bun intermittently loses the exit of a
+// child process, so a test stalls until its timeout or the whole process
+// hangs inside `Bun.spawnSync`. `test.serial` keeps the subprocess-heavy
+// tests one at a time; `describe.serial` does not serialize under
+// `--concurrent`.
+// Bun bug: https://github.com/oven-sh/bun/issues/45365 (async form) and
+// https://github.com/oven-sh/bun/issues/34069 (spawnSync form). Seen on
+// 1.3.14 through 1.4.3. Once fixed, drop `test.serial` here and in
+// protocol-validate.test.ts.
 describe("review implementation amend", () => {
-	test("dry-run and record use the author commit across a later review commit", async () => {
-		const built = fixture();
-		try {
-			const preview = await amendImplementationPlanCommand(
-				{ ...inputFor(built), dryRun: true },
-				built.ctx,
-			);
-			expect(preview.dryRun).toBe(true);
-			expect(preview.created).toBe(false);
-			expect(preview.approvedPlanCommit).toBe(built.author);
-			expect(preview.completionAuthorized).toBe(false);
-			expect(
-				built.ctx.recordStore
-					.listLines(RUN, "budget")
-					.some(
-						(line) =>
-							(line.payload as { kind?: string }).kind ===
-							"implementation-plan-amendment",
-					),
-			).toBe(false);
-			const recorded = await amendImplementationPlanCommand(
-				inputFor(built),
-				built.ctx,
-			);
-			expect(recorded.created).toBe(true);
-			expect(recorded.approvedPlanCommit).toBe(built.author);
-			expect(recorded.approvedPlanCommit).not.toBe(built.review);
-			const row = built.ctx.db
-				.query(
-					`SELECT id FROM steps WHERE run_id = ?1 AND step_name = 'implementation:amendment'`,
-				)
-				.get(RUN) as { id: number } | null;
-			expect(row?.id).toBeGreaterThan(0);
-			const retry = await amendImplementationPlanCommand(
-				inputFor(built),
-				built.ctx,
-			);
-			expect(retry.created).toBe(false);
-			expect(retry.amendmentId).toBe(recorded.amendmentId);
-			expect(
-				built.ctx.recordStore
-					.listLines(RUN, "budget")
-					.filter(
-						(line) =>
-							(line.payload as { kind?: string }).kind ===
-							"implementation-plan-amendment",
-					),
-			).toHaveLength(1);
-			built.ctx.db.run(
-				`DELETE FROM steps WHERE run_id = ?1 AND step_name = 'implementation:amendment'`,
-				[RUN],
-			);
-			const projected = await amendImplementationPlanCommand(
-				inputFor(built),
-				built.ctx,
-			);
-			expect(projected.created).toBe(false);
-			const again = built.ctx.db
-				.query(
-					`SELECT COUNT(*) AS n FROM steps WHERE run_id = ?1 AND step_name = 'implementation:amendment'`,
-				)
-				.get(RUN) as { n: number };
-			expect(again.n).toBe(1);
-			const promptStore = createMemoryPromptStore();
-			const same = await submitReviewDecision(
-				{
-					runId: RUN,
-					gateId: built.decision.gateId,
-					phase: "2",
-					payload: {
-						choice: "authorize_amendment",
-						rationale: built.decision.rationale,
-						evidence: [],
-						findingRefs: built.decision.findingRefs,
-						amendmentScope: built.scope,
-					},
-				},
-				{ context: built.ctx, promptStore },
-			);
-			expect(same.created).toBe(false);
-			expect(same.decision.decisionId).toBe(built.decision.decisionId);
-			await expect(
-				submitReviewDecision(
+	test.serial(
+		"dry-run and record use the author commit across a later review commit",
+		async () => {
+			const built = fixture();
+			try {
+				const preview = await amendImplementationPlanCommand(
+					{ ...inputFor(built), dryRun: true },
+					built.ctx,
+				);
+				expect(preview.dryRun).toBe(true);
+				expect(preview.created).toBe(false);
+				expect(preview.approvedPlanCommit).toBe(built.author);
+				expect(preview.completionAuthorized).toBe(false);
+				expect(
+					built.ctx.recordStore
+						.listLines(RUN, "budget")
+						.some(
+							(line) =>
+								(line.payload as { kind?: string }).kind ===
+								"implementation-plan-amendment",
+						),
+				).toBe(false);
+				const recorded = await amendImplementationPlanCommand(
+					inputFor(built),
+					built.ctx,
+				);
+				expect(recorded.created).toBe(true);
+				expect(recorded.approvedPlanCommit).toBe(built.author);
+				expect(recorded.approvedPlanCommit).not.toBe(built.review);
+				const row = built.ctx.db
+					.query(
+						`SELECT id FROM steps WHERE run_id = ?1 AND step_name = 'implementation:amendment'`,
+					)
+					.get(RUN) as { id: number } | null;
+				expect(row?.id).toBeGreaterThan(0);
+				const retry = await amendImplementationPlanCommand(
+					inputFor(built),
+					built.ctx,
+				);
+				expect(retry.created).toBe(false);
+				expect(retry.amendmentId).toBe(recorded.amendmentId);
+				expect(
+					built.ctx.recordStore
+						.listLines(RUN, "budget")
+						.filter(
+							(line) =>
+								(line.payload as { kind?: string }).kind ===
+								"implementation-plan-amendment",
+						),
+				).toHaveLength(1);
+				built.ctx.db.run(
+					`DELETE FROM steps WHERE run_id = ?1 AND step_name = 'implementation:amendment'`,
+					[RUN],
+				);
+				const projected = await amendImplementationPlanCommand(
+					inputFor(built),
+					built.ctx,
+				);
+				expect(projected.created).toBe(false);
+				const again = built.ctx.db
+					.query(
+						`SELECT COUNT(*) AS n FROM steps WHERE run_id = ?1 AND step_name = 'implementation:amendment'`,
+					)
+					.get(RUN) as { n: number };
+				expect(again.n).toBe(1);
+				const promptStore = createMemoryPromptStore();
+				const same = await submitReviewDecision(
 					{
 						runId: RUN,
 						gateId: built.decision.gateId,
@@ -496,139 +490,175 @@ describe("review implementation amend", () => {
 							rationale: built.decision.rationale,
 							evidence: [],
 							findingRefs: built.decision.findingRefs,
-							amendmentScope: {
-								...built.scope,
-								earliestAffectedPhase: "3",
-							},
+							amendmentScope: built.scope,
 						},
 					},
 					{ context: built.ctx, promptStore },
-				),
-			).rejects.toMatchObject({ code: "REVIEW_GATE_ALREADY_RESOLVED" });
-		} finally {
-			built.close();
-		}
-	}, 20000);
+				);
+				expect(same.created).toBe(false);
+				expect(same.decision.decisionId).toBe(built.decision.decisionId);
+				await expect(
+					submitReviewDecision(
+						{
+							runId: RUN,
+							gateId: built.decision.gateId,
+							phase: "2",
+							payload: {
+								choice: "authorize_amendment",
+								rationale: built.decision.rationale,
+								evidence: [],
+								findingRefs: built.decision.findingRefs,
+								amendmentScope: {
+									...built.scope,
+									earliestAffectedPhase: "3",
+								},
+							},
+						},
+						{ context: built.ctx, promptStore },
+					),
+				).rejects.toMatchObject({ code: "REVIEW_GATE_ALREADY_RESOLVED" });
+			} finally {
+				built.close();
+			}
+		},
+		20000,
+	);
 
-	test("rejects a code change, a dirty plan, and a boundary that is not an ancestor", async () => {
-		const dirty = fixture();
-		try {
-			writeFileSync(join(dirty.dir, "plan.md"), `${PLAN}\n`, "utf8");
-			await expect(
-				amendImplementationPlanCommand(inputFor(dirty), dirty.ctx),
-			).rejects.toThrow("uncommitted code changes");
-		} finally {
-			dirty.close();
-		}
-		const changed = fixture();
-		try {
-			writeFileSync(
-				join(changed.dir, "src-changed.ts"),
-				"export const n = 1;\n",
-			);
-			git(changed.dir, ["add", "src-changed.ts"]);
-			git(changed.dir, ["commit", "-m", "code"]);
-			await expect(
-				amendImplementationPlanCommand(inputFor(changed), changed.ctx),
-			).rejects.toThrow("Non-workflow files changed");
-		} finally {
-			changed.close();
-		}
-		const side = fixture({ boundaryHash: "side" });
-		try {
-			await expect(
-				amendImplementationPlanCommand(inputFor(side), side.ctx),
-			).rejects.toThrow("ancestor");
-		} finally {
-			side.close();
-		}
-	}, 20000);
+	test.serial(
+		"rejects a code change, a dirty plan, and a boundary that is not an ancestor",
+		async () => {
+			const dirty = fixture();
+			try {
+				writeFileSync(join(dirty.dir, "plan.md"), `${PLAN}\n`, "utf8");
+				await expect(
+					amendImplementationPlanCommand(inputFor(dirty), dirty.ctx),
+				).rejects.toThrow("uncommitted code changes");
+			} finally {
+				dirty.close();
+			}
+			const changed = fixture();
+			try {
+				writeFileSync(
+					join(changed.dir, "src-changed.ts"),
+					"export const n = 1;\n",
+				);
+				git(changed.dir, ["add", "src-changed.ts"]);
+				git(changed.dir, ["commit", "-m", "code"]);
+				await expect(
+					amendImplementationPlanCommand(inputFor(changed), changed.ctx),
+				).rejects.toThrow("Non-workflow files changed");
+			} finally {
+				changed.close();
+			}
+			const side = fixture({ boundaryHash: "side" });
+			try {
+				await expect(
+					amendImplementationPlanCommand(inputFor(side), side.ctx),
+				).rejects.toThrow("ancestor");
+			} finally {
+				side.close();
+			}
+		},
+		20000,
+	);
 
-	test("resolves numeric and run-qualified steps and rejects another run", async () => {
-		const built = fixture();
-		try {
-			await expect(
-				amendImplementationPlanCommand(
+	test.serial(
+		"resolves numeric and run-qualified steps and rejects another run",
+		async () => {
+			const built = fixture();
+			try {
+				await expect(
+					amendImplementationPlanCommand(
+						{
+							...inputFor(built),
+							humanStep: "step:run-other:human:review-governance:2:1",
+						},
+						built.ctx,
+					),
+				).rejects.toThrow("must belong to the execution run");
+				await expect(
+					amendImplementationPlanCommand(
+						{ ...inputFor(built), approvalStep: "99999" },
+						built.ctx,
+					),
+				).rejects.toThrow("not in this run");
+				const recorded = await amendImplementationPlanCommand(
 					{
 						...inputFor(built),
-						humanStep: "step:run-other:human:review-governance:2:1",
+						humanStep: built.input.humanStep,
+						approvalStep: stepIdempotencyKey({
+							runId: RUN,
+							stepName: "reviewer:plan",
+							phase: "plan",
+							iteration: 1,
+						}),
 					},
 					built.ctx,
-				),
-			).rejects.toThrow("must belong to the execution run");
-			await expect(
-				amendImplementationPlanCommand(
-					{ ...inputFor(built), approvalStep: "99999" },
-					built.ctx,
-				),
-			).rejects.toThrow("not in this run");
-			const recorded = await amendImplementationPlanCommand(
-				{
-					...inputFor(built),
-					humanStep: built.input.humanStep,
-					approvalStep: stepIdempotencyKey({
-						runId: RUN,
-						stepName: "reviewer:plan",
-						phase: "plan",
-						iteration: 1,
-					}),
-				},
-				built.ctx,
-			);
-			expect(recorded.created).toBe(true);
-		} finally {
-			built.close();
-		}
-	}, 20000);
+				);
+				expect(recorded.created).toBe(true);
+			} finally {
+				built.close();
+			}
+		},
+		20000,
+	);
 
-	test("advisory budget gates stay nonblocking and enforced semantic gates reject", async () => {
-		const advisory = fixture({
-			gateCauses: [{ kind: "budget_alert", alert: "baseline_disputed" }],
-		});
-		try {
-			const recorded = await amendImplementationPlanCommand(
-				inputFor(advisory),
-				advisory.ctx,
-			);
-			expect(recorded.created).toBe(true);
-		} finally {
-			advisory.close();
-		}
-		const enforced = fixture({
-			mode: "enforced",
-			gateCauses: [
-				{
-					kind: "semantic_human",
-					finding: { findingId: "R1", fingerprint: "sha256:finding" },
-				},
-			],
-		});
-		try {
-			await expect(
-				amendImplementationPlanCommand(inputFor(enforced), enforced.ctx),
-			).rejects.toThrow("unresolved approval gate");
-		} finally {
-			enforced.close();
-		}
-	}, 20000);
+	test.serial(
+		"advisory budget gates stay nonblocking and enforced semantic gates reject",
+		async () => {
+			const advisory = fixture({
+				gateCauses: [{ kind: "budget_alert", alert: "baseline_disputed" }],
+			});
+			try {
+				const recorded = await amendImplementationPlanCommand(
+					inputFor(advisory),
+					advisory.ctx,
+				);
+				expect(recorded.created).toBe(true);
+			} finally {
+				advisory.close();
+			}
+			const enforced = fixture({
+				mode: "enforced",
+				gateCauses: [
+					{
+						kind: "semantic_human",
+						finding: { findingId: "R1", fingerprint: "sha256:finding" },
+					},
+				],
+			});
+			try {
+				await expect(
+					amendImplementationPlanCommand(inputFor(enforced), enforced.ctx),
+				).rejects.toThrow("unresolved approval gate");
+			} finally {
+				enforced.close();
+			}
+		},
+		20000,
+	);
 
-	test("admission rejects registration once the step budget is exhausted", async () => {
-		const built = fixture({ maxSteps: 1 });
-		try {
-			await expect(
-				amendImplementationPlanCommand(inputFor(built), built.ctx),
-			).rejects.toMatchObject({ code: "MAX_STEPS_EXCEEDED" });
-			expect(
-				built.ctx.recordStore
-					.listLines(RUN, "budget")
-					.some(
-						(line) =>
-							(line.payload as { kind?: string }).kind ===
-							"implementation-plan-amendment",
-					),
-			).toBe(false);
-		} finally {
-			built.close();
-		}
-	}, 20000);
+	test.serial(
+		"admission rejects registration once the step budget is exhausted",
+		async () => {
+			const built = fixture({ maxSteps: 1 });
+			try {
+				await expect(
+					amendImplementationPlanCommand(inputFor(built), built.ctx),
+				).rejects.toMatchObject({ code: "MAX_STEPS_EXCEEDED" });
+				expect(
+					built.ctx.recordStore
+						.listLines(RUN, "budget")
+						.some(
+							(line) =>
+								(line.payload as { kind?: string }).kind ===
+								"implementation-plan-amendment",
+						),
+				).toBe(false);
+			} finally {
+				built.close();
+			}
+		},
+		20000,
+	);
 });
