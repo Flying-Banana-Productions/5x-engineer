@@ -44,6 +44,7 @@ import { createImplementationDecision } from "../../../src/review-governance/dec
 import { fingerprintImplementationVerdictItem } from "../../../src/review-governance/fingerprint.js";
 import {
 	foldEffectiveExecution,
+	presentRevisionProvenance,
 	registerImplementationAmendment,
 } from "../../../src/review-governance/implementation-amendment.js";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
@@ -795,22 +796,36 @@ describe("phase 4 amendment acceptance", () => {
 			effectiveGateCauses: [],
 			origin,
 		});
-		const repeated = await registerImplementationAmendment(
-			{
-				runId,
-				humanStepKey: secondHuman,
-				approvalStepKey: secondApproval,
-				fromPhase: "2",
-				resolves: [],
-				committedPlanBytes: again,
-				worktreePlanBytes: again,
-				approvedPlanCommit: COMMIT,
-				boundaryCommit: COMMIT,
-				headAccepted: true,
-				unresolvedApprovalGate: false,
-			},
+		const secondRegistration = {
+			runId,
+			humanStepKey: secondHuman,
+			approvalStepKey: secondApproval,
+			fromPhase: "2",
+			resolves: [] as string[],
+			committedPlanBytes: again,
+			worktreePlanBytes: again,
+			approvedPlanCommit: COMMIT,
+			boundaryCommit: COMMIT,
+			headAccepted: true,
+			unresolvedApprovalGate: false,
+		};
+		const withdrawn = [{ creditClaimId: "DC1", effect: "withdraw" as const }];
+		const previewAgain = await registerImplementationAmendment(
+			{ ...secondRegistration, dryRun: true },
 			{ recordStore: store, origin, now: () => "2026-10-19T00:00:00.000Z" },
 		);
+		expect(previewAgain.dryRun).toBe(true);
+		expect(previewAgain.created).toBe(false);
+		expect(previewAgain.claimDifferences).toEqual([]);
+		expect(previewAgain.provenance.creditDifferences).toEqual(withdrawn);
+		expect(previewAgain.provenance.unchangedClaimIds).toEqual(["DC0"]);
+		expect(previewAgain.provenance.completionAuthorized).toBe(false);
+
+		const repeated = await registerImplementationAmendment(secondRegistration, {
+			recordStore: store,
+			origin,
+			now: () => "2026-10-19T00:00:00.000Z",
+		});
 		expect(repeated.created).toBe(true);
 		expect(repeated.predecessorRevisionId).toBe(recorded.amendmentId);
 		expect(repeated.provenance.history.map((entry) => entry.kind)).toEqual([
@@ -818,8 +833,112 @@ describe("phase 4 amendment acceptance", () => {
 			"implementation_plan_amendment",
 			"implementation_plan_amendment",
 		]);
-		expect(repeated.provenance.creditDifferences).toEqual([]);
+		expect(repeated.claimDifferences).toEqual([]);
+		expect(repeated.provenance.creditDifferences).toEqual(withdrawn);
+		expect(repeated.provenance.unchangedClaimIds).toEqual(["DC0"]);
 		expect(repeated.completionAuthorized).toBe(false);
+
+		const replay = await registerImplementationAmendment(
+			{ ...secondRegistration, dryRun: true },
+			{ recordStore: store, origin, now: () => "2026-10-19T00:00:00.000Z" },
+		);
+		expect(replay.created).toBe(false);
+		expect(replay.dryRun).toBe(true);
+		expect(replay.claimDifferences).toEqual([]);
+		expect(replay.provenance.creditDifferences).toEqual(withdrawn);
+		expect(replay.provenance.unchangedClaimIds).toEqual(["DC0"]);
+
+		const historical = foldEffectiveExecution({
+			recordStore: store,
+			runId,
+			revisionId: recorded.amendmentId,
+		});
+		expect(historical.ok).toBe(true);
+		if (!historical.ok) return;
+		expect(historical.selectedRevisionId).toBe(recorded.amendmentId);
+		const historicalProvenance = presentRevisionProvenance({
+			binding,
+			execution: historical,
+		});
+		expect(historicalProvenance.effective.revisionId).toBe(
+			recorded.amendmentId,
+		);
+		expect(historicalProvenance.creditDifferences).toEqual(withdrawn);
+		expect(historicalProvenance.unchangedClaimIds).toEqual(["DC0"]);
+
+		const initialPrefix = foldEffectiveExecution({
+			recordStore: store,
+			runId,
+			revisionId: "binding-player",
+		});
+		expect(initialPrefix.ok).toBe(true);
+		if (!initialPrefix.ok) return;
+		const initialProvenance = presentRevisionProvenance({
+			binding,
+			execution: initialPrefix,
+		});
+		expect(initialProvenance.effective.revisionId).toBe("binding-player");
+		expect(initialProvenance.creditDifferences).toEqual([]);
+		expect(initialProvenance.unchangedClaimIds).toEqual(["DC0", "DC1"]);
+
+		const afterSecond = presentImplementationGovernance({
+			readiness: {
+				executionObligations: true,
+				checklistSufficient: false,
+				planDrifted: false,
+				bindingPresent: true,
+				phases: [],
+			},
+			binding,
+			contexts: [],
+			observations: [],
+			correctionAttempts: [],
+			reconciliations: [],
+			activeGate: null,
+			recordStore: store,
+			runId,
+		});
+		expect(afterSecond.revision).toMatchObject({
+			ok: true,
+			creditDifferences: withdrawn,
+			unchangedClaimIds: ["DC0"],
+		});
+		const laterLines: string[] = [];
+		const laterLog = console.log;
+		console.log = (...args: unknown[]) =>
+			laterLines.push(String(args[0] ?? ""));
+		try {
+			formatStateText({
+				run: {
+					id: runId,
+					plan_path: "plan.md",
+					status: "active",
+					created_at: "2026-10-19T00:00:00.000Z",
+					updated_at: "2026-10-19T00:00:00.000Z",
+				},
+				steps: [],
+				summary: {
+					total_steps: 0,
+					phases_completed: [],
+					total_tokens_in: 0,
+					total_tokens_out: 0,
+					total_cost_usd: 0,
+					total_duration_ms: 0,
+				},
+				steps_used: 0,
+				max_steps: 10,
+				steps_remaining: 10,
+				implementation_governance: afterSecond,
+			});
+		} finally {
+			console.log = laterLog;
+		}
+		const laterText = laterLines.join("\n");
+		expect(laterText).toContain(`effective_revision=${repeated.amendmentId}`);
+		expect(laterText).toContain(
+			"Implementation credit differences: DC1=withdraw unchanged=DC0 baseline_unchanged=yes",
+		);
+		expect(laterText).toContain("completion_authorized=no");
 	});
 
 	test("legacy chain survives upgrade discovery, rebuild, and a new-format amendment", async () => {
@@ -1258,6 +1377,117 @@ function git(args: string[], cwd: string): string {
 	return result.stdout.toString().trim();
 }
 
+function seedCommittedLegacyRecovery(): { dir: string; runId: string } {
+	const dir = mkdtempSync(join(tmpdir(), "5x-legacy-discovery-"));
+	mkdirSync(join(dir, ".5x"), { recursive: true });
+	git(["init"], dir);
+	git(["config", "user.email", "test@test.com"], dir);
+	git(["config", "user.name", "Test"], dir);
+	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
+	mkdirSync(join(dir, "docs/development/plans"), { recursive: true });
+	writeFileSync(join(dir, "docs/development/plans/legacy.md"), PLAN, "utf-8");
+	git(["add", "-A"], dir);
+	git(["commit", "-m", "plan"], dir);
+
+	const runId = "run-git-legacy";
+	const records = createWorkingTreeRecordStore({
+		recordsRoot: join(dir, "docs/development/runs"),
+	});
+	putRun(records, runId, "completed", "docs/development/plans/legacy.md");
+	const approvedHash = hashPlanBytes(PLAN);
+	append(records, runId, "budget", implementationBindingKey(runId), {
+		kind: "implementation-binding",
+		version: 1,
+		id: "binding-git",
+		executionRunId: runId,
+		sourceRunId: "source-run",
+		sourceSnapshotId: "snapshot-1",
+		sourceBaselineId: "baseline-1",
+		approvedPlanCommit: COMMIT,
+		approvedPlanHash: approvedHash,
+		approvedPlanBytes: PLAN,
+		b0: 2,
+		governingB: 4,
+		mode: "advisory",
+		thresholds: DEFAULT_REVIEW_BUDGET_CONFIG,
+		ledger: ledgerOf(PLAN),
+		effectiveDecisions: [],
+		phaseMap: [
+			{ id: "1", heading: "Foundation" },
+			{ id: "2", heading: "Providers" },
+		],
+		debtTargets: [],
+		ledgerHash: "ledger",
+		decisionsHash: "decisions",
+		createdAt: "2026-10-19T00:00:00.000Z",
+	});
+	append(
+		records,
+		runId,
+		"budget",
+		"ctx-obs-2",
+		context(runId, "ctx-obs-2", "2", "binding-git"),
+	);
+	const phaseTwo = observation({
+		runId,
+		id: "obs-2",
+		phase: "2",
+		iteration: 1,
+		items: [item("R7")],
+		bindingId: "binding-git",
+	});
+	append(records, runId, "budget", "obs-2", phaseTwo);
+	const auth = "11111111-1111-4111-8111-111111111141";
+	append(
+		records,
+		runId,
+		"decisions",
+		auth,
+		createImplementationDecision({
+			decisionId: auth,
+			gateId: "gate-git",
+			observationId: "obs-2",
+			bindingId: "binding-git",
+			phase: "2",
+			choice: "authorize_amendment",
+			findingRefs: [
+				{
+					findingId: "R7",
+					fingerprint: fingerprintImplementationVerdictItem(item("R7"), "2"),
+				},
+			],
+			rationale: "historical",
+			evidence: [],
+			claimAdjustments: [],
+			ledgerHash: "ledger",
+			decisionsHash: "decisions",
+			createdAt: "2026-10-19T00:00:00.000Z",
+		}),
+	);
+	const bytes = PLAN.replace("[ ] Read digits", "[x] Read digits");
+	append(
+		records,
+		runId,
+		"budget",
+		"budget:implementation-plan-recovery:binding-git",
+		recovery({
+			runId,
+			id: "recovery-git",
+			authorizationId: auth,
+			parent: null,
+			beforeHash: approvedHash,
+			bytes,
+			phase: "2",
+			contexts: ["ctx-obs-2"],
+			observations: ["obs-2"],
+			bindingId: "binding-git",
+		}),
+	);
+	git(["add", "-A"], dir);
+	git(["commit", "-m", "records"], dir);
+	return { dir, runId };
+}
+
 describe("legacy discovery without the source worktree", () => {
 	test("reads committed recoveries after the worktree copy is removed and an index rebuild", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "5x-legacy-discovery-"));
@@ -1446,4 +1676,58 @@ describe("legacy discovery without the source worktree", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	test.each(["steps", "decisions"] as const)(
+		"malformed committed %s.jsonl fails closed and keeps the recovery identity",
+		async (stream) => {
+			const { dir, runId } = seedCommittedLegacyRecovery();
+			try {
+				const file = `${stream}.jsonl`;
+				const rel = `docs/development/runs/legacy/${runId}/${file}`;
+				writeFileSync(join(dir, rel), "{not-json}\n");
+				git(["add", "-A"], dir);
+				git(["commit", "-m", `corrupt ${file}`], dir);
+				rmSync(join(dir, "docs/development/runs"), {
+					recursive: true,
+					force: true,
+				});
+				const commit = git(["rev-parse", "HEAD"], dir);
+				const discovered = await discoverLegacyRecoveryLineage({
+					recordStore: createWorkingTreeRecordStore({
+						recordsRoot: join(dir, "docs/development/runs"),
+					}),
+					git: {
+						commit,
+						workdir: dir,
+						recordsRelPath: "docs/development/runs",
+					},
+				});
+				expect(discovered.resumed).toBe(false);
+				expect(discovered.journalRewritten).toBe(false);
+				expect(discovered.syntheticApproval).toBe(false);
+				expect(discovered.reports).toHaveLength(1);
+				expect(discovered.reports[0]).toMatchObject({
+					runId,
+					source: "git",
+					lineageValid: false,
+					resumeCompatible: false,
+					completionAuthorized: false,
+					currentRevisionId: null,
+					history: [],
+					recoveryIds: ["recovery-git"],
+					diagnostic: {
+						stream,
+						recordId: "recovery-git",
+						recoveryIds: ["recovery-git"],
+					},
+				});
+				const message = discovered.reports[0]?.diagnostic?.message ?? "";
+				expect(message).toContain(file);
+				expect(message).toContain("invalid JSON");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 20000 },
+	);
 });

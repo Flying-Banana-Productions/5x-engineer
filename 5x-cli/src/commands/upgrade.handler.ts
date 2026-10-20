@@ -569,6 +569,32 @@ function recoveryIdsFrom(lines: readonly RecordLine[]): string[] {
 	return ids;
 }
 
+/** Recovery identities that still decode, including from a journal that also has a bad line. */
+function knownRecoveryIds(
+	lines: readonly RecordLine[],
+	budgetBody: string | null,
+	runId: string,
+): string[] {
+	const ids = recoveryIdsFrom(lines);
+	if (!budgetBody?.includes("implementation-plan-recovery")) return ids;
+	for (const rawLine of budgetBody.split("\n")) {
+		if (!rawLine.includes("implementation-plan-recovery")) continue;
+		try {
+			ids.push(...recoveryIdsFrom(decodeJsonlFile(`${rawLine}\n`, runId)));
+		} catch {
+			// This line names a recovery but does not decode.
+		}
+	}
+	return [...new Set(ids)];
+}
+
+interface UnreadableCommittedJournal {
+	stream: RevisionFoldDiagnostic["stream"];
+	recordId: string;
+	recoveryIds: string[];
+	message: string;
+}
+
 function reportRecoveredRun(input: {
 	store: RecordStore;
 	summary: RunRecordSummary;
@@ -657,6 +683,12 @@ function reportRecoveredRun(input: {
 	};
 }
 
+const COMMITTED_JOURNALS = [
+	{ file: "steps.jsonl", stream: "steps" },
+	{ file: "budget.jsonl", stream: "budget" },
+	{ file: "decisions.jsonl", stream: "decisions" },
+] as const;
+
 async function gitRunsMissingFrom(input: {
 	seen: ReadonlySet<string>;
 	commit: string;
@@ -665,14 +697,22 @@ async function gitRunsMissingFrom(input: {
 }): Promise<
 	Array<
 		| { summary: RunRecordSummary; store: RecordStore; unreadable: null }
-		| { summary: RunRecordSummary; store: null; unreadable: string }
+		| {
+				summary: RunRecordSummary;
+				store: null;
+				unreadable: UnreadableCommittedJournal;
+		  }
 	>
 > {
 	const prefix = input.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "");
 	const paths = await gitLsTreePaths(input.workdir, input.commit, prefix);
 	const found: Array<
 		| { summary: RunRecordSummary; store: RecordStore; unreadable: null }
-		| { summary: RunRecordSummary; store: null; unreadable: string }
+		| {
+				summary: RunRecordSummary;
+				store: null;
+				unreadable: UnreadableCommittedJournal;
+		  }
 	> = [];
 	for (const path of paths) {
 		if (!path.endsWith("/run.json")) continue;
@@ -686,27 +726,45 @@ async function gitRunsMissingFrom(input: {
 		}
 		if (input.seen.has(summary.id)) continue;
 		const lines: RecordLine[] = [];
-		let unreadable: string | null = null;
-		for (const file of ["steps.jsonl", "budget.jsonl", "decisions.jsonl"]) {
-			const rel = path.replace(/run\.json$/, file);
+		let budgetBody: string | null = null;
+		let decodeFailure: {
+			stream: UnreadableCommittedJournal["stream"];
+			message: string;
+		} | null = null;
+		for (const journal of COMMITTED_JOURNALS) {
+			const rel = path.replace(/run\.json$/, journal.file);
 			const body = await gitShowFile(input.workdir, input.commit, rel);
 			if (body == null) continue;
+			if (journal.file === "budget.jsonl") budgetBody = body;
 			try {
 				lines.push(...decodeJsonlFile(body, summary.id));
 			} catch (error) {
-				if (
-					file === "budget.jsonl" &&
-					body.includes("implementation-plan-recovery")
-				) {
-					unreadable =
-						error instanceof Error
-							? error.message
-							: "Committed recovery journal could not be decoded.";
-				}
+				if (decodeFailure) continue;
+				const detail =
+					error instanceof Error
+						? error.message
+						: "Committed recovery journal could not be decoded.";
+				decodeFailure = {
+					stream: journal.stream,
+					message: `${journal.file}: ${detail}`,
+				};
 			}
 		}
-		if (unreadable) {
-			found.push({ summary, store: null, unreadable });
+		const recoveryIds = knownRecoveryIds(lines, budgetBody, summary.id);
+		const hasRecovery =
+			recoveryIds.length > 0 ||
+			(budgetBody?.includes("implementation-plan-recovery") ?? false);
+		if (decodeFailure && hasRecovery) {
+			found.push({
+				summary,
+				store: null,
+				unreadable: {
+					stream: decodeFailure.stream,
+					recordId: recoveryIds[0] ?? summary.id,
+					recoveryIds,
+					message: decodeFailure.message,
+				},
+			});
 			continue;
 		}
 		const store = createMemoryRecordStore();
@@ -726,16 +784,6 @@ async function gitRunsMissingFrom(input: {
 				});
 			}
 		} catch (error) {
-			const hasRecovery = lines.some((line) => {
-				const payload = line.payload;
-				return (
-					!!payload &&
-					typeof payload === "object" &&
-					!Array.isArray(payload) &&
-					(payload as { kind?: unknown }).kind ===
-						"implementation-plan-recovery"
-				);
-			});
 			if (!hasRecovery) {
 				const empty = createMemoryRecordStore();
 				empty.putRun(summary);
@@ -745,10 +793,15 @@ async function gitRunsMissingFrom(input: {
 			found.push({
 				summary,
 				store: null,
-				unreadable:
-					error instanceof Error
-						? error.message
-						: "Committed recovery journal could not be replayed.",
+				unreadable: {
+					stream: "budget",
+					recordId: recoveryIds[0] ?? summary.id,
+					recoveryIds,
+					message:
+						error instanceof Error
+							? error.message
+							: "Committed recovery journal could not be replayed.",
+				},
 			});
 			continue;
 		}
@@ -799,7 +852,7 @@ export async function discoverLegacyRecoveryLineage(input: {
 					status: entry.summary.status,
 					planPath: entry.summary.plan_path,
 					source: "git",
-					recoveryIds: [],
+					recoveryIds: entry.unreadable.recoveryIds,
 					lineageValid: false,
 					resumeCompatible: false,
 					completionAuthorized: false,
@@ -807,12 +860,10 @@ export async function discoverLegacyRecoveryLineage(input: {
 					history: [],
 					diagnostic: {
 						runId: entry.summary.id,
-						stream: "budget",
-						recordId: entry.summary.id,
-						recoveryIds: [],
-						message:
-							entry.unreadable ??
-							"Committed recovery journal could not be read.",
+						stream: entry.unreadable.stream,
+						recordId: entry.unreadable.recordId,
+						recoveryIds: entry.unreadable.recoveryIds,
+						message: entry.unreadable.message,
 					},
 					minimumToolchain: AMENDED_RUN_MINIMUM_TOOLCHAIN,
 				});

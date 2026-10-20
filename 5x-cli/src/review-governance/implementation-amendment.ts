@@ -205,7 +205,7 @@ export interface RevisionProvenance {
 	pendingFindings: EffectiveFinding[];
 	resolvedFindings: EffectiveFinding[];
 	creditDifferences: AmendmentClaimEdit[];
-	/** Claims with no edit on the effective revision. Affected-phase evidence still does not certify. */
+	/** Original-ledger claims with no edit in the selected lineage prefix. Affected-phase evidence still does not certify. */
 	unchangedClaimIds: string[];
 	baselineUnchanged: true;
 }
@@ -2261,14 +2261,33 @@ function ledgerClaimIds(binding: ImplementationBindingPayload): string[] {
 	return ids;
 }
 
-function creditEditsFor(
+/**
+ * Claim edits in lineage order through `throughRevisionId`.
+ * Later revisions are outside this prefix. The fold already drops them
+ * when the execution itself is a historical prefix.
+ */
+function prefixClaimEdits(
 	execution: EffectiveExecution,
-	revisionId: string,
+	throughRevisionId: string,
 ): AmendmentClaimEdit[] {
-	return (
-		execution.dispositions.find((entry) => entry.revisionId === revisionId)
-			?.claimEdits ?? []
+	const end = execution.revisions.findIndex(
+		(revision) => revision.id === throughRevisionId,
 	);
+	if (end < 0) return [];
+	const prefix = new Set(
+		execution.revisions.slice(0, end + 1).map((revision) => revision.id),
+	);
+	return execution.dispositions
+		.filter((entry) => prefix.has(entry.revisionId))
+		.flatMap((entry) => entry.claimEdits);
+}
+
+function claimsWithoutEdits(
+	binding: ImplementationBindingPayload,
+	edits: readonly AmendmentClaimEdit[],
+): string[] {
+	const edited = new Set(edits.map((edit) => edit.creditClaimId));
+	return ledgerClaimIds(binding).filter((claimId) => !edited.has(claimId));
 }
 
 /**
@@ -2281,13 +2300,16 @@ export function presentRevisionProvenance(input: {
 }): RevisionProvenance {
 	const selected =
 		input.execution.revisions.find(
+			(revision) => revision.id === input.execution.selectedRevisionId,
+		) ??
+		input.execution.revisions.find(
 			(revision) => revision.id === input.execution.currentRevisionId,
-		) ?? input.execution.revisions.at(-1);
+		) ??
+		input.execution.revisions.at(-1);
 	if (!selected) {
 		throw new TypeError("Effective execution has no revision.");
 	}
-	const creditDifferences = creditEditsFor(input.execution, selected.id);
-	const edited = new Set(creditDifferences.map((edit) => edit.creditClaimId));
+	const creditDifferences = prefixClaimEdits(input.execution, selected.id);
 	return {
 		ok: true,
 		completionAuthorized: false,
@@ -2316,9 +2338,7 @@ export function presentRevisionProvenance(input: {
 			(finding) => finding.status === "amendment_resolved",
 		),
 		creditDifferences,
-		unchangedClaimIds: ledgerClaimIds(input.binding).filter(
-			(claimId) => !edited.has(claimId),
-		),
+		unchangedClaimIds: claimsWithoutEdits(input.binding, creditDifferences),
 		baselineUnchanged: true,
 	};
 }
@@ -2369,6 +2389,16 @@ function presentRegistrationProvenance(input: {
 	const recorded = input.execution.revisions.some(
 		(revision) => revision.id === input.amendmentId,
 	);
+	const creditDifferences = recorded
+		? prefixClaimEdits(input.execution, input.amendmentId)
+		: [
+				...prefixClaimEdits(input.execution, input.predecessorRevisionId),
+				...input.claimEdits,
+			];
+	const unchangedClaimIds = claimsWithoutEdits(
+		input.binding,
+		creditDifferences,
+	);
 	if (recorded && input.execution.currentRevisionId === input.amendmentId) {
 		const live = presentRevisionProvenance({
 			binding: input.binding,
@@ -2377,11 +2407,8 @@ function presentRegistrationProvenance(input: {
 		return {
 			...live,
 			affectedPhases: [...input.affectedPhases],
-			creditDifferences: [...input.claimEdits],
-			unchangedClaimIds: ledgerClaimIds(input.binding).filter(
-				(claimId) =>
-					!input.claimEdits.some((edit) => edit.creditClaimId === claimId),
-			),
+			creditDifferences,
+			unchangedClaimIds,
 		};
 	}
 	const invalidatedObservations = new Set(input.invalidatedObservationIds);
@@ -2447,11 +2474,8 @@ function presentRegistrationProvenance(input: {
 			status: "amendment_resolved" as const,
 			reason: finding.reason,
 		})),
-		creditDifferences: [...input.claimEdits],
-		unchangedClaimIds: ledgerClaimIds(input.binding).filter(
-			(claimId) =>
-				!input.claimEdits.some((edit) => edit.creditClaimId === claimId),
-		),
+		creditDifferences,
+		unchangedClaimIds,
 		baselineUnchanged: true,
 	};
 }
