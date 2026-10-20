@@ -110,3 +110,25 @@ None that require author work. See the nonblocking follow-ups.
 - [x] Legacy-to-new lifecycle with malformed history failing closed (records path; git path is P1.2).
 - [x] Installed/rendered asset contract via the focused suite.
 - [x] Typecheck, lint, and focused suites.
+
+---
+
+## Addendum (2026-10-20) — Closure of P1.1 and P1.2
+
+**Reviewed:** `5de384a6eba18a4dc563d5bfbeb0c0a90ac57039` (range `a5d1e066..5de384a6`, review context `35dce24a-2c49-4e23-8377-b50b9f5b4a02`)
+
+**Local verification:** `bun test test/unit/review-governance/implementation-amendment-acceptance.test.ts test/integration/commands/upgrade.test.ts` gives 23 pass, 0 fail. `bun run typecheck` and `bun run lint` are clean. I did not re-run the full suite; the range touches only `upgrade.handler.ts`, `implementation-amendment.ts` and the acceptance test.
+
+### What's addressed (✅)
+
+- **P1.1 — addressed.** `creditEditsFor` is replaced by `prefixClaimEdits`, which flattens claim edits across every revision up to the selected one, in lineage order. `presentRevisionProvenance` now selects by `selectedRevisionId` first, so historical prefixes work. `presentRegistrationProvenance` uses the predecessor prefix plus the registering edits for a preview and the amendment's own prefix once recorded. `unchangedClaimIds` comes from `claimsWithoutEdits` over that cumulative set. The new test confirms that after a second amendment with no claim edits, DC1 stays withdrawn and `unchangedClaimIds` is `["DC0"]` in preview, registration, replay, historical-prefix and state output. The initial prefix still reports `["DC0","DC1"]`.
+- **P1.2 — addressed.** `gitRunsMissingFrom` now records the first decode failure from any of `steps.jsonl`, `budget.jsonl` and `decisions.jsonl`, naming the file and stream. A recovery counts as present if any decodable line carries it, or if a budget line naming a recovery fails to decode (`knownRecoveryIds`). In that case the run is reported `lineageValid: false`, `resumeCompatible: false`, with the decode message and recovery IDs. A run with no recovery still degrades to an empty store, as before. New tests cover malformed `steps.jsonl` and `decisions.jsonl` and assert the file name and "invalid JSON" in the diagnostic.
+
+### Remaining concerns
+
+None blocking. The earlier nonblocking follow-ups still stand and are unchanged.
+
+### Updated readiness
+
+- **Phase 4 completion:** ✅ — both P1 items are fixed with regression coverage.
+- **Ready for next phase / production:** ✅ — Phase 4 is the final phase, and no open items remain.
