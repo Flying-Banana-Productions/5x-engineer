@@ -10,6 +10,7 @@
 
 import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationClaimObservation,
@@ -22,6 +23,7 @@ import type {
 } from "../review-budget/record-lines.js";
 import {
 	isCompleteDebtClaimEvidence,
+	type ParsedDeliveryBudget,
 	type ReviewBudgetMode,
 } from "../review-budget/types.js";
 import type { EffectiveExecution } from "./implementation-amendment.js";
@@ -112,13 +114,18 @@ function phaseIndex(
 	return phaseMap.findIndex((phase) => phase.id === phaseId);
 }
 
-function dueClaims(binding: ImplementationBindingPayload): DueClaim[] {
+function dueClaims(
+	binding: ImplementationBindingPayload,
+	ledger: ParsedDeliveryBudget,
+	withdrawnClaimIds: ReadonlySet<string>,
+): DueClaim[] {
 	const claims: DueClaim[] = [];
-	for (const item of binding.ledger.workItems) {
+	for (const item of ledger.workItems) {
 		if (item.architectureDelta >= 0) continue;
 		const claim = item.debtClaim;
 		if (!isCompleteDebtClaimEvidence(claim)) continue;
 		if (claim.coupling !== "intrinsic") continue;
+		if (withdrawnClaimIds.has(claim.debtClaimId)) continue;
 		const target = binding.debtTargets.find(
 			(entry) => entry.claimId === claim.debtClaimId,
 		);
@@ -196,6 +203,8 @@ function phaseSettlement(input: {
 	headCommit: string | null;
 	codeEquivalentCommits?: readonly string[];
 	requireHeadMatch: boolean;
+	ledger: ParsedDeliveryBudget;
+	withdrawnClaimIds: ReadonlySet<string>;
 }): ImplementationBoundaryPhaseReadiness {
 	const observation = latestForPhase(
 		input.observations,
@@ -237,9 +246,11 @@ function phaseSettlement(input: {
 			observation?.route === "author_revision");
 	const reviewed = ordinaryComplete || correctedComplete;
 
-	const phaseClaims = dueClaims(input.binding).filter(
-		(claim) => claim.phaseId === input.phase,
-	);
+	const phaseClaims = dueClaims(
+		input.binding,
+		input.ledger,
+		input.withdrawnClaimIds,
+	).filter((claim) => claim.phaseId === input.phase);
 	const reconciliation = latestForPhase(
 		input.reconciliations,
 		input.binding.id,
@@ -345,6 +356,30 @@ export function evaluateImplementationBoundary(
 
 	const pinned = input.binding.mode;
 	const effective = input.effectiveExecution;
+	const parsedLedger = effective
+		? parseDeliveryBudget(effective.approvedPlanBytes)
+		: null;
+	if (
+		effective &&
+		parsedLedger &&
+		!parsedLedger.ok &&
+		effective.approvedPlanBytes !== input.binding.approvedPlanBytes
+	) {
+		return deny(
+			"IMPLEMENTATION_EVIDENCE_MALFORMED",
+			"The effective approved ledger could not be parsed.",
+			emptyReadiness(true),
+			["The effective approved ledger could not be parsed."],
+		);
+	}
+	const ledger = parsedLedger?.ok ? parsedLedger.value : input.binding.ledger;
+	const withdrawnClaimIds = new Set(
+		effective?.dispositions.flatMap((entry) =>
+			entry.claimEdits
+				.filter((edit) => edit.effect === "withdraw")
+				.map((edit) => edit.creditClaimId),
+		) ?? [],
+	);
 	const drift = detectPlanDrift({
 		approvedPlanBytes:
 			effective?.approvedPlanBytes ?? input.binding.approvedPlanBytes,
@@ -408,6 +443,8 @@ export function evaluateImplementationBoundary(
 				? { codeEquivalentCommits: input.codeEquivalentCommits }
 				: {}),
 			requireHeadMatch: phase.id === freshPhase,
+			ledger,
+			withdrawnClaimIds,
 		}),
 	);
 	const legacyRecovery = effective

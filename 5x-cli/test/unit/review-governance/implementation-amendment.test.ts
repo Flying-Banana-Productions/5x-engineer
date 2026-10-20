@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { composeImplementationReviewerRecord } from "../../../src/commands/implementation-review-context.js";
+import type { ReviewBudgetCommandContext } from "../../../src/commands/review-budget-context.js";
 import {
 	createMemoryRecordStore,
 	type RecordOrigin,
@@ -20,15 +22,20 @@ import {
 	type ImplementationReviewObservationPayload,
 	type ImplementationSemanticAmendmentPayload,
 	implementationBindingKey,
+	implementationReviewContextKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
+import { buildImplementationReviewPromptContext } from "../../../src/review-governance/context.js";
 import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
 import { fingerprintImplementationVerdictItem } from "../../../src/review-governance/fingerprint.js";
 import {
 	amendmentIntentDigest,
+	type EffectiveExecution,
 	foldEffectiveExecution,
 	formatAmendmentReviewPromptContext,
 	initialRevisionId,
+	phaseReopenedByRevision,
 	verifyAmendmentAssessment,
 } from "../../../src/review-governance/implementation-amendment.js";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
@@ -78,6 +85,39 @@ Keep the binding.
 
 - [ ] Verify timestamps
 `;
+
+function claimPlan(delta: number): string {
+	return PLAN.replace(
+		"| W1 | Foundation | 2 | 0 | - | - | Required |",
+		[
+			"| W1 | Foundation | 2 | 0 | - | - | Required |",
+			`| W2 | Claim | 2 | ${delta} | DC0 (\`intrinsic\`) | - | Credit |`,
+		].join("\n"),
+	).replace(
+		"### Surface Snapshot",
+		[
+			"### Debt Claims",
+			"",
+			"#### DC0",
+			"",
+			"- Target phase: 2",
+			"- Minimal-compliant effort delta: 0",
+			"- Minimal-compliant architecture delta: 0",
+			"- Before: two parsers",
+			"- After: one parser",
+			"",
+			"### Surface Snapshot",
+		].join("\n"),
+	);
+}
+
+function designItem(id: string): VerdictItem {
+	return {
+		...item(id, "Design"),
+		scopeClass: "plan_defect",
+		planImpact: { kind: "design", locations: [] },
+	};
+}
 
 function digest(text: string): string {
 	return `sha256:${createHash("sha256").update(text).digest("hex")}`;
@@ -417,7 +457,7 @@ function semanticAmendment(input: {
 	};
 }
 
-function foldSemantic(input: {
+function openSemantic(input: {
 	base?: string;
 	amended: string;
 	authorization: ReturnType<typeof decision>;
@@ -429,9 +469,11 @@ function foldSemantic(input: {
 	earliestAffectedPhase?: string;
 	invalidatedContextIds?: string[];
 	invalidatedObservationIds?: string[];
+	decorateBinding?: (approved: ImplementationBindingPayload) => void;
 }) {
 	const base = input.base ?? PLAN;
 	const approved = binding(base);
+	input.decorateBinding?.(approved);
 	const contexts = input.contexts ?? [context("ctx-obs-2", "2")];
 	const observations = input.observations ?? [
 		observation({
@@ -488,30 +530,37 @@ function foldSemantic(input: {
 		resolvedFindings: payload.resolvedFindings,
 		claimEdits: payload.claimEdits,
 	});
-	return foldEffectiveExecution({
-		recordStore: storeWith({
-			budget: [
-				{ key: implementationBindingKey(runId), payload: approved },
-				...contexts.map((entry) => ({ key: entry.id, payload: entry })),
-				...observations.map((entry) => ({
-					key: entry.id,
-					payload: encodeImplementationReviewObservationPayload(entry),
-				})),
-				{
-					key: "budget:implementation-plan-amendment:binding-1:rev-1",
-					payload: encodeImplementationSemanticAmendmentPayload(payload),
-				},
-			],
-			decisions: [
-				{
-					key: input.authorization.decisionId,
-					payload: input.authorization,
-				},
-			],
-			steps: [human, approval, paired],
-		}),
-		runId,
+	const recordStore = storeWith({
+		budget: [
+			{ key: implementationBindingKey(runId), payload: approved },
+			...contexts.map((entry) => ({ key: entry.id, payload: entry })),
+			...observations.map((entry) => ({
+				key: entry.id,
+				payload: encodeImplementationReviewObservationPayload(entry),
+			})),
+			{
+				key: "budget:implementation-plan-amendment:binding-1:rev-1",
+				payload: encodeImplementationSemanticAmendmentPayload(payload),
+			},
+		],
+		decisions: [
+			{
+				key: input.authorization.decisionId,
+				payload: input.authorization,
+			},
+		],
+		steps: [human, approval, paired],
 	});
+	return {
+		folded: foldEffectiveExecution({ recordStore, runId }),
+		recordStore,
+	};
+}
+
+function foldSemantic(
+	input: Parameters<typeof openSemantic>[0],
+): ReturnType<typeof foldEffectiveExecution> {
+	return openSemantic(input).folded;
 }
 
 function correction(id: string, observationId: string, phase: string) {
@@ -1774,6 +1823,333 @@ describe("effective revision fold", () => {
 		expect(
 			folded.evidence.find((entry) => entry.recordId === "obs-2"),
 		).toMatchObject({ applicability: "invalidated" });
+	});
+
+	test("admits a carried design defect and excludes one found after the amendment", () => {
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111141",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+		});
+		const opened = openSemantic({
+			amended: PLAN.replace("[ ] Read digits", "[x] Read digits"),
+			authorization,
+			observations: [
+				observation({
+					id: "obs-2",
+					phase: "2",
+					iteration: 1,
+					items: [designItem("R7")],
+				}),
+			],
+		});
+		expect(opened.folded.ok).toBe(true);
+		const store = createReviewBudgetStore(opened.recordStore);
+		const carried = buildImplementationReviewPromptContext({
+			runId,
+			phase: "2",
+			store,
+			recordStore: opened.recordStore,
+		});
+		expect(carried?.actionableFindings).toEqual([
+			expect.objectContaining({
+				id: "R7",
+				scopeClass: "plan_defect",
+				action: "human_required",
+			}),
+		]);
+		opened.recordStore.append({
+			runId,
+			stream: "budget",
+			idempotencyKey: "obs-2c",
+			payload: observation({
+				id: "obs-2c",
+				phase: "2",
+				iteration: 2,
+				items: [designItem("D3")],
+				revisionId: "rev-1",
+			}),
+			...recordedEnvelope(origin),
+		});
+		const later = buildImplementationReviewPromptContext({
+			runId,
+			phase: "2",
+			store,
+			recordStore: opened.recordStore,
+		});
+		expect(later?.actionableFindings.map((finding) => finding.id)).toEqual([]);
+	});
+
+	test("restores auto_fix only for legacy recovery finding refs", () => {
+		const approved = binding();
+		const amended = PLAN.replace("[ ] Read digits", "[x] Read digits");
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111142",
+			observationId: "obs-2",
+			phase: "2",
+		});
+		const recovered = recovery({
+			id: "recovery-1",
+			authorizationId: authorization.decisionId,
+			parent: null,
+			beforeHash: approved.approvedPlanHash,
+			beforeCommit: approved.approvedPlanCommit,
+			bytes: amended,
+			phase: "2",
+			contexts: ["ctx-obs-2"],
+			observations: ["obs-2"],
+		});
+		const recordStore = storeWith({
+			budget: [
+				{ key: implementationBindingKey(runId), payload: approved },
+				{ key: "ctx-2", payload: context("ctx-obs-2", "2") },
+				{
+					key: "obs-2",
+					payload: observation({
+						id: "obs-2",
+						phase: "2",
+						iteration: 1,
+						items: [designItem("R7"), designItem("D2")],
+					}),
+				},
+				{
+					key: "budget:implementation-plan-recovery:binding-1",
+					payload: recovered,
+				},
+			],
+			decisions: [{ key: authorization.decisionId, payload: authorization }],
+		});
+		const store = createReviewBudgetStore(recordStore);
+		const built = buildImplementationReviewPromptContext({
+			runId,
+			phase: "2",
+			store,
+			recordStore,
+		});
+		expect(built?.actionableFindings).toEqual([
+			expect.objectContaining({ id: "R7", action: "auto_fix" }),
+			expect.objectContaining({ id: "D2", action: "human_required" }),
+		]);
+	});
+
+	test("reopens a phase only when its latest completion precedes the paired amendment", () => {
+		const phaseMap = binding().phaseMap;
+		const executionFor = (
+			kind: EffectiveExecution["revisions"][number]["kind"],
+		): EffectiveExecution => {
+			const initial = {
+				id: "binding-1",
+				kind: "initial" as const,
+				predecessorId: null,
+				approvedPlanHash: hashPlanBytes(PLAN),
+				approvedPlanBytes: PLAN,
+				amendmentAssessment: null,
+			};
+			const current =
+				kind === "initial"
+					? initial
+					: {
+							id: "rev-1",
+							kind,
+							predecessorId: "binding-1",
+							approvedPlanHash: hashPlanBytes(PLAN),
+							approvedPlanBytes: PLAN,
+							amendmentAssessment: null,
+							earliestAffectedPhase: "2",
+							...(kind === "legacy_frontier_recovery"
+								? {
+										legacy: {
+											scopeConfirmation: "frontier",
+											preservedPhaseConfirmation: "earlier phases stay",
+											commit: COMMIT,
+										},
+									}
+								: {}),
+						};
+			return {
+				ok: true,
+				runId,
+				bindingId: "binding-1",
+				initialRevisionId: "binding-1",
+				currentRevisionId: current.id,
+				selectedRevisionId: current.id,
+				pinned: {
+					b0: 2,
+					governingB: 4,
+					mode: "advisory",
+					sourceRunId: "source-run",
+					bindingId: "binding-1",
+				},
+				revisions: kind === "initial" ? [initial] : [initial, current],
+				dispositions: [],
+				evidence: [],
+				findings: [],
+				approvedPlanBytes: PLAN,
+				approvedPlanHash: hashPlanBytes(PLAN),
+				lineageParentId: null,
+				invalidatedContextIds: [],
+				invalidatedObservationIds: [],
+			};
+		};
+		const lines = (
+			entries: Array<[string, string, number, Record<string, unknown>?]>,
+		) =>
+			storeWith({
+				steps: entries.map(([name, phase, iteration, result]) =>
+					step(name, phase, iteration, result ?? {}),
+				),
+			}).listLines(runId, "steps");
+		const amended = executionFor("implementation_plan_amendment");
+		expect(
+			phaseReopenedByRevision({
+				phaseMap,
+				execution: amended,
+				phaseId: "2",
+				steps: lines([
+					["phase:complete", "2", 1],
+					["implementation:amendment", "2", 2, { amendmentId: "rev-1" }],
+				]),
+			}),
+		).toBe(true);
+		expect(
+			phaseReopenedByRevision({
+				phaseMap,
+				execution: amended,
+				phaseId: "2",
+				steps: lines([
+					["implementation:amendment", "2", 1, { amendmentId: "rev-1" }],
+					["phase:complete", "2", 2],
+				]),
+			}),
+		).toBe(false);
+		expect(
+			phaseReopenedByRevision({
+				phaseMap,
+				execution: amended,
+				phaseId: "1",
+				steps: lines([
+					["phase:complete", "1", 1],
+					["implementation:amendment", "2", 2, { amendmentId: "rev-1" }],
+				]),
+			}),
+		).toBe(false);
+		expect(
+			phaseReopenedByRevision({
+				phaseMap,
+				execution: executionFor("legacy_frontier_recovery"),
+				phaseId: "2",
+				steps: lines([
+					["phase:complete", "2", 1],
+					["implementation:amendment", "2", 2, { amendmentId: "rev-1" }],
+				]),
+			}),
+		).toBe(false);
+		expect(
+			phaseReopenedByRevision({
+				phaseMap,
+				execution: amended,
+				phaseId: "2",
+				steps: lines([["phase:complete", "2", 1]]),
+			}),
+		).toBe(true);
+		expect(
+			phaseReopenedByRevision({
+				phaseMap,
+				execution: amended,
+				phaseId: "2",
+				steps: lines([
+					["implementation:amendment", "2", 1, { amendmentId: "rev-1" }],
+				]),
+			}),
+		).toBe(false);
+	});
+
+	test("a pre-amendment waiver does not raise a reduced claim", async () => {
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111143",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+			claimEdits: [{ creditClaimId: "DC0", effect: "reduce_magnitude" }],
+		});
+		const opened = openSemantic({
+			base: claimPlan(-5),
+			amended: claimPlan(-3),
+			authorization,
+			claimEdits: [{ creditClaimId: "DC0", effect: "reduce_magnitude" }],
+			decorateBinding: (approved) => {
+				approved.debtTargets = [
+					{ claimId: "DC0", sourceLabel: "2", phaseId: "2" },
+				];
+				approved.effectiveDecisions = [
+					{
+						kind: "waiver",
+						decisionId: "waiver-pre",
+						creditClaimId: "DC0",
+						approvedMagnitude: 4,
+						active: true,
+					},
+				];
+			},
+		});
+		expect(opened.folded.ok).toBe(true);
+		if (!opened.folded.ok) return;
+		const fresh = context("ctx-fresh", "2");
+		opened.recordStore.append({
+			runId,
+			stream: "budget",
+			idempotencyKey: implementationReviewContextKey(fresh.id),
+			payload: fresh,
+			...recordedEnvelope(origin),
+		});
+		const codeContext: CodeDiffContext = {
+			baseCommit: fresh.baseCommit,
+			reviewedCommit: fresh.reviewedCommit,
+			patch: "",
+			patchHash: fresh.patchHash,
+			excludedPaths: [],
+			hunks: [],
+			binaryPaths: [],
+		};
+		const composed = await composeImplementationReviewerRecord({
+			ctx: {
+				store: createReviewBudgetStore(opened.recordStore),
+				recordStore: opened.recordStore,
+			} as ReviewBudgetCommandContext,
+			runId,
+			stepName: "reviewer:commit",
+			phase: "2",
+			iteration: 2,
+			verdict: {
+				readiness: "ready",
+				items: [],
+				creditRealizations: [
+					{
+						creditClaimId: "DC0",
+						realization: "realized",
+						realizedArchitectureDelta: -3,
+						evidence: `Post-state at ${COMMIT} matches the reduced claim.`,
+					},
+				],
+			},
+			contextId: fresh.id,
+			codeContext,
+		});
+		if (composed.status !== "applied") {
+			throw new Error(
+				composed.status === "error"
+					? `${composed.code}: ${composed.message}`
+					: composed.status,
+			);
+		}
+		expect(composed.reconciliation.claims[0]).toMatchObject({
+			creditClaimId: "DC0",
+			status: "realized",
+			effectiveApprovedMagnitude: 3,
+			waiverDecisionId: null,
+		});
+		expect(composed.reconciliation.budget.realizedCredit).toBe(3);
 	});
 });
 

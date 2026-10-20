@@ -92,6 +92,14 @@ export interface CreditReconciliationInput {
 	effectiveLedger?: ParsedDeliveryBudget;
 	claimEdits?: readonly AmendmentClaimEdit[];
 	invalidatedObservationIds?: ReadonlySet<string>;
+	/**
+	 * Lineage order and the revision that recorded each edit and assessment.
+	 * An edited claim's pre-revision assessment does not carry. A later
+	 * assessment of that claim does.
+	 */
+	revisionOrder?: readonly string[];
+	claimEditRevisionId?: ReadonlyMap<string, string>;
+	observationRevisionId?: ReadonlyMap<string, string>;
 }
 
 export interface CreditReconciliationRejection {
@@ -237,14 +245,9 @@ function carriedAssessment(
 		if (input.invalidatedObservationIds?.has(prior.observationId)) continue;
 		const claim = prior.claims.find((item) => item.creditClaimId === claimId);
 		if (!claim) continue;
-		const edited = input.claimEdits?.some(
-			(edit) =>
-				edit.creditClaimId === claimId &&
-				(edit.effect === "edit_contract" ||
-					edit.effect === "reduce_magnitude" ||
-					edit.effect === "withdraw"),
-		);
-		if (edited) continue;
+		if (observationPrecedesClaimEdit(input, prior.observationId, claimId)) {
+			continue;
+		}
 		const proof = attempts.some((attempt) =>
 			proofCarries(attempt, prior, input.reviewedCommit, input.binding.id),
 		);
@@ -252,6 +255,29 @@ function carriedAssessment(
 		if (!prior.laterCodeChanged) return { assessment: prior, claim };
 	}
 	return null;
+}
+
+function observationPrecedesClaimEdit(
+	input: CreditReconciliationInput,
+	observationId: string,
+	claimId: string,
+): boolean {
+	const edited = input.claimEdits?.some(
+		(edit) =>
+			edit.creditClaimId === claimId &&
+			(edit.effect === "edit_contract" ||
+				edit.effect === "reduce_magnitude" ||
+				edit.effect === "withdraw"),
+	);
+	if (!edited) return false;
+	const editRevision = input.claimEditRevisionId?.get(claimId);
+	const observationRevision = input.observationRevisionId?.get(observationId);
+	const order = input.revisionOrder;
+	if (!editRevision || !observationRevision || !order) return false;
+	const editIndex = order.indexOf(editRevision);
+	const observationIndex = order.indexOf(observationRevision);
+	if (editIndex < 0 || observationIndex < 0) return true;
+	return observationIndex < editIndex;
 }
 
 function approvedClaims(

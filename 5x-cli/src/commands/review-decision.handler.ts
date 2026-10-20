@@ -12,6 +12,7 @@ import { createSqlitePromptStore } from "../control-plane/sqlite-store.js";
 import type { PromptStore } from "../control-plane/store.js";
 import { completeRun, getRunV1, recordStep } from "../db/operations-v1.js";
 import { CliError } from "../output.js";
+import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
 import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
@@ -43,6 +44,7 @@ import {
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
 import {
+	type EffectiveExecution,
 	foldEffectiveExecution,
 	prepareAuthorizeAmendmentScope,
 	registerImplementationAmendment,
@@ -1271,6 +1273,35 @@ function implementationFindingRefs(input: {
 	return findingRefs;
 }
 
+function effectiveApprovedClaims(
+	binding: NonNullable<
+		ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
+	>,
+	folded: EffectiveExecution,
+): { claimIds: Set<string>; deltas: Map<string, number> } {
+	const parsed = parseDeliveryBudget(folded.approvedPlanBytes);
+	if (!parsed.ok && folded.approvedPlanBytes !== binding.approvedPlanBytes) {
+		throw new TypeError("The effective approved ledger could not be parsed.");
+	}
+	const ledger = parsed.ok ? parsed.value : binding.ledger;
+	const withdrawn = new Set(
+		folded.dispositions.flatMap((entry) =>
+			entry.claimEdits
+				.filter((edit) => edit.effect === "withdraw")
+				.map((edit) => edit.creditClaimId),
+		),
+	);
+	const claimIds = new Set<string>();
+	const deltas = new Map<string, number>();
+	for (const item of ledger.workItems) {
+		const id = item.debtClaim?.debtClaimId;
+		if (!id || withdrawn.has(id)) continue;
+		claimIds.add(id);
+		deltas.set(id, item.architectureDelta);
+	}
+	return { claimIds, deltas };
+}
+
 function recordedAmendmentScope(
 	ctx: ReviewBudgetCommandContext,
 	runId: string,
@@ -1299,12 +1330,7 @@ function recordedAmendmentScope(
 	if (!current) throw new TypeError("The current revision is missing.");
 	const binding = ctx.store.getImplementationBinding(runId);
 	if (!binding) throw new TypeError("implementation binding is missing");
-	const ledgerClaimIds = new Set([
-		...binding.ledger.workItems.flatMap((item) =>
-			item.debtClaim ? [item.debtClaim.debtClaimId] : [],
-		),
-		...binding.debtTargets.map((target) => target.claimId),
-	]);
+	const ledgerClaimIds = effectiveApprovedClaims(binding, folded).claimIds;
 	return prepareAuthorizeAmendmentScope({
 		choice: input.choice,
 		amendmentScope: input.amendmentScope,
@@ -1780,14 +1806,16 @@ async function submitImplementationReviewDecision(
 	const allowed = allowedImplementationChoices(gate.causes);
 	if (!allowed.includes(choice))
 		fail("REVIEW_DECISION_INVALID", `${choice} is not allowed for this gate`);
-	const claimIds = new Set(binding.debtTargets.map((target) => target.claimId));
-	const originals = new Map(
-		binding.ledger.workItems.flatMap((item) =>
-			item.debtClaim
-				? [[item.debtClaim.debtClaimId, item.architectureDelta] as const]
-				: [],
-		),
-	);
+	const folded = foldEffectiveExecution({
+		recordStore: ctx.recordStore,
+		runId: input.runId,
+	});
+	if (!folded.ok) {
+		fail("IMPLEMENTATION_EVIDENCE_MALFORMED", folded.diagnostic.message);
+	}
+	const approvedClaims = effectiveApprovedClaims(binding, folded);
+	const claimIds = approvedClaims.claimIds;
+	const originals = approvedClaims.deltas;
 	const findingRefs = implementationFindingRefs({
 		eligible: new Map(
 			gate.causes.flatMap((cause) =>

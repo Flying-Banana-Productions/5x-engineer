@@ -118,7 +118,7 @@ function binding(): ImplementationBindingPayload {
 		sourceSnapshotId: "snap-1",
 		sourceBaselineId: "base-1",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		approvedPlanBytes: "# Plan\n",
 		b0: 8,
 		governingB: 8,
@@ -564,6 +564,70 @@ describe("implementation prompt context", () => {
 			`I-defer (Accepted latency, decision ${decision.decisionId})`,
 		);
 		expect(author).not.toContain("I-defer (implementation_defect");
+		ctx.db.close();
+	});
+
+	test("a design plan_defect on an ordinary bound run stays with the human", () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.saveImplementationBinding(
+			binding(),
+			ctx.originFor({ kind: "system", role: "cli" }),
+		);
+		const recorded = observation({
+			readiness: "not_ready",
+			items: [
+				{
+					id: "I1",
+					title: "Missing guard",
+					action: "auto_fix",
+					reason: "Restore the existing check.",
+					priority: "P1",
+					scopeClass: "implementation_defect",
+				},
+				{
+					id: "D1",
+					title: "Choose the policy",
+					action: "human_required",
+					reason: "The approved plan does not decide this.",
+					priority: "P1",
+					scopeClass: "plan_defect",
+					planImpact: { kind: "design", locations: [] },
+				},
+				{
+					id: "T1",
+					title: "Stale sentence",
+					action: "auto_fix",
+					reason: "Replace the stale sentence.",
+					priority: "P2",
+					scopeClass: "plan_defect",
+					planImpact: {
+						kind: "text_only",
+						locations: [{ heading: "Phase 1", staleText: "old sentence" }],
+					},
+				},
+			],
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: "budget:implementation-review:obs-design",
+			payload: encodeImplementationReviewObservationPayload(recorded),
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		const built = buildImplementationReviewPromptContext({
+			runId: "run1",
+			phase: "1",
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+		});
+		if (!built) throw new Error("expected author context");
+		expect(built.actionableFindings.map((finding) => finding.id)).toEqual([
+			"I1",
+			"T1",
+		]);
+		const actionable =
+			formatImplementationAuthorContext(built).split("### Text guard")[0];
+		expect(actionable).not.toContain("- D1 (");
 		ctx.db.close();
 	});
 });

@@ -3897,6 +3897,7 @@ export async function recordStepInternal(
 					phaseMap: binding.phaseMap,
 					execution: folded,
 					phaseId,
+					steps: recordStore.listLines(params.run, "steps"),
 				}));
 		if (existing && !reopened && !revisionReopened) {
 			const after = computeRunSummary(db, params.run);

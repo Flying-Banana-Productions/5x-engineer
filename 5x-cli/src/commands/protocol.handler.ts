@@ -45,6 +45,7 @@ import {
 	composeImplementationReviewerRecord,
 	implementationGovernanceDecoration,
 	type PendingImplementationObservation,
+	readEffectiveImplementationReviewAnchor,
 	recordImplementationReviewerStepWithObservation,
 } from "./implementation-review-context.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
@@ -620,18 +621,22 @@ export async function protocolValidate(
 						implementationBinding = binding;
 						implementationRecordContext = implementationContext;
 						mode = binding.mode;
+						const anchor = readEffectiveImplementationReviewAnchor({
+							store: implementationContext.store,
+							runId: params.run,
+							binding,
+						});
+						if (!anchor.ok) {
+							outputError("IMPLEMENTATION_EVIDENCE_MALFORMED", anchor.message);
+						}
 						phaseIds = binding.phaseMap.map((entry) => entry.id);
-						workItemIds = binding.ledger.workItems.map((item) => item.id);
-						creditClaimIds = binding.ledger.workItems.flatMap((item) =>
+						workItemIds = anchor.ledger.workItems.map((item) => item.id);
+						creditClaimIds = anchor.ledger.workItems.flatMap((item) =>
 							item.debtClaim ? [item.debtClaim.debtClaimId] : [],
 						);
-						approvedPlanBytes = binding.approvedPlanBytes;
-						approvedPlanHash = binding.approvedPlanHash;
-						amendments =
-							implementationContext.store.listImplementationTextAmendments(
-								params.run,
-								binding.id,
-							);
+						approvedPlanBytes = anchor.approvedPlanBytes;
+						approvedPlanHash = anchor.approvedPlanHash;
+						amendments = [];
 						codeClosure = readImplementationCodeClosure(
 							implementationContext.recordStore,
 							params.run,

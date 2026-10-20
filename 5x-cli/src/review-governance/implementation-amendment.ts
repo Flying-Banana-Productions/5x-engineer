@@ -1558,21 +1558,66 @@ export function planBytesDifferFromEffectiveRevision(input: {
 	return hashPlanBytes(input.planBytes) !== folded.approvedPlanHash;
 }
 
+function numericPhaseId(phase: string | null | undefined): string | null {
+	if (!phase) return null;
+	const trimmed = phase.trim();
+	if (/^\d+(?:\.\d+)?$/.test(trimmed)) return trimmed;
+	const prefixed = trimmed.match(/^phase[\s-]+(\d+(?:\.\d+)?)\b/i);
+	return prefixed?.[1] ?? null;
+}
+
+/**
+ * A phase is revision-reopened only when its latest `phase:complete` precedes
+ * the current revision's paired `implementation:amendment` step in the steps
+ * journal. SQLite ids are not an order across streams. Legacy recoveries stay
+ * on the later author/reviewer step rule.
+ */
 export function phaseReopenedByRevision(input: {
 	phaseMap: readonly { id: string }[];
 	execution: EffectiveExecution;
 	phaseId: string;
+	steps: readonly RecordLine[];
 }): boolean {
 	const revision = input.execution.revisions.find(
 		(entry) => entry.id === input.execution.currentRevisionId,
 	);
-	const boundary = revision?.earliestAffectedPhase;
+	if (revision?.kind !== "implementation_plan_amendment") {
+		return false;
+	}
+	const boundary = revision.earliestAffectedPhase;
 	if (!boundary) return false;
 	const ids = input.phaseMap.map((phase) => phase.id);
 	const boundaryIndex = ids.indexOf(boundary);
 	const phaseIndex = ids.indexOf(input.phaseId);
 	if (boundaryIndex < 0 || phaseIndex < 0) return true;
-	return phaseIndex >= boundaryIndex;
+	if (phaseIndex < boundaryIndex) return false;
+	let amendmentIndex = -1;
+	let completeIndex = -1;
+	for (const [index, line] of input.steps.entries()) {
+		const step = stepRecord(line);
+		if (!step) continue;
+		if (
+			step.step_name === "phase:complete" &&
+			numericPhaseId(step.phase) === input.phaseId
+		) {
+			completeIndex = index;
+		}
+		const result =
+			step.result_json &&
+			typeof step.result_json === "object" &&
+			!Array.isArray(step.result_json)
+				? (step.result_json as { amendmentId?: unknown })
+				: null;
+		if (
+			step.step_name === "implementation:amendment" &&
+			result?.amendmentId === revision.id
+		) {
+			amendmentIndex = index;
+		}
+	}
+	if (completeIndex < 0) return false;
+	if (amendmentIndex < 0) return true;
+	return completeIndex < amendmentIndex;
 }
 
 function canonicalIntent(value: unknown): string {
