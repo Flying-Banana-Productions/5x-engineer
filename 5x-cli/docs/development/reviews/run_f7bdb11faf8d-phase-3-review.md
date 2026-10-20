@@ -125,3 +125,25 @@ In the same way, `review-decision.handler.ts` builds `allowedClaimIds` and `orig
 - [ ] P2.4 Coverage for reopen, re-completion, withdrawal at the boundary, and correction → reassessment → registration
 
 **Phase readiness:** ❌ Not ready for Phase 4 until P1.1 and P1.2 are fixed. Both are mechanical.
+
+---
+
+## Addendum (2026-10-20) — Closure review of `b2c8ef97`
+
+**Reviewed:** `b2c8ef9732ef4a5a4fa624c16f26d8df5e60f93b` (range `b4d5f63c..b2c8ef97`, review context `35284fce-ebcb-4db6-b9b6-98c4ff745163`)  
+**Local verification:** `bun run typecheck` clean, `bun run lint` clean, `bun run test` gives 3945 pass, 0 fail across 256 files.
+
+### What's addressed (✅)
+- **P1.1 — addressed.** A non-`text_only` `plan_defect` is now admitted only when a legacy recovery's authorization names it (`legacyFindingIds`, still routed as `auto_fix`) or when it is pending and its source observation was invalidated by a revision (`carriedPendingFindingIds`). Ordinary bound runs exclude it again. A skills-suite test covers it.
+- **P1.2 — addressed.** `humanDebtDecisionsForReconciliation` now filters decisions invalidated by the fold and decisions or waivers touching edited claims. `review-decision.handler.ts` validates `allowedClaimIds` and original deltas against the effective ledger and excludes withdrawn claims. New tests cover both paths.
+- **P2.1 — addressed.** `phaseReopenedByRevision` applies only to a current semantic amendment and compares the latest `phase:complete` against the paired `implementation:amendment` step in the steps journal, not SQLite ids.
+- **P2.2 — addressed.** Edited-claim carry suppression is scoped by lineage order: only assessments recorded before the revision that made the edit are skipped (`observationPrecedesClaimEdit`).
+- **P2.3 — addressed.** Reviewer recording, invoke and protocol fallback validation, prompt context, template/invoke rendering and the boundary's due claims now use the fold's bytes, hash and effective ledger through `readEffectiveImplementationReviewAnchor`. Fold failures fail closed (`IMPLEMENTATION_EVIDENCE_MALFORMED` / `EffectiveRevisionReadError`). The boundary skips withdrawn claims.
+- **P2.4 — addressed.** The revision adds unit and integration coverage for reopen and replay, withdrawal at the boundary, the author filter, waiver and decision scope handling, and carry scoping.
+
+### Remaining concerns
+- None blocking. One nit: decision claim-id validation now derives from ledger claims rather than `debtTargets`, so non-intrinsic ledger claims are also accepted. The scope checks downstream still constrain this.
+
+### Updated readiness
+- **Phase 3 completion:** ✅
+- **Ready for next phase:** ✅
