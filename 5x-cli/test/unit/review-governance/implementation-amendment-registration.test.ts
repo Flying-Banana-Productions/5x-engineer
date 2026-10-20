@@ -148,6 +148,7 @@ function world(options?: {
 	headAccepted?: boolean;
 	worktree?: string;
 	unresolvedApprovalGate?: boolean;
+	boundaryCommit?: string;
 }) {
 	const base = options?.base ?? PLAN;
 	const amended =
@@ -390,6 +391,12 @@ function world(options?: {
 		result: "complete",
 		commit: COMMIT,
 	});
+	const boundaryCommit = options?.boundaryCommit ?? COMMIT;
+	step("git:commit", "plan", 1, {
+		hash: boundaryCommit,
+		message: "review",
+		files: ["docs/development/reviews/review.md"],
+	});
 	const approvalKey = step("reviewer:plan", "plan", 1, {
 		readiness: "ready",
 		items: [],
@@ -419,7 +426,7 @@ function world(options?: {
 		committedPlanBytes: amended,
 		worktreePlanBytes: options?.worktree ?? amended,
 		approvedPlanCommit: COMMIT,
-		boundaryCommit: COMMIT,
+		boundaryCommit,
 		headAccepted: options?.headAccepted ?? true,
 		unresolvedApprovalGate: options?.unresolvedApprovalGate ?? false,
 	};
@@ -433,7 +440,7 @@ function world(options?: {
 	};
 }
 
-function register(
+async function register(
 	built: ReturnType<typeof world>,
 	overrides: Partial<ReturnType<typeof world>["input"]> & {
 		dryRun?: boolean;
@@ -445,15 +452,15 @@ function register(
 	);
 }
 
-describe("amendment registration", () => {
-	test("dry-run writes nothing and record is idempotent", () => {
+describe("amendment registration", async () => {
+	test("dry-run writes nothing and record is idempotent", async () => {
 		const built = world();
 		const before = {
 			steps: built.store.listLines(runId, "steps").length,
 			budget: built.store.listLines(runId, "budget").length,
 			decisions: built.store.listLines(runId, "decisions").length,
 		};
-		const preview = register(built, { dryRun: true });
+		const preview = await register(built, { dryRun: true });
 		expect(preview.created).toBe(false);
 		expect(preview.dryRun).toBe(true);
 		expect(preview.completionAuthorized).toBe(false);
@@ -472,10 +479,10 @@ describe("amendment registration", () => {
 		expect(built.store.listLines(runId, "decisions")).toHaveLength(
 			before.decisions,
 		);
-		const recorded = register(built);
+		const recorded = await register(built);
 		expect(recorded.created).toBe(true);
 		expect(recorded.completionAuthorized).toBe(false);
-		const again = register(built);
+		const again = await register(built);
 		expect(again.created).toBe(false);
 		expect(again.amendmentId).toBe(recorded.amendmentId);
 		expect(
@@ -502,7 +509,7 @@ describe("amendment registration", () => {
 		expect(folded.bindingId).toBe("binding-1");
 	});
 
-	test("a failed precondition leaves no receipt and the retry wins", () => {
+	test("a failed precondition leaves no receipt and the retry wins", async () => {
 		const built = world();
 		const original = built.store.atomicAppendIfAllNew.bind(built.store);
 		let armed = true;
@@ -516,7 +523,7 @@ describe("amendment registration", () => {
 			}
 			return original(ops, keys);
 		};
-		expect(() => register(built)).toThrow("repeat the dry-run");
+		await expect(register(built)).rejects.toThrow("repeat the dry-run");
 		expect(
 			built.store
 				.listLines(runId, "budget")
@@ -526,11 +533,11 @@ describe("amendment registration", () => {
 						"implementation-plan-amendment",
 				),
 		).toBe(false);
-		const recorded = register(built);
+		const recorded = await register(built);
 		expect(recorded.created).toBe(true);
 	});
 
-	test("a concurrent step makes the captured history stale", () => {
+	test("a concurrent step makes the captured history stale", async () => {
 		const built = world();
 		const original = built.store.atomicAppendIfAllNew.bind(built.store);
 		let armed = true;
@@ -565,8 +572,8 @@ describe("amendment registration", () => {
 			}
 			return original(ops, keys);
 		};
-		expect(() => register(built)).toThrow("repeat the dry-run");
-		const recorded = register(built);
+		await expect(register(built)).rejects.toThrow("repeat the dry-run");
+		const recorded = await register(built);
 		expect(recorded.created).toBe(true);
 	});
 
@@ -646,6 +653,11 @@ describe("amendment registration", () => {
 			result: "complete",
 			commit: COMMIT,
 		});
+		appendStep("git:commit", "plan", 2, {
+			hash: COMMIT,
+			message: "review",
+			files: ["docs/development/reviews/review.md"],
+		});
 		const approvalKey = appendStep("reviewer:plan", "plan", 2, {
 			readiness: "ready",
 			items: [],
@@ -666,16 +678,16 @@ describe("amendment registration", () => {
 		return { humanKey, approvalKey };
 	}
 
-	test("a changed intent for the same predecessor conflicts", () => {
+	test("a changed intent for the same predecessor conflicts", async () => {
 		const built = world();
-		const first = register(built);
+		const first = await register(built);
 		const competing = competingAuthorization(built, "binding-1");
-		expect(() =>
+		await expect(
 			register(built, {
 				humanStepKey: competing.humanKey,
 				approvalStepKey: competing.approvalKey,
 			}),
-		).toThrow("different amendment already won");
+		).rejects.toThrow("different amendment already won");
 		expect(first.created).toBe(true);
 		expect(
 			built.store
@@ -688,19 +700,19 @@ describe("amendment registration", () => {
 		).toHaveLength(1);
 	});
 
-	test("an authorization cannot be reused after the predecessor advances", () => {
+	test("an authorization cannot be reused after the predecessor advances", async () => {
 		const built = world();
-		const first = register(built);
-		const retry = register(built);
+		const first = await register(built);
+		const retry = await register(built);
 		expect(retry.created).toBe(false);
 		expect(retry.amendmentId).toBe(first.amendmentId);
 		const competing = competingAuthorization(built, "binding-1");
-		expect(() =>
+		await expect(
 			register(built, {
 				humanStepKey: competing.humanKey,
 				approvalStepKey: competing.approvalKey,
 			}),
-		).toThrow("different amendment already won");
+		).rejects.toThrow("different amendment already won");
 		const folded = foldEffectiveExecution({
 			recordStore: built.store,
 			runId,
@@ -708,27 +720,27 @@ describe("amendment registration", () => {
 		expect(folded.ok ? folded.currentRevisionId : "").toBe(first.amendmentId);
 	});
 
-	test("rejects a generic human gate, missing scope, and a stale plan or head", () => {
-		expect(() => register(world({ humanStepName: "human:gate" }))).toThrow(
-			"human:gate",
-		);
-		expect(() => register(world({ humanChoice: "continue" }))).toThrow(
+	test("rejects a generic human gate, missing scope, and a stale plan or head", async () => {
+		await expect(
+			register(world({ humanStepName: "human:gate" })),
+		).rejects.toThrow("human:gate");
+		await expect(register(world({ humanChoice: "continue" }))).rejects.toThrow(
 			"Continue and override",
 		);
-		expect(() => register(world({ humanChoice: "override" }))).toThrow(
+		await expect(register(world({ humanChoice: "override" }))).rejects.toThrow(
 			"Continue and override",
 		);
-		expect(() => register(world({ omitScope: true }))).toThrow(
+		await expect(register(world({ omitScope: true }))).rejects.toThrow(
 			"omits amendmentScope",
 		);
-		expect(() => register(world(), { worktreePlanBytes: `${PLAN}\n` })).toThrow(
-			"worktree plan",
-		);
-		expect(() => register(world({ headAccepted: false }))).toThrow(
+		await expect(
+			register(world(), { worktreePlanBytes: `${PLAN}\n` }),
+		).rejects.toThrow("worktree plan");
+		await expect(register(world({ headAccepted: false }))).rejects.toThrow(
 			"HEAD is stale",
 		);
 		const missing = world();
-		expect(() =>
+		await expect(
 			register(missing, {
 				humanStepKey: stepIdempotencyKey({
 					runId,
@@ -737,12 +749,12 @@ describe("amendment registration", () => {
 					iteration: 8,
 				}),
 			}),
-		).toThrow("human:review-governance");
+		).rejects.toThrow("human:review-governance");
 	});
 
-	test("rejects a broader boundary, a completed reopen, and an unenumerated claim", () => {
+	test("rejects a broader boundary, a completed reopen, and an unenumerated claim", async () => {
 		const broader = world({ fromPhase: "1", earliestAuthorized: "2" });
-		expect(() => register(broader)).toThrow("was not clamped");
+		await expect(register(broader)).rejects.toThrow("was not clamped");
 		expect(
 			broader.store
 				.listLines(runId, "budget")
@@ -752,9 +764,9 @@ describe("amendment registration", () => {
 						"implementation-plan-amendment",
 				),
 		).toBe(false);
-		expect(() =>
+		await expect(
 			register(world({ phaseComplete: ["2"], reopen: false })),
-		).toThrow("reopenCompletedPhases");
+		).rejects.toThrow("reopenCompletedPhases");
 		const claimed = claimPlan();
 		const withdrawn = claimed
 			.replace("| W2 | Claim | 2 | -1 | DC0 (`intrinsic`) | - | Credit |\n", "")
@@ -774,7 +786,7 @@ describe("amendment registration", () => {
 				].join("\n"),
 				"",
 			);
-		expect(() =>
+		await expect(
 			register(
 				world({
 					base: claimed,
@@ -784,7 +796,7 @@ describe("amendment registration", () => {
 					rationale: "withdraw DC0 and reopen phase 1",
 				}),
 			),
-		).toThrow("outside amendmentScope");
+		).rejects.toThrow("outside amendmentScope");
 		const recorded = createImplementationDecision({
 			decisionId: "33333333-3333-4333-8333-333333333333",
 			gateId: "gate-rationale",
@@ -811,10 +823,10 @@ describe("amendment registration", () => {
 		expect(recorded.rationale).toContain("withdraw DC0");
 	});
 
-	test("rejects a finding outside resolutionRefs and a plain id from another phase", () => {
+	test("rejects a finding outside resolutionRefs and a plain id from another phase", async () => {
 		const source = item("R1", "Providers");
 		const fingerprint = fingerprintImplementationVerdictItem(source, "2");
-		expect(() =>
+		await expect(
 			register(
 				world({
 					resolved: [
@@ -830,20 +842,20 @@ describe("amendment registration", () => {
 				}),
 				{ resolves: ["R1"] },
 			),
-		).toThrow("outside amendmentScope");
+		).rejects.toThrow("outside amendmentScope");
 		const cross = world({ otherPhaseFinding: true });
-		expect(() => register(cross, { resolves: ["R7"] })).toThrow(
+		await expect(register(cross, { resolves: ["R7"] })).rejects.toThrow(
 			"another phase",
 		);
 	});
 
-	test("rejects an unresolved approval gate", () => {
-		expect(() => register(world({ unresolvedApprovalGate: true }))).toThrow(
-			"unresolved approval gate",
-		);
+	test("rejects an unresolved approval gate", async () => {
+		await expect(
+			register(world({ unresolvedApprovalGate: true })),
+		).rejects.toThrow("unresolved approval gate");
 	});
 
-	test("records scope only from the structured object", () => {
+	test("records scope only from the structured object", async () => {
 		const built = world();
 		const observations = [
 			built.store.listLines(runId, "budget").flatMap((line) => {
@@ -996,5 +1008,159 @@ describe("amendment registration", () => {
 				},
 			}),
 		).toThrow("only valid on authorize_amendment");
+	});
+
+	test("a reviewer git commit is the boundary, not the approved plan commit", async () => {
+		const boundary = "c".repeat(40);
+		const built = world({ boundaryCommit: boundary });
+		const recorded = await register(built);
+		expect(recorded.approvedPlanCommit).toBe(COMMIT);
+		expect(recorded.created).toBe(true);
+		const stored = built.store.listLines(runId, "budget").find((line) => {
+			const payload = line.payload as { kind?: string };
+			return payload.kind === "implementation-plan-amendment";
+		});
+		if (!stored) throw new Error("missing amendment receipt");
+		const receipt = stored.payload as {
+			approvedPlanCommit?: string;
+			afterCommit?: string;
+		};
+		expect(receipt.approvedPlanCommit).toBe(COMMIT);
+		expect(receipt.afterCommit).toBe(COMMIT);
+		await expect(
+			register(world(), { boundaryCommit: "d".repeat(40) }),
+		).rejects.toThrow("review boundary");
+	});
+
+	test("a budget-only append after the snapshot fails the CAS precondition", async () => {
+		const built = world();
+		const original = built.store.listLines.bind(built.store);
+		let reads = 0;
+		let injected = false;
+		built.store.listLines = (id, stream) => {
+			const lines = original(id, stream);
+			reads += 1;
+			if (!injected && reads > 3 && stream === "budget") {
+				injected = true;
+				built.store.append({
+					runId,
+					stream: "budget",
+					idempotencyKey: "budget:concurrent-review-context",
+					payload: { kind: "review-context", id: "concurrent" },
+					...recordedEnvelope(origin),
+				});
+			}
+			return lines;
+		};
+		await expect(register(built)).rejects.toThrow("repeat the dry-run");
+		expect(
+			built.store
+				.listLines(runId, "budget")
+				.some(
+					(line) =>
+						(line.payload as { kind?: string }).kind ===
+						"implementation-plan-amendment",
+				),
+		).toBe(false);
+		built.store.listLines = original;
+		const recorded = await register(built);
+		expect(recorded.created).toBe(true);
+		expect(
+			built.store
+				.listLines(runId, "budget")
+				.filter(
+					(line) =>
+						(line.payload as { kind?: string }).kind ===
+						"implementation-plan-amendment",
+				),
+		).toHaveLength(1);
+	});
+
+	test("pending findings come from the canonical register", async () => {
+		const source = item("R1", "Providers");
+		const fingerprint = fingerprintImplementationVerdictItem(source, "2");
+		const resolved = await register(
+			world({
+				resolved: [
+					{
+						phase: "2",
+						observationId: "obs-2",
+						findingId: "R1",
+						fingerprint,
+						reason: "scope changed",
+					},
+				],
+				scopeResolutions: [
+					{
+						phase: "2",
+						observationId: "obs-2",
+						findingId: "R1",
+						fingerprint,
+					},
+				],
+			}),
+			{ resolves: ["R1"], dryRun: true },
+		);
+		expect(resolved.pendingFindings).toEqual([]);
+		const built = world();
+		const later = item("R2", "Still open");
+		const laterFingerprint = fingerprintImplementationVerdictItem(later, "2");
+		built.store.append({
+			runId,
+			stream: "budget",
+			idempotencyKey: "obs-2b",
+			payload: {
+				kind: "implementation-review",
+				version: 1,
+				id: "obs-2b",
+				runId,
+				stepKey: { stepName: "reviewer:impl", phase: "2", iteration: 4 },
+				bindingId: "binding-1",
+				contextId: "ctx-obs-2b",
+				domain: "implementation",
+				phase: "2",
+				originalVerdict: {
+					readiness: "not_ready",
+					items: [later],
+					priorFindings: [{ id: "R1", status: "addressed" }],
+				},
+				outcomes: [{ id: "R1", status: "addressed" }],
+				route: "human_gate",
+				nextAction: "human_gate",
+				diagnostics: [],
+				claimObservations: [],
+				gateCauses: [],
+				telemetry: {
+					reviewCycles: 2,
+					fixCycles: 0,
+					reviewOriginatedCommits: 0,
+					qualityReruns: 0,
+					classCounts: {
+						implementation_defect: 1,
+						plan_defect: 0,
+						scope_expansion: 0,
+						pre_existing: 0,
+					},
+					planAmendments: 0,
+					addedPaths: [],
+					boundaryInventory: [],
+					effortVariance: 0,
+					architectureVariance: 0,
+				},
+				budgetInvariant: { W: 2, R: 0, B: 4, D: 0 },
+				completionAuthorized: false,
+				createdAt: "2026-10-19T00:00:00.000Z",
+			},
+			...recordedEnvelope(origin),
+		});
+		const preview = await register(built, { dryRun: true });
+		expect(preview.pendingFindings).toEqual([
+			{
+				phase: "2",
+				observationId: "obs-2b",
+				findingId: "R2",
+				fingerprint: laterFingerprint,
+			},
+		]);
 	});
 });

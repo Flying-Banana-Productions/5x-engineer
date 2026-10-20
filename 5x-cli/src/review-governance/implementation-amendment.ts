@@ -11,9 +11,12 @@
 import { createHash } from "node:crypto";
 import type { RecordStore } from "../control-plane/record-store.js";
 import {
+	type AppendOp,
+	type AtomicAppendIfAllNewResult,
 	type RecordLine,
 	type RecordOrigin,
 	RecordStoreError,
+	type RecordStream,
 	recordedEnvelope,
 	type StepRecordPayload,
 	stepIdempotencyKey,
@@ -1567,11 +1570,10 @@ function verifyRegisteredAmendmentEvidence(
 			? (humanStep.result_json as { decisionId?: unknown; choice?: unknown })
 			: null;
 	if (
-		!humanStep ||
-		humanStep.step_name !== "human:review-governance" ||
+		humanStep?.step_name !== "human:review-governance" ||
 		humanResult?.decisionId !== lineage.authorizationId ||
-		humanResult.choice === "continue" ||
-		humanResult.choice === "override"
+		humanResult?.choice === "continue" ||
+		humanResult?.choice === "override"
 	) {
 		return `Human step ${lineage.humanStep.idempotencyKey} is not the coupled authorize_amendment step.`;
 	}
@@ -1667,6 +1669,8 @@ export function prepareAuthorizeAmendmentScope(input: {
 	phaseIds: readonly string[];
 	currentRevisionId: string;
 	ledgerClaimIds: ReadonlySet<string>;
+	/** False only when an identical stored decision is retried after the revision advances. */
+	requireCurrentPredecessor?: boolean;
 }): AmendmentScope | undefined {
 	if (input.choice !== "authorize_amendment") {
 		if (input.amendmentScope !== undefined) {
@@ -1722,7 +1726,10 @@ export function prepareAuthorizeAmendmentScope(input: {
 		});
 	}
 	const scope = parseAmendmentScope(record);
-	if (scope.predecessorRevisionId !== input.currentRevisionId) {
+	if (
+		input.requireCurrentPredecessor !== false &&
+		scope.predecessorRevisionId !== input.currentRevisionId
+	) {
 		throw new TypeError(
 			`predecessor ${scope.predecessorRevisionId} is not the current revision ${input.currentRevisionId}`,
 		);
@@ -1997,16 +2004,51 @@ function stepIndex(lines: readonly RecordLine[], key: string): number {
 	return lines.findIndex((line) => line.idempotencyKey === key);
 }
 
+function journalExpectedKeys(
+	recordStore: RecordStore,
+	runId: string,
+): Partial<Record<RecordStream, string[]>> {
+	const keys = (stream: RecordStream) =>
+		recordStore.listLines(runId, stream).map((line) => line.idempotencyKey);
+	return {
+		steps: keys("steps"),
+		budget: keys("budget"),
+		decisions: keys("decisions"),
+	};
+}
+
+function resultObject(
+	step: StepRecordPayload | null,
+): Record<string, unknown> | null {
+	const result = step?.result_json;
+	if (!result || typeof result !== "object" || Array.isArray(result))
+		return null;
+	return result as Record<string, unknown>;
+}
+
 /** Validate and, unless dry-run, durably append one semantic amendment. */
-export function registerImplementationAmendment(
+export async function registerImplementationAmendment(
 	input: RegisterImplementationAmendmentInput,
-	deps: { recordStore: RecordStore; origin: RecordOrigin; now?: () => string },
-): ImplementationAmendmentRegistration {
+	deps: {
+		recordStore: RecordStore;
+		origin: RecordOrigin;
+		now?: () => string;
+		/**
+		 * Paired append. The command passes the shared admission/finalization seam.
+		 * The default is the RecordStore CAS append used by direct callers.
+		 */
+		appendPair?: (
+			ops: AppendOp[],
+			expectedKeys: Partial<Record<RecordStream, string[]>>,
+		) => Promise<AtomicAppendIfAllNewResult> | AtomicAppendIfAllNewResult;
+	},
+): Promise<ImplementationAmendmentRegistration> {
 	const { recordStore } = deps;
 	const run = recordStore.getRun(input.runId);
-	if (!run || run.status !== "active") {
+	if (run?.status !== "active") {
 		rejectAmendment("Registration requires an active implementation run.");
 	}
+	const expectedKeys = journalExpectedKeys(recordStore, input.runId);
 	const folded = foldEffectiveExecution({
 		recordStore,
 		runId: input.runId,
@@ -2059,7 +2101,7 @@ export function registerImplementationAmendment(
 	const approvalLine = approvalIndex >= 0 ? steps[approvalIndex] : undefined;
 	const humanStep = humanLine ? stepRecord(humanLine) : null;
 	const approvalStep = approvalLine ? stepRecord(approvalLine) : null;
-	if (!humanStep || humanStep.step_name !== "human:review-governance") {
+	if (humanStep?.step_name !== "human:review-governance") {
 		rejectAmendment(
 			"The human step must be the coupled human:review-governance record. A generic human:gate does not qualify.",
 		);
@@ -2084,8 +2126,7 @@ export function registerImplementationAmendment(
 		);
 	}
 	if (
-		!approvalStep ||
-		!approvalStep.step_name.startsWith("reviewer:") ||
+		approvalStep?.step_name.startsWith("reviewer:") !== true ||
 		approvalStep.phase !== "plan"
 	) {
 		rejectAmendment(
@@ -2103,8 +2144,7 @@ export function registerImplementationAmendment(
 		(decision) => decision.decisionId === humanResult.decisionId,
 	);
 	if (
-		!authorization ||
-		authorization.choice !== "authorize_amendment" ||
+		authorization?.choice !== "authorize_amendment" ||
 		authorization.bindingId !== binding.id
 	) {
 		rejectAmendment(
@@ -2174,8 +2214,7 @@ export function registerImplementationAmendment(
 				})
 			: null;
 	if (
-		!verdict ||
-		verdict.readiness !== "ready" ||
+		verdict?.readiness !== "ready" ||
 		!Array.isArray(verdict.items) ||
 		verdict.items.length > 0 ||
 		verdict.governance?.route === "final_corrections" ||
@@ -2353,8 +2392,7 @@ export function registerImplementationAmendment(
 		});
 	const snapshot = snapshots.at(-1);
 	if (
-		!snapshot ||
-		snapshot.stepKey.phase !== "plan" ||
+		snapshot?.stepKey.phase !== "plan" ||
 		snapshot.stepKey.stepName !== approvalStep.step_name ||
 		snapshot.stepKey.iteration !== approvalStep.iteration ||
 		JSON.stringify(snapshot.currentLedger) !== JSON.stringify(afterLedger.value)
@@ -2363,25 +2401,29 @@ export function registerImplementationAmendment(
 			"The latest plan-review snapshot must match the approval step and the amended ledger.",
 		);
 	}
-	const author = steps.slice(humanIndex + 1, approvalIndex).find((line) => {
-		const step = stepRecord(line);
-		const result =
-			step?.result_json &&
-			typeof step.result_json === "object" &&
-			!Array.isArray(step.result_json)
-				? (step.result_json as { result?: unknown; commit?: unknown })
-				: null;
-		return (
-			step?.phase === "plan" &&
-			step.step_name.startsWith("author:") &&
-			result?.result === "complete" &&
-			(result.commit === input.approvedPlanCommit ||
-				step.head_commit === input.approvedPlanCommit)
-		);
-	});
-	if (!author || input.approvedPlanCommit !== input.boundaryCommit) {
+	const author = steps
+		.slice(humanIndex + 1, approvalIndex)
+		.reverse()
+		.find((line) => {
+			const step = stepRecord(line);
+			const result = resultObject(step);
+			return (
+				step?.phase === "plan" &&
+				step.step_name.startsWith("author:") &&
+				result?.result === "complete" &&
+				result.commit === input.approvedPlanCommit
+			);
+		});
+	const boundaryLine = steps
+		.slice(0, approvalIndex)
+		.reverse()
+		.find((line) => stepRecord(line)?.step_name === "git:commit");
+	const boundaryHash = resultObject(
+		boundaryLine ? stepRecord(boundaryLine) : null,
+	)?.hash;
+	if (!author || boundaryHash !== input.boundaryCommit) {
 		rejectAmendment(
-			"The approved plan commit must be the completed author commit at the review boundary.",
+			"The approved plan commit must be the completed author commit, and the review boundary must be the last git:commit before approval.",
 		);
 	}
 	const selectors = input.resolves.map((raw) => {
@@ -2575,35 +2617,19 @@ export function registerImplementationAmendment(
 		authorizationId: authorization.decisionId,
 		approvedPlanHash: approvedHash,
 	};
-	const pendingFindings = observations.flatMap((observation) =>
-		observation.originalVerdict.items.flatMap((item) => {
-			let fingerprint: string;
-			try {
-				fingerprint = fingerprintImplementationVerdictItem(
-					item as VerdictItem,
-					observation.phase,
-				);
-			} catch {
-				return [];
-			}
-			const resolved = assessment.resolvedFindings.some(
-				(finding) =>
-					finding.phase === observation.phase &&
-					finding.observationId === observation.id &&
-					finding.findingId === item.id &&
-					finding.fingerprint === fingerprint,
-			);
-			if (resolved) return [];
-			return [
-				{
-					phase: observation.phase,
-					observationId: observation.id,
-					findingId: item.id,
-					fingerprint,
-				},
-			];
-		}),
-	);
+	const resolvedKeys = new Set(assessment.resolvedFindings.map(findingKey));
+	const pendingFindings = folded.findings.flatMap((finding) => {
+		if (finding.status !== "pending") return [];
+		if (resolvedKeys.has(findingKey(finding))) return [];
+		return [
+			{
+				phase: finding.phase,
+				observationId: finding.observationId,
+				findingId: finding.findingId,
+				fingerprint: finding.fingerprint,
+			},
+		];
+	});
 	const registration = (
 		created: boolean,
 		dryRun: boolean,
@@ -2710,37 +2736,29 @@ export function registerImplementationAmendment(
 		model: null,
 	};
 	const envelope = recordedEnvelope(deps.origin);
-	let appended: ReturnType<RecordStore["atomicAppendIfAllNew"]>;
+	const ops: AppendOp[] = [
+		{
+			runId: input.runId,
+			stream: "steps",
+			idempotencyKey: stepKey,
+			payload: stepPayload,
+			createdAt,
+			...envelope,
+		},
+		{
+			runId: input.runId,
+			stream: "budget",
+			idempotencyKey: budgetKey,
+			payload,
+			createdAt,
+			...envelope,
+		},
+	];
+	let appended: AtomicAppendIfAllNewResult;
 	try {
-		appended = recordStore.atomicAppendIfAllNew(
-			[
-				{
-					runId: input.runId,
-					stream: "steps",
-					idempotencyKey: stepKey,
-					payload: stepPayload,
-					createdAt,
-					...envelope,
-				},
-				{
-					runId: input.runId,
-					stream: "budget",
-					idempotencyKey: budgetKey,
-					payload,
-					createdAt,
-					...envelope,
-				},
-			],
-			{
-				steps: steps.map((line) => line.idempotencyKey),
-				budget: recordStore
-					.listLines(input.runId, "budget")
-					.map((line) => line.idempotencyKey),
-				decisions: recordStore
-					.listLines(input.runId, "decisions")
-					.map((line) => line.idempotencyKey),
-			},
-		);
+		appended = await (deps.appendPair
+			? deps.appendPair(ops, expectedKeys)
+			: recordStore.atomicAppendIfAllNew(ops, expectedKeys));
 	} catch (error) {
 		if (
 			error instanceof RecordStoreError &&

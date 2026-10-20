@@ -1,7 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import type {
+	AppendOp,
+	AtomicAppendIfAllNewResult,
 	RecordPerformer,
+	RecordStream,
 	StepRecordPayload,
 } from "../control-plane/index.js";
 import { stepIdempotencyKey } from "../control-plane/record-types.js";
@@ -14,6 +17,7 @@ import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
 import {
 	assertCleanCodeWorktree,
+	CodeDiffError,
 	changedCodePaths,
 	isCodeAncestor,
 	readHeadCommit,
@@ -1177,12 +1181,17 @@ async function acceptStoredImplementationDecision(
 			createdAt: stored.createdAt,
 			...(input.payload.amendmentScope !== undefined
 				? {
-						amendmentScope: recordedAmendmentScope(ctx, input.runId, {
-							choice: input.payload.choice,
-							amendmentScope: input.payload.amendmentScope,
-							findingRefs,
-							sourceObservationId: stored.observationId,
-						}),
+						amendmentScope: recordedAmendmentScope(
+							ctx,
+							input.runId,
+							{
+								choice: input.payload.choice,
+								amendmentScope: input.payload.amendmentScope,
+								findingRefs,
+								sourceObservationId: stored.observationId,
+							},
+							{ requireCurrentPredecessor: false },
+						),
 					}
 				: {}),
 		});
@@ -1271,6 +1280,7 @@ function recordedAmendmentScope(
 		findingRefs: readonly FindingIdentity[];
 		sourceObservationId: string;
 	},
+	options?: { requireCurrentPredecessor?: boolean },
 ): AmendmentScope | undefined {
 	if (
 		input.choice !== "authorize_amendment" &&
@@ -1308,6 +1318,7 @@ function recordedAmendmentScope(
 		),
 		currentRevisionId: folded.currentRevisionId,
 		ledgerClaimIds,
+		requireCurrentPredecessor: options?.requireCurrentPredecessor,
 	});
 }
 
@@ -1388,6 +1399,183 @@ function resolveJournalStep(
 	return line;
 }
 
+function journalStep(line: { payload: unknown }): StepRecordPayload | null {
+	const payload = line.payload;
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+		return null;
+	}
+	const step = payload as StepRecordPayload;
+	if (
+		typeof step.step_name !== "string" ||
+		typeof step.iteration !== "number"
+	) {
+		return null;
+	}
+	return step;
+}
+
+function stepResultRecord(
+	step: StepRecordPayload | null,
+): Record<string, unknown> | null {
+	const result = step?.result_json;
+	if (!result || typeof result !== "object" || Array.isArray(result))
+		return null;
+	return result as Record<string, unknown>;
+}
+
+function completedAuthorCommit(
+	steps: readonly { idempotencyKey: string; payload: unknown }[],
+	humanKey: string,
+	approvalKey: string,
+): string {
+	const humanIndex = steps.findIndex(
+		(line) => line.idempotencyKey === humanKey,
+	);
+	const approvalIndex = steps.findIndex(
+		(line) => line.idempotencyKey === approvalKey,
+	);
+	const author = steps
+		.slice(humanIndex + 1, approvalIndex)
+		.reverse()
+		.find((line) => {
+			const step = journalStep(line);
+			const result = stepResultRecord(step);
+			return (
+				step?.phase === "plan" &&
+				step.step_name.startsWith("author:") &&
+				result?.result === "complete" &&
+				typeof result.commit === "string" &&
+				result.commit.length > 0
+			);
+		});
+	const commit = stepResultRecord(author ? journalStep(author) : null)?.commit;
+	if (typeof commit !== "string" || commit.length === 0) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"The plan approval has no completed author commit between the human authorization and the review.",
+		);
+	}
+	return commit;
+}
+
+function reviewBoundaryCommit(
+	steps: readonly { idempotencyKey: string; payload: unknown }[],
+	approvalKey: string,
+): string {
+	const approvalIndex = steps.findIndex(
+		(line) => line.idempotencyKey === approvalKey,
+	);
+	const boundary = steps
+		.slice(0, approvalIndex)
+		.reverse()
+		.find((line) => journalStep(line)?.step_name === "git:commit");
+	const hash = stepResultRecord(boundary ? journalStep(boundary) : null)?.hash;
+	if (typeof hash !== "string" || hash.length === 0) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"The plan approval has no recorded review-boundary commit.",
+		);
+	}
+	return hash;
+}
+
+async function appendAmendmentThroughAdmission(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	ops: AppendOp[],
+	expectedKeys: Partial<Record<RecordStream, string[]>>,
+): Promise<AtomicAppendIfAllNewResult> {
+	const stepOp = ops.find((op) => op.stream === "steps");
+	const budgetOp = ops.find((op) => op.stream === "budget");
+	const step = stepOp ? journalStep(stepOp) : null;
+	if (!stepOp || !budgetOp || !step?.phase) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"Registration did not commit. Repeat the dry-run.",
+		);
+	}
+	const run = getRunV1(ctx.db, runId);
+	if (!run) {
+		throw new CliError("RUN_NOT_FOUND", `Run ${runId} not found`);
+	}
+	let admitted: Awaited<ReturnType<typeof prepareRecordStepAppend>>;
+	try {
+		admitted = await prepareRecordStepAppend(
+			{
+				run: runId,
+				stepName: "implementation:amendment",
+				phase: step.phase,
+				iteration: step.iteration,
+				result: JSON.stringify(step.result_json),
+				performer: { kind: "human", role: "operator" },
+			},
+			{
+				db: ctx.db,
+				config: ctx.config,
+				recordStore: ctx.recordStore,
+				...(ctx.controlPlane ? { controlPlane: ctx.controlPlane } : {}),
+			},
+		);
+	} catch (error) {
+		if (error instanceof RecordError) {
+			throw new CliError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
+	let written: Awaited<ReturnType<typeof finalizeAndWritePreparedStep>>;
+	try {
+		written = await finalizeAndWritePreparedStep(
+			admitted.prepared,
+			{
+				db: ctx.db,
+				config: ctx.config,
+				recordStore: ctx.recordStore,
+				originFor: ctx.originFor,
+				run,
+			},
+			{
+				mode: "paired-all-new",
+				expectedKeys,
+				extraOps: (_finalized, envelope) => [
+					{
+						runId: budgetOp.runId,
+						stream: "budget",
+						idempotencyKey: budgetOp.idempotencyKey,
+						payload: budgetOp.payload,
+						createdAt: budgetOp.createdAt,
+						...envelope,
+					},
+				],
+			},
+		);
+	} catch (error) {
+		if (error instanceof RecordError) {
+			throw new CliError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
+	if (written.outcome === "coupled-key-exists") {
+		return { created: false, duplicates: [{ index: 1, line: written.line }] };
+	}
+	const budgetLine = ctx.recordStore.getLine(
+		runId,
+		"budget",
+		budgetOp.idempotencyKey,
+	);
+	if (!written.recorded) {
+		return budgetLine
+			? { created: false, duplicates: [{ index: 1, line: budgetLine }] }
+			: { created: false, duplicates: [] };
+	}
+	return {
+		created: true,
+		results: [
+			{ created: true, line: written.stepLine },
+			...(budgetLine ? [{ created: true, line: budgetLine }] : []),
+		],
+	};
+}
+
 export async function amendImplementationPlanCommand(
 	input: {
 		runId: string;
@@ -1409,64 +1597,84 @@ export async function amendImplementationPlanCommand(
 	const human = resolveJournalStep(ctx, input.runId, input.humanStep);
 	const approval = resolveJournalStep(ctx, input.runId, input.approvalStep);
 	const steps = ctx.recordStore.listLines(input.runId, "steps");
-	const approvalIndex = steps.findIndex(
-		(line) => line.idempotencyKey === approval.idempotencyKey,
+	const approvedPlanCommit = completedAuthorCommit(
+		steps,
+		human.idempotencyKey,
+		approval.idempotencyKey,
 	);
-	const boundary = steps
-		.slice(0, approvalIndex)
-		.reverse()
-		.find((line) => {
-			const payload = line.payload as {
-				step_name?: unknown;
-				result_json?: unknown;
-			};
-			return payload.step_name === "git:commit";
-		});
-	const boundaryCommit = (
-		(boundary?.payload as { result_json?: { hash?: unknown } } | undefined)
-			?.result_json as { hash?: unknown } | undefined
-	)?.hash;
-	const approvalPayload = approval.payload as {
-		head_commit?: unknown;
-	};
-	const commit =
-		typeof boundaryCommit === "string" && boundaryCommit.length > 0
-			? boundaryCommit
-			: typeof approvalPayload.head_commit === "string"
-				? approvalPayload.head_commit
-				: "";
-	if (!commit) {
-		throw new CliError(
-			"IMPLEMENTATION_AMENDMENT_REJECTED",
-			"The plan approval has no recorded review-boundary commit.",
-		);
-	}
+	const boundaryCommit = reviewBoundaryCommit(steps, approval.idempotencyKey);
 	const workdir = ctx.executionContext.effectiveWorkingDirectory;
 	const git = workdirCodeDiffGit(workdir);
-	const head = await readHeadCommit(git);
 	const planPath = ctx.executionContext.run.plan_path;
 	const showOptions = { repoRoot: ctx.executionContext.controlPlaneRoot };
-	const committedPlanBytes = await showPlanAtCommit(
-		workdir,
-		commit,
-		planPath,
-		showOptions,
-	);
-	const headPlan = await showPlanAtCommit(workdir, head, planPath, showOptions);
 	const excluded =
 		ctx.store.listImplementationReviewContexts(input.runId, binding.id).at(-1)
 			?.excludedPaths ?? [];
-	let headAccepted = false;
-	if (
-		committedPlanBytes !== null &&
-		headPlan === committedPlanBytes &&
-		(await isCodeAncestor(git, commit, head))
-	) {
+	let committedPlanBytes: string;
+	try {
+		const head = await readHeadCommit(git);
+		if (
+			!(await isCodeAncestor(git, approvedPlanCommit, boundaryCommit)) ||
+			!(await isCodeAncestor(git, boundaryCommit, head))
+		) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				"The approved plan commit must be an ancestor of the review boundary, and the boundary an ancestor of HEAD.",
+			);
+		}
 		await assertCleanCodeWorktree(git, excluded);
-		headAccepted =
-			(await changedCodePaths(git, commit, head, excluded)).length === 0;
+		const drifted = [
+			...(await changedCodePaths(
+				git,
+				approvedPlanCommit,
+				boundaryCommit,
+				excluded,
+			)),
+			...(await changedCodePaths(git, boundaryCommit, head, excluded)),
+		];
+		if (drifted.length > 0) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				"Non-workflow files changed after the approved plan commit.",
+			);
+		}
+		const approvedBytes = await showPlanAtCommit(
+			workdir,
+			approvedPlanCommit,
+			planPath,
+			showOptions,
+		);
+		const boundaryBytes = await showPlanAtCommit(
+			workdir,
+			boundaryCommit,
+			planPath,
+			showOptions,
+		);
+		const headBytes = await showPlanAtCommit(
+			workdir,
+			head,
+			planPath,
+			showOptions,
+		);
+		if (
+			approvedBytes === null ||
+			approvedBytes !== boundaryBytes ||
+			approvedBytes !== headBytes
+		) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				"The plan bytes at the approved commit, the review boundary, and HEAD must match.",
+			);
+		}
+		committedPlanBytes = approvedBytes;
+	} catch (error) {
+		if (error instanceof CliError) throw error;
+		if (error instanceof CodeDiffError) {
+			throw new CliError("IMPLEMENTATION_AMENDMENT_REJECTED", error.message);
+		}
+		throw error;
 	}
-	const result = registerImplementationAmendment(
+	const result = await registerImplementationAmendment(
 		{
 			runId: input.runId,
 			humanStepKey: human.idempotencyKey,
@@ -1474,14 +1682,14 @@ export async function amendImplementationPlanCommand(
 			fromPhase: input.fromPhase,
 			resolves: input.resolves,
 			dryRun: input.dryRun,
-			committedPlanBytes: committedPlanBytes ?? "",
+			committedPlanBytes,
 			worktreePlanBytes: readFileSync(
 				ctx.executionContext.effectivePlanPath,
 				"utf8",
 			),
-			approvedPlanCommit: commit,
-			boundaryCommit: commit,
-			headAccepted,
+			approvedPlanCommit,
+			boundaryCommit,
+			headAccepted: true,
 			unresolvedApprovalGate: unresolvedApprovalGate(
 				ctx,
 				input.runId,
@@ -1491,9 +1699,11 @@ export async function amendImplementationPlanCommand(
 		{
 			recordStore: ctx.recordStore,
 			origin: ctx.originFor({ kind: "human", role: "operator" }),
+			appendPair: (ops, expectedKeys) =>
+				appendAmendmentThroughAdmission(ctx, input.runId, ops, expectedKeys),
 		},
 	);
-	if (result.created) {
+	if (!result.dryRun) {
 		recordStep(ctx.db, {
 			run_id: input.runId,
 			step_name: "implementation:amendment",

@@ -31,6 +31,7 @@ import {
 	type RecordRecorder,
 	type RecordStore,
 	RecordStoreError,
+	type RecordStream,
 	RUN_RECORD_FORMAT_VERSION,
 	recordedEnvelope,
 	redactStepPayload,
@@ -3307,6 +3308,8 @@ export async function finalizeAndWritePreparedStep(
 	},
 	opts: {
 		mode: FinalizeWriteMode;
+		/** Journal keys captured before validation. Paired mode rejects a stale history. */
+		expectedKeys?: Partial<Record<RecordStream, string[]>>;
 		extraOps?: (
 			finalized: FinalizedRecordStep,
 			envelope: ReturnType<typeof recordedEnvelope>,
@@ -3415,7 +3418,10 @@ export async function finalizeAndWritePreparedStep(
 				result?.line ??
 				storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
 		} else {
-			const result = ctx.recordStore.atomicAppendIfAllNew(ops);
+			const result = ctx.recordStore.atomicAppendIfAllNew(
+				ops,
+				opts.expectedKeys,
+			);
 			created = result.created;
 			stepLine = result.created
 				? (result.results[0]?.line ?? null)
