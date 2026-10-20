@@ -2111,8 +2111,8 @@ function implementationBinding() {
 		sourceSnapshotId: "snap",
 		sourceBaselineId: "base",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
 		approvedPlanBytes: "# Plan\n",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		b0: 2,
 		governingB: 2,
 		mode: "enforced" as const,
@@ -2598,6 +2598,12 @@ The binding is unchanged.
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
 | W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
 
 ## Design Decisions
 
