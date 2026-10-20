@@ -6,7 +6,7 @@
 **Local verification:**
 - Focused suites pass: `bun test --timeout 30000 test/unit/review-governance/implementation-amendment-registration.test.ts test/unit/review-governance/implementation-amendment.test.ts test/unit/commands/implementation-recovery.test.ts test/integration/commands/implementation-completion.test.ts` gives 66 pass, 0 fail.
 - `bun run typecheck` is clean. `bun run lint` exits 0 but reports 7 new `useOptionalChain` warnings, all in `implementation-amendment.ts` (P2.3).
-- Full suite (`bun test --concurrent --timeout 30000`) had not finished when this review was committed, so this review does not rely on it. The focused suites above are the verified evidence.
+- Full suite: `bun test --concurrent --dots --timeout 30000` gives 3951 pass, 0 fail across 256 files.
 
 **Implementation plan:** `5x-cli/docs/development/plans/215-implementation-plan-amendment-plan.md` (approved commit `a5b3b69`, binding `ffa8a3af-0d29-4645-86c3-e55806f1b1ff`, advisory mode)  
 **Technical design:** N/A
