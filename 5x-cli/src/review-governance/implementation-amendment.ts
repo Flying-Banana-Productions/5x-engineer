@@ -3,17 +3,22 @@
  *
  * The binding line stays immutable. Legacy recoveries and semantic amendments
  * append revisions. Historical lines without a revision field are attributed
- * from journal order inside one stream. This module does not append records
- * or synthesize a reviewer assessment for a legacy recovery.
+ * from journal order inside one stream. Registration appends one paired
+ * receipt. The fold does not synthesize a reviewer assessment for a legacy
+ * recovery.
  */
 
 import { createHash } from "node:crypto";
 import type { RecordStore } from "../control-plane/record-store.js";
 import {
 	type RecordLine,
+	type RecordOrigin,
+	RecordStoreError,
+	recordedEnvelope,
 	type StepRecordPayload,
 	stepIdempotencyKey,
 } from "../control-plane/record-types.js";
+import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { type Phase, parsePlan } from "../parsers/plan.js";
 import {
@@ -21,10 +26,13 @@ import {
 	type AmendmentClaimEdit,
 	type AmendmentPreservedPhase,
 	type AmendmentResolvedFinding,
+	type AmendmentScope,
 	parseAmendmentAssessment,
+	parseAmendmentScope,
 	type VerdictItem,
 } from "../protocol.js";
 import {
+	decodeBudgetSnapshotPayload,
 	decodeImplementationBindingPayload,
 	decodeImplementationCorrectionAttemptPayload,
 	decodeImplementationCreditReconciliationPayload,
@@ -43,14 +51,21 @@ import {
 	type ImplementationSemanticAmendmentPayload,
 	type ImplementationTextAmendmentPayload,
 	implementationBindingKey,
+	implementationSemanticAmendmentKey,
 } from "../review-budget/record-lines.js";
-import type { ParsedDeliveryBudget } from "../review-budget/types.js";
+import type {
+	ParsedDeliveryBudget,
+	ParsedWorkItem,
+} from "../review-budget/types.js";
 import {
+	classifyDecisionAcceptance,
 	type ImplementationDecisionPayload,
+	listImplementationDecisions,
 	validateImplementationDecision,
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { normalizeCheckboxMarkers } from "./plan-amendment.js";
+import type { FindingIdentity } from "./types.js";
 
 export function initialRevisionId(bindingId: string): string {
 	return bindingId;
@@ -1111,6 +1126,14 @@ export function foldEffectiveExecution(input: {
 					);
 				}
 			}
+			const evidenceProblem = verifyRegisteredAmendmentEvidence(
+				input.recordStore,
+				input.runId,
+				lineage,
+			);
+			if (evidenceProblem) {
+				return fail("budget", line.idempotencyKey, evidenceProblem, lineage.id);
+			}
 			resolutions = lineage.resolvedFindings;
 			dispositions.push({
 				revisionId: lineage.id,
@@ -1455,4 +1478,1315 @@ export function foldEffectiveExecution(input: {
 		evidence,
 		findings,
 	};
+}
+
+function canonicalIntent(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalIntent).join(",")}]`;
+	if (value && typeof value === "object") {
+		return `{${Object.entries(value as Record<string, unknown>)
+			.filter(([, item]) => item !== undefined)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, item]) => `${JSON.stringify(key)}:${canonicalIntent(item)}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/** Digest of one registration intent. The authorization is not reusable for another. */
+export function amendmentIntentDigest(input: {
+	authorizationId: string;
+	predecessorRevisionId: string;
+	humanStepKey: string;
+	approvalStepKey: string;
+	approvedPlanHash: string;
+	earliestAffectedPhase: string;
+	preservedPhases: readonly AmendmentPreservedPhase[];
+	resolvedFindings: readonly AmendmentResolvedFinding[];
+	claimEdits: readonly AmendmentClaimEdit[];
+}): string {
+	const hex = createHash("sha256")
+		.update(
+			canonicalIntent({
+				authorizationId: input.authorizationId,
+				predecessorRevisionId: input.predecessorRevisionId,
+				humanStepKey: input.humanStepKey,
+				approvalStepKey: input.approvalStepKey,
+				approvedPlanHash: input.approvedPlanHash,
+				earliestAffectedPhase: input.earliestAffectedPhase,
+				preservedPhases: [...input.preservedPhases].sort((left, right) =>
+					left.phaseId.localeCompare(right.phaseId),
+				),
+				resolvedFindings: [...input.resolvedFindings].sort((left, right) =>
+					`${left.phase}\u0000${left.observationId}\u0000${left.findingId}`.localeCompare(
+						`${right.phase}\u0000${right.observationId}\u0000${right.findingId}`,
+					),
+				),
+				claimEdits: [...input.claimEdits].sort((left, right) =>
+					`${left.creditClaimId}\u0000${left.effect}`.localeCompare(
+						`${right.creditClaimId}\u0000${right.effect}`,
+					),
+				),
+			}),
+		)
+		.digest("hex");
+	return `sha256:${hex}`;
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+	return canonicalIntent(left) === canonicalIntent(right);
+}
+
+function verifyRegisteredAmendmentEvidence(
+	recordStore: RecordStore,
+	runId: string,
+	lineage: ImplementationSemanticAmendmentPayload,
+): string | null {
+	const expected = amendmentIntentDigest({
+		authorizationId: lineage.authorizationId,
+		predecessorRevisionId: lineage.predecessorRevisionId,
+		humanStepKey: lineage.humanStep.idempotencyKey,
+		approvalStepKey: lineage.approvalStep.idempotencyKey,
+		approvedPlanHash: lineage.approvedPlanHash,
+		earliestAffectedPhase: lineage.earliestAffectedPhase,
+		preservedPhases: lineage.preservedPhases,
+		resolvedFindings: lineage.resolvedFindings,
+		claimEdits: lineage.claimEdits,
+	});
+	if (lineage.intentDigest !== expected) {
+		return `Amendment ${lineage.id} intent digest does not match its evidence.`;
+	}
+	const steps = recordStore.listLines(runId, "steps");
+	const human = steps.find(
+		(line) => line.idempotencyKey === lineage.humanStep.idempotencyKey,
+	);
+	const humanStep = human ? stepRecord(human) : null;
+	const humanResult =
+		humanStep?.result_json &&
+		typeof humanStep.result_json === "object" &&
+		!Array.isArray(humanStep.result_json)
+			? (humanStep.result_json as { decisionId?: unknown; choice?: unknown })
+			: null;
+	if (
+		!humanStep ||
+		humanStep.step_name !== "human:review-governance" ||
+		humanResult?.decisionId !== lineage.authorizationId ||
+		humanResult.choice === "continue" ||
+		humanResult.choice === "override"
+	) {
+		return `Human step ${lineage.humanStep.idempotencyKey} is not the coupled authorize_amendment step.`;
+	}
+	const approval = steps.find(
+		(line) => line.idempotencyKey === lineage.approvalStep.idempotencyKey,
+	);
+	const approvalStep = approval ? stepRecord(approval) : null;
+	const verdict =
+		approvalStep?.result_json &&
+		typeof approvalStep.result_json === "object" &&
+		!Array.isArray(approvalStep.result_json)
+			? (approvalStep.result_json as { amendmentAssessment?: unknown })
+			: null;
+	if (!approvalStep?.step_name.startsWith("reviewer:") || !verdict) {
+		return `Approval step ${lineage.approvalStep.idempotencyKey} is not a plan reviewer step.`;
+	}
+	if (verdict.amendmentAssessment === undefined) {
+		return `Approval step ${lineage.approvalStep.idempotencyKey} omits amendmentAssessment.`;
+	}
+	let assessment: AmendmentAssessment;
+	try {
+		assessment = parseAmendmentAssessment(verdict.amendmentAssessment);
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	if (
+		assessment.predecessorRevisionId !== lineage.predecessorRevisionId ||
+		assessment.reviewedPlanHash !== lineage.approvedPlanHash ||
+		assessment.earliestAffectedPhase !== lineage.earliestAffectedPhase ||
+		!sameJson(assessment.preservedPhases, lineage.preservedPhases) ||
+		!sameJson(assessment.resolvedFindings, lineage.resolvedFindings) ||
+		!sameJson(assessment.claimEdits, lineage.claimEdits)
+	) {
+		return `Approval step ${lineage.approvalStep.idempotencyKey} does not match amendment ${lineage.id}.`;
+	}
+	const paired = steps.filter((line) => {
+		const step = stepRecord(line);
+		const result =
+			step?.result_json &&
+			typeof step.result_json === "object" &&
+			!Array.isArray(step.result_json)
+				? (step.result_json as { amendmentId?: unknown })
+				: null;
+		return (
+			step?.step_name === "implementation:amendment" &&
+			result?.amendmentId === lineage.id
+		);
+	});
+	if (paired.length !== 1) {
+		return `Amendment ${lineage.id} is missing its paired implementation:amendment step.`;
+	}
+	return null;
+}
+
+function observationFingerprint(
+	observation: ImplementationReviewObservationPayload,
+	findingId: string,
+): string | null {
+	for (const cause of observation.gateCauses) {
+		if (
+			"findingId" in cause &&
+			cause.findingId === findingId &&
+			typeof cause.fingerprint === "string" &&
+			cause.fingerprint.length > 0
+		) {
+			return cause.fingerprint;
+		}
+	}
+	const item = observation.originalVerdict.items.find(
+		(entry) => entry.id === findingId,
+	);
+	if (!item) return null;
+	try {
+		return fingerprintImplementationVerdictItem(
+			item as VerdictItem,
+			observation.phase,
+		);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Build amendmentScope from the structured object only.
+ * Rationale and gate prose are not read. Missing keys are not defaulted.
+ */
+export function prepareAuthorizeAmendmentScope(input: {
+	choice: string;
+	amendmentScope: unknown;
+	findingRefs: readonly FindingIdentity[];
+	sourceObservationId: string;
+	observations: readonly ImplementationReviewObservationPayload[];
+	phaseIds: readonly string[];
+	currentRevisionId: string;
+	ledgerClaimIds: ReadonlySet<string>;
+}): AmendmentScope | undefined {
+	if (input.choice !== "authorize_amendment") {
+		if (input.amendmentScope !== undefined) {
+			throw new TypeError(
+				"amendmentScope is only valid on authorize_amendment",
+			);
+		}
+		return undefined;
+	}
+	if (input.amendmentScope === undefined) {
+		throw new TypeError("authorize_amendment requires amendmentScope");
+	}
+	if (
+		!input.amendmentScope ||
+		typeof input.amendmentScope !== "object" ||
+		Array.isArray(input.amendmentScope)
+	) {
+		throw new TypeError("amendmentScope must be an object");
+	}
+	const record: Record<string, unknown> = {
+		...(input.amendmentScope as Record<string, unknown>),
+	};
+	if (Array.isArray(record.resolutionRefs)) {
+		record.resolutionRefs = record.resolutionRefs.map((entry) => {
+			if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+				return entry;
+			}
+			const ref = { ...(entry as Record<string, unknown>) };
+			const phase = typeof ref.phase === "string" ? ref.phase : "";
+			const observationId =
+				typeof ref.observationId === "string" ? ref.observationId : "";
+			const findingId = typeof ref.findingId === "string" ? ref.findingId : "";
+			const observation = input.observations.find(
+				(candidate) =>
+					candidate.id === observationId && candidate.phase === phase,
+			);
+			const recorded = observation
+				? observationFingerprint(observation, findingId)
+				: null;
+			if (recorded) {
+				if (
+					typeof ref.fingerprint !== "string" ||
+					ref.fingerprint.length === 0
+				) {
+					ref.fingerprint = recorded;
+				} else if (ref.fingerprint !== recorded) {
+					throw new TypeError(
+						`resolution ref ${findingId} fingerprint does not match ${phase}/${observationId}`,
+					);
+				}
+			}
+			return ref;
+		});
+	}
+	const scope = parseAmendmentScope(record);
+	if (scope.predecessorRevisionId !== input.currentRevisionId) {
+		throw new TypeError(
+			`predecessor ${scope.predecessorRevisionId} is not the current revision ${input.currentRevisionId}`,
+		);
+	}
+	if (!input.phaseIds.includes(scope.earliestAffectedPhase)) {
+		throw new TypeError(
+			`phase ${scope.earliestAffectedPhase} is not in the current plan`,
+		);
+	}
+	const source = input.observations.find(
+		(observation) => observation.id === input.sourceObservationId,
+	);
+	for (const edit of scope.claimEdits) {
+		if (!input.ledgerClaimIds.has(edit.creditClaimId)) {
+			throw new TypeError(
+				`claim ${edit.creditClaimId} is not on the bound ledger`,
+			);
+		}
+	}
+	for (const ref of scope.resolutionRefs) {
+		const observation = input.observations.find(
+			(candidate) =>
+				candidate.id === ref.observationId && candidate.phase === ref.phase,
+		);
+		const recorded = observation
+			? observationFingerprint(observation, ref.findingId)
+			: null;
+		if (!observation || recorded !== ref.fingerprint) {
+			throw new TypeError(
+				`resolution ref ${ref.findingId} is not on ${ref.phase}/${ref.observationId} for this binding`,
+			);
+		}
+		if (observation.id !== input.sourceObservationId) continue;
+		const inFindingRefs = input.findingRefs.some(
+			(finding) =>
+				finding.findingId === ref.findingId &&
+				finding.fingerprint === ref.fingerprint,
+		);
+		const planCause = source?.gateCauses.some(
+			(cause) =>
+				cause.kind === "plan_amendment" &&
+				"findingId" in cause &&
+				cause.findingId === ref.findingId &&
+				cause.fingerprint === ref.fingerprint,
+		);
+		if (!inFindingRefs || !planCause) {
+			throw new TypeError(
+				`source resolution ref ${ref.findingId} is outside findingRefs or a plan_amendment cause`,
+			);
+		}
+	}
+	return scope;
+}
+
+function debtContract(item: ParsedWorkItem): string {
+	const claim = item.debtClaim;
+	if (!claim) return "";
+	return JSON.stringify({
+		coupling: claim.coupling,
+		targetPhase: claim.targetPhase,
+		minimalAlternativeEffortDelta: claim.minimalAlternativeEffortDelta,
+		minimalAlternativeArchitectureDelta:
+			claim.minimalAlternativeArchitectureDelta,
+		before: claim.before,
+		after: claim.after,
+	});
+}
+
+function claimEffects(
+	before: ParsedDeliveryBudget,
+	after: ParsedDeliveryBudget,
+): AmendmentClaimEdit[] {
+	const beforeClaims = new Map<string, ParsedWorkItem>();
+	const afterClaims = new Map<string, ParsedWorkItem>();
+	for (const [ledger, target] of [
+		[before, beforeClaims],
+		[after, afterClaims],
+	] as const) {
+		for (const item of ledger.workItems) {
+			const claimId = item.debtClaim?.debtClaimId;
+			if (!claimId) continue;
+			if (target.has(claimId)) {
+				throw new TypeError(`claim ${claimId} is reused`);
+			}
+			target.set(claimId, item);
+		}
+	}
+	const effects: AmendmentClaimEdit[] = [];
+	for (const [claimId, item] of beforeClaims) {
+		const next = afterClaims.get(claimId);
+		if (!next) {
+			effects.push({ creditClaimId: claimId, effect: "withdraw" });
+			continue;
+		}
+		if (next.id !== item.id) {
+			throw new TypeError(
+				`claim ${claimId} cannot move to work item ${next.id}`,
+			);
+		}
+		if (next.architectureDelta < item.architectureDelta) {
+			throw new TypeError(`claim ${claimId} cannot increase approved credit`);
+		}
+		if (next.architectureDelta > item.architectureDelta) {
+			effects.push({ creditClaimId: claimId, effect: "reduce_magnitude" });
+		}
+		if (debtContract(next) !== debtContract(item)) {
+			effects.push({ creditClaimId: claimId, effect: "edit_contract" });
+		}
+	}
+	for (const claimId of afterClaims.keys()) {
+		if (!beforeClaims.has(claimId)) {
+			throw new TypeError(`new claim ${claimId} cannot be introduced`);
+		}
+	}
+	return effects;
+}
+
+function effectSet(edits: readonly AmendmentClaimEdit[]): string {
+	return canonicalIntent(
+		[...edits].sort((left, right) =>
+			`${left.creditClaimId}\u0000${left.effect}`.localeCompare(
+				`${right.creditClaimId}\u0000${right.effect}`,
+			),
+		),
+	);
+}
+
+function findingKey(finding: {
+	phase: string;
+	observationId: string;
+	findingId: string;
+	fingerprint: string;
+}): string {
+	return `${finding.phase}\u0000${finding.observationId}\u0000${finding.findingId}\u0000${finding.fingerprint}`;
+}
+
+export interface AmendmentResolveRequest {
+	raw: string;
+	phase?: string;
+	observationId?: string;
+	findingId: string;
+}
+
+export function parseResolveSelector(raw: string): AmendmentResolveRequest {
+	const token = raw.trim();
+	if (!token.includes("/")) return { raw: token, findingId: token };
+	const parts = token.split("/");
+	if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+		throw new TypeError(
+			`--resolves ${raw} must be a finding id or phase/observation-id/finding-id`,
+		);
+	}
+	const [phase, observationId, findingId] = parts;
+	if (!phase || !observationId || !findingId) {
+		throw new TypeError(
+			`--resolves ${raw} must be a finding id or phase/observation-id/finding-id`,
+		);
+	}
+	return { raw: token, phase, observationId, findingId };
+}
+
+export interface RegisterImplementationAmendmentInput {
+	runId: string;
+	humanStepKey: string;
+	approvalStepKey: string;
+	fromPhase: string;
+	resolves: readonly string[];
+	dryRun?: boolean;
+	committedPlanBytes: string;
+	worktreePlanBytes: string;
+	approvedPlanCommit: string;
+	boundaryCommit: string;
+	/** False when HEAD is stale or non-workflow paths changed after approval. */
+	headAccepted: boolean;
+	/** True when pinned enforced policy still has an unresolved approval gate. */
+	unresolvedApprovalGate: boolean;
+}
+
+export interface ImplementationAmendmentRegistration {
+	created: boolean;
+	dryRun: boolean;
+	completionAuthorized: false;
+	nextAction: "resume_author";
+	amendmentId: string;
+	predecessorRevisionId: string;
+	approvedPlanHash: string;
+	approvedPlanCommit: string;
+	earliestAffectedPhase: string;
+	affectedPhases: string[];
+	preservedPhases: AmendmentPreservedPhase[];
+	invalidatedContextIds: string[];
+	invalidatedObservationIds: string[];
+	pendingFindings: Array<{
+		phase: string;
+		observationId: string;
+		findingId: string;
+		fingerprint: string;
+	}>;
+	resolvedFindings: AmendmentResolvedFinding[];
+	claimDifferences: AmendmentClaimEdit[];
+	preservedBinding: {
+		id: string;
+		sourceRunId: string;
+		b0: number;
+		governingB: number;
+		mode: ImplementationBindingPayload["mode"];
+	};
+	authorizedScope: AmendmentScope;
+	assessedScope: AmendmentAssessment;
+	intersection: {
+		earliestAffectedPhase: string;
+		claimEdits: AmendmentClaimEdit[];
+		resolvedFindings: AmendmentResolvedFinding[];
+	};
+	step: {
+		idempotencyKey: string;
+		iteration: number;
+		phase: string;
+		result: {
+			amendmentId: string;
+			predecessorRevisionId: string;
+			authorizationId: string;
+			approvedPlanHash: string;
+		};
+	};
+}
+
+function rejectAmendment(message: string): never {
+	throw new CliError("IMPLEMENTATION_AMENDMENT_REJECTED", message);
+}
+
+function lineageTail(
+	recordStore: RecordStore,
+	runId: string,
+	binding: ImplementationBindingPayload,
+): { parentId: string | null; beforeCommit: string; beforeHash: string } {
+	let parentId: string | null = null;
+	let beforeCommit = binding.approvedPlanCommit;
+	let beforeHash = binding.approvedPlanHash;
+	for (const line of recordStore.listLines(runId, "budget")) {
+		const kind = payloadRecord(line)?.kind;
+		try {
+			if (kind === "implementation-text-amendment") {
+				const text = decodeImplementationTextAmendmentPayload(line.payload);
+				if (text.bindingId !== binding.id) continue;
+				parentId = text.id;
+				beforeCommit = text.afterCommit;
+				beforeHash = text.afterBlobHash;
+			} else if (kind === "implementation-plan-recovery") {
+				const recovery = decodeImplementationPlanRecoveryPayload(line.payload);
+				if (recovery.bindingId !== binding.id) continue;
+				parentId = recovery.id;
+				beforeCommit = recovery.afterCommit;
+				beforeHash = recovery.afterBlobHash;
+			} else if (kind === "implementation-plan-amendment") {
+				const amendment = decodeImplementationSemanticAmendmentPayload(
+					line.payload,
+				);
+				if (amendment.bindingId !== binding.id) continue;
+				parentId = amendment.id;
+				beforeCommit = amendment.afterCommit;
+				beforeHash = amendment.afterBlobHash;
+			}
+		} catch (error) {
+			rejectAmendment(error instanceof Error ? error.message : String(error));
+		}
+	}
+	return { parentId, beforeCommit, beforeHash };
+}
+
+function stepIndex(lines: readonly RecordLine[], key: string): number {
+	return lines.findIndex((line) => line.idempotencyKey === key);
+}
+
+/** Validate and, unless dry-run, durably append one semantic amendment. */
+export function registerImplementationAmendment(
+	input: RegisterImplementationAmendmentInput,
+	deps: { recordStore: RecordStore; origin: RecordOrigin; now?: () => string },
+): ImplementationAmendmentRegistration {
+	const { recordStore } = deps;
+	const run = recordStore.getRun(input.runId);
+	if (!run || run.status !== "active") {
+		rejectAmendment("Registration requires an active implementation run.");
+	}
+	const folded = foldEffectiveExecution({
+		recordStore,
+		runId: input.runId,
+	});
+	if (!folded.ok) rejectAmendment(folded.diagnostic.message);
+	const bindingLine = recordStore.getLine(
+		input.runId,
+		"budget",
+		implementationBindingKey(input.runId),
+	);
+	if (!bindingLine) rejectAmendment("The implementation binding is missing.");
+	const binding = decodeImplementationBindingPayload(bindingLine.payload);
+	if (
+		binding.id !== folded.bindingId ||
+		binding.b0 !== folded.pinned.b0 ||
+		binding.governingB !== folded.pinned.governingB ||
+		binding.mode !== folded.pinned.mode ||
+		binding.sourceRunId !== folded.pinned.sourceRunId
+	) {
+		rejectAmendment(
+			"Registration keeps the original binding, baseline, and pinned policy.",
+		);
+	}
+	const current = folded.revisions.find(
+		(revision) => revision.id === folded.currentRevisionId,
+	);
+	if (!current) rejectAmendment("The current revision is missing.");
+	if (hashPlanBytes(current.approvedPlanBytes) !== current.approvedPlanHash) {
+		rejectAmendment("The current revision hash does not match its bytes.");
+	}
+	if (!input.headAccepted) {
+		rejectAmendment(
+			"HEAD is stale or non-workflow files changed after the approved plan commit.",
+		);
+	}
+	if (input.worktreePlanBytes !== input.committedPlanBytes) {
+		rejectAmendment(
+			"The worktree plan does not match the approved committed plan bytes.",
+		);
+	}
+	if (input.unresolvedApprovalGate) {
+		rejectAmendment(
+			"The coupled plan approval still has an unresolved approval gate.",
+		);
+	}
+	const steps = recordStore.listLines(input.runId, "steps");
+	const humanIndex = stepIndex(steps, input.humanStepKey);
+	const approvalIndex = stepIndex(steps, input.approvalStepKey);
+	const humanLine = humanIndex >= 0 ? steps[humanIndex] : undefined;
+	const approvalLine = approvalIndex >= 0 ? steps[approvalIndex] : undefined;
+	const humanStep = humanLine ? stepRecord(humanLine) : null;
+	const approvalStep = approvalLine ? stepRecord(approvalLine) : null;
+	if (!humanStep || humanStep.step_name !== "human:review-governance") {
+		rejectAmendment(
+			"The human step must be the coupled human:review-governance record. A generic human:gate does not qualify.",
+		);
+	}
+	const humanResult =
+		humanStep.result_json &&
+		typeof humanStep.result_json === "object" &&
+		!Array.isArray(humanStep.result_json)
+			? (humanStep.result_json as {
+					decisionId?: unknown;
+					choice?: unknown;
+				})
+			: null;
+	if (
+		!humanResult ||
+		typeof humanResult.decisionId !== "string" ||
+		humanResult.choice === "continue" ||
+		humanResult.choice === "override"
+	) {
+		rejectAmendment(
+			"The human step must resolve one authorize_amendment decision. Continue and override do not qualify.",
+		);
+	}
+	if (
+		!approvalStep ||
+		!approvalStep.step_name.startsWith("reviewer:") ||
+		approvalStep.phase !== "plan"
+	) {
+		rejectAmendment(
+			"The approval step must be a plan reviewer step in this run.",
+		);
+	}
+	if (humanIndex < 0 || approvalIndex <= humanIndex) {
+		rejectAmendment("The plan approval must follow its human authorization.");
+	}
+	const listed = listImplementationDecisions(recordStore, input.runId);
+	if (listed.diagnostics.length) {
+		rejectAmendment("Implementation decision history is unreadable.");
+	}
+	const authorization = listed.decisions.find(
+		(decision) => decision.decisionId === humanResult.decisionId,
+	);
+	if (
+		!authorization ||
+		authorization.choice !== "authorize_amendment" ||
+		authorization.bindingId !== binding.id
+	) {
+		rejectAmendment(
+			"An authorize_amendment decision coupled to this human step is required.",
+		);
+	}
+	if (!authorization.amendmentScope) {
+		rejectAmendment(
+			`Authorization ${authorization.decisionId} omits amendmentScope and cannot authorize a semantic amendment.`,
+		);
+	}
+	const scope = authorization.amendmentScope;
+	if (
+		listed.decisions.some(
+			(decision) => decision.supersedesDecisionId === authorization.decisionId,
+		)
+	) {
+		rejectAmendment("Superseded amendment authorizations are rejected.");
+	}
+	const acceptance = classifyDecisionAcceptance({
+		decision: authorization,
+		steps,
+		budget: recordStore.listLines(input.runId, "budget"),
+	});
+	if (!acceptance.accepted) {
+		rejectAmendment(
+			acceptance.diagnostic ?? "The human authorization is not accepted.",
+		);
+	}
+	const baseline = folded.revisions.find(
+		(revision) => revision.id === scope.predecessorRevisionId,
+	);
+	if (!baseline) {
+		rejectAmendment(
+			`Authorization predecessor ${scope.predecessorRevisionId} is not in the revision chain.`,
+		);
+	}
+	const budgetKey = implementationSemanticAmendmentKey(
+		binding.id,
+		scope.predecessorRevisionId,
+	);
+	const recordedPredecessor = recordStore.getLine(
+		input.runId,
+		"budget",
+		budgetKey,
+	);
+	if (
+		!recordedPredecessor &&
+		scope.predecessorRevisionId !== folded.currentRevisionId
+	) {
+		rejectAmendment(
+			`Authorization predecessor ${scope.predecessorRevisionId} is not the current revision ${folded.currentRevisionId}.`,
+		);
+	}
+	if (hashPlanBytes(baseline.approvedPlanBytes) !== baseline.approvedPlanHash) {
+		rejectAmendment("The predecessor revision hash does not match its bytes.");
+	}
+	const verdict =
+		approvalStep.result_json &&
+		typeof approvalStep.result_json === "object" &&
+		!Array.isArray(approvalStep.result_json)
+			? (approvalStep.result_json as {
+					readiness?: unknown;
+					items?: unknown;
+					amendmentAssessment?: unknown;
+					governance?: { route?: unknown };
+				})
+			: null;
+	if (
+		!verdict ||
+		verdict.readiness !== "ready" ||
+		!Array.isArray(verdict.items) ||
+		verdict.items.length > 0 ||
+		verdict.governance?.route === "final_corrections" ||
+		(verdict.governance?.route !== undefined &&
+			verdict.governance.route !== "complete")
+	) {
+		rejectAmendment(
+			"The coupled plan approval must have normalized route complete. Final corrections require a new assessment.",
+		);
+	}
+	if (verdict.amendmentAssessment === undefined) {
+		rejectAmendment(
+			"The plan approval has no amendmentAssessment. A ready summary does not authorize carry.",
+		);
+	}
+	let assessment: AmendmentAssessment;
+	try {
+		assessment = parseAmendmentAssessment(verdict.amendmentAssessment);
+	} catch (error) {
+		rejectAmendment(error instanceof Error ? error.message : String(error));
+	}
+	const approvedHash = hashPlanBytes(input.committedPlanBytes);
+	if (
+		assessment.predecessorRevisionId !== scope.predecessorRevisionId ||
+		assessment.reviewedPlanHash !== approvedHash ||
+		hashPlanBytes(baseline.approvedPlanBytes) !== baseline.approvedPlanHash
+	) {
+		rejectAmendment(
+			"The assessment predecessor or reviewed plan hash does not match the current revision and committed bytes.",
+		);
+	}
+	if (assessment.earliestAffectedPhase !== input.fromPhase) {
+		rejectAmendment(
+			"--from-phase must equal the assessment's earliest affected phase.",
+		);
+	}
+	const predecessorPlan = parsePlan(baseline.approvedPlanBytes);
+	const phaseIds = predecessorPlan.phases.map((phase) => phase.number);
+	const nextPlan = parsePlan(input.committedPlanBytes);
+	const nextIds = nextPlan.phases.map((phase) => phase.number);
+	if (
+		new Set(phaseIds).size !== phaseIds.length ||
+		nextIds.join("\u0000") !== phaseIds.join("\u0000")
+	) {
+		rejectAmendment(
+			"Registration cannot delete, add, reorder, or renumber phase ids.",
+		);
+	}
+	const authorizedIndex = phaseIds.indexOf(scope.earliestAffectedPhase);
+	const assessedIndex = phaseIds.indexOf(assessment.earliestAffectedPhase);
+	if (authorizedIndex < 0 || assessedIndex < 0) {
+		rejectAmendment("The affected phase is not in the predecessor plan.");
+	}
+	if (assessedIndex < authorizedIndex) {
+		rejectAmendment(
+			`Assessed boundary ${assessment.earliestAffectedPhase} is earlier than authorized phase ${scope.earliestAffectedPhase}. The assessment was not clamped.`,
+		);
+	}
+	const preservedIds = phaseIds.slice(0, assessedIndex);
+	const preserved = new Set(
+		assessment.preservedPhases.map((phase) => phase.phaseId),
+	);
+	if (
+		preserved.size !== preservedIds.length ||
+		preservedIds.some((id) => !preserved.has(id))
+	) {
+		rejectAmendment(
+			"Preserved phases must be exactly the phases before the assessed boundary.",
+		);
+	}
+	const beforeLedger = parseDeliveryBudget(baseline.approvedPlanBytes);
+	const afterLedger = parseDeliveryBudget(input.committedPlanBytes);
+	if (!beforeLedger.ok || !afterLedger.ok) {
+		rejectAmendment("The amended plan ledger could not be parsed.");
+	}
+	for (const phaseId of preservedIds) {
+		const index = phaseIds.indexOf(phaseId);
+		if (
+			phaseSection(
+				baseline.approvedPlanBytes,
+				predecessorPlan.phases,
+				index,
+			) !== phaseSection(input.committedPlanBytes, nextPlan.phases, index)
+		) {
+			rejectAmendment(
+				`Preserved phase ${phaseId} changed beyond checkbox state.`,
+			);
+		}
+		if (
+			claimContract(beforeLedger.value, phaseId) !==
+			claimContract(afterLedger.value, phaseId)
+		) {
+			rejectAmendment(
+				`Preserved phase ${phaseId} changed a linked claim contract.`,
+			);
+		}
+		const section = phaseSection(
+			baseline.approvedPlanBytes,
+			predecessorPlan.phases,
+			index,
+		);
+		for (const workItemId of namedWorkItemIds(section)) {
+			if (
+				workItemContract(beforeLedger.value, workItemId) !==
+				workItemContract(afterLedger.value, workItemId)
+			) {
+				rejectAmendment(
+					`Preserved phase ${phaseId} changed a linked work-item contract.`,
+				);
+			}
+		}
+	}
+	const affected = phaseIds.slice(assessedIndex);
+	const completed = new Set<string>();
+	for (const line of steps) {
+		const step = stepRecord(line);
+		if (step?.step_name === "phase:complete" && step.phase) {
+			completed.add(step.phase);
+		}
+	}
+	const observations = recordStore
+		.listLines(input.runId, "budget")
+		.flatMap((line) => {
+			try {
+				const observation = decodeImplementationReviewObservationPayload(
+					line.payload,
+				);
+				return observation.bindingId === binding.id ? [observation] : [];
+			} catch {
+				return [];
+			}
+		});
+	for (const observation of observations) {
+		if (observation.completionAuthorized) completed.add(observation.phase);
+	}
+	if (
+		affected.some((phaseId) => completed.has(phaseId)) &&
+		!scope.reopenCompletedPhases
+	) {
+		rejectAmendment(
+			"Completed phases at or after the assessed boundary require reopenCompletedPhases true. Consent was not inferred.",
+		);
+	}
+	let derivedEffects: AmendmentClaimEdit[];
+	try {
+		derivedEffects = claimEffects(beforeLedger.value, afterLedger.value);
+	} catch (error) {
+		rejectAmendment(error instanceof Error ? error.message : String(error));
+	}
+	if (effectSet(assessment.claimEdits) !== effectSet(derivedEffects)) {
+		rejectAmendment(
+			"The assessment's claim effects do not match the amended ledger. A broader assessment was not clamped.",
+		);
+	}
+	for (const edit of assessment.claimEdits) {
+		const allowed = scope.claimEdits.some(
+			(candidate) =>
+				candidate.creditClaimId === edit.creditClaimId &&
+				candidate.effect === edit.effect,
+		);
+		if (!allowed) {
+			rejectAmendment(
+				`Claim edit ${edit.creditClaimId} ${edit.effect} is outside amendmentScope.`,
+			);
+		}
+	}
+	const snapshots = recordStore
+		.listLines(input.runId, "budget")
+		.flatMap((line) => {
+			try {
+				return [decodeBudgetSnapshotPayload(line.payload)];
+			} catch {
+				return [];
+			}
+		});
+	const snapshot = snapshots.at(-1);
+	if (
+		!snapshot ||
+		snapshot.stepKey.phase !== "plan" ||
+		snapshot.stepKey.stepName !== approvalStep.step_name ||
+		snapshot.stepKey.iteration !== approvalStep.iteration ||
+		JSON.stringify(snapshot.currentLedger) !== JSON.stringify(afterLedger.value)
+	) {
+		rejectAmendment(
+			"The latest plan-review snapshot must match the approval step and the amended ledger.",
+		);
+	}
+	const author = steps.slice(humanIndex + 1, approvalIndex).find((line) => {
+		const step = stepRecord(line);
+		const result =
+			step?.result_json &&
+			typeof step.result_json === "object" &&
+			!Array.isArray(step.result_json)
+				? (step.result_json as { result?: unknown; commit?: unknown })
+				: null;
+		return (
+			step?.phase === "plan" &&
+			step.step_name.startsWith("author:") &&
+			result?.result === "complete" &&
+			(result.commit === input.approvedPlanCommit ||
+				step.head_commit === input.approvedPlanCommit)
+		);
+	});
+	if (!author || input.approvedPlanCommit !== input.boundaryCommit) {
+		rejectAmendment(
+			"The approved plan commit must be the completed author commit at the review boundary.",
+		);
+	}
+	const selectors = input.resolves.map((raw) => {
+		try {
+			return parseResolveSelector(raw);
+		} catch (error) {
+			return rejectAmendment(
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	});
+	const sourceObservation = observations.find(
+		(observation) => observation.id === authorization.observationId,
+	);
+	if (!sourceObservation || sourceObservation.phase !== authorization.phase) {
+		rejectAmendment("The authorization source observation is missing.");
+	}
+	const selected = selectors.map((selector) => {
+		const observation = selector.observationId
+			? observations.find(
+					(candidate) =>
+						candidate.id === selector.observationId &&
+						candidate.phase === selector.phase,
+				)
+			: sourceObservation;
+		if (!selector.observationId && selector.phase) {
+			rejectAmendment(`--resolves ${selector.raw} is not a source finding id.`);
+		}
+		if (!observation) {
+			rejectAmendment(
+				`--resolves ${selector.raw} does not name an observation on this binding.`,
+			);
+		}
+		if (!selector.observationId && observation.id !== sourceObservation.id) {
+			rejectAmendment(
+				`Plain --resolves ${selector.findingId} is not on the authorization source observation.`,
+			);
+		}
+		const fingerprint = observationFingerprint(observation, selector.findingId);
+		if (!fingerprint) {
+			rejectAmendment(
+				selector.observationId
+					? `--resolves ${selector.raw} is not on that observation.`
+					: `Plain --resolves ${selector.findingId} is not on the source observation. The same id on another phase is not selected.`,
+			);
+		}
+		const assessed = assessment.resolvedFindings.find(
+			(finding) =>
+				finding.phase === observation.phase &&
+				finding.observationId === observation.id &&
+				finding.findingId === selector.findingId &&
+				finding.fingerprint === fingerprint,
+		);
+		if (!assessed) {
+			rejectAmendment(
+				`--resolves ${selector.findingId} is not an amendment-resolved finding in the assessment.`,
+			);
+		}
+		return assessed;
+	});
+	if (new Set(selected.map(findingKey)).size !== selected.length) {
+		rejectAmendment("Duplicate --resolves selectors are rejected.");
+	}
+	const assessedKeys = new Set(assessment.resolvedFindings.map(findingKey));
+	const selectedKeys = new Set(selected.map(findingKey));
+	if (
+		assessedKeys.size !== selectedKeys.size ||
+		[...assessedKeys].some((key) => !selectedKeys.has(key))
+	) {
+		rejectAmendment(
+			"The requested --resolves set must equal the assessment's amendment-resolved findings.",
+		);
+	}
+	for (const finding of assessment.resolvedFindings) {
+		const allowed = scope.resolutionRefs.some(
+			(ref) =>
+				ref.phase === finding.phase &&
+				ref.observationId === finding.observationId &&
+				ref.findingId === finding.findingId &&
+				ref.fingerprint === finding.fingerprint,
+		);
+		if (!allowed) {
+			rejectAmendment(
+				`Resolved finding ${finding.findingId} is outside amendmentScope. The assessment was not clamped.`,
+			);
+		}
+	}
+	const contexts = recordStore
+		.listLines(input.runId, "budget")
+		.flatMap((line) => {
+			try {
+				const context = decodeImplementationReviewContextPayload(line.payload);
+				return context.bindingId === binding.id ? [context] : [];
+			} catch {
+				return [];
+			}
+		});
+	const affectedSet = new Set(affected);
+	const invalidatedContextIds = contexts
+		.filter((context) => affectedSet.has(context.phase))
+		.map((context) => context.id);
+	const invalidatedObservationIds = observations
+		.filter((observation) => affectedSet.has(observation.phase))
+		.map((observation) => observation.id);
+	const tail = lineageTail(recordStore, input.runId, binding);
+	const consumed = recordStore.listLines(input.runId, "budget").some((line) => {
+		const kind = payloadRecord(line)?.kind;
+		if (kind === "implementation-plan-recovery") {
+			try {
+				return (
+					decodeImplementationPlanRecoveryPayload(line.payload)
+						.authorizationId === authorization.decisionId
+				);
+			} catch {
+				return false;
+			}
+		}
+		if (kind !== "implementation-plan-amendment") return false;
+		try {
+			const amendment = decodeImplementationSemanticAmendmentPayload(
+				line.payload,
+			);
+			return (
+				amendment.authorizationId === authorization.decisionId &&
+				amendment.predecessorRevisionId !== scope.predecessorRevisionId
+			);
+		} catch {
+			return false;
+		}
+	});
+	const digest = amendmentIntentDigest({
+		authorizationId: authorization.decisionId,
+		predecessorRevisionId: scope.predecessorRevisionId,
+		humanStepKey: input.humanStepKey,
+		approvalStepKey: input.approvalStepKey,
+		approvedPlanHash: approvedHash,
+		earliestAffectedPhase: assessment.earliestAffectedPhase,
+		preservedPhases: assessment.preservedPhases,
+		resolvedFindings: assessment.resolvedFindings,
+		claimEdits: assessment.claimEdits,
+	});
+	const amendmentId = `amendment:${digest.slice("sha256:".length)}`;
+	let iteration = 1;
+	for (const line of steps) {
+		const step = stepRecord(line);
+		if (
+			step?.step_name === "implementation:amendment" &&
+			step.phase === assessment.earliestAffectedPhase &&
+			step.iteration >= iteration
+		) {
+			iteration = step.iteration + 1;
+		}
+	}
+	const stepKey = stepIdempotencyKey({
+		runId: input.runId,
+		stepName: "implementation:amendment",
+		phase: assessment.earliestAffectedPhase,
+		iteration,
+	});
+	const createdAt = deps.now?.() ?? new Date().toISOString();
+	const payload: ImplementationSemanticAmendmentPayload = {
+		kind: "implementation-plan-amendment",
+		version: 1,
+		id: amendmentId,
+		bindingId: binding.id,
+		executionRunId: input.runId,
+		predecessorRevisionId: scope.predecessorRevisionId,
+		authorizationId: authorization.decisionId,
+		humanStep: { idempotencyKey: input.humanStepKey },
+		approvalStep: { idempotencyKey: input.approvalStepKey },
+		parentLineageId: tail.parentId,
+		beforeCommit: tail.beforeCommit,
+		afterCommit: input.approvedPlanCommit,
+		beforeBlobHash: tail.beforeHash,
+		afterBlobHash: approvedHash,
+		approvedPlanCommit: input.approvedPlanCommit,
+		approvedPlanHash: approvedHash,
+		approvedPlanBytes: input.committedPlanBytes,
+		earliestAffectedPhase: assessment.earliestAffectedPhase,
+		preservedPhases: assessment.preservedPhases,
+		resolvedFindings: assessment.resolvedFindings,
+		claimEdits: assessment.claimEdits,
+		invalidatedContextIds,
+		invalidatedObservationIds,
+		intentDigest: digest,
+		createdAt,
+	};
+	const stepResult = {
+		amendmentId,
+		predecessorRevisionId: scope.predecessorRevisionId,
+		authorizationId: authorization.decisionId,
+		approvedPlanHash: approvedHash,
+	};
+	const pendingFindings = observations.flatMap((observation) =>
+		observation.originalVerdict.items.flatMap((item) => {
+			let fingerprint: string;
+			try {
+				fingerprint = fingerprintImplementationVerdictItem(
+					item as VerdictItem,
+					observation.phase,
+				);
+			} catch {
+				return [];
+			}
+			const resolved = assessment.resolvedFindings.some(
+				(finding) =>
+					finding.phase === observation.phase &&
+					finding.observationId === observation.id &&
+					finding.findingId === item.id &&
+					finding.fingerprint === fingerprint,
+			);
+			if (resolved) return [];
+			return [
+				{
+					phase: observation.phase,
+					observationId: observation.id,
+					findingId: item.id,
+					fingerprint,
+				},
+			];
+		}),
+	);
+	const registration = (
+		created: boolean,
+		dryRun: boolean,
+	): ImplementationAmendmentRegistration => ({
+		created,
+		dryRun,
+		completionAuthorized: false,
+		nextAction: "resume_author",
+		amendmentId,
+		predecessorRevisionId: scope.predecessorRevisionId,
+		approvedPlanHash: approvedHash,
+		approvedPlanCommit: input.approvedPlanCommit,
+		earliestAffectedPhase: assessment.earliestAffectedPhase,
+		affectedPhases: affected,
+		preservedPhases: assessment.preservedPhases,
+		invalidatedContextIds,
+		invalidatedObservationIds,
+		pendingFindings,
+		resolvedFindings: assessment.resolvedFindings,
+		claimDifferences: assessment.claimEdits,
+		preservedBinding: {
+			id: binding.id,
+			sourceRunId: binding.sourceRunId,
+			b0: binding.b0,
+			governingB: binding.governingB,
+			mode: binding.mode,
+		},
+		authorizedScope: scope,
+		assessedScope: assessment,
+		intersection: {
+			earliestAffectedPhase: assessment.earliestAffectedPhase,
+			claimEdits: assessment.claimEdits,
+			resolvedFindings: assessment.resolvedFindings,
+		},
+		step: {
+			idempotencyKey: stepKey,
+			iteration,
+			phase: assessment.earliestAffectedPhase,
+			result: stepResult,
+		},
+	});
+	const existing = recordStore.getLine(input.runId, "budget", budgetKey);
+	if (existing) {
+		let winner: ImplementationSemanticAmendmentPayload;
+		try {
+			winner = decodeImplementationSemanticAmendmentPayload(existing.payload);
+		} catch (error) {
+			rejectAmendment(error instanceof Error ? error.message : String(error));
+		}
+		if (winner.id !== amendmentId || winner.intentDigest !== digest) {
+			rejectAmendment(
+				"A different amendment already won this predecessor. Inspect its receipt.",
+			);
+		}
+		const recorded = registration(false, Boolean(input.dryRun));
+		const paired = steps
+			.map(stepRecord)
+			.find(
+				(step) =>
+					step?.step_name === "implementation:amendment" &&
+					step.result_json !== null &&
+					typeof step.result_json === "object" &&
+					(step.result_json as { amendmentId?: string }).amendmentId ===
+						winner.id,
+			);
+		if (paired?.phase) {
+			recorded.step = {
+				idempotencyKey: stepIdempotencyKey({
+					runId: input.runId,
+					stepName: paired.step_name,
+					phase: paired.phase,
+					iteration: paired.iteration,
+				}),
+				iteration: paired.iteration,
+				phase: paired.phase,
+				result: stepResult,
+			};
+		}
+		return recorded;
+	}
+	if (consumed) {
+		rejectAmendment(
+			"This authorization was already consumed and cannot be reused.",
+		);
+	}
+	if (tail.beforeHash !== baseline.approvedPlanHash) {
+		rejectAmendment(
+			"The lineage tail does not match the current revision hash.",
+		);
+	}
+	if (input.dryRun) return registration(false, true);
+	const stepPayload: StepRecordPayload = {
+		step_name: "implementation:amendment",
+		phase: assessment.earliestAffectedPhase,
+		iteration,
+		result_json: stepResult,
+		head_commit: input.approvedPlanCommit,
+		patch_id: null,
+		diff_summary: null,
+		duration_ms: null,
+		tokens_in: null,
+		tokens_out: null,
+		cost_usd: null,
+		model: null,
+	};
+	const envelope = recordedEnvelope(deps.origin);
+	let appended: ReturnType<RecordStore["atomicAppendIfAllNew"]>;
+	try {
+		appended = recordStore.atomicAppendIfAllNew(
+			[
+				{
+					runId: input.runId,
+					stream: "steps",
+					idempotencyKey: stepKey,
+					payload: stepPayload,
+					createdAt,
+					...envelope,
+				},
+				{
+					runId: input.runId,
+					stream: "budget",
+					idempotencyKey: budgetKey,
+					payload,
+					createdAt,
+					...envelope,
+				},
+			],
+			{
+				steps: steps.map((line) => line.idempotencyKey),
+				budget: recordStore
+					.listLines(input.runId, "budget")
+					.map((line) => line.idempotencyKey),
+				decisions: recordStore
+					.listLines(input.runId, "decisions")
+					.map((line) => line.idempotencyKey),
+			},
+		);
+	} catch (error) {
+		if (
+			error instanceof RecordStoreError &&
+			error.code === "RECORD_PRECONDITION_FAILED"
+		) {
+			rejectAmendment(
+				"Run history changed during registration; repeat the dry-run. No new revision was published.",
+			);
+		}
+		throw error;
+	}
+	if (!appended.created) {
+		const budgetDuplicate = appended.duplicates.find(
+			(duplicate) => duplicate.line.idempotencyKey === budgetKey,
+		);
+		if (!budgetDuplicate) {
+			rejectAmendment("Registration did not commit. Repeat the dry-run.");
+		}
+		const winner = decodeImplementationSemanticAmendmentPayload(
+			budgetDuplicate.line.payload,
+		);
+		if (winner.id !== amendmentId) {
+			rejectAmendment(
+				"A different amendment already won this predecessor. Inspect its receipt.",
+			);
+		}
+		const readback = recordStore.getLine(input.runId, "budget", budgetKey);
+		if (!readback) {
+			rejectAmendment("The recorded amendment could not be read back.");
+		}
+		return registration(false, false);
+	}
+	const readback = recordStore.getLine(input.runId, "budget", budgetKey);
+	const readStep = recordStore.getLine(input.runId, "steps", stepKey);
+	if (!readback || !readStep) {
+		rejectAmendment("The recorded amendment could not be read back.");
+	}
+	const stored = decodeImplementationSemanticAmendmentPayload(readback.payload);
+	if (stored.id !== amendmentId || stored.intentDigest !== digest) {
+		rejectAmendment("Readback does not match the registration intent.");
+	}
+	const evidenceProblem = verifyRegisteredAmendmentEvidence(
+		recordStore,
+		input.runId,
+		stored,
+	);
+	if (evidenceProblem) rejectAmendment(evidenceProblem);
+	return registration(true, false);
 }

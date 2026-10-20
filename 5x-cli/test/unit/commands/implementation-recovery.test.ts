@@ -254,6 +254,13 @@ async function fixture(
 				choice: "authorize_amendment",
 				rationale: "Offline timestamp normalization only",
 				findingRefs: [{ findingId: "R1", fingerprint: "sha256:timestamp" }],
+				amendmentScope: {
+					predecessorRevisionId: "binding",
+					earliestAffectedPhase: "2",
+					reopenCompletedPhases: false,
+					claimEdits: [],
+					resolutionRefs: [],
+				},
 			},
 		},
 		{ context: ctx, promptStore: createMemoryPromptStore() },
@@ -620,6 +627,13 @@ describe("unfinished-frontier amendment recovery", () => {
 							findingRefs: [
 								{ findingId: "R1", fingerprint: "sha256:timestamp" },
 							],
+							amendmentScope: {
+								predecessorRevisionId: previous.id,
+								earliestAffectedPhase: phase,
+								reopenCompletedPhases: false,
+								claimEdits: [],
+								resolutionRefs: [],
+							},
 						},
 					},
 					{ context: f.ctx, promptStore: createMemoryPromptStore() },

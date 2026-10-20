@@ -4,13 +4,21 @@ import type {
 	RecordPerformer,
 	StepRecordPayload,
 } from "../control-plane/index.js";
+import { stepIdempotencyKey } from "../control-plane/record-types.js";
 import { createSqlitePromptStore } from "../control-plane/sqlite-store.js";
 import type { PromptStore } from "../control-plane/store.js";
-import { completeRun, getRunV1 } from "../db/operations-v1.js";
+import { completeRun, getRunV1, recordStep } from "../db/operations-v1.js";
 import { CliError } from "../output.js";
-import type { ReviewerVerdict } from "../protocol.js";
+import { parsePlan } from "../parsers/plan.js";
+import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
-import { workdirCodeDiffGit } from "../review-governance/code-diff.js";
+import {
+	assertCleanCodeWorktree,
+	changedCodePaths,
+	isCodeAncestor,
+	readHeadCommit,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
 import {
 	decodeImplementationDecisionPayload,
 	decodeReviewDecisionPayload,
@@ -31,8 +39,14 @@ import {
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
 import {
+	foldEffectiveExecution,
+	prepareAuthorizeAmendmentScope,
+	registerImplementationAmendment,
+} from "../review-governance/implementation-amendment.js";
+import {
 	ensureImplementationAdmission,
 	planRepoPath,
+	showPlanAtCommit,
 } from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
@@ -75,6 +89,12 @@ export interface SubmitPlanReviewDecisionPayload {
 	approvedItemIds?: string[];
 	approvedWorkItemIds?: string[];
 	snapshotId?: string;
+	/**
+	 * Structured scope for a new authorize_amendment decision.
+	 * Omitted keys are not defaulted. Rationale is not scope.
+	 * Fingerprints may be omitted; recording fills them from observations.
+	 */
+	amendmentScope?: unknown;
 }
 
 export interface SubmitPlanReviewDecisionInput {
@@ -1155,6 +1175,16 @@ async function acceptStoredImplementationDecision(
 			ledgerHash: stored.ledgerHash,
 			decisionsHash: stored.decisionsHash,
 			createdAt: stored.createdAt,
+			...(input.payload.amendmentScope !== undefined
+				? {
+						amendmentScope: recordedAmendmentScope(ctx, input.runId, {
+							choice: input.payload.choice,
+							amendmentScope: input.payload.amendmentScope,
+							findingRefs,
+							sourceObservationId: stored.observationId,
+						}),
+					}
+				: {}),
 		});
 	} catch (error) {
 		fail(
@@ -1230,6 +1260,259 @@ function implementationFindingRefs(input: {
 			);
 	}
 	return findingRefs;
+}
+
+function recordedAmendmentScope(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	input: {
+		choice: string;
+		amendmentScope: unknown;
+		findingRefs: readonly FindingIdentity[];
+		sourceObservationId: string;
+	},
+): AmendmentScope | undefined {
+	if (
+		input.choice !== "authorize_amendment" &&
+		input.amendmentScope === undefined
+	) {
+		return undefined;
+	}
+	const folded = foldEffectiveExecution({
+		recordStore: ctx.recordStore,
+		runId,
+	});
+	if (!folded.ok) throw new TypeError(folded.diagnostic.message);
+	const current = folded.revisions.find(
+		(revision) => revision.id === folded.currentRevisionId,
+	);
+	if (!current) throw new TypeError("The current revision is missing.");
+	const binding = ctx.store.getImplementationBinding(runId);
+	if (!binding) throw new TypeError("implementation binding is missing");
+	const ledgerClaimIds = new Set([
+		...binding.ledger.workItems.flatMap((item) =>
+			item.debtClaim ? [item.debtClaim.debtClaimId] : [],
+		),
+		...binding.debtTargets.map((target) => target.claimId),
+	]);
+	return prepareAuthorizeAmendmentScope({
+		choice: input.choice,
+		amendmentScope: input.amendmentScope,
+		findingRefs: input.findingRefs,
+		sourceObservationId: input.sourceObservationId,
+		observations: ctx.store
+			.listImplementationReviews(runId)
+			.filter((observation) => observation.bindingId === binding.id),
+		phaseIds: parsePlan(current.approvedPlanBytes).phases.map(
+			(phase) => phase.number,
+		),
+		currentRevisionId: folded.currentRevisionId,
+		ledgerClaimIds,
+	});
+}
+
+function unresolvedApprovalGate(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	mode: "advisory" | "enforced",
+): boolean {
+	const open = createReviewGovernanceStore(ctx.recordStore).deriveOpenGate(
+		runId,
+	);
+	if (!open) return false;
+	if (mode === "advisory") {
+		return open.causes.some(
+			(cause) => cause.kind !== "budget_alert" && cause.kind !== "budget_band",
+		);
+	}
+	return true;
+}
+
+function resolveJournalStep(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	selector: string,
+) {
+	const lines = ctx.recordStore.listLines(runId, "steps");
+	const exact = lines.find((line) => line.idempotencyKey === selector);
+	if (exact) return exact;
+	if (/^\d+$/.test(selector)) {
+		const row = ctx.db
+			.query(
+				`SELECT step_name, phase, iteration FROM steps WHERE id = ?1 AND run_id = ?2`,
+			)
+			.get(Number(selector), runId) as {
+			step_name: string;
+			phase: string | null;
+			iteration: number;
+		} | null;
+		if (!row) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				`Step ${selector} is not in this run.`,
+			);
+		}
+		const key = stepIdempotencyKey({
+			runId,
+			stepName: row.step_name,
+			phase: row.phase,
+			iteration: row.iteration,
+		});
+		const line = lines.find((candidate) => candidate.idempotencyKey === key);
+		if (!line) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				`Step ${selector} has no authoritative journal identity.`,
+			);
+		}
+		return line;
+	}
+	if (selector.startsWith("step:") && !selector.startsWith(`step:${runId}:`)) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"Human and approval steps must belong to the execution run.",
+		);
+	}
+	const qualified = selector.startsWith("step:")
+		? selector
+		: `step:${runId}:${selector}`;
+	const line = lines.find(
+		(candidate) => candidate.idempotencyKey === qualified,
+	);
+	if (!line) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			`Step ${selector} is not in this run.`,
+		);
+	}
+	return line;
+}
+
+export async function amendImplementationPlanCommand(
+	input: {
+		runId: string;
+		humanStep: string;
+		approvalStep: string;
+		fromPhase: string;
+		resolves: readonly string[];
+		dryRun?: boolean;
+	},
+	ctx: ReviewBudgetCommandContext,
+) {
+	const binding = ctx.store.getImplementationBinding(input.runId);
+	if (!binding) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"No existing binding to amend.",
+		);
+	}
+	const human = resolveJournalStep(ctx, input.runId, input.humanStep);
+	const approval = resolveJournalStep(ctx, input.runId, input.approvalStep);
+	const steps = ctx.recordStore.listLines(input.runId, "steps");
+	const approvalIndex = steps.findIndex(
+		(line) => line.idempotencyKey === approval.idempotencyKey,
+	);
+	const boundary = steps
+		.slice(0, approvalIndex)
+		.reverse()
+		.find((line) => {
+			const payload = line.payload as {
+				step_name?: unknown;
+				result_json?: unknown;
+			};
+			return payload.step_name === "git:commit";
+		});
+	const boundaryCommit = (
+		(boundary?.payload as { result_json?: { hash?: unknown } } | undefined)
+			?.result_json as { hash?: unknown } | undefined
+	)?.hash;
+	const approvalPayload = approval.payload as {
+		head_commit?: unknown;
+	};
+	const commit =
+		typeof boundaryCommit === "string" && boundaryCommit.length > 0
+			? boundaryCommit
+			: typeof approvalPayload.head_commit === "string"
+				? approvalPayload.head_commit
+				: "";
+	if (!commit) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"The plan approval has no recorded review-boundary commit.",
+		);
+	}
+	const workdir = ctx.executionContext.effectiveWorkingDirectory;
+	const git = workdirCodeDiffGit(workdir);
+	const head = await readHeadCommit(git);
+	const planPath = ctx.executionContext.run.plan_path;
+	const showOptions = { repoRoot: ctx.executionContext.controlPlaneRoot };
+	const committedPlanBytes = await showPlanAtCommit(
+		workdir,
+		commit,
+		planPath,
+		showOptions,
+	);
+	const headPlan = await showPlanAtCommit(workdir, head, planPath, showOptions);
+	const excluded =
+		ctx.store.listImplementationReviewContexts(input.runId, binding.id).at(-1)
+			?.excludedPaths ?? [];
+	let headAccepted = false;
+	if (
+		committedPlanBytes !== null &&
+		headPlan === committedPlanBytes &&
+		(await isCodeAncestor(git, commit, head))
+	) {
+		await assertCleanCodeWorktree(git, excluded);
+		headAccepted =
+			(await changedCodePaths(git, commit, head, excluded)).length === 0;
+	}
+	const result = registerImplementationAmendment(
+		{
+			runId: input.runId,
+			humanStepKey: human.idempotencyKey,
+			approvalStepKey: approval.idempotencyKey,
+			fromPhase: input.fromPhase,
+			resolves: input.resolves,
+			dryRun: input.dryRun,
+			committedPlanBytes: committedPlanBytes ?? "",
+			worktreePlanBytes: readFileSync(
+				ctx.executionContext.effectivePlanPath,
+				"utf8",
+			),
+			approvedPlanCommit: commit,
+			boundaryCommit: commit,
+			headAccepted,
+			unresolvedApprovalGate: unresolvedApprovalGate(
+				ctx,
+				input.runId,
+				binding.mode,
+			),
+		},
+		{
+			recordStore: ctx.recordStore,
+			origin: ctx.originFor({ kind: "human", role: "operator" }),
+		},
+	);
+	if (result.created) {
+		recordStep(ctx.db, {
+			run_id: input.runId,
+			step_name: "implementation:amendment",
+			phase: result.step.phase,
+			iteration: result.step.iteration,
+			result_json: JSON.stringify(result.step.result),
+			head_commit: result.approvedPlanCommit,
+		});
+	}
+	return {
+		...result,
+		preservedBinding: {
+			id: binding.id,
+			sourceRunId: binding.sourceRunId,
+			b0: binding.b0,
+			governingB: binding.governingB,
+			mode: binding.mode,
+		},
+	};
 }
 
 function findImplementationGate(
@@ -1314,7 +1597,14 @@ async function submitImplementationReviewDecision(
 		),
 	);
 	let decision: ImplementationDecisionPayload;
+	let amendmentScope: AmendmentScope | undefined;
 	try {
+		amendmentScope = recordedAmendmentScope(ctx, input.runId, {
+			choice,
+			amendmentScope: input.payload.amendmentScope,
+			findingRefs,
+			sourceObservationId: gate.observationId,
+		});
 		decision = createImplementationDecision({
 			gateId: gate.gateId,
 			observationId: gate.observationId,
@@ -1328,6 +1618,7 @@ async function submitImplementationReviewDecision(
 			ledgerHash: binding.ledgerHash,
 			decisionsHash: binding.decisionsHash,
 			createdAt: deps.now?.() ?? new Date().toISOString(),
+			...(amendmentScope ? { amendmentScope } : {}),
 		});
 		assertImplementationDecisionScope({
 			decision,

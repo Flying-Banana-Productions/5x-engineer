@@ -514,6 +514,12 @@ describe("implementation completion boundaries", () => {
 						"R1",
 						"--rationale",
 						"Use the correct offline behavior only",
+						"--predecessor-revision",
+						gate.bindingId,
+						"--earliest-affected-phase",
+						"2",
+						"--reopen-completed-phases",
+						"false",
 					]),
 				).decision.decisionId;
 				let amended = readFileSync(planPath, "utf8").replace(

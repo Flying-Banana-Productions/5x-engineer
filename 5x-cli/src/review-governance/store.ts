@@ -637,7 +637,7 @@ export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
 	string[]
 > = {
 	revise_plan: ["rationale"],
-	authorize_amendment: ["rationale", "findingRefs"],
+	authorize_amendment: ["rationale", "findingRefs", "amendmentScope"],
 	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
 	restore_simplification: ["rationale", "claimAdjustments"],
 	approve_higher_burden: ["rationale", "claimAdjustments"],

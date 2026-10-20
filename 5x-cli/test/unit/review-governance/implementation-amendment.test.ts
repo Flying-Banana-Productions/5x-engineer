@@ -25,6 +25,7 @@ import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.j
 import { createImplementationDecision } from "../../../src/review-governance/decisions.js";
 import { fingerprintImplementationVerdictItem } from "../../../src/review-governance/fingerprint.js";
 import {
+	amendmentIntentDigest,
 	foldEffectiveExecution,
 	formatAmendmentReviewPromptContext,
 	initialRevisionId,
@@ -451,6 +452,42 @@ function foldSemantic(input: {
 		invalidatedContextIds: input.invalidatedContextIds,
 		invalidatedObservationIds: input.invalidatedObservationIds,
 	});
+	const human = step("human:review-governance", input.authorization.phase, 4, {
+		decisionId: input.authorization.decisionId,
+		gateId: input.authorization.gateId,
+		choice: "authorize_amendment",
+	});
+	const approval = step("reviewer:plan", "plan", 4, {
+		readiness: "ready",
+		items: [],
+		amendmentAssessment: {
+			predecessorRevisionId: payload.predecessorRevisionId,
+			reviewedPlanHash: payload.approvedPlanHash,
+			earliestAffectedPhase: payload.earliestAffectedPhase,
+			preservedPhases: payload.preservedPhases,
+			resolvedFindings: payload.resolvedFindings,
+			claimEdits: payload.claimEdits,
+		},
+	});
+	const paired = step(
+		"implementation:amendment",
+		payload.earliestAffectedPhase,
+		4,
+		{ amendmentId: payload.id },
+	);
+	payload.humanStep = { idempotencyKey: human.key };
+	payload.approvalStep = { idempotencyKey: approval.key };
+	payload.intentDigest = amendmentIntentDigest({
+		authorizationId: payload.authorizationId,
+		predecessorRevisionId: payload.predecessorRevisionId,
+		humanStepKey: human.key,
+		approvalStepKey: approval.key,
+		approvedPlanHash: payload.approvedPlanHash,
+		earliestAffectedPhase: payload.earliestAffectedPhase,
+		preservedPhases: payload.preservedPhases,
+		resolvedFindings: payload.resolvedFindings,
+		claimEdits: payload.claimEdits,
+	});
 	return foldEffectiveExecution({
 		recordStore: storeWith({
 			budget: [
@@ -471,6 +508,7 @@ function foldSemantic(input: {
 					payload: input.authorization,
 				},
 			],
+			steps: [human, approval, paired],
 		}),
 		runId,
 	});
@@ -1155,6 +1193,39 @@ describe("effective revision fold", () => {
 			intentDigest: digest("register"),
 			createdAt: "2026-10-19T00:00:00.000Z",
 		};
+		const human = step("human:review-governance", "2", 4, {
+			decisionId: authorization.decisionId,
+			gateId: authorization.gateId,
+			choice: "authorize_amendment",
+		});
+		const approval = step("reviewer:plan", "plan", 4, {
+			readiness: "ready",
+			items: [],
+			amendmentAssessment: {
+				predecessorRevisionId: payload.predecessorRevisionId,
+				reviewedPlanHash: payload.approvedPlanHash,
+				earliestAffectedPhase: payload.earliestAffectedPhase,
+				preservedPhases: payload.preservedPhases,
+				resolvedFindings: payload.resolvedFindings,
+				claimEdits: payload.claimEdits,
+			},
+		});
+		const paired = step("implementation:amendment", "2", 4, {
+			amendmentId: payload.id,
+		});
+		payload.humanStep = { idempotencyKey: human.key };
+		payload.approvalStep = { idempotencyKey: approval.key };
+		payload.intentDigest = amendmentIntentDigest({
+			authorizationId: payload.authorizationId,
+			predecessorRevisionId: payload.predecessorRevisionId,
+			humanStepKey: human.key,
+			approvalStepKey: approval.key,
+			approvedPlanHash: payload.approvedPlanHash,
+			earliestAffectedPhase: payload.earliestAffectedPhase,
+			preservedPhases: payload.preservedPhases,
+			resolvedFindings: payload.resolvedFindings,
+			claimEdits: payload.claimEdits,
+		});
 		const records = storeWith({
 			budget: [
 				{ key: implementationBindingKey(runId), payload: approved },
@@ -1168,6 +1239,7 @@ describe("effective revision fold", () => {
 				},
 			],
 			decisions: [{ key: authorization.decisionId, payload: authorization }],
+			steps: [human, approval, paired],
 		});
 		const folded = foldEffectiveExecution({ recordStore: records, runId });
 		expect(folded.ok).toBe(true);
