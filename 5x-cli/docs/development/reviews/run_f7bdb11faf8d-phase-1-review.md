@@ -144,3 +144,28 @@ Decision 3 assigns this judgment to the reviewer. The mechanical checks are the 
 - The fold does not yet verify `intentDigest`, `humanStep` or `approvalStep` against the steps journal, or the paired `implementation:amendment` step. Phase 2 defines the digest and pairing, and should add these checks to the fold once they exist.
 - `listImplementationTextAmendments` still excludes semantic amendments. A text amendment after a semantic amendment would compute the wrong `parentLineageId` until Phase 3 routes text-lineage replay through the fold, as planned.
 - The quality commit touches `src/utils/ndjson-tailer.ts` and the test script, which are outside the plan's inventory. It is quality-gate remediation with its own tests and a diagnosis in `phase-1-quality.md`, not plan scope. It changes `run watch` shutdown behavior only by delivering lines that were already on disk.
+
+---
+
+## Addendum (2026-10-19) — Closure review of P1.1–P2.6
+
+**Reviewed:** `af3795d207c0e6181a982e873a87b7c86d5c0302` (range `c61692b..af3795d`, review context `ef2d06b1-22f7-4d1a-9b7d-3fe313e5ecf3`)
+
+**Local verification:** 234 pass, 0 fail across `test/unit/review-governance/`, `protocol.test.ts` and `review-budget-index.test.ts`. `bun run typecheck` and `bun run lint` are clean. I re-folded the committed plan 210 run read-only: findings dropped from 21 to 10, with no duplicates, and the remaining ones are carried or still-open items.
+
+### What's addressed (✅)
+- **P1.1 — finding register**: Addressed. The register now groups observations by phase and takes the open set from the latest observation. It applies the `openCodeFindings` rule, keeps the first-recorded identity once, and applies amendment resolutions by fingerprint. A multi-round test covers it.
+- **P1.2 — protected-section rejection**: Addressed. `protectedText` and its gate are removed. A positive test preserves Phase 1 across a shared design edit.
+- **P2.1 — work-item contracts**: Addressed. Preserved phases compare every `W<n>` row they name, and a negative test covers it.
+- **P2.2 — scope cross-check**: Addressed. The fold checks predecessor, phase floor, claim edits and resolution refs against the consumed scope, with a negative test.
+- **P2.3 — dependent evidence label**: Addressed. Corrections and credits citing an invalidated observation are now `invalidated`.
+- **P2.4 — duplicate list entries**: Addressed. The strict decoder rejects duplicates, and a test covers it.
+- **P2.5 — help wording**: Addressed in the help text and the prompt context.
+- **P2.6 — tests**: Addressed. The negative phase-section and claim-contract tests are added, and the historical hash is pinned to a literal.
+
+### Remaining concerns
+- None.
+
+### Updated readiness
+- **Phase 1 completion:** ✅
+- **Ready for Phase 2:** ✅ Registration should reuse the fold's preservation and scope checks.
