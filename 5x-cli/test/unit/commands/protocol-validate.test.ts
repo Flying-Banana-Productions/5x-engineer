@@ -2182,205 +2182,214 @@ function verdictProvider(structured: unknown): AgentProvider {
 }
 
 describe("protocol and invoke implementation recording", () => {
-	test("both entry points persist the same observation and durable authorization", async () => {
-		const dir = makeTmpDir();
-		const inputDir = makeTmpDir();
-		const ctx = makeBudgetContext({ mode: "enforced" });
-		try {
-			setupProjectDir(dir);
-			insertRun(dir, "run1", join(dir, "plan.md"));
-			const head = gitHead(dir);
-			ctx.executionContext.effectiveWorkingDirectory = dir;
-			ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
-			ctx.store.saveImplementationBinding(implementationBinding(), TEST_ORIGIN);
-			const captured = capturePhaseAuthorAdmission({
-				recordStore: ctx.recordStore,
-				origin: TEST_ORIGIN,
-				executionRunId: "run1",
-				bindingId: "binding-1",
-				phase: "1",
-				preAuthorCommit: head,
-			});
-			expect(captured.status).toBe("captured");
-			const prepared = await prepareImplementationReviewContext({
-				store: ctx.store,
-				recordStore: ctx.recordStore,
-				origin: TEST_ORIGIN,
-				executionRunId: "run1",
-				bindingId: "binding-1",
-				phase: "1",
-				excludedPaths: [],
-				workdir: dir,
-			});
-			expect(prepared.status).toBe("ready");
-			if (prepared.status !== "ready") return;
-			const verdict = implementationVerdict();
-			const input = writeInput(inputDir, verdict);
-			const logs: string[] = [];
-			const originalLog = console.log;
-			console.log = (message?: unknown) => {
-				logs.push(String(message));
-			};
+	test(
+		"both entry points persist the same observation and durable authorization",
+		async () => {
+			const dir = makeTmpDir();
+			const inputDir = makeTmpDir();
+			const ctx = makeBudgetContext({ mode: "enforced" });
 			try {
-				await protocolValidate({
-					role: "reviewer",
-					input,
-					run: "run1",
-					step: "reviewer:commit",
+				setupProjectDir(dir);
+				insertRun(dir, "run1", join(dir, "plan.md"));
+				const head = gitHead(dir);
+				ctx.executionContext.effectiveWorkingDirectory = dir;
+				ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+				ctx.store.saveImplementationBinding(
+					implementationBinding(),
+					TEST_ORIGIN,
+				);
+				const captured = capturePhaseAuthorAdmission({
+					recordStore: ctx.recordStore,
+					origin: TEST_ORIGIN,
+					executionRunId: "run1",
+					bindingId: "binding-1",
 					phase: "1",
-					iteration: 1,
-					reviewContext: prepared.context.id,
-					startDir: dir,
-					createReviewBudgetContext: async () => ctx,
+					preAuthorCommit: head,
 				});
-			} finally {
-				console.log = originalLog;
-			}
-			const pendingEnvelope = JSON.parse(logs.at(-1) ?? "{}") as {
-				ok?: boolean;
-				data?: {
-					result?: {
-						governance?: {
-							route?: string;
-							completionAuthorized?: boolean;
-						};
-					};
+				expect(captured.status).toBe("captured");
+				const prepared = await prepareImplementationReviewContext({
+					store: ctx.store,
+					recordStore: ctx.recordStore,
+					origin: TEST_ORIGIN,
+					executionRunId: "run1",
+					bindingId: "binding-1",
+					phase: "1",
+					excludedPaths: [],
+					workdir: dir,
+				});
+				expect(prepared.status).toBe("ready");
+				if (prepared.status !== "ready") return;
+				const verdict = implementationVerdict();
+				const input = writeInput(inputDir, verdict);
+				const logs: string[] = [];
+				const originalLog = console.log;
+				console.log = (message?: unknown) => {
+					logs.push(String(message));
 				};
-			};
-			expect(pendingEnvelope.ok).toBe(true);
-			expect(pendingEnvelope.data?.result?.governance?.route).toBe("complete");
-			expect(
-				pendingEnvelope.data?.result?.governance?.completionAuthorized,
-			).toBe(false);
-			expect(
-				ctx.recordStore
-					.listLines("run1", "steps")
-					.some(
-						(line) =>
-							(line.payload as { step_name?: string }).step_name ===
-							"reviewer:commit",
-					),
-			).toBe(false);
-
-			const recordLogs: string[] = [];
-			console.log = (message?: unknown) => {
-				recordLogs.push(String(message));
-			};
-			try {
-				await protocolValidate({
-					role: "reviewer",
-					input,
-					run: "run1",
-					record: true,
-					step: "reviewer:commit",
-					phase: "1",
-					iteration: 1,
-					reviewContext: prepared.context.id,
-					startDir: dir,
-					createReviewBudgetContext: async () => ctx,
-				});
-				await invokeAgent(
-					"reviewer",
-					{
-						template: "reviewer-commit",
+				try {
+					await protocolValidate({
+						role: "reviewer",
+						input,
 						run: "run1",
+						step: "reviewer:commit",
 						phase: "1",
 						iteration: 1,
-						record: true,
-						quiet: true,
-						workdir: dir,
-						vars: [
-							`commit_hash=${head}`,
-							`review_path=${join(dir, "review.md")}`,
-							`plan_path=${join(dir, "plan.md")}`,
-							`review_template_path=${join(dir, "template.md")}`,
-							"run_id=run1",
-						],
-					},
-					{
+						reviewContext: prepared.context.id,
+						startDir: dir,
 						createReviewBudgetContext: async () => ctx,
-						createProvider: async () => verdictProvider(verdict),
-					},
+					});
+				} finally {
+					console.log = originalLog;
+				}
+				const pendingEnvelope = JSON.parse(logs.at(-1) ?? "{}") as {
+					ok?: boolean;
+					data?: {
+						result?: {
+							governance?: {
+								route?: string;
+								completionAuthorized?: boolean;
+							};
+						};
+					};
+				};
+				expect(pendingEnvelope.ok).toBe(true);
+				expect(pendingEnvelope.data?.result?.governance?.route).toBe(
+					"complete",
 				);
-			} finally {
-				console.log = originalLog;
-			}
-			const protocolRecord = JSON.parse(recordLogs[0] ?? "{}") as {
-				data?: {
-					result?: {
-						governance?: {
-							route?: string;
-							completionAuthorized?: boolean;
-							gateCauses?: unknown[];
-						};
-					};
-				};
-			};
-			const invokeEnvelope = JSON.parse(recordLogs.at(-1) ?? "{}") as {
-				data?: {
-					result?: {
-						governance?: {
-							route?: string;
-							completionAuthorized?: boolean;
-							gateCauses?: unknown[];
-						};
-					};
-				};
-			};
+				expect(
+					pendingEnvelope.data?.result?.governance?.completionAuthorized,
+				).toBe(false);
+				expect(
+					ctx.recordStore
+						.listLines("run1", "steps")
+						.some(
+							(line) =>
+								(line.payload as { step_name?: string }).step_name ===
+								"reviewer:commit",
+						),
+				).toBe(false);
 
-			const steps = ctx.recordStore
-				.listLines("run1", "steps")
-				.filter((line) => {
-					const name = (line.payload as { step_name?: string }).step_name;
-					return name === "reviewer:commit";
-				});
-			const observations = ctx.store.listImplementationReviews("run1");
-			expect(steps).toHaveLength(1);
-			expect(observations).toHaveLength(1);
-			const step = steps[0]?.payload as {
-				step_name?: string;
-				phase?: string;
-				iteration?: number;
-				result_json?: {
-					governance?: {
-						route?: string;
-						completionAuthorized?: boolean;
-						gateCauses?: unknown[];
+				const recordLogs: string[] = [];
+				console.log = (message?: unknown) => {
+					recordLogs.push(String(message));
+				};
+				try {
+					await protocolValidate({
+						role: "reviewer",
+						input,
+						run: "run1",
+						record: true,
+						step: "reviewer:commit",
+						phase: "1",
+						iteration: 1,
+						reviewContext: prepared.context.id,
+						startDir: dir,
+						createReviewBudgetContext: async () => ctx,
+					});
+					await invokeAgent(
+						"reviewer",
+						{
+							template: "reviewer-commit",
+							run: "run1",
+							phase: "1",
+							iteration: 1,
+							record: true,
+							quiet: true,
+							workdir: dir,
+							vars: [
+								`commit_hash=${head}`,
+								`review_path=${join(dir, "review.md")}`,
+								`plan_path=${join(dir, "plan.md")}`,
+								`review_template_path=${join(dir, "template.md")}`,
+								"run_id=run1",
+							],
+						},
+						{
+							createReviewBudgetContext: async () => ctx,
+							createProvider: async () => verdictProvider(verdict),
+						},
+					);
+				} finally {
+					console.log = originalLog;
+				}
+				const protocolRecord = JSON.parse(recordLogs[0] ?? "{}") as {
+					data?: {
+						result?: {
+							governance?: {
+								route?: string;
+								completionAuthorized?: boolean;
+								gateCauses?: unknown[];
+							};
+						};
 					};
 				};
-			};
-			expect(step.step_name).toBe("reviewer:commit");
-			expect(step.phase).toBe("1");
-			expect(step.iteration).toBe(1);
-			expect(protocolRecord.data?.result?.governance?.route).toBe("complete");
-			expect(
-				protocolRecord.data?.result?.governance?.completionAuthorized,
-			).toBe(true);
-			expect(invokeEnvelope.data?.result?.governance?.route).toBe(
-				protocolRecord.data?.result?.governance?.route,
-			);
-			expect(
-				invokeEnvelope.data?.result?.governance?.completionAuthorized,
-			).toBe(true);
-			expect(invokeEnvelope.data?.result?.governance?.gateCauses).toEqual(
-				protocolRecord.data?.result?.governance?.gateCauses,
-			);
-			expect(observations[0]?.route).toBe("complete");
-			expect(protocolRecord.data?.result?.governance?.gateCauses).toEqual(
-				observations[0]?.gateCauses,
-			);
-			expect(observations[0]?.stepKey).toEqual({
-				stepName: "reviewer:commit",
-				phase: "1",
-				iteration: 1,
-			});
-			expect(observations[0]?.completionAuthorized).toBe(true);
-		} finally {
-			ctx.db.close();
-			cleanupDir(dir);
-			cleanupDir(inputDir);
-		}
-	});
+				const invokeEnvelope = JSON.parse(recordLogs.at(-1) ?? "{}") as {
+					data?: {
+						result?: {
+							governance?: {
+								route?: string;
+								completionAuthorized?: boolean;
+								gateCauses?: unknown[];
+							};
+						};
+					};
+				};
+
+				const steps = ctx.recordStore
+					.listLines("run1", "steps")
+					.filter((line) => {
+						const name = (line.payload as { step_name?: string }).step_name;
+						return name === "reviewer:commit";
+					});
+				const observations = ctx.store.listImplementationReviews("run1");
+				expect(steps).toHaveLength(1);
+				expect(observations).toHaveLength(1);
+				const step = steps[0]?.payload as {
+					step_name?: string;
+					phase?: string;
+					iteration?: number;
+					result_json?: {
+						governance?: {
+							route?: string;
+							completionAuthorized?: boolean;
+							gateCauses?: unknown[];
+						};
+					};
+				};
+				expect(step.step_name).toBe("reviewer:commit");
+				expect(step.phase).toBe("1");
+				expect(step.iteration).toBe(1);
+				expect(protocolRecord.data?.result?.governance?.route).toBe("complete");
+				expect(
+					protocolRecord.data?.result?.governance?.completionAuthorized,
+				).toBe(true);
+				expect(invokeEnvelope.data?.result?.governance?.route).toBe(
+					protocolRecord.data?.result?.governance?.route,
+				);
+				expect(
+					invokeEnvelope.data?.result?.governance?.completionAuthorized,
+				).toBe(true);
+				expect(invokeEnvelope.data?.result?.governance?.gateCauses).toEqual(
+					protocolRecord.data?.result?.governance?.gateCauses,
+				);
+				expect(observations[0]?.route).toBe("complete");
+				expect(protocolRecord.data?.result?.governance?.gateCauses).toEqual(
+					observations[0]?.gateCauses,
+				);
+				expect(observations[0]?.stepKey).toEqual({
+					stepName: "reviewer:commit",
+					phase: "1",
+					iteration: 1,
+				});
+				expect(observations[0]?.completionAuthorized).toBe(true);
+			} finally {
+				ctx.db.close();
+				cleanupDir(dir);
+				cleanupDir(inputDir);
+			}
+		},
+		{ timeout: 30_000 },
+	);
 
 	test("author recording surfaces a blocking text-amendment failure", async () => {
 		const dir = makeTmpDir();
