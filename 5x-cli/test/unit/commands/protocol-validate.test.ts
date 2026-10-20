@@ -34,6 +34,7 @@ import {
 	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import type { EffectiveExecution } from "../../../src/review-governance/implementation-amendment.js";
 import {
 	capturePhaseAuthorAdmission,
 	hashPlanBytes,
@@ -2866,6 +2867,8 @@ function stubImplementationBinding(
 	ctx: ReturnType<typeof makeBudgetContext>,
 	binding: { mode: "advisory" | "enforced"; workItemIds?: string[] },
 ): void {
+	const approvedPlanBytes = "# Plan\n";
+	const approvedPlanHash = "sha256:unused";
 	ctx.store.getImplementationBinding = () =>
 		({
 			id: "binding-1",
@@ -2877,9 +2880,36 @@ function stubImplementationBinding(
 					debtClaim: null,
 				})),
 			},
-			approvedPlanBytes: "# Plan\n",
-			approvedPlanHash: "sha256:unused",
+			approvedPlanBytes,
+			approvedPlanHash,
 		}) as unknown as ReturnType<typeof ctx.store.getImplementationBinding>;
 	ctx.store.getImplementationCompatibility = () => null;
 	ctx.store.listImplementationTextAmendments = () => [];
+	// Matching bytes keep the bound ledger when the plan text does not parse.
+	// A missing or disagreeing fold stays fail-closed in production.
+	ctx.store.readEffectiveImplementationRevision = () =>
+		({
+			ok: true,
+			runId: "run1",
+			bindingId: "binding-1",
+			initialRevisionId: "binding-1",
+			currentRevisionId: "binding-1",
+			selectedRevisionId: "binding-1",
+			pinned: {
+				b0: 0,
+				governingB: 0,
+				mode: binding.mode,
+				sourceRunId: "run1",
+				bindingId: "binding-1",
+			},
+			revisions: [],
+			dispositions: [],
+			evidence: [],
+			findings: [],
+			approvedPlanBytes,
+			approvedPlanHash,
+			lineageParentId: null,
+			invalidatedContextIds: [],
+			invalidatedObservationIds: [],
+		}) satisfies EffectiveExecution;
 }
