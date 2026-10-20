@@ -126,3 +126,27 @@ Nothing in `test/` calls `amendImplementationPlanCommand` or the `review impleme
 
 **Phase readiness:** ❌ Phase 3 should not start until P1.1–P1.4 are fixed. Phase 3 threads the effective revision through execution, which assumes registration can succeed in the real workflow and cannot fork the chain.
 
+
+---
+
+## Addendum (2026-10-20) — Closure review of the Phase 2 corrections
+
+**Reviewed:** `93c16a4c18d25c54c479d0f5d2cdda41f2dbbfda` (governance range `ba5ead0..93c16a4`, review context `02084894-57fb-48d3-a248-7f5cd301892b`)
+
+**Local verification:** `bun run typecheck` is clean. `bun run lint` reports no warnings. The full suite (`bun test --concurrent --dots --timeout 30000`) gives 3959 pass, 0 fail across 257 files.
+
+### What's addressed (✅)
+- **P1.1 — approved plan commit:** Addressed. The handler now takes `approvedPlanCommit` from the last completed plan author step between the human and approval steps, and takes `boundaryCommit` separately from the last `git:commit` before the approval. It requires approved ⊑ boundary ⊑ HEAD, a clean worktree, no non-workflow path changes across both spans, and identical plan bytes at all three commits. Registration re-checks that the boundary is the last `git:commit`, so the two commits are no longer the same value. A handler test runs dry-run and record across a later reviewer commit, and a registration test covers "a reviewer git commit is the boundary, not the approved plan commit".
+- **P1.2 — CAS snapshot:** Addressed. `journalExpectedKeys` captures the steps, budget and decisions keys once, before the first validation read, and passes them as `expectedKeys`. A new test appends a budget-only line after the snapshot and asserts the precondition failure and that no receipt is published.
+- **P1.3 — shared finalization:** Addressed. The command routes the pair through `prepareRecordStepAppend` and `finalizeAndWritePreparedStep` in `paired-all-new` mode. `finalizeAndWritePreparedStep` now forwards `expectedKeys`. The handler projects the step whenever the call is not a dry-run, which covers the idempotent-winner retry. The tests cover retry after a partial local projection and max-steps admission.
+- **P1.4 — handler tests:** Addressed. `implementation-amendment-command.test.ts` covers the real author, reviewer-commit and verdict sequence, code change, dirty worktree, non-ancestor boundary, numeric and run-qualified selectors, a foreign-run key, advisory versus enforced gates, an identical retry, and step-budget exhaustion.
+- **P2.1 — canonical register:** Addressed. `pendingFindings` now filters `folded.findings` for `pending` and excludes the findings this registration resolves. A test covers it.
+- **P2.2 — decision retry:** Addressed. The stored-decision path passes `requireCurrentPredecessor: false`. The intent-hash comparison still rejects a changed scope.
+- **P2.3 — lint:** Addressed. The seven optional-chain warnings are gone.
+
+### Remaining concerns
+- None blocking. The nonblocking follow-ups in the initial review still stand: the dead `consumed` branch, the shared canonical encoder, and requiring a persisted `complete` route. The new `headAccepted: true` argument is now a constant, because the handler performs the checks itself. It could be removed from the registration input.
+
+### Updated readiness
+- **Phase 2 completion:** ✅ — The dry-run and record paths validate the same intent. Registration is paired, idempotent and CAS-protected, and the real workflow's commit sequence now succeeds.
+- **Ready for next phase:** ✅
