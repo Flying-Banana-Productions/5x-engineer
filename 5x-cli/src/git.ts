@@ -515,6 +515,47 @@ export async function removeWorktree(
 	}
 }
 
+export interface SubmoduleInfo {
+	/** Path relative to the superproject worktree root. */
+	path: string;
+	/** Commits reachable from the submodule's HEAD or branches but no remote. */
+	unpushedCommits: number;
+}
+
+/**
+ * List initialized (checked-out) submodules in a worktree, recursively.
+ *
+ * Git refuses a non-forced `worktree remove` when any exist, and a forced
+ * remove deletes the submodules' object stores (they live under the linked
+ * worktree's admin dir), so `unpushedCommits` tells callers whether forcing
+ * would lose history.
+ */
+export async function listInitializedSubmodules(
+	workdir: string,
+): Promise<SubmoduleInfo[]> {
+	const result = await run(
+		[
+			"submodule",
+			"foreach",
+			"--quiet",
+			"--recursive",
+			'n=$(git rev-list --count HEAD --branches --not --remotes) && printf "%s\\t%s\\n" "$displaypath" "$n"',
+		],
+		workdir,
+	);
+	if (result.exitCode !== 0) {
+		throw new Error(`Failed to inspect submodules: ${result.stderr}`);
+	}
+
+	const submodules: SubmoduleInfo[] = [];
+	for (const line of result.stdout.split("\n")) {
+		const [path, count] = line.split("\t");
+		if (!path || count === undefined) continue;
+		submodules.push({ path, unpushedCommits: Number.parseInt(count, 10) });
+	}
+	return submodules;
+}
+
 /** List all worktrees. */
 export async function listWorktrees(repoRoot: string): Promise<WorktreeInfo[]> {
 	const result = await run(["worktree", "list", "--porcelain"], repoRoot);

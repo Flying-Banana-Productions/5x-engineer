@@ -25,9 +25,11 @@ import {
 	hasUncommittedChanges,
 	isBranchMerged,
 	isBranchRelevant,
+	listInitializedSubmodules,
 	listWorktrees,
 	removeWorktree,
 	runWorktreeSetupCommand,
+	type SubmoduleInfo,
 } from "../git.js";
 import { outputError, outputSuccess } from "../output.js";
 import {
@@ -403,9 +405,34 @@ export async function worktreeRemove(
 		}
 	}
 
+	// Git refuses to remove a worktree with initialized submodules unless
+	// forced, even when clean. Forcing deletes the submodules' object stores,
+	// so only do it once every submodule commit exists on a remote.
+	let force = params.force ?? false;
+	if (!force) {
+		let submodules: SubmoduleInfo[] = [];
+		try {
+			submodules = await listInitializedSubmodules(wtPath);
+		} catch (err) {
+			outputError(
+				"WORKTREE_ERROR",
+				`Failed to inspect submodules: ${err instanceof Error ? err.message : String(err)}. Use --force to remove anyway.`,
+			);
+		}
+		const unpushed = submodules.filter((s) => s.unpushedCommits > 0);
+		if (unpushed.length > 0) {
+			outputError(
+				"SUBMODULE_UNPUSHED",
+				"Worktree submodules have commits that are not on any remote and would be lost. Push them, or use --force.",
+				{ worktree_path: wtPath, submodules: unpushed },
+			);
+		}
+		force = submodules.length > 0;
+	}
+
 	// Remove worktree
 	try {
-		await removeWorktree(projectRoot, wtPath, params.force);
+		await removeWorktree(projectRoot, wtPath, force);
 	} catch (err) {
 		outputError(
 			"WORKTREE_ERROR",

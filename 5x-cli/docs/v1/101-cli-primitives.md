@@ -859,6 +859,8 @@ Remove a worktree.
 
 Removes the git worktree and cleans up the branch. `--force` removes even if the worktree has uncommitted changes.
 
+Worktrees with initialized submodules are removed only when every submodule commit exists on a remote (git deletes a linked worktree's submodule object stores on removal). Otherwise `remove` fails with `SUBMODULE_UNPUSHED`, listing the affected submodules; `--force` skips this check.
+
 If multiple plans still reference the same worktree, `remove` fails with `WORKTREE_SHARED`. Detach the other plans first.
 
 ### `5x worktree attach`

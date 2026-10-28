@@ -28,6 +28,7 @@ import {
 	isBranchRelevant,
 	listChangedFiles,
 	listFiveXRefs,
+	listInitializedSubmodules,
 	listRefTips,
 	listRemotes,
 	listWorktrees,
@@ -689,6 +690,27 @@ describe("worktree operations", () => {
 		expect(execGitSpy).toHaveBeenCalledWith(
 			["worktree", "remove", "/repo/wt/rm", "--force"],
 			"/repo",
+		);
+	});
+
+	test("list initialized submodules with unpushed counts", async () => {
+		mockGit([cmd("submodule", "foreach"), ok("libs/a\t0\nlibs/a/nested\t3\n")]);
+		const subs = await listInitializedSubmodules("/repo/wt/rm");
+		expect(subs).toEqual([
+			{ path: "libs/a", unpushedCommits: 0 },
+			{ path: "libs/a/nested", unpushedCommits: 3 },
+		]);
+	});
+
+	test("list initialized submodules returns empty without submodules", async () => {
+		mockGit([cmd("submodule", "foreach"), ok("")]);
+		expect(await listInitializedSubmodules("/repo/wt/rm")).toEqual([]);
+	});
+
+	test("list initialized submodules throws when inspection fails", async () => {
+		mockGit([cmd("submodule", "foreach"), fail("fatal: bad HEAD")]);
+		await expect(listInitializedSubmodules("/repo/wt/rm")).rejects.toThrow(
+			"Failed to inspect submodules",
 		);
 	});
 });
