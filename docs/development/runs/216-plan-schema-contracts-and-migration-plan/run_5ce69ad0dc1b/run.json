@@ -5,12 +5,15 @@
     "maxStepsPerRun": 250
   },
   "created_at": "2026-10-29 14:28:07",
-  "sealed_at": null,
-  "status": "active",
-  "final_head_commit": null,
+  "sealed_at": "2026-10-29T15:31:27.985Z",
+  "status": "completed",
+  "final_head_commit": "4018531a1935a17e6e4bb426c50ebe50f09b5db5",
   "cli_version": "2.0.0",
   "format_version": 1,
   "creator": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  },
+  "sealer": {
     "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
   }
 }
