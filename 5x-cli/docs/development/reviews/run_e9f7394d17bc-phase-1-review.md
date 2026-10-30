@@ -83,3 +83,20 @@ These are not author work for this phase.
 - [ ] P2.1 — restore the single-match `checkboxIdentity` replace and add a lone-`\r` regression test
 
 **Phase gate:** Unit tests pass for schema 0, valid schema 1, notes, fences, splices, and malformed declarations. Behavior outside the new module is unchanged except for P2.1. After P2.1 the phase is complete, and Phase 2 can start on the approved plan text.
+
+---
+
+## Addendum (2026-10-29) — Closure of P2.1
+
+**Reviewed:** `9e40af03..4990c7d7` (commit `4990c7d7`)  
+**Local verification:** `bun test test/unit/review-governance/plan-amendment.test.ts test/unit/plan-schema/` 54 pass, 0 fail. `tsc --noEmit` clean. Biome clean on `src/review-governance` and the touched test.
+
+### What's addressed (✅)
+- **P2.1 — `checkboxIdentity` lone-`\r` behavior change: addressed.** `CHECKBOX_MARKER_SOURCE` is now exported from `plan-markdown.ts`, and `checkboxIdentity` again uses the single, non-multiline `line.replace(new RegExp(CHECKBOX_MARKER_SOURCE), "$1[ ]")`. `normalizeCheckboxMarkers` is unchanged and remains the global multiline document normalizer. The new regression test pins the pre-move signature `sha256:5780f9b4…`, which is the value I measured at `4adb443b`. It also checks that toggling the second checkbox changes the signature.
+
+### Remaining concerns
+- None new. The revision touches only the constant's export, `checkboxIdentity`, and one test. The nonblocking follow-ups from the main review are unchanged and are not author work.
+
+### Updated readiness
+- **Phase 1 completion:** ✅. The gate that no caller outside the new module changes behavior now holds.
+- **Ready for next phase:** ✅
