@@ -285,12 +285,12 @@ Expected schema 0 returns the raw string as `authorityMarkdown` and `normalizeCh
 
 Export `PLAN_SCHEMA_AUTHORITY_INSTRUCTION` as the exact paragraph in Design Decisions.
 
-- [ ] Add `loadPlanDocument` and the error codes above.
-- [ ] Move checkbox normalization without changing its pattern, and re-export it.
-- [ ] Reject note ids that are duplicated, empty, quoted with single quotes, or longer than 64 characters.
-- [ ] Treat fenced marker examples as literal text. A schema 1 document may document the grammar inside a fence and still have one real contract.
-- [ ] Space-fill non-governing lines. A non-ASCII status line above a governing line must leave that governing line's UTF-16 offset unchanged, and byte conversion of that offset must use the raw string.
-- [ ] Cover the cases in the Tests table for W1, including a requirement copied into a note, a requirement moved into a note, and a contract end marker shifted to leave a requirement outside.
+- [x] Add `loadPlanDocument` and the error codes above.
+- [x] Move checkbox normalization without changing its pattern, and re-export it.
+- [x] Reject note ids that are duplicated, empty, quoted with single quotes, or longer than 64 characters.
+- [x] Treat fenced marker examples as literal text. A schema 1 document may document the grammar inside a fence and still have one real contract.
+- [x] Space-fill non-governing lines. A non-ASCII status line above a governing line must leave that governing line's UTF-16 offset unchanged, and byte conversion of that offset must use the raw string.
+- [x] Cover the cases in the Tests table for W1, including a requirement copied into a note, a requirement moved into a note, and a contract end marker shifted to leave a requirement outside.
 
 ---
 

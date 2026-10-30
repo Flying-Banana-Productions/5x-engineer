@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import type { PlanImpactKind } from "../protocol.js";
 import type { ParsedDeliveryBudget } from "../review-budget/types.js";
 import {
+	normalizeCheckboxMarkers,
 	PLAN_CHECKBOX_LINE,
 	type PlanHeadingSpan,
 	type PlanMarkdownLine,
@@ -21,6 +22,8 @@ import {
 	protectedPlanByteRanges,
 } from "./plan-markdown.js";
 import type { ResolvedPlanImpactSpan } from "./types.js";
+
+export { normalizeCheckboxMarkers };
 
 export interface TextAmendmentGuard {
 	id: string;
@@ -169,18 +172,8 @@ export function extractBudgetTableBytes(
 	return { ok: true, tableBytes: markdown.slice(start, end) };
 }
 
-const CHECKBOX_MARKER_SOURCE = String.raw`^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]`;
-
-/**
- * Collapse `[ ]`, `[x]`, and `[X]` to `[ ]` without changing byte length.
- * Other bytes, including text injected in place of a marker, stay intact.
- */
-export function normalizeCheckboxMarkers(markdown: string): string {
-	return markdown.replace(new RegExp(CHECKBOX_MARKER_SOURCE, "gm"), "$1[ ]");
-}
-
 function checkboxIdentity(line: string): string {
-	return line.replace(new RegExp(CHECKBOX_MARKER_SOURCE), "$1[ ]");
+	return normalizeCheckboxMarkers(line);
 }
 
 /** Phase headings, checklist identities, and protected section bytes. */
