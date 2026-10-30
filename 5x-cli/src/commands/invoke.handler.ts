@@ -34,13 +34,13 @@ import {
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
-import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	extractPipeContext,
 	isStdinPiped,
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
@@ -85,10 +85,10 @@ import {
 	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
 	isImplementationAuthorTemplate,
-	recordedPlanSchemaFromBinding,
 	PRE_AUTHOR_STEP_NAME,
 	prepareImplementationReviewContext,
 	readImplementationBinding,
+	recordedPlanSchemaFromBinding,
 	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";

@@ -353,7 +353,9 @@ export function evaluateImplementationBoundary(
 		amendments: lineage,
 		currentPlanBytes: input.currentPlanBytes ?? "",
 		recordedSchema: recorded.recordedSchema,
-		...(recorded.governingHash ? { governingHash: recorded.governingHash } : {}),
+		...(recorded.governingHash
+			? { governingHash: recorded.governingHash }
+			: {}),
 	});
 	const planMissing = input.currentPlanBytes === null;
 	const phasesToCheck = phasesForIntent(

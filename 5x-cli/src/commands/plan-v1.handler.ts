@@ -18,11 +18,13 @@ import {
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
+import { createWorkingTreeRecordStore } from "../control-plane/record-fs.js";
 import { parseRunJson } from "../control-plane/record-layout.js";
 import type {
 	RecordOrigin,
 	RecordRecorder,
 } from "../control-plane/record-types.js";
+import { createReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { getDb } from "../db/connection.js";
 import { type PlanRow, upsertPlan } from "../db/operations.js";
 import {
@@ -35,10 +37,7 @@ import { runMigrations } from "../db/schema.js";
 import { gitLsTreePaths, gitShowFile, revParseCommit } from "../git.js";
 import { type LockDirOpts, releaseLock } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
-import {
-	planSchemaCommandMessage,
-	readAuthoritativePlan,
-} from "../plan-schema/authority.js";
+import { parsedPlanHasPhases } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
 	isPathUnder,
@@ -46,6 +45,10 @@ import {
 	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
 import {
 	envelopeAttribution,
 	formatAttributionLines,
@@ -58,13 +61,10 @@ import {
 	prepareProgressSession,
 	resolvePlanProgress,
 } from "../records/resolve.js";
-import { createWorkingTreeRecordStore } from "../control-plane/record-fs.js";
-import { createReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import {
 	expectedSchemaForStore,
 	planPathsIdentifySamePlan,
 } from "../review-governance/implementation-state.js";
-import { parsedPlanHasPhases } from "../parsers/plan.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
