@@ -32,6 +32,10 @@ import {
 	listRecordedImplementationReviews,
 	readImplementationBinding,
 } from "./implementation-state.js";
+import {
+	type OperatingRestriction,
+	operatingRestrictionsFrom,
+} from "./restrictions.js";
 import { createReviewGovernanceStore } from "./store.js";
 import type {
 	FindingIdentity,
@@ -225,6 +229,8 @@ export interface ImplementationReviewPromptContext {
 	requiredOutcomeIds: string[];
 	dueClaims: ImplementationDueClaimContext[];
 	deferredOrAcceptedRisks: ImplementationRiskContext[];
+	/** Binding-wide: restrictions from every phase stay in force. */
+	operatingRestrictions: OperatingRestriction[];
 	debtWaivers: ImplementationWaiverContext[];
 	authorRoute: PlanReviewRoute | null;
 	authorNextAction: ImplementationNextAction | null;
@@ -378,7 +384,9 @@ export function buildImplementationReviewPromptContext(input: {
 	);
 	const deferredFindingIds = new Set(
 		active.flatMap((decision) =>
-			decision.choice === "defer_accept_risk" && decision.phase === phaseId
+			(decision.choice === "defer_accept_risk" ||
+				decision.choice === "accept_with_restriction") &&
+			decision.phase === phaseId
 				? decision.findingRefs.map((finding) => finding.findingId)
 				: [],
 		),
@@ -539,6 +547,7 @@ export function buildImplementationReviewPromptContext(input: {
 		requiredOutcomeIds: closure.priorCodeFindings.map((finding) => finding.id),
 		dueClaims: dueClaimsForPhase(binding, phaseId, waivers),
 		deferredOrAcceptedRisks: [...importedRisks(binding), ...risks],
+		operatingRestrictions: operatingRestrictionsFrom(active),
 		debtWaivers: waivers,
 		authorRoute: resumingRecovery ? "author_revision" : (latest?.route ?? null),
 		authorNextAction: resumingRecovery
@@ -576,11 +585,21 @@ Review kind closure is a closure review even when this session uses the initial 
 
 Give exactly one \`priorFindings\` outcome for every id in Required prior-finding outcome IDs: \`addressed\`, \`partially_addressed\`, or \`still_open\`. Emit each outcome with \`--prior-finding\`. Partial and open outcomes remain exactly once in \`items[]\`. Addressed outcomes leave \`items[]\`.
 
-A new ordinary blocker needs exact file-qualified hunk evidence (\`introducedBy\`: \`commitRange\`, \`diffHunk\` with the \`diff --git\` line plus the complete \`@@\` hunk, and \`explanation\`) from the supplied range. Critical late safety (\`lateDiscovery: "critical_safety"\` plus \`lateDiscoveryEvidence\`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred finding needs the same \`priorDecisionId\` and materially new \`newEvidence\`.`;
+A new ordinary blocker needs exact file-qualified hunk evidence (\`introducedBy\`: \`commitRange\`, \`diffHunk\` with the \`diff --git\` line plus the complete \`@@\` hunk, and \`explanation\`) from the supplied range. Critical late safety (\`lateDiscovery: "critical_safety"\` plus \`lateDiscoveryEvidence\`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred or restricted finding needs the same \`priorDecisionId\` and materially new \`newEvidence\`.`;
 
 function skippedFinding(entry: ImplementationRiskContext): string {
 	const title = entry.title === entry.findingId ? "" : `${entry.title}, `;
 	return `${entry.findingId} (${title}decision ${entry.decisionId})`;
+}
+
+function restrictionLine(entry: OperatingRestriction): string {
+	return `- ${entry.restriction} (phase ${entry.phase}, findings ${list(entry.findingIds)}, decision ${entry.decisionId}; rationale: ${entry.rationale})`;
+}
+
+function restrictionLines(context: ImplementationReviewPromptContext): string {
+	return context.operatingRestrictions.length
+		? context.operatingRestrictions.map(restrictionLine).join("\n")
+		: "- (none)";
 }
 
 function sharedImplementationLines(
@@ -636,7 +655,7 @@ export function formatImplementationReviewerContext(
 		: "- (none)";
 	const closure =
 		context.reviewKind === "closure" ? `\n\n${CLOSURE_RULES}` : "";
-	return `## Implementation-review governance context\n\n${sharedImplementationLines(context)}\n\nAssess due claims against the effective approved post-state, including human waivers and reductions. Do not create new credit.\n\n### Due claims\n\n${claims}\n\n### Deferred or accepted-risk decisions\n\n${risks}\n\n### Debt waivers and reductions\n\n${waivers}${closure}`;
+	return `## Implementation-review governance context\n\n${sharedImplementationLines(context)}\n\nAssess due claims against the effective approved post-state, including human waivers and reductions. Do not create new credit.\n\n### Due claims\n\n${claims}\n\n### Deferred or accepted-risk decisions\n\n${risks}\n\n### Operating restrictions\n\nThe operator accepted these findings under a condition that applies outside the code (for example release ordering). Do not re-raise a restricted finding unless the restriction no longer holds or material new evidence shows the condition is insufficient. Do not report the restriction itself as a defect.\n\n${restrictionLines(context)}\n\n### Debt waivers and reductions\n\n${waivers}${closure}`;
 }
 
 export function formatImplementationAuthorContext(
@@ -658,6 +677,15 @@ export function formatImplementationAuthorContext(
 				)
 				.join("\n")
 		: "- (none)";
-	const skipped = context.deferredOrAcceptedRisks.map(skippedFinding);
-	return `## Admitted implementation work\n\n${sharedImplementationLines(context)}\n- Recorded route: ${context.authorRoute ?? "(none)"}\n- Next action: ${context.authorNextAction ?? "(none)"}\n- Final correction: ${context.finalCorrection ? "yes" : "no"}\n- Eligible item: ${context.eligibleItemId ?? "(none)"}\n\nImplement only the admitted findings below and the governing decisions in this section. Do not infer extra work from the rest of the review Markdown.\n\n### Actionable findings\n\n${findings}\n\n### Text guard\n\nGuard: ${context.textGuard?.id ?? "(none)"}\n${guard}\n\nReplace only those literal spans, plus checkbox toggles. Structural amendments, budget-table bytes, and scope expansion require an approved amendment workflow.\n\n### Governing decisions\n\n- Finding IDs not to implement unless material new evidence is reviewed: ${list(skipped)}\n- Debt waivers and reductions stay in force. Assess and preserve the effective approved post-state; do not create credit.\n\n### Final correction limit\n\n${context.finalCorrection ? `Change only finding ${context.eligibleItemId ?? "(none)"}.` : "This pass is not a final correction."} Do not clean up unrelated code, tests, docs, or plan structure.`;
+	const skipped = [
+		...context.deferredOrAcceptedRisks.map(skippedFinding),
+		...context.operatingRestrictions
+			.filter((entry) => entry.phase === context.phaseId)
+			.flatMap((entry) =>
+				entry.findingIds.map(
+					(findingId) => `${findingId} (restriction ${entry.decisionId})`,
+				),
+			),
+	];
+	return `## Admitted implementation work\n\n${sharedImplementationLines(context)}\n- Recorded route: ${context.authorRoute ?? "(none)"}\n- Next action: ${context.authorNextAction ?? "(none)"}\n- Final correction: ${context.finalCorrection ? "yes" : "no"}\n- Eligible item: ${context.eligibleItemId ?? "(none)"}\n\nImplement only the admitted findings below and the governing decisions in this section. Do not infer extra work from the rest of the review Markdown.\n\n### Actionable findings\n\n${findings}\n\n### Text guard\n\nGuard: ${context.textGuard?.id ?? "(none)"}\n${guard}\n\nReplace only those literal spans, plus checkbox toggles. Structural amendments, budget-table bytes, and scope expansion require an approved amendment workflow.\n\n### Governing decisions\n\n- Finding IDs not to implement unless material new evidence is reviewed: ${list(skipped)}\n- Debt waivers and reductions stay in force. Assess and preserve the effective approved post-state; do not create credit.\n- Operating restrictions stay in force. Do not work around them in code:\n${restrictionLines(context)}\n\n### Final correction limit\n\n${context.finalCorrection ? `Change only finding ${context.eligibleItemId ?? "(none)"}.` : "This pass is not a final correction."} Do not clean up unrelated code, tests, docs, or plan structure.`;
 }

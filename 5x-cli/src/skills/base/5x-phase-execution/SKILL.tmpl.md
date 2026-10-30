@@ -579,6 +579,23 @@ Check the result:
 Run `5x review gate show --phase $PHASE`. Set `$GATE_ID` from `.data.gateId`.
 Present its causes and `allowedChoices`. Submit with `5x review decide --gate "$GATE_ID"`.
 
+A boundary-changing implementation finding (`SOURCE_OF_CORRECTION_PRECEDENCE`)
+arrives as a `plan_amendment` cause. Its gate offers `authorize_amendment`,
+`defer_accept_risk`, `accept_with_restriction`, and `abort`. Choose
+`accept_with_restriction` when the work is correct but must proceed under an
+operator condition outside the code, such as release or deployment ordering.
+It is not risk acceptance. Pass `--finding`, `--rationale`, and the exact
+condition with `--restriction`. Do not invent the condition; the operator
+states it.
+
+A restriction stays in force for the rest of the run. It appears in
+`5x run state` under `implementation_governance.restrictions`, in later author
+and reviewer context, and in `5x run complete` output as
+`operating_restrictions`. Relay those to the operator for release notes;
+completion does not lift them. A deferred or restricted finding leaves the
+next closure review's required outcomes. Re-raising it needs its decision id
+and materially new evidence.
+
 Applicable bound architecture approvals suppress inherited architecture causes;
 raw budget alerts may remain as telemetry. Read `inheritedBudgetGovernance`
 and its suppressed-alert decision references from the recorded review response.

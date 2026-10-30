@@ -59,6 +59,7 @@ const JSON_FIELDS = new Set([
 	"approvedWorkItemIds",
 	"snapshotId",
 	"claimAdjustments",
+	"restriction",
 ]);
 
 export function registerReview(parent: Command) {
@@ -93,6 +94,12 @@ export function registerReview(parent: Command) {
 		.option("--rationale <text>", "Decision rationale", collect, [])
 		.option("--evidence <text>", "Evidence (repeatable)", collect, [])
 		.option("--finding <id>", "Eligible finding id (repeatable)", collect, [])
+		.option(
+			"--restriction <text>",
+			"Operating restriction for accept_with_restriction (for example a release condition)",
+			collect,
+			[],
+		)
 		.option("--retain <scope>", "Retained scope (repeatable)", collect, [])
 		.option("--remove <scope>", "Removed scope (repeatable)", collect, [])
 		.option(
@@ -138,6 +145,7 @@ export function registerReview(parent: Command) {
 					opts.rationale,
 					opts.evidence,
 					opts.finding,
+					opts.restriction,
 					opts.retain,
 					opts.remove,
 					opts.baseline,
@@ -184,6 +192,7 @@ export function registerReview(parent: Command) {
 					);
 				const baselineRaw = scalar(opts.baseline, "--baseline");
 				const approvedPRaw = scalar(opts.approvedP, "--approved-p");
+				const restriction = scalar(opts.restriction, "--restriction");
 				payload = {
 					choice: choice as SubmitPlanReviewDecisionPayload["choice"],
 					rationale,
@@ -198,6 +207,7 @@ export function registerReview(parent: Command) {
 						: {}),
 					approvedItemIds: opts.approvedItem,
 					approvedWorkItemIds: opts.approvedWorkItem,
+					...(restriction !== undefined ? { restriction } : {}),
 				};
 				findingIds = opts.finding;
 			}

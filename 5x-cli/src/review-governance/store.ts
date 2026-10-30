@@ -639,6 +639,7 @@ export const IMPLEMENTATION_DECISION_REQUIRED_FIELDS: Record<
 	revise_plan: ["rationale"],
 	authorize_amendment: ["rationale", "findingRefs"],
 	defer_accept_risk: ["rationale", "evidence", "findingRefs"],
+	accept_with_restriction: ["rationale", "restriction", "findingRefs"],
 	restore_simplification: ["rationale", "claimAdjustments"],
 	approve_higher_burden: ["rationale", "claimAdjustments"],
 	reduce_scope: ["rationale", "claimAdjustments"],
@@ -688,7 +689,7 @@ export function allowedImplementationChoices(
 				cause.kind === "plan_amendment",
 		)
 	)
-		choices.push("defer_accept_risk");
+		choices.push("defer_accept_risk", "accept_with_restriction");
 	// Claim choices require a shortfall whose claim ids scope validation and
 	// coverage can both accept. Inherited budgets can request plan revision;
 	// they cannot be waived by an unrelated claim decision.

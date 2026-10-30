@@ -313,6 +313,16 @@ function gateCausesFor(input: {
 			causes.push({ kind: "plan_amendment", ...identity });
 			continue;
 		}
+		// A boundary-changing correction is a plan or scope decision (see
+		// SOURCE_OF_CORRECTION_PRECEDENCE), so the gate offers the amendment path.
+		if (
+			item.scopeClass === "implementation_defect" &&
+			item.boundaryChanges !== undefined &&
+			item.boundaryChanges.length > 0
+		) {
+			causes.push({ kind: "plan_amendment", ...identity });
+			continue;
+		}
 		if (
 			item.scopeClass === "scope_expansion" ||
 			item.action === "human_required" ||

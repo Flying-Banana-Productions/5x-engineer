@@ -53,7 +53,7 @@ Evaluate the implementation across these dimensions:
 
 Give exactly one `priorFindings` outcome for every id in `Required prior-finding outcome IDs`: `addressed`, `partially_addressed`, or `still_open`. Partial and open outcomes remain exactly once in `items[]`. Addressed outcomes leave `items[]`.
 
-A new ordinary blocker needs exact file-qualified hunk evidence (`introducedBy`) from the supplied range and a causal explanation. Critical late safety (`lateDiscovery: "critical_safety"` plus `lateDiscoveryEvidence`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred finding needs the same `priorDecisionId` and materially new `newEvidence`.
+A new ordinary blocker needs exact file-qualified hunk evidence (`introducedBy`) from the supplied range and a causal explanation. Critical late safety (`lateDiscovery: "critical_safety"` plus `lateDiscoveryEvidence`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred or restricted finding needs the same `priorDecisionId` and materially new `newEvidence`.
 
 Use the four classes and source-of-correction precedence from the initial review:
 
@@ -62,7 +62,9 @@ Use the four classes and source-of-correction precedence from the initial review
 - `scope_expansion` is never automatic.
 - Ordinary `pre_existing` notes stay in **Nonblocking follow-ups**, not `items[]`.
 
-Do not create new credit. The same `Implementation-review governance context` is appended on a fresh session and on continuation. It includes binding, source, approved work-item IDs, phase scope, full-diff retrieval, due claims, deferred decisions (title, rationale, decision ID, approved scope), and debt waivers. Assess the effective approved post-state.
+`boundaryChanges` names the boundaries (`api`, `schema`, `dependency`, `subsystem`, `architecture`, `plan-structure`) that the correction would change beyond the approved plan. Work the approved plan already includes is not a boundary change. A condition outside the code, such as release or deployment ordering, is not a boundary change: classify it `human_required` with no boundary label and state the condition in `lowestCostCorrection`. A labeled boundary routes to a human amendment gate. Use `[]` only after checking; omit the field when impact is unknown.
+
+Do not create new credit. The same `Implementation-review governance context` is appended on a fresh session and on continuation. It includes binding, source, approved work-item IDs, phase scope, full-diff retrieval, due claims, deferred decisions (title, rationale, decision ID, approved scope), operating restrictions, and debt waivers. Assess the effective approved post-state.
 
 Applicable bound architecture approvals resolve inherited burden even when raw budget telemetry retains an alert. Use the runtime context's effective alerts and suppressed-alert decision references; do not reopen approved burden solely from raw alerts. New or increased architecture and boundary changes still require their own review and governance.
 

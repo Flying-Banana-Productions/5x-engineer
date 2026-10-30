@@ -542,6 +542,8 @@ export interface ImplementationDecisionPayload {
 	rationale: string;
 	evidence: string[];
 	claimAdjustments: ImplementationClaimAdjustment[];
+	/** Operator condition the work proceeds under. Only accept_with_restriction. */
+	restriction?: string;
 	ledgerHash: string;
 	decisionsHash: string;
 	supersedesDecisionId?: string;
@@ -590,6 +592,9 @@ export function createImplementationDecision(
 				? { supersedesObservationId: adjustment.supersedesObservationId }
 				: {}),
 		})),
+		...(input.restriction !== undefined
+			? { restriction: input.restriction }
+			: {}),
 		ledgerHash: input.ledgerHash,
 		decisionsHash: input.decisionsHash,
 		...(input.supersedesDecisionId
@@ -651,6 +656,7 @@ export function validateImplementationDecision(
 		"revise_plan",
 		"authorize_amendment",
 		"defer_accept_risk",
+		"accept_with_restriction",
 		"restore_simplification",
 		"approve_higher_burden",
 		"reduce_scope",
@@ -658,6 +664,16 @@ export function validateImplementationDecision(
 	];
 	if (!choices.includes(input.choice))
 		throw new TypeError("unsupported implementation decision choice");
+	if (input.choice === "accept_with_restriction") {
+		if (typeof input.restriction !== "string" || !input.restriction.trim())
+			throw new TypeError("accept_with_restriction requires a restriction");
+		if (input.claimAdjustments.length > 0)
+			throw new TypeError("accept_with_restriction rejects claim adjustments");
+	} else if (input.restriction !== undefined) {
+		throw new TypeError(
+			"restriction is only accepted with accept_with_restriction",
+		);
+	}
 	if (
 		input.choice === "revise_plan" &&
 		(input.findingRefs.length > 0 || input.claimAdjustments.length > 0)
@@ -667,7 +683,8 @@ export function validateImplementationDecision(
 		);
 	if (
 		(input.choice === "authorize_amendment" ||
-			input.choice === "defer_accept_risk") &&
+			input.choice === "defer_accept_risk" ||
+			input.choice === "accept_with_restriction") &&
 		input.findingRefs.length === 0
 	)
 		throw new TypeError(`${input.choice} requires finding refs`);
@@ -733,6 +750,7 @@ export function validateImplementationDecision(
 		rationale: input.rationale,
 		evidence: input.evidence,
 		claimAdjustments: input.claimAdjustments,
+		restriction: input.restriction,
 		ledgerHash: input.ledgerHash,
 		decisionsHash: input.decisionsHash,
 		supersedesDecisionId: input.supersedesDecisionId,
@@ -968,6 +986,7 @@ export function applyImplementationDecisionCauseCoverage(
 	for (const cause of causes) {
 		if (
 			(decision.choice === "defer_accept_risk" ||
+				decision.choice === "accept_with_restriction" ||
 				decision.choice === "authorize_amendment") &&
 			(cause.kind === "semantic_human" ||
 				cause.kind === "critical_safety" ||

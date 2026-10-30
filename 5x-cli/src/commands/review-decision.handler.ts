@@ -75,6 +75,8 @@ export interface SubmitPlanReviewDecisionPayload {
 	approvedItemIds?: string[];
 	approvedWorkItemIds?: string[];
 	snapshotId?: string;
+	/** Implementation accept_with_restriction only. */
+	restriction?: string;
 }
 
 export interface SubmitPlanReviewDecisionInput {
@@ -377,6 +379,11 @@ function validateAndCreate(input: {
 		fail(
 			"REVIEW_DECISION_FIELD_NOT_ALLOWED",
 			"baseline is not applicable to this choice",
+		);
+	if (payload.restriction !== undefined)
+		fail(
+			"REVIEW_DECISION_FIELD_NOT_ALLOWED",
+			"restriction applies only to implementation gates",
 		);
 	if (
 		payload.choice !== "defer_accept_risk" &&
@@ -1152,6 +1159,9 @@ async function acceptStoredImplementationDecision(
 			rationale: input.payload.rationale,
 			evidence: input.payload.evidence ?? [],
 			claimAdjustments: input.claimAdjustments ?? [],
+			...(input.payload.restriction !== undefined
+				? { restriction: input.payload.restriction }
+				: {}),
 			ledgerHash: stored.ledgerHash,
 			decisionsHash: stored.decisionsHash,
 			createdAt: stored.createdAt,
@@ -1325,6 +1335,9 @@ async function submitImplementationReviewDecision(
 			rationale: input.payload.rationale,
 			evidence: input.payload.evidence ?? [],
 			claimAdjustments: input.claimAdjustments ?? [],
+			...(input.payload.restriction !== undefined
+				? { restriction: input.payload.restriction }
+				: {}),
 			ledgerHash: binding.ledgerHash,
 			decisionsHash: binding.decisionsHash,
 			createdAt: deps.now?.() ?? new Date().toISOString(),

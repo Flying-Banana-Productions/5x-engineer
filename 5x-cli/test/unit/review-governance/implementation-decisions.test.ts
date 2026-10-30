@@ -22,7 +22,9 @@ import {
 	deriveGateId,
 	foldGoverningReviewState,
 	type ImplementationDecisionPayload,
+	validateImplementationDecision,
 } from "../../../src/review-governance/decisions.js";
+import { operatingRestrictionsFrom } from "../../../src/review-governance/restrictions.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import {
 	allowedImplementationChoices,
@@ -519,6 +521,31 @@ describe("implementation review decisions", () => {
 				},
 			]),
 		).toEqual(["revise_plan", "abort"]);
+		// Boundary-changing findings arrive as plan_amendment causes: the
+		// amendment path, deferral, a restriction, or abort.
+		expect(
+			allowedImplementationChoices([
+				{
+					kind: "plan_amendment",
+					findingId: "F1",
+					fingerprint: "sha256:finding-1",
+				},
+			]),
+		).toEqual([
+			"authorize_amendment",
+			"defer_accept_risk",
+			"accept_with_restriction",
+			"abort",
+		]);
+		expect(
+			allowedImplementationChoices([
+				{
+					kind: "semantic_human",
+					findingId: "F1",
+					fingerprint: "sha256:finding-1",
+				},
+			]),
+		).toEqual(["defer_accept_risk", "accept_with_restriction", "abort"]);
 	});
 
 	test("claim scope rejects arbitrary ids and broader credit", () => {
@@ -563,6 +590,104 @@ describe("implementation review decisions", () => {
 			restored,
 		);
 		expect(afterRestore.map((cause) => cause.kind)).toEqual(["semantic_human"]);
+	});
+
+	test("an operating restriction settles the finding like a deferral, under a condition", () => {
+		const restricted = createImplementationDecision({
+			gateId: "gate",
+			observationId: "obs-1",
+			bindingId: "binding-1",
+			phase: "1",
+			choice: "accept_with_restriction",
+			findingRefs: [{ findingId: "F1", fingerprint: "sha256:finding-1" }],
+			rationale: "Release ordering, not a code defect",
+			evidence: [],
+			claimAdjustments: [],
+			restriction: "Apply predecessor migrations before deploying",
+			ledgerHash: "ledger-a",
+			decisionsHash: "decisions-a",
+			createdAt: "2026-01-02 00:00:00",
+		});
+		expect(
+			applyImplementationDecisionCauseCoverage(
+				observation().gateCauses,
+				restricted,
+			).map((cause) => cause.kind),
+		).toEqual(["credit_shortfall"]);
+		expect(
+			applyImplementationDecisionCauseCoverage(
+				[
+					{
+						kind: "plan_amendment",
+						findingId: "F1",
+						fingerprint: "sha256:finding-1",
+					},
+				],
+				restricted,
+			),
+		).toEqual([]);
+		// The restriction is part of the intent: a different condition is a
+		// different decision.
+		const other = createImplementationDecision({
+			...restricted,
+			restriction: "Ship behind a flag",
+		});
+		expect(other.decisionIntentHash).not.toBe(restricted.decisionIntentHash);
+		expect(() =>
+			createImplementationDecision({ ...restricted, restriction: "  " }),
+		).toThrow("requires a restriction");
+		const { restriction: _omitted, ...withoutRestriction } = restricted;
+		expect(() => createImplementationDecision(withoutRestriction)).toThrow(
+			"requires a restriction",
+		);
+		expect(() =>
+			createImplementationDecision({
+				...restricted,
+				findingRefs: [],
+			}),
+		).toThrow("requires finding refs");
+		expect(() =>
+			createImplementationDecision({
+				...decision("gate"),
+				restriction: "not for a deferral",
+			}),
+		).toThrow("only accepted with accept_with_restriction");
+		// Decisions without a restriction keep their historical intent hash.
+		const deferral = decision("gate");
+		expect(
+			validateImplementationDecision({ ...deferral, restriction: undefined })
+				.decisionIntentHash,
+		).toBe(deferral.decisionIntentHash);
+	});
+
+	test("restrictions are binding-wide and drop superseded decisions", () => {
+		const restrict = (id: string, phase: string, supersedes?: string) =>
+			createImplementationDecision({
+				gateId: `gate-${id}`,
+				observationId: "obs-1",
+				bindingId: "binding-1",
+				phase,
+				choice: "accept_with_restriction",
+				findingRefs: [{ findingId: "F1", fingerprint: "sha256:finding-1" }],
+				rationale: "Release ordering",
+				evidence: [],
+				claimAdjustments: [],
+				restriction: `restriction ${id}`,
+				ledgerHash: "ledger-a",
+				decisionsHash: "decisions-a",
+				...(supersedes ? { supersedesDecisionId: supersedes } : {}),
+			});
+		const first = restrict("a", "1");
+		const replaced = restrict("b", "1", first.decisionId);
+		const later = restrict("c", "2");
+		expect(
+			operatingRestrictionsFrom([first, replaced, later, decision("gate")]).map(
+				(entry) => [entry.restriction, entry.phase],
+			),
+		).toEqual([
+			["restriction b", "1"],
+			["restriction c", "2"],
+		]);
 	});
 
 	test("malformed observation boundaries are not accepted", () => {
@@ -613,6 +738,7 @@ describe("implementation review decisions", () => {
 					revise_plan: ["rationale"],
 					authorize_amendment: [],
 					defer_accept_risk: [],
+					accept_with_restriction: [],
 					restore_simplification: [],
 					approve_higher_burden: [],
 					reduce_scope: [],

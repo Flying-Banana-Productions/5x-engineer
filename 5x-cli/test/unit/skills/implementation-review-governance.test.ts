@@ -93,6 +93,17 @@ const promptContext: ImplementationReviewPromptContext = {
 			source: "imported",
 		},
 	],
+	operatingRestrictions: [
+		{
+			decisionId: "decision-restrict",
+			gateId: "gate-restrict",
+			phase: "1",
+			findingIds: ["I9"],
+			restriction: "Apply predecessor migrations before deploying",
+			rationale: "Release ordering, not a code change",
+			createdAt: "2026-10-30T00:00:00.000Z",
+		},
+	],
 	debtWaivers: [
 		{
 			decisionId: "decision-waive",
@@ -276,6 +287,11 @@ describe("implementation review skill branches", () => {
 				);
 			}
 			expect(content).toContain("5x review corrections finish");
+			// Release conditions are restrictions, not accepted risk, and they
+			// survive into run completion.
+			expect(content).toContain("`accept_with_restriction`");
+			expect(content).toContain("It is not risk acceptance.");
+			expect(content).toContain("`operating_restrictions`");
 			expect(content).toContain("5x review implementation recover-plan");
 			expect(content).toContain("--confirm-preserved-phases");
 			expect(content).toContain("Recovery never completes a phase");
@@ -335,6 +351,19 @@ describe("implementation review skill branches", () => {
 					PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
 				),
 			).toBe(1);
+		}
+	});
+
+	test("both reviewer-commit templates define boundary changes the same way", () => {
+		for (const name of ["reviewer-commit", "reviewer-commit-continued"]) {
+			const raw = getDefaultTemplateRaw(name);
+			expect(raw).toContain(
+				"that the correction would change beyond the approved plan",
+			);
+			expect(raw).toContain(
+				"A condition outside the code, such as release or deployment ordering, is not a boundary change",
+			);
+			expect(raw).toContain("operating restrictions");
 		}
 	});
 
@@ -429,6 +458,15 @@ describe("implementation prompt context", () => {
 		expect(rendered).toContain("approved scope: W1");
 		expect(rendered).toContain("decision decision-waive");
 		expect(author).toContain("Implement only the admitted findings");
+		expect(rendered).toContain("### Operating restrictions");
+		expect(rendered).toContain(
+			"Apply predecessor migrations before deploying (phase 1, findings I9",
+		);
+		expect(rendered).toContain(
+			"Do not report the restriction itself as a defect.",
+		);
+		expect(author).toContain("I9 (restriction decision-restrict)");
+		expect(author).toContain("Operating restrictions stay in force.");
 		expect(author).toContain(
 			"P1.1 (Imported latency risk, decision decision-risk)",
 		);

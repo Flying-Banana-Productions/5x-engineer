@@ -27,7 +27,10 @@ import {
 	validateCodeReviewClosure,
 } from "./code-diff.js";
 import {
+	classifyDecisionAcceptance,
+	type ImplementationDecisionPayload,
 	listGovernanceDecisions,
+	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
@@ -475,8 +478,8 @@ function classify(input: {
 				input.diagnostics.push(
 					diagnostic(
 						"SOURCE_OF_CORRECTION_PRECEDENCE",
-						`Finding '${item.id}' changes ${boundaries.join(", ")} and is a plan or scope decision, even if it is also a bug.`,
-						"error",
+						`Finding '${item.id}' changes ${boundaries.join(", ")} and is a plan or scope decision, even if it is also a bug. It routes to a human gate that offers the amendment path.`,
+						"info",
 						item.id,
 					),
 				);
@@ -649,6 +652,7 @@ export function readImplementationCodeClosure(
 } {
 	const phaseId = canonicalPhaseId(phase);
 	const verdicts: ReviewerVerdict[] = [];
+	const verdictObservationIds: (string | null)[] = [];
 	let priorReviewCount = 0;
 	const budget = recordStore.listLines(runId, "budget");
 	const bindingLine = budget.find(
@@ -659,7 +663,10 @@ export function readImplementationCodeClosure(
 	const binding = bindingLine
 		? decodeImplementationBindingPayload(bindingLine.payload)
 		: null;
-	const observations = new Map<string, ReviewerVerdict>();
+	const observations = new Map<
+		string,
+		{ id: string; verdict: ReviewerVerdict }
+	>();
 	if (binding) {
 		for (const line of budget) {
 			if (
@@ -683,7 +690,7 @@ export function readImplementationCodeClosure(
 					...observation.stepKey,
 					iteration: observation.stepKey.iteration,
 				}),
-				observation.originalVerdict,
+				{ id: observation.id, verdict: observation.originalVerdict },
 			);
 		}
 	}
@@ -710,22 +717,100 @@ export function readImplementationCodeClosure(
 			) {
 				continue;
 			}
-			const verdict = binding
+			const observed = binding
 				? observations.get(line.idempotencyKey)
+				: undefined;
+			const verdict = binding
+				? observed?.verdict
 				: reviewerVerdictFrom(step.result_json);
 			if (binding && !verdict) continue;
 			priorReviewCount += 1;
-			if (verdict) verdicts.push(verdict);
+			if (verdict) {
+				verdicts.push(verdict);
+				verdictObservationIds.push(observed?.id ?? null);
+			}
 		}
 	}
 	const latest = verdicts.at(-1);
+	const settled =
+		binding && phaseId
+			? settledImplementationDecisions(recordStore, runId, binding.id, phaseId)
+			: [];
+	const latestObservationId = verdictObservationIds.at(-1) ?? null;
+	// A re-raise (priorDecisionId) reopens the finding until a decision on
+	// that newer observation settles it again.
+	const reRaised = new Set(
+		(latest?.items ?? []).flatMap((item) =>
+			item.priorDecisionId ? [item.id] : [],
+		),
+	);
+	const settledIds = new Set(
+		settled.flatMap((decision) =>
+			decision.findingRefs
+				.filter(
+					(ref) =>
+						!reRaised.has(ref.findingId) ||
+						decision.observationId === latestObservationId,
+				)
+				.map((ref) => ref.findingId),
+		),
+	);
 	return {
 		priorReviewCount,
-		priorCodeFindings: latest ? openCodeFindings(latest) : [],
-		priorCodeDecisions: codeClosureDecisions(
-			listGovernanceDecisions(recordStore, runId).decisions,
-		),
+		priorCodeFindings: latest
+			? openCodeFindings(latest).filter(
+					(finding) => !settledIds.has(finding.id),
+				)
+			: [],
+		priorCodeDecisions: [
+			...codeClosureDecisions(
+				listGovernanceDecisions(recordStore, runId).decisions,
+			),
+			...settled.map((decision) => ({
+				decisionId: decision.decisionId,
+				findingIds: decision.findingRefs.map((ref) => ref.findingId),
+				evidence: [
+					...decision.evidence,
+					...(decision.restriction ? [decision.restriction] : []),
+				],
+			})),
+		],
 	};
+}
+
+/**
+ * Accepted, unsuperseded defer and restriction decisions for one phase. They
+ * settle their findings: closure stops requiring an outcome, and re-raising
+ * needs the decision id plus new evidence.
+ */
+function settledImplementationDecisions(
+	recordStore: RecordStore,
+	runId: string,
+	bindingId: string,
+	phaseId: string,
+): ImplementationDecisionPayload[] {
+	const steps = recordStore.listLines(runId, "steps");
+	const budget = recordStore.listLines(runId, "budget");
+	const accepted = listImplementationDecisions(
+		recordStore,
+		runId,
+	).decisions.filter(
+		(decision) =>
+			decision.bindingId === bindingId &&
+			classifyDecisionAcceptance({ decision, steps, budget }).accepted,
+	);
+	const superseded = new Set(
+		accepted.flatMap((decision) =>
+			decision.supersedesDecisionId ? [decision.supersedesDecisionId] : [],
+		),
+	);
+	return accepted.filter(
+		(decision) =>
+			(decision.choice === "defer_accept_risk" ||
+				decision.choice === "accept_with_restriction") &&
+			canonicalPhaseId(decision.phase) === phaseId &&
+			!superseded.has(decision.decisionId),
+	);
 }
 
 export function validateImplementationReview(

@@ -172,6 +172,10 @@ import {
 	expectedSchemaForStore,
 	isImplementationAuthorAdmission,
 } from "../review-governance/implementation-state.js";
+import {
+	listOperatingRestrictions,
+	type OperatingRestriction,
+} from "../review-governance/restrictions.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
@@ -1258,6 +1262,8 @@ export interface ImplementationGovernanceState
 		architectureVariance: number;
 	} | null;
 	credit: ImplementationGovernanceCreditView | null;
+	/** Accepted operating restrictions on this binding, every phase. */
+	restrictions: OperatingRestriction[];
 }
 
 function phaseOrdinal(
@@ -1396,6 +1402,7 @@ export function presentImplementationGovernance(input: {
 	reconciliations: readonly ImplementationCreditReconciliationPayload[];
 	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
 	activeGate: DerivedImplementationGate | null;
+	restrictions?: readonly OperatingRestriction[];
 }): ImplementationGovernanceState {
 	const binding = input.binding;
 	const observations = binding
@@ -1494,6 +1501,7 @@ export function presentImplementationGovernance(input: {
 					}
 				: null,
 		credit: binding ? creditView(binding, input.reconciliations) : null,
+		restrictions: structuredClone([...(input.restrictions ?? [])]),
 	};
 }
 
@@ -1547,6 +1555,13 @@ function tryPresentImplementationGovernance(
 				input.runId,
 				binding,
 			),
+			restrictions: binding
+				? listOperatingRestrictions({
+						recordStore: input.recordStore,
+						runId: input.runId,
+						bindingId: binding.id,
+					})
+				: [],
 		});
 	} catch (error) {
 		warn(
@@ -1967,6 +1982,11 @@ export function formatStateText(data: {
 				})
 				.join("; ");
 			console.log(`Implementation claims: ${claims}`);
+		}
+		for (const restriction of governance.restrictions ?? []) {
+			console.log(
+				`Implementation restriction: ${restriction.restriction} (phase ${restriction.phase}, findings ${restriction.findingIds.join(",")}, decision ${restriction.decisionId})`,
+			);
 		}
 	}
 
@@ -4449,10 +4469,28 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		runId,
 	);
 
+	const binding =
+		status === "completed"
+			? createReviewBudgetStore(recordCtx.recordStore).getImplementationBinding(
+					runId,
+				)
+			: null;
+	const restrictions = binding
+		? listOperatingRestrictions({
+				recordStore: recordCtx.recordStore,
+				runId,
+				bindingId: binding.id,
+			})
+		: [];
 	outputSuccess({
 		run_id: runId,
 		status,
 		reason: params.reason ?? null,
+		// The run completed under these operator conditions. Carry them
+		// into release notes; completion does not lift them.
+		...(restrictions.length > 0
+			? { operating_restrictions: restrictions }
+			: {}),
 	});
 }
 
