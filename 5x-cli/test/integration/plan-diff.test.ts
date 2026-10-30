@@ -30,7 +30,9 @@ async function history(commits: readonly ImportedCommit[]): Promise<{
 }
 
 describe("plan-only review diff evidence", () => {
-	test(
+	// --concurrent runs this file on one thread, so a started test's 15s budget
+	// includes sibling git. test.serial starts that budget when the test runs.
+	test.serial(
 		"builds a top-level-relative plan diff from a subdirectory workdir",
 		async () => {
 			const { dir, hashes } = await history([
@@ -63,7 +65,7 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"accepts a pre-artifact end commit with an equivalent plan patch and exact hunk",
 		async () => {
 			const plan = "# Plan\n\nnew\n";
@@ -122,7 +124,7 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"tracks renamed plans and documents omitted hunk retrieval",
 		async () => {
 			const original = `${Array.from({ length: 260 }, (_, index) => `line ${index}`).join("\n")}\n`;
@@ -157,7 +159,7 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"limits equivalent endpoints to the last plan-touching commit and later artifacts",
 		async () => {
 			const { dir, hashes } = await history([
@@ -225,7 +227,7 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"returns an empty text context for no plan change and rejects binary plans",
 		async () => {
 			const { dir, hashes } = await history([

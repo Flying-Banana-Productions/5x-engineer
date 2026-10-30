@@ -106,6 +106,8 @@ bun test --concurrent         # parallel execution (CI default)
 
 Build the seed once. Do not spawn git for an identity that the seed already has.
 
+A test that still awaits a chain of git commands should be `test.serial` when the same file has other git or copy setup. `--concurrent` runs that file on one thread, and the 15s budget includes time blocked behind a sibling. `test.serial` starts the budget when the test runs. Do not raise the suite timeout to cover that wait.
+
 ### `cleanGitEnv()`
 
 Every `Bun.spawn`/`Bun.spawnSync` call that runs git (or spawns a process that will run git) must pass `env: cleanGitEnv()`. Bun's `delete process.env.X` doesn't call `unsetenv()` at the C level, so child processes still inherit `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` from git hooks. The helpers above already pass it.

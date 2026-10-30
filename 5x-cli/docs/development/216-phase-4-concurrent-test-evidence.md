@@ -4,46 +4,37 @@
 **Phase:** 4 quality remediation. The executing plan stays schema 0. This note is not a plan edit.
 **Product code:** unchanged.
 
-## Root cause
+## What the gate actually did
 
-`bun test --concurrent` runs the tests in one file on a single thread. `--max-concurrency` defaults to 20, and `--parallel` defaults to the CPU count (8 on this machine). `Bun.spawnSync` blocks that thread. A test's 15s budget is wall-clock from the moment it starts, including time it spends waiting behind a sibling's git process. Async git in product code cannot resume during that block.
+`5x quality run` resolves this run to the linked worktree and runs the gates in `5x-cli` (`Quality gates executing in: …/216-plan-schema-contracts-and-migration-plan-768a25/5x-cli`). The runner is `runSingleCommand`: `sh -c` with stdout and stderr piped, stdin left at the spawn default, and `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` removed from the copied environment. The orchestrator process on this machine had the same `TMPDIR` as the shell and no `GIT_DIR`.
 
-Two fixtures made that budget depend on how busy process startup was:
+Commit `d9566b6c` did not stabilize that gate. The immediate rerun wrote `.5x/logs/run_e9f7394d17bc/quality-phase0-attempt1-bun-run-test.log`:
 
-- `test/integration/plan-diff.test.ts` built each history with one synchronous git process per `init`, `add`, `commit`, and `rev-parse`. Five concurrent tests serialized about 50 of those calls, then `buildPlanReviewDiffContext` awaited more git. The equivalence test already carried a 60s timeout for that reason. The pre-artifact test stayed at 15s. Under full-suite startup delay, about 300ms per git call is enough for 50 calls to miss 15s.
-- `test/unit/commands/protocol-validate.test.ts` has 95 tests. Twenty-one call `setupProjectDir`, which ran five synchronous git commands and did not pass `cleanGitEnv()`. With the concurrency cap, a batch of those setups shares the thread with "both entry points persist the same observation and durable authorization", which is waiting on `protocolValidate` and `invokeAgent`. The same test was killed at 5000ms in phase 0 and at 15000ms by the phase 4 gate.
+- `bun test --concurrent --dots --timeout 15000`
+- 4026 pass, 2 fail, 15918 expect() calls, 259 files, 218.47s
+- `plan-diff.test.ts` — accepts a pre-artifact end commit with an equivalent plan patch and exact hunk — 15000.57ms
+- `protocol-validate.test.ts` — a paired collision is an error envelope before success — 15000.17ms
 
-The phase 4 gate recorded two consecutive failures, both at 15000ms, on those two tests, after lint, typecheck, and the focused asset suite (34 pass) had succeeded. A quiet reproduction on this machine passed (below), so the failure is load margin, not a wrong assertion.
+The log is 5164 bytes. That is under a pipe buffer, the suite printed its summary, and the runner's 300s command timeout did not fire. Capture did not stall `bun test`. The two failures are bun's per-test kill. Lint had already passed. This is the same machine as the direct runs that passed; the failed gate was slower (218s versus about 190s), not a different host.
 
-## What changed
+## Why those two tests hit 15s
 
-`test/helpers/git-fixture.ts` keeps git off the per-test critical path:
+`--concurrent` runs every test in a file on one thread. The timer starts when the test starts and keeps running while a sibling blocks that thread. `describe.serial` does not change this under `--concurrent` on bun 1.4.4 (both tests in the block started together). `test.serial` does: it runs after the file's concurrent tests, one at a time, and a 300ms serial test still passed when a sibling slept 700ms.
 
-- `copyInitializedRepo` copies one shared `git init -b main` repo with the test author. Later tests do not spawn `git init` or two `git config` processes.
-- `commitAll` / `commitAllSync` run `git add -A` and `git commit` in one process. Concurrent tests use the async form.
-- `importCommitSequence` builds a whole history with one async `git fast-import`, then one async `git reset --hard`. Plan-diff still asserts rename detection, equivalent endpoints, exact hunk text, and binary rejection.
-- `copyCommittedProject` copies a committed tree and, for the protocol fixture, a migrated `.5x/5x.db`. `readHead` reads the ref file. The protocol recording test no longer spawns git for setup. The two amendment tests each use one async `commitAll`.
-- The repeated init/config/add/commit blocks in the other unit and integration fixtures now call those helpers. Every remaining helper spawn passes `cleanGitEnv()`.
+`d9566b6c` removed per-test `git init`, but the plan-diff file still ran five histories at once, and the protocol recording tests still awaited `prepareImplementationReviewContext` (a chain of `git status` / `diff` / `merge-base`) while other tests in that file copied fixtures. The pre-artifact test and the paired-collision test are the ones the rerun killed. Assertions are unchanged.
 
-The suite timeout stayed 15000ms. The plan-diff equivalence test's special 60s timeout is back to 15000ms. The protocol recording test still calls the handlers directly, so it stays in the unit file; the subprocess setup is what moved. Plan-diff was already an integration test.
+Nested workers are the default `--parallel` width (8), the same for a direct `bun run test` and for the gate. Git fixture output is far below the pipe size, and those spawns already pass `stdin: "ignore"` and read both pipes. The suite-level capture was not the stall.
 
-## Timings
+## Mitigation
 
-Command, from `5x-cli`: `bun run test` (`bun test --concurrent --dots --timeout 15000`).
+`test.serial` on all five plan-diff tests, and on the four protocol recording tests that build a review context. The suite timeout stays 15000ms. No test was disabled.
 
-| Run | Result | Wall | user | sys |
+## Orchestrated gate after the change
+
+`5x quality run --run run_e9f7394d17bc` with no `--record`, from this worktree. Both runs: lint clean (463 files), 4028 pass, 0 fail, 15926 expect() calls, 259 files.
+
+| Run | Test wall | Process real | user | sys |
 | --- | --- | --- | --- | --- |
-| Before, this machine | 4028 pass, 0 fail, 15926 assertions, 259 files | 199.49s | 302.03s | 239.09s |
-| After, first | 4028 pass, 0 fail, 15926 assertions, 259 files | 189.84s | 300.11s | 239.74s |
-| After, second | 4028 pass, 0 fail, 15926 assertions, 259 files | 189.07s | 300.17s | 239.22s |
-
-The before run passed here. The gate's two failures are the same command on a busier machine. Wall time dropped about 10s with almost the same CPU total: less time is spent blocked behind `spawnSync`, so overlapping tests finish inside the 15s budget instead of adding their git calls together.
-
-Isolated files, same flags:
-
-| Scope | Before | After |
-| --- | --- | --- |
-| `plan-diff.test.ts` + `protocol-validate.test.ts` (100 tests) | 5.67s | 3.70s |
-| `plan-diff.test.ts` alone (5 tests) | included above | 228ms |
-
-Also, after the fixture change: `bun run lint` clean (Biome 2.5.15, 463 files), `bun run typecheck` clean, focused asset suite `bun test --concurrent --timeout 15000 test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts` 34 pass, 0 fail, 7.88s.
+| Gate after `d9566b6c` | 218.47s | (not recorded) | | |
+| After `test.serial`, first | 192.29s | 192.99s | 303.60s | 242.13s |
+| After `test.serial`, second | 190.73s | 191.49s | 304.11s | 241.35s |
