@@ -94,9 +94,21 @@ bun test --concurrent         # parallel execution (CI default)
 
 ## Required Patterns for Integration Tests
 
+### Git fixtures
+
+`--concurrent` runs every test in a file on one thread. `Bun.spawnSync` blocks that thread, so a per-test `git init` / `config` / `add` / `commit` chain counts against every sibling's 15s timeout. Copy a repo instead:
+
+- `copyInitializedRepo(dir)` — one shared `git init -b main` plus the test author.
+- `commitAllSync` / `commitAll` — `git add -A` and `commit` in one process. Prefer `commitAll` inside concurrent tests.
+- `importCommitSequence` — one async `git fast-import` for a multi-commit history.
+- `copyCommittedProject` — file snapshot plus optional migrated `.5x/5x.db`, copied with no per-test git process.
+- `readHead` — HEAD from the ref file.
+
+Build the seed once. Do not spawn git for an identity that the seed already has.
+
 ### `cleanGitEnv()`
 
-Every `Bun.spawn`/`Bun.spawnSync` call that runs git (or spawns a process that will run git) must pass `env: cleanGitEnv()`. Bun's `delete process.env.X` doesn't call `unsetenv()` at the C level, so child processes still inherit `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` from git hooks.
+Every `Bun.spawn`/`Bun.spawnSync` call that runs git (or spawns a process that will run git) must pass `env: cleanGitEnv()`. Bun's `delete process.env.X` doesn't call `unsetenv()` at the C level, so child processes still inherit `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` from git hooks. The helpers above already pass it.
 
 ```ts
 import { cleanGitEnv } from "../../helpers/clean-env.js";

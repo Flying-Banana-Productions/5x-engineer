@@ -20,6 +20,10 @@ import { join, resolve } from "node:path";
 import { runMigrations } from "../../../src/db/schema.js";
 import { planSlugFromPath } from "../../../src/paths.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -70,27 +74,7 @@ function parseJson(stdout: string): Record<string, unknown> {
 
 /** Create a minimal project with git repo and 5x config. */
 function setupProject(dir: string): void {
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	// Create .5x directory with DB
 	mkdirSync(join(dir, ".5x"), { recursive: true });
@@ -112,20 +96,7 @@ function setupProject(dir: string): void {
 		"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
 	);
 
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 }
 
 /** Insert a run directly into the DB for testing. */
@@ -171,27 +142,7 @@ function insertStep(
 
 /** Create a project with continuePhaseSessions enabled for reviewer. */
 function setupProjectWithSessionEnforcement(dir: string): void {
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	const db = new Database(join(dir, ".5x", "5x.db"));
@@ -211,20 +162,7 @@ function setupProjectWithSessionEnforcement(dir: string): void {
 		"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
 	);
 
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 }
 
 // ---------------------------------------------------------------------------
@@ -929,27 +867,7 @@ describe("5x template render", () => {
 			const dir = makeTmpDir();
 			try {
 				// Setup with custom runReviews directory
-				Bun.spawnSync(["git", "init"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "config", "user.name", "Test"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				copyInitializedRepo(dir);
 
 				mkdirSync(join(dir, ".5x"), { recursive: true });
 				const db = new Database(join(dir, ".5x", "5x.db"));

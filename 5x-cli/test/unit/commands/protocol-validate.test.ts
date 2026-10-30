@@ -26,7 +26,6 @@ import {
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
 import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
-import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
 import {
@@ -43,6 +42,12 @@ import {
 	prepareTextAmendmentGuard,
 	verifyGuardedPlanBytes,
 } from "../../../src/review-governance/plan-amendment.js";
+import {
+	commitAll,
+	copyCommittedProject,
+	type ProjectSeedSpec,
+	readHead,
+} from "../../helpers/git-fixture.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
@@ -91,51 +96,19 @@ function writeRawInput(dir: string, raw: string): string {
 	return p;
 }
 
-/** Set up a minimal 5x project dir with git + DB (no subprocesses). */
+const protocolProject: ProjectSeedSpec = {
+	files: {
+		".gitignore": ".5x/\n5x.toml.local\n",
+		"5x.toml":
+			'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n',
+	},
+	message: "init",
+	migrateDb: true,
+};
+
+/** Copy the shared git + DB snapshot. No per-test git process. */
 function setupProjectDir(dir: string): void {
-	// Git repo (minimal — only needs .git to exist for control-plane resolution)
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-
-	mkdirSync(join(dir, ".5x"), { recursive: true });
-	const db = new Database(join(dir, ".5x", "5x.db"));
-	runMigrations(db);
-	db.close();
-
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
-	writeFileSync(
-		join(dir, "5x.toml"),
-		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n',
-	);
-
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyCommittedProject(dir, protocolProject);
 }
 
 function insertRun(dir: string, runId: string, planPath: string): void {
@@ -2147,16 +2120,7 @@ function implementationBinding() {
 }
 
 function gitHead(dir: string): string {
-	const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
-		cwd: dir,
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	if (result.exitCode !== 0) {
-		throw new Error(result.stderr.toString());
-	}
-	return result.stdout.toString().trim();
+	return readHead(dir);
 }
 
 function verdictProvider(structured: unknown): AgentProvider {
@@ -2417,19 +2381,7 @@ The binding is unchanged.
 				"Keep another ledger.",
 			);
 			writeFileSync(join(dir, "plan.md"), committed);
-			Bun.spawnSync(["git", "add", "plan.md"], {
-				cwd: dir,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "plan"], {
-				cwd: dir,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			const head = gitHead(dir);
+			const head = await commitAll(dir, "plan");
 			const prepared = prepareTextAmendmentGuard({
 				id: "guard-1",
 				anchorBytes: markdown,
@@ -2605,20 +2557,8 @@ The binding is unchanged.
 		try {
 			setupProjectDir(dir);
 			writeFileSync(join(dir, "plan.md"), amended);
-			Bun.spawnSync(["git", "add", "plan.md"], {
-				cwd: dir,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "plan"], {
-				cwd: dir,
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			const head = await commitAll(dir, "plan");
 			insertRun(dir, "run1", join(dir, "plan.md"));
-			const head = gitHead(dir);
 			const binding = implementationBinding();
 			binding.approvedPlanBytes = original;
 			binding.approvedPlanHash = hashPlanBytes(original);

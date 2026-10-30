@@ -35,6 +35,7 @@ import {
 import { listAgentTemplates } from "../../../src/harnesses/opencode/loader.js";
 import { listSkillNames } from "../../../src/harnesses/opencode/skills/loader.js";
 import { version } from "../../../src/version.js";
+import { copyInitializedRepo } from "../../helpers/git-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -64,16 +65,7 @@ async function bootstrapProject(dir: string): Promise<void> {
 
 /** Minimal git repo so `resolveControlPlaneRoot` / `resolveCheckoutRoot` use repo root as project root. */
 function initGitRepo(dir: string): void {
-	const r = Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		stdout: "ignore",
-		stderr: "pipe",
-	});
-	if (r.exitCode !== 0) {
-		throw new Error(`git init failed: ${r.stderr.toString()}`);
-	}
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], { cwd: dir });
-	Bun.spawnSync(["git", "config", "user.name", "Test"], { cwd: dir });
+	copyInitializedRepo(dir);
 }
 
 // ---------------------------------------------------------------------------

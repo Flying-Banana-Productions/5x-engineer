@@ -11,6 +11,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -64,27 +68,7 @@ describe("5x run init with sub-project config", () => {
 			const dir = makeTmpDir();
 			try {
 				// Init git repo
-				Bun.spawnSync(["git", "init"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "config", "user.name", "Test"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				copyInitializedRepo(dir);
 
 				// Root 5x.toml — default plans path
 				writeFileSync(
@@ -116,20 +100,7 @@ describe("5x run init with sub-project config", () => {
 				);
 
 				// Initial commit so worktree is clean
-				Bun.spawnSync(["git", "add", "-A"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "commit", "-m", "init"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				commitAllSync(dir, "init");
 
 				// Run `5x init` to create state DB
 				const initResult = await run5x(dir, ["init"]);

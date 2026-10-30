@@ -8,7 +8,7 @@ import { templateRender } from "../../../src/commands/template.handler.js";
 import { _resetForTest, closeDb } from "../../../src/db/connection.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
-import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { copyInitializedRepo } from "../../helpers/git-fixture.js";
 import {
 	makeBudgetContext,
 	seedPromptGovernanceContext,
@@ -22,13 +22,7 @@ describe("templateRender review-budget dependencies", () => {
 			`5x-template-handler-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		mkdirSync(dir, { recursive: true });
-		Bun.spawnSync(["git", "init"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		copyInitializedRepo(dir);
 		mkdirSync(join(dir, ".5x"), { recursive: true });
 		const planPath = join(dir, "plan.md");
 		writeFileSync(planPath, "# Plan\n");
@@ -75,13 +69,7 @@ describe("templateRender review-budget dependencies", () => {
 			`5x-template-governance-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		mkdirSync(dir, { recursive: true });
-		Bun.spawnSync(["git", "init"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		copyInitializedRepo(dir);
 		mkdirSync(join(dir, ".5x"), { recursive: true });
 		const planPath = join(dir, "plan.md");
 		writeFileSync(planPath, "# Plan\n");
@@ -156,13 +144,7 @@ describe("templateRender review-budget dependencies", () => {
 			`5x-template-admission-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		mkdirSync(dir, { recursive: true });
-		Bun.spawnSync(["git", "init"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		copyInitializedRepo(dir);
 		mkdirSync(join(dir, ".5x"), { recursive: true });
 		const planPath = join(dir, "plan.md");
 		const planMarkdown = `# Plan
