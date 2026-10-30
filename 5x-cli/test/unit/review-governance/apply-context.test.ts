@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ReviewBudgetSnapshotRecord } from "../../../src/control-plane/review-budget-store.js";
+import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../../../src/plan-schema/document.js";
 import {
 	applyPlanReviewGovernance,
 	persistedFindingsFromSnapshots,
@@ -127,6 +128,11 @@ describe("plan review prompt projection", () => {
 			diffAppend: "diff",
 			governanceAppend: governance,
 		});
-		expect(projected).toBe(`base\ndiff\n\n${governance}`);
+		expect(projected).toBe(
+			`base\n\n${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}\ndiff\n\n${governance}`,
+		);
+		expect(projected.indexOf("diff")).toBeLessThan(
+			projected.indexOf(governance),
+		);
 	});
 });

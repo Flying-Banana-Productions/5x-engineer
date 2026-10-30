@@ -14,6 +14,7 @@ import {
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { getDefaultSkillRaw } from "../../../src/harnesses/opencode/skills/loader.js";
+import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../../../src/plan-schema/document.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
 import {
 	encodeImplementationReviewObservationPayload,
@@ -36,6 +37,7 @@ import { hashPlanBytes } from "../../../src/review-governance/implementation-sta
 import { renderSkillByName } from "../../../src/skills/loader.js";
 import { createRenderContext } from "../../../src/skills/renderer.js";
 import {
+	getDefaultTemplateRaw,
 	renderTemplate,
 	setTemplateOverrideDir,
 } from "../../../src/templates/loader.js";
@@ -44,6 +46,18 @@ import {
 	makeBudgetContext,
 	TEST_ORIGIN,
 } from "../commands/review-budget-test-helpers.js";
+
+function countOccurrences(haystack: string, needle: string): number {
+	if (needle.length === 0) return 0;
+	let count = 0;
+	let from = 0;
+	while (true) {
+		const index = haystack.indexOf(needle, from);
+		if (index === -1) return count;
+		count += 1;
+		from = index + needle.length;
+	}
+}
 
 const promptContext: ImplementationReviewPromptContext = {
 	reviewKind: "closure",
@@ -277,6 +291,9 @@ describe("implementation review skill branches", () => {
 			expect(content).toContain("IMPLEMENTATION_APPROVAL_REQUIRED");
 			expect(content).toContain("Never continue that failure as v1");
 			expect(content).toContain("harness_freshness");
+			expect(countOccurrences(content, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(
+				1,
+			);
 			expect(content).toContain("Delegation mode precedence");
 			expect(content).toContain("maxReviewIterations");
 			expect(content).toContain("--new-session");
@@ -284,6 +301,70 @@ describe("implementation review skill branches", () => {
 			expect(content).not.toContain("baselineAssessment");
 			expect(content).not.toContain("projectedEffort");
 		}
+	});
+
+	test("rendered author-next-phase prompt contains the authority paragraph once", () => {
+		const rendered = renderTemplate("author-next-phase", {
+			plan_path: "docs/development/plans/001-thing.md",
+			phase_number: "1",
+			user_notes: "",
+		});
+		const prompt = appendPlanReviewPromptContext({ prompt: rendered.prompt });
+		expect(countOccurrences(prompt, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(1);
+		expect(prompt).toContain("schema 0 plan");
+		expect(prompt).toContain(
+			"do not invalidate an authorized text-amendment span",
+		);
+	});
+
+	test("bundled workflow templates contain the authority paragraph once", () => {
+		for (const name of [
+			"author-generate-plan",
+			"author-next-phase",
+			"author-process-plan-review",
+			"author-process-impl-review",
+			"author-fix-quality",
+			"reviewer-plan",
+			"reviewer-plan-continued",
+			"reviewer-commit",
+			"reviewer-commit-continued",
+		]) {
+			expect(
+				countOccurrences(
+					getDefaultTemplateRaw(name),
+					PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
+				),
+			).toBe(1);
+		}
+	});
+
+	test("migration skill records operator confirmation and foundation only points at it", () => {
+		const migration = renderSkillByName(
+			"5x-plan-migration",
+			createRenderContext(true),
+		).content;
+		expect(migration).toContain("--confirm-exclusions");
+		expect(migration).toContain("verified_equivalent");
+		expect(migration).toContain(
+			"not treat a missing marker as migration eligibility",
+		);
+		expect(migration).toContain(
+			"Older CLIs fail closed by treating informational edits as raw drift.",
+		);
+		expect(migration).toContain(
+			"does not describe a reviewer snapshot, a `--snapshot` flag,",
+		);
+		expect(migration).toContain("or reviewer authority for migration.");
+		expect(countOccurrences(migration, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(
+			1,
+		);
+		const foundation = renderSkillByName(
+			"5x",
+			createRenderContext(true),
+		).content;
+		expect(foundation).toContain("5x-plan-migration");
+		expect(foundation).not.toContain("--confirm-exclusions");
+		expect(foundation).not.toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
 	});
 
 	test("loads current skill content rather than an installed copy", () => {

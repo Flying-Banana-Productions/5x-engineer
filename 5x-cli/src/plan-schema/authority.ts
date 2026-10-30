@@ -18,13 +18,20 @@ import {
 
 export { authoritativePlan };
 
+const PLAN_SCHEMA_RECOVERY_POINTER =
+	"See 5x review migrate-schema --help and the 5x-plan-migration skill.";
+
 export function planSchemaCommandMessage(failure: { message: string }): string {
 	const legacy = failure.message.includes("not a legacy fallback")
 		? failure.message
 		: `${failure.message} This is not a legacy fallback.`;
-	return legacy.includes("5x-plan-migration")
-		? legacy
-		: `${legacy} Use the 5x-plan-migration skill.`;
+	if (
+		legacy.includes("5x review migrate-schema --help") &&
+		legacy.includes("5x-plan-migration")
+	) {
+		return legacy;
+	}
+	return `${legacy} ${PLAN_SCHEMA_RECOVERY_POINTER}`;
 }
 
 export function readAuthoritativePlan(

@@ -1,20 +1,36 @@
-export const DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE = `# {Feature/Change Title}
+import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../plan-schema/document.js";
+
+export const DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE = `<!-- 5x:plan-schema:1 -->
 
 <!--
 HOW TO USE (also applies without the 5x workflow skills)
 Replace placeholders with project-specific content; delete unused optional sections.
 Keep the visible headings, budget columns, and checklist syntax intact: 5x parses them.
+This skeleton is schema 1. The human **Version:** line is the document revision, not the schema.
+Outside the contract: this declaration, generator comments, **Version:**, **Created:**, **Status:**,
+and ## Revision History. Inside the contract: the title, obligations, budget, phases, gates,
+checklists, exclusions, files touched, and tests. Delete generator comments before approval.
+A comment left inside the contract is governing text. A Draft plan is not execution approval.
+${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}
 Examples below are illustrative, not approved work or evidence. Replace example IDs
 with real stable IDs and use actual source paths, phase targets, and before/after states.
-Remove these comments from the finished document if desired; keep substantive design,
-acceptance criteria, and evidence visible. A Draft plan is not execution approval.
 Parser note: HTML comments are not automatically ignored. Example lines are labeled
 so they cannot become real headings, table rows, metadata, or checklist items.
 -->
 
+\`\`\`text
+<!-- 5x:note:start id="execution-context" -->
+Informational context. It does not govern the work and does not satisfy a completion gate.
+<!-- 5x:note:end id="execution-context" -->
+\`\`\`
+
 **Version:** 1.0
 **Created:** {Month Day, Year}
 **Status:** Draft
+
+<!-- 5x:contract:start -->
+
+# {Feature/Change Title}
 
 ## Overview
 
@@ -123,6 +139,8 @@ phase advancement when the supplied 5x workflow requires review or reconciliatio
 ## Not In Scope
 
 - {Explicitly excluded item}
+
+<!-- 5x:contract:end -->
 
 ## Revision History
 

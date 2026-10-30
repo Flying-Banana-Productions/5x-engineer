@@ -1,5 +1,6 @@
 import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../plan-schema/document.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import type {
 	ImplementationBindingPayload,
@@ -137,6 +138,10 @@ export function appendPlanReviewPromptContext(input: {
 	governanceAppend?: string | null;
 }): string {
 	let prompt = input.prompt;
+	if (!prompt.includes(PLAN_SCHEMA_AUTHORITY_INSTRUCTION)) {
+		const separator = prompt.endsWith("\n") ? "\n" : "\n\n";
+		prompt += `${separator}${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}`;
+	}
 	if (input.diffAppend) prompt += `\n${input.diffAppend}`;
 	if (input.governanceAppend) prompt += `\n\n${input.governanceAppend}`;
 	return prompt;

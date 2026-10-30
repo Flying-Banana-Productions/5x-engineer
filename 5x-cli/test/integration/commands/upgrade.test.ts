@@ -15,6 +15,7 @@ import {
 	type HarnessManifest,
 	MANIFEST_FILENAME,
 } from "../../../src/harnesses/manifest.js";
+import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../../../src/plan-schema/document.js";
 import { getDefaultTemplateRaw } from "../../../src/templates/loader.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
@@ -1018,5 +1019,316 @@ describe("5x upgrade harness freshness (Phase 7)", () => {
 			}
 		},
 		{ timeout: 60000 },
+	);
+});
+
+function countOccurrences(haystack: string, needle: string): number {
+	if (needle.length === 0) return 0;
+	let count = 0;
+	let from = 0;
+	while (true) {
+		const index = haystack.indexOf(needle, from);
+		if (index === -1) return count;
+		count += 1;
+		from = index + needle.length;
+	}
+}
+
+function envelopeData(stdout: string): Record<string, unknown> {
+	const parsed = JSON.parse(stdout) as { data?: Record<string, unknown> };
+	return parsed.data ?? (parsed as Record<string, unknown>);
+}
+
+function echoedPrompt(log: string): string {
+	const deltas: string[] = [];
+	for (const line of log.split("\n")) {
+		if (line.trim().length === 0) continue;
+		const event = JSON.parse(line) as { type?: string; delta?: string };
+		if (event.type === "text" && typeof event.delta === "string") {
+			deltas.push(event.delta);
+		}
+	}
+	return deltas.join("");
+}
+
+describe("schema 1 workflow assets", () => {
+	const staleOverride =
+		'---\nname: author-next-phase\ndescription: stale override\nversion: 1\nvariables: [plan_path, phase_number, user_notes, run_id]\nstep_name: "author:implement"\nvariable_defaults:\n  user_notes: ""\n  run_id: ""\n---\n\nImplement phase {{phase_number}} of `{{plan_path}}`.\nNotes: {{user_notes}}\n';
+
+	test(
+		"configured skeleton resolves to schema 1 and a custom path survives upgrade",
+		async () => {
+			const project = await setupProject();
+			try {
+				const shown = await run5x(project, [
+					"config",
+					"show",
+					"--key",
+					"paths.templates.plan",
+				]);
+				expect(shown.exitCode, shown.stderr).toBe(0);
+				const configured = envelopeData(shown.stdout).value;
+				expect(configured).toBe(
+					join(project.dir, "docs/_implementation_plan_template.md"),
+				);
+				const installedPath = join(
+					project.dir,
+					".5x",
+					"templates",
+					"implementation-plan-template.md",
+				);
+				const bundled = readFileSync(installedPath, "utf-8");
+				expect(bundled).toContain("<!-- 5x:plan-schema:1 -->");
+				expect(bundled).toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
+				const pointed = await run5x(project, [
+					"config",
+					"set",
+					"paths.templates.plan",
+					".5x/templates/implementation-plan-template.md",
+					"--local",
+				]);
+				expect(pointed.exitCode, `${pointed.stdout}\n${pointed.stderr}`).toBe(
+					0,
+				);
+				const pointedShow = await run5x(project, [
+					"config",
+					"show",
+					"--key",
+					"paths.templates.plan",
+				]);
+				expect(pointedShow.exitCode, pointedShow.stderr).toBe(0);
+				expect(envelopeData(pointedShow.stdout).value).toBe(installedPath);
+
+				const customRelative = "docs/custom-plan-template.md";
+				const customPath = join(project.dir, customRelative);
+				const customBody = `<!-- custom-plan-skeleton -->\n${bundled}`;
+				writeFileSync(customPath, customBody);
+				const set = await run5x(project, [
+					"config",
+					"set",
+					"paths.templates.plan",
+					customRelative,
+					"--local",
+				]);
+				expect(set.exitCode, set.stderr).toBe(0);
+				const resolved = await run5x(project, [
+					"config",
+					"show",
+					"--key",
+					"paths.templates.plan",
+				]);
+				expect(resolved.exitCode, resolved.stderr).toBe(0);
+				expect(envelopeData(resolved.stdout).value).toBe(customPath);
+
+				const upgraded = await run5x(project, ["upgrade", "-f", "--no-sync"]);
+				expect(upgraded.exitCode, upgraded.stderr).toBe(0);
+				expect(readFileSync(customPath, "utf-8")).toBe(customBody);
+				expect(
+					readFileSync(
+						join(
+							project.dir,
+							".5x",
+							"templates",
+							"implementation-plan-template.md",
+						),
+						"utf-8",
+					),
+				).toContain("<!-- 5x:plan-schema:1 -->");
+				const after = await run5x(project, [
+					"config",
+					"show",
+					"--key",
+					"paths.templates.plan",
+				]);
+				expect(envelopeData(after.stdout).value).toBe(customPath);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
+	);
+
+	test(
+		"native and invoke renders include the authority paragraph once, including a stale override",
+		async () => {
+			const project = await setupProject();
+			try {
+				writeFileSync(
+					join(project.dir, "5x.toml.local"),
+					`[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n\n[sample]\necho = true\n\n[sample.structured]\nresult = "complete"\ncommit = "abc123"\n`,
+				);
+				const vars = [
+					"--var",
+					"plan_path=docs/development/plans/001-thing.md",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=",
+				];
+				const bundled = await run5x(project, [
+					"template",
+					"render",
+					"author-next-phase",
+					...vars,
+				]);
+				expect(bundled.exitCode, bundled.stderr).toBe(0);
+				const bundledPrompt = envelopeData(bundled.stdout).prompt;
+				expect(typeof bundledPrompt).toBe("string");
+				expect(
+					countOccurrences(
+						bundledPrompt as string,
+						PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
+					),
+				).toBe(1);
+
+				const promptsDir = join(project.dir, ".5x", "templates", "prompts");
+				mkdirSync(promptsDir, { recursive: true });
+				const overridePath = join(promptsDir, "author-next-phase.md");
+				writeFileSync(overridePath, staleOverride);
+				const overridden = await run5x(project, [
+					"template",
+					"render",
+					"author-next-phase",
+					...vars,
+				]);
+				expect(
+					overridden.exitCode,
+					`${overridden.stdout}\n${overridden.stderr}`,
+				).toBe(0);
+				expect(overridden.stderr).toContain("older than bundled");
+				const overriddenPrompt = envelopeData(overridden.stdout).prompt;
+				expect(
+					countOccurrences(
+						overriddenPrompt as string,
+						PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
+					),
+				).toBe(1);
+				expect(readFileSync(overridePath, "utf-8")).toBe(staleOverride);
+
+				const init = await run5x(project, [
+					"run",
+					"init",
+					"--plan",
+					"docs/development/plans/001-thing.md",
+					"--allow-dirty",
+				]);
+				expect(init.exitCode, `${init.stdout}\n${init.stderr}`).toBe(0);
+				const invoked = await run5x(project, [
+					"invoke",
+					"author",
+					"author-next-phase",
+					"--quiet",
+					"--var",
+					"phase_number=1",
+					"--var",
+					"user_notes=probe",
+				]);
+				expect(invoked.exitCode, `${invoked.stdout}\n${invoked.stderr}`).toBe(
+					0,
+				);
+				const logPath = envelopeData(invoked.stdout).log_path;
+				expect(typeof logPath).toBe("string");
+				const echoed = echoedPrompt(readFileSync(logPath as string, "utf-8"));
+				expect(echoed).toContain("[SampleProvider echo]");
+				expect(
+					countOccurrences(echoed, PLAN_SCHEMA_AUTHORITY_INSTRUCTION),
+				).toBe(1);
+				expect(readFileSync(overridePath, "utf-8")).toBe(staleOverride);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
+	);
+
+	test(
+		"fresh install and sync receive 5x-plan-migration without rewriting customized skills",
+		async () => {
+			const project = await setupProject();
+			try {
+				const install = await run5x(project, [
+					"harness",
+					"install",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(install.exitCode, install.stderr).toBe(0);
+				const migrationPath = opencodePath(
+					project,
+					"skills",
+					"5x-plan-migration",
+					"SKILL.md",
+				);
+				expect(existsSync(migrationPath)).toBe(true);
+				const installedMigration = readFileSync(migrationPath, "utf-8");
+				expect(installedMigration).toContain("--confirm-exclusions");
+				expect(installedMigration).toContain(
+					"Older CLIs fail closed by treating informational edits as raw drift.",
+				);
+				const foundation = readFileSync(
+					opencodePath(project, "skills", "5x", "SKILL.md"),
+					"utf-8",
+				);
+				expect(foundation).toContain("5x-plan-migration");
+				expect(foundation).not.toContain("--confirm-exclusions");
+
+				rmSync(opencodePath(project, "skills", "5x-plan-migration"), {
+					recursive: true,
+					force: true,
+				});
+				expect(existsSync(migrationPath)).toBe(false);
+				const restored = await run5x(project, [
+					"harness",
+					"sync",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(
+					restored.exitCode,
+					`${restored.stdout}\n${restored.stderr}`,
+				).toBe(0);
+				expect(readFileSync(migrationPath, "utf-8")).toContain(
+					"--confirm-exclusions",
+				);
+
+				const planSkill = opencodePath(
+					project,
+					"skills",
+					"5x-plan",
+					"SKILL.md",
+				);
+				const phaseSkill = opencodePath(
+					project,
+					"skills",
+					"5x-phase-execution",
+					"SKILL.md",
+				);
+				const customPlan = "# custom 5x-plan\n";
+				const customPhase = "# custom 5x-phase-execution\n";
+				writeFileSync(planSkill, customPlan);
+				writeFileSync(phaseSkill, customPhase);
+				const preserved = await run5x(project, [
+					"harness",
+					"sync",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(preserved.exitCode).not.toBe(0);
+				expect(`${preserved.stdout}\n${preserved.stderr}`).toContain(
+					"local modifications",
+				);
+				expect(readFileSync(planSkill, "utf-8")).toBe(customPlan);
+				expect(readFileSync(phaseSkill, "utf-8")).toBe(customPhase);
+				expect(readFileSync(migrationPath, "utf-8")).toContain(
+					"--confirm-exclusions",
+				);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
 	);
 });

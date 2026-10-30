@@ -238,7 +238,7 @@ opencode = "openai/sub-local-reviewer"
 		}
 	});
 
-	test("installs 5 skills and 4 agents (3 subagents + 1 orchestrator)", async () => {
+	test("installs every bundled skill and 4 agents (3 subagents + 1 orchestrator)", async () => {
 		const tmp = makeTmpDir();
 		try {
 			await bootstrapProject(tmp);
@@ -252,7 +252,7 @@ opencode = "openai/sub-local-reviewer"
 			const agentsDir = join(tmp, ".opencode", "agents");
 
 			const skillNames = listSkillNames();
-			expect(skillNames).toHaveLength(6);
+			expect(skillNames).toHaveLength(7);
 
 			const agentNames = listAgentTemplates().map((a) => a.name);
 			expect(agentNames).toHaveLength(4);

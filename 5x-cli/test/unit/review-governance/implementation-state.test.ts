@@ -44,6 +44,8 @@ import {
 	isImplementationAuthorTemplate,
 	mapDebtTargetToPhaseId,
 	PLAN_DRIFT_RECOVERY_HELP,
+	PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP,
+	planDriftRecoveryHelp,
 	planRepoPath,
 	recordVerifiedTextAmendment,
 	verifyAuthorTextAmendment,
@@ -1181,6 +1183,15 @@ describe("implementation execution binding", () => {
 		expect(missing.drifted).toBe(true);
 		expect(missing.reason).toContain("PLAN_SCHEMA_INVALID");
 		expect(missing.reason).toContain("not a legacy fallback");
+		expect(missing.reason).toContain("Missing markers are malformed input");
+		expect(missing.reason).toContain("5x review migrate-schema --help");
+		expect(missing.reason).toContain("5x-plan-migration");
+		expect(planDriftRecoveryHelp(1, missing.reason)).toBe(
+			PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP,
+		);
+		expect(planDriftRecoveryHelp(0, missing.reason)).toBe(
+			PLAN_DRIFT_RECOVERY_HELP,
+		);
 		const wrongHash = detectPlanDrift({
 			...base,
 			currentPlanBytes: markdown,

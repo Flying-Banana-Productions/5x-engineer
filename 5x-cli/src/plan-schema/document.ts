@@ -671,7 +671,7 @@ export function loadPlanDocument(
 		if (expected === "file") return { ok: true, document: projectSchema0(raw) };
 		return failure(
 			"PLAN_SCHEMA_INVALID",
-			"Schema 1 declaration is missing. This is not a legacy fallback.",
+			"Schema 1 declaration is missing. Missing markers are malformed input. This is not a legacy fallback.",
 		);
 	}
 	return projectDeclaredSchema(raw, scanned.lines, scanned.markers);

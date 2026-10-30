@@ -230,6 +230,24 @@ const SCHEMA0_CHAIN_REASON =
 export const PLAN_DRIFT_RECOVERY_HELP =
 	"Legacy schema 0 behavior remains supported. 5x review migrate-schema --help and the 5x-plan-migration skill can record a schema transition. Semantic amendments still use 5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only).";
 
+export const PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP =
+	"Missing schema 1 markers are malformed input, not a legacy fallback. See 5x review migrate-schema --help and the 5x-plan-migration skill. Semantic amendments still use 5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only).";
+
+export function planDriftRecoveryHelp(
+	recordedSchema: 0 | 1,
+	reason?: string,
+): string {
+	if (recordedSchema === 0) return PLAN_DRIFT_RECOVERY_HELP;
+	if (
+		reason?.includes("PLAN_SCHEMA_INVALID") ||
+		reason?.includes("PLAN_SCHEMA_UNSUPPORTED") ||
+		reason?.includes("Missing markers are malformed input")
+	) {
+		return PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP;
+	}
+	return PLAN_DRIFT_RECOVERY_HELP;
+}
+
 export function detectPlanDrift(input: {
 	approvedPlanBytes: string;
 	approvedPlanHash: string;
@@ -329,9 +347,16 @@ export function detectPlanDrift(input: {
 function schemaDriftReason(
 	loaded: Extract<ReturnType<typeof loadPlanDocument>, { ok: false }>,
 ): string {
-	return loaded.message.includes("not a legacy fallback")
+	const base = loaded.message.includes("not a legacy fallback")
 		? `${loaded.code}: ${loaded.message}`
 		: `${loaded.code}: ${loaded.message} This is not a legacy fallback.`;
+	if (
+		base.includes("5x review migrate-schema --help") &&
+		base.includes("5x-plan-migration")
+	) {
+		return base;
+	}
+	return `${base} See 5x review migrate-schema --help and the 5x-plan-migration skill.`;
 }
 
 interface ReplayResult {
@@ -881,7 +906,10 @@ async function admitExistingBinding(
 			detail: {
 				bindingId: binding.id,
 				chainValid: amendments.ok && drift.chainValid,
-				recoveryHelp: PLAN_DRIFT_RECOVERY_HELP,
+				recoveryHelp: planDriftRecoveryHelp(
+					recorded.recordedSchema,
+					drift.reason,
+				),
 			},
 		};
 	}
@@ -1293,11 +1321,11 @@ export function planFileGovernedReason(input: {
 			binding = input.store.getImplementationBinding(run.id);
 		} catch (error) {
 			if (!isMissingRun(error)) {
-				return `Run ${run.id} has an unreadable implementation binding. Use 5x review migrate-schema for a recorded transition.`;
+				return `Run ${run.id} has an unreadable implementation binding. Use 5x review migrate-schema --help and the 5x-plan-migration skill for a recorded transition.`;
 			}
 		}
 		if (binding) {
-			return `Plan ${input.planPath} already has implementation binding ${binding.id} on run ${run.id}. Use 5x review migrate-schema.`;
+			return `Plan ${input.planPath} already has implementation binding ${binding.id} on run ${run.id}. Use 5x review migrate-schema --help and the 5x-plan-migration skill.`;
 		}
 		const assessed = assessApprovedSource({
 			recordStore: input.recordStore,
@@ -1306,10 +1334,10 @@ export function planFileGovernedReason(input: {
 			planPath: run.plan_path,
 		});
 		if (assessed.status === "error") {
-			return `${assessed.message} Use 5x review migrate-schema for a recorded transition.`;
+			return `${assessed.message} Use 5x review migrate-schema --help and the 5x-plan-migration skill for a recorded transition.`;
 		}
 		if (assessed.approval) {
-			return `Plan ${input.planPath} has a completed plan-review approval on run ${run.id}. Use 5x review migrate-schema.`;
+			return `Plan ${input.planPath} has a completed plan-review approval on run ${run.id}. Use 5x review migrate-schema --help and the 5x-plan-migration skill.`;
 		}
 	}
 	return null;

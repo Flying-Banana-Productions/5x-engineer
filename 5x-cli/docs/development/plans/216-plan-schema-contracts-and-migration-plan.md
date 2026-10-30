@@ -494,9 +494,9 @@ Change the default implementation-plan skeleton to schema 1 using the inside/out
 
 The foundation `5x` skill only points at `5x-plan-migration` for schema transitions. It does not inline the procedure. Register the new template in `BASE_SKILL_TEMPLATES`. Harness install already iterates `listBaseSkillNames()` (`src/harnesses/universal/plugin.ts`, `src/harnesses/opencode/skills/loader.ts`, `src/harnesses/cursor/skills/loader.ts`), so a registered skill is installed and uninstalled with the others. Do not special-case the name in each harness.
 
-- [ ] Update the skeleton and the four existing skills.
-- [ ] Add and register `5x-plan-migration`.
-- [ ] Keep the foundation skill to a pointer.
+- [x] Update the skeleton and the four existing skills.
+- [x] Add and register `5x-plan-migration`.
+- [x] Keep the foundation skill to a pointer.
 
 ### 4.2 Templates, runtime append, and overrides
 
@@ -518,9 +518,9 @@ Also append that same constant from `appendPlanReviewPromptContext` so native an
 
 Configured resolution stays the existing override directory used by both handlers. Tests must render a bundled template and an override fixture that omits the paragraph, for both the template command path and the invoke path, and assert the rendered prompt contains the paragraph exactly once.
 
-- [ ] Update the nine templates and the shared append.
-- [ ] Assert native and invoke parity, including a stale override.
-- [ ] Leave project override files on disk untouched.
+- [x] Update the nine templates and the shared append.
+- [x] Assert native and invoke parity, including a stale override.
+- [x] Leave project override files on disk untouched.
 
 ### 4.3 Diagnostics and acceptance
 
@@ -534,9 +534,9 @@ bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementati
 
 Upgrade coverage must show a new install receives `5x-plan-migration`, an existing install gains it through harness sync, and an overridden `5x-plan` or `5x-phase-execution` is not silently rewritten. The governance skill test must keep its current assertions and also require the authority paragraph in `5x-phase-execution` and in the rendered `author-next-phase` prompt.
 
-- [ ] Point recovery diagnostics at the migration command and skill.
-- [ ] Pass the focused acceptance suite and the new render tests.
-- [ ] Document in the migration skill that schema 1 runs and migrated runs need a CLI that records `planSchema`. Older CLIs fail closed by treating informational edits as raw drift.
+- [x] Point recovery diagnostics at the migration command and skill.
+- [x] Pass the focused acceptance suite and the new render tests.
+- [x] Document in the migration skill that schema 1 runs and migrated runs need a CLI that records `planSchema`. Older CLIs fail closed by treating informational edits as raw drift.
 
 ---
 
