@@ -373,6 +373,16 @@ describe("implementation review skill branches", () => {
 			"does not describe a reviewer snapshot, a `--snapshot` flag,",
 		);
 		expect(migration).toContain("or reviewer authority for migration.");
+		// Approved plans have a CLI path: prepare, record, checkpoint.
+		expect(migration).toContain("--prepare");
+		expect(migration).toContain(
+			"use raw `git commit`, or reopen a completed run",
+		);
+		expect(migration).toContain("A run lineage records one schema migration.");
+		// recover-plan needs an execution run; an unbound approval re-reviews.
+		expect(migration).toContain(
+			"`5x review\n  implementation recover-plan` needs an execution run and does not apply.",
+		);
 		expect(countOccurrences(migration, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(
 			1,
 		);

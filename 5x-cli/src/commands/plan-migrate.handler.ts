@@ -11,7 +11,10 @@ import { loadPlanDocument } from "../plan-schema/document.js";
 import { resolveRecordsRoot } from "../records/paths.js";
 import { planFileGovernedReason } from "../review-governance/implementation-state.js";
 import {
+	bookkeepingNotice,
 	equivalentWrapInterior,
+	type GoverningBookkeepingLine,
+	governingBookkeepingLines,
 	nonGoverningLines,
 	wrapEquivalentPlan,
 } from "../review-governance/schema-migration.js";
@@ -33,6 +36,8 @@ export async function planMigrate(input: PlanMigrateInput): Promise<{
 	path: string;
 	message: string;
 	nonGoverningText?: { line: number; text: string }[];
+	governingBookkeeping?: GoverningBookkeepingLine[];
+	notice?: string;
 }> {
 	if (input.mode !== "equivalent" && input.mode !== "selective") {
 		throw new CliError(
@@ -116,12 +121,20 @@ export async function planMigrate(input: PlanMigrateInput): Promise<{
 	}
 	const unchanged = next === raw;
 	if (write && !unchanged) writeFileSync(absolute, next);
+	const governingBookkeeping = governingBookkeepingLines(next);
+	const notice = bookkeepingNotice(
+		"equivalent",
+		governingBookkeeping,
+		"unapproved",
+	);
 	return {
 		wrote: write && !unchanged,
 		unchanged,
 		mode: "equivalent",
 		schema: 1,
 		path: absolute,
+		governingBookkeeping,
+		...(notice ? { notice } : {}),
 		message:
 			"Submit the file through ordinary plan review. This command did not approve the plan or write a governance record.",
 	};

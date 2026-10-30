@@ -71,24 +71,41 @@ as an exclusion identified by its approved line number (`L` plus the 1-based
 line), and shows the current status line inside `nonGoverningText`. It does
 not pair the two with a semantic matcher.
 
+## Choose the mode first
+
+A run lineage records one schema migration. The mode chosen now fixes the
+contract boundary for the rest of the run. Show the operator this choice
+before preparing anything:
+
+- Equivalent: every approved line stays governing. No exclusion approval.
+  Version, Status, generator comments, and Revision History stay inside the
+  contract, so later bookkeeping edits still drift.
+- Selective: bookkeeping moves outside the contract. The operator confirms
+  the exact exclusion digest.
+
+`--prepare --dry-run` and `--dry-run` report the bookkeeping lines a target
+keeps inside the contract as `governingBookkeeping`, with a `notice`. Relay
+that notice to the operator before writing.
+
 ## Equivalent and selective
 
 ```text
 5x plan migrate --plan <path> --mode equivalent|selective [--write] [--dry-run]
-5x review migrate-schema --run <id> --commit <sha> --mode equivalent|selective [--dry-run] [--confirm-exclusions <digest>]
+5x review migrate-schema --run <id> --mode equivalent|selective --prepare [--dry-run]
+5x review migrate-schema --run <id> --commit <sha> --mode equivalent|selective [--dry-run] [--confirm-exclusions <digest>] [--no-checkpoint]
 ```
 
 `5x plan migrate` rewrites an unapproved working-tree file and writes no
 governance record. It refuses when that plan already has an implementation
-binding or a completed plan-review approval, and tells the operator to use
-`5x review migrate-schema`. Equivalent `--write` wraps the file. Selective
+binding or a completed plan-review approval, and names the
+`5x review migrate-schema --prepare` command for that run. Equivalent `--write` wraps the file. Selective
 mode checks a schema 1 file the operator already edited and writes nothing
 unless `--write` is set and `--dry-run` is absent. Success says to submit the
 file through ordinary plan review. It does not approve the plan.
 
 `5x review migrate-schema` is the recorded transition for a bound execution
-run or an approved plan-review run with no execution binding. It has no
-`--snapshot` argument. It does not call admission, so it can run while
+run or an approved plan-review run with no execution binding. Both work on a
+completed run without reopening it. It has no `--snapshot` argument. It does not call admission, so it can run while
 admission would return `IMPLEMENTATION_PLAN_DRIFT`. `--commit` is a full sha.
 The target must load as schema 1.
 
@@ -102,12 +119,36 @@ computed. The operator passes that digest. The operator does not invent it.
 Authority is `operator`. There is no reviewer authority and no snapshot id.
 
 A retained governing edit is a deletion plus an insertion. Selective mode
-rejects the insertion with `PLAN_MIGRATION_GOVERNING_CHANGE` and points at
-`5x review implementation recover-plan`. Do not use migration to change an
-obligation.
+rejects the insertion with `PLAN_MIGRATION_GOVERNING_CHANGE`. Do not use
+migration to change an obligation. The remediation depends on the run:
+
+- Approved plan-review run with no execution binding: revise the plan and
+  have the revision approved through a fresh plan review. `5x review
+  implementation recover-plan` needs an execution run and does not apply.
+- Bound execution run: use the amendment workflow. For an
+  already-authorized amendment at an unfinished frontier, an operator may
+  use `5x review implementation recover-plan`.
 
 The target ledger must deep-equal the approved ledger. Migration does not
 reopen phases and does not authorize completion.
+
+## Prepare, record, checkpoint
+
+Use the CLI for every write. Do not hand-edit markers into an approved plan,
+use raw `git commit`, or reopen a completed run.
+
+1. `--prepare --dry-run` proves the candidate and writes nothing. Equivalent
+   mode proposes the mechanical wrap. Selective mode checks the schema 1 file
+   the operator already edited.
+2. `--prepare` writes the equivalent wrap, proves it, and commits only the
+   plan file. A rejected proof writes nothing. It prints the full sha and the
+   next commands. Repeating it is a no-op. It records nothing.
+3. `--commit <sha> --dry-run`, then `--commit <sha>` records the migration.
+   Recording authority stays here, never with `--prepare`.
+4. A successful record commits that run's records path only (`checkpoint` in
+   the result). `--no-checkpoint` leaves them uncommitted. If the checkpoint
+   fails, repeat the same command: the identical retry returns the stored
+   record and retries the checkpoint.
 
 ## Confirm the digest
 
@@ -125,7 +166,9 @@ digest stale.
 ## Error codes
 
 - `PLAN_MIGRATION_NOT_EQUIVALENT` — equivalent mode saw an exclusion or insertion.
-- `PLAN_MIGRATION_GOVERNING_CHANGE` — selective mode saw an added governing line. Use `5x review implementation recover-plan` for that change.
+- `PLAN_MIGRATION_GOVERNING_CHANGE` — selective mode saw an added governing line, or the ledger differs. Follow the run-specific remediation above.
+- `PLAN_MIGRATION_COMMIT_FAILED` — `--prepare` wrote the plan but could not commit it. Fix the failure (for example a hook), then repeat `--prepare`.
+- `PLAN_MIGRATION_CHECKPOINT_FAILED` — the migration is recorded but its records are not committed. Repeat the same command, or pass `--no-checkpoint` and checkpoint the records another way.
 - `PLAN_MIGRATION_STALE` — the confirmation digest does not match the current proposal. Writes nothing. Repeat the dry-run.
 - `PLAN_MIGRATION_CONFLICT` — a different proposal after a recorded migration, or a second migration on a schema 1 binding or an already migrated lineage. Writes nothing. An identical completed retry returns the stored record and does not write again.
 - `PLAN_SCHEMA_INVALID` / `PLAN_SCHEMA_UNSUPPORTED` — the target is not valid schema 1, including missing markers on a run whose records say schema 1. Not a legacy fallback.

@@ -24,7 +24,6 @@ import {
 	deliveryLedgersEqual,
 	detectPlanDrift,
 	hashPlanBytes,
-	PLAN_DRIFT_RECOVERY_HELP,
 	resolveRecordedPlanSchema,
 } from "../../../src/review-governance/implementation-state.js";
 import {
@@ -33,7 +32,10 @@ import {
 	diffPlanSchemaMigration,
 	type ExecutePlanSchemaMigrationInput,
 	executePlanSchemaMigration,
+	governingBookkeepingLines,
+	migrationGoverningChangeHelp,
 	planSchemaProposalDigest,
+	preparePlanSchemaMigration,
 	wrapEquivalentPlan,
 } from "../../../src/review-governance/schema-migration.js";
 
@@ -488,9 +490,24 @@ describe("plan schema migration", () => {
 			runMigration(ctx, approved, edited, { mode: "selective", dryRun: true }),
 		);
 		expect(governing.code).toBe("PLAN_MIGRATION_GOVERNING_CHANGE");
-		expect(governing.message).toContain(PLAN_DRIFT_RECOVERY_HELP);
+		expect(governing.message).toContain(
+			migrationGoverningChangeHelp("execution"),
+		);
 		expect(governing.message).toContain("recover-plan");
 		expect(migrationCount(ctx)).toBe(0);
+		// recover-plan needs an execution run. An unbound approval must not be
+		// pointed at it.
+		const unbound = caught(() =>
+			runMigration(ctx, approved, edited, {
+				mode: "selective",
+				dryRun: true,
+				subject: subjectFor(approved, { kind: "source" }),
+			}),
+		);
+		expect(unbound.code).toBe("PLAN_MIGRATION_GOVERNING_CHANGE");
+		expect(unbound.message).toContain(migrationGoverningChangeHelp("source"));
+		expect(unbound.message).toContain("fresh plan review");
+		expect(unbound.message).not.toContain("recover-plan --help");
 		const wrapped = wrapEquivalentPlan(approved);
 		const mismatched = subjectFor(approved);
 		mismatched.ledger = {
@@ -1294,5 +1311,196 @@ describe("schema migration expectedKeys snapshot", () => {
 						"schema-migration",
 				),
 		).toBe(false);
+	});
+});
+
+describe("migration preparation", () => {
+	function fakeRepo(approved: string, worktree = approved) {
+		const commits = new Map<string, string>([[APPROVED_COMMIT, approved]]);
+		let file: string | null = worktree;
+		let head = APPROVED_COMMIT;
+		let writes = 0;
+		return {
+			commits,
+			get file() {
+				return file;
+			},
+			get writes() {
+				return writes;
+			},
+			deps: {
+				planPath: PLAN_PATH,
+				readPlanAtCommit: async (commit: string) => commits.get(commit) ?? null,
+				readPlanFile: () => file,
+				writePlanFile: (bytes: string) => {
+					writes += 1;
+					file = bytes;
+				},
+				commitPlanFile: async () => {
+					if (file === commits.get(head)) {
+						return { commit: head, committed: false };
+					}
+					head = String(commits.size).padStart(40, "d");
+					commits.set(head, file ?? "");
+					return { commit: head, committed: true };
+				},
+			},
+		};
+	}
+
+	test("equivalent dry run proves the wrap and writes nothing", async () => {
+		const ctx = setup();
+		const markdown = plan(true);
+		putSource(ctx, "source", markdown);
+		const repo = fakeRepo(markdown);
+		const result = await preparePlanSchemaMigration(
+			{ runId: "source", mode: "equivalent", dryRun: true },
+			{ ...ctx, origin: ORIGIN, ...repo.deps },
+		);
+		expect(result.dryRun).toBe(true);
+		expect(result.commit).toBeNull();
+		expect(result.targetChanged).toBe(true);
+		expect(result.exclusions).toEqual([]);
+		expect(result.completionAuthorized).toBe(false);
+		expect(result.governingBookkeeping.map((line) => line.text)).toEqual([
+			"**Status:** Draft",
+		]);
+		expect(result.notice).toContain("cannot be revised later");
+		expect(result.notice).toContain("--mode selective");
+		expect(repo.writes).toBe(0);
+		expect(repo.file).toBe(markdown);
+		expect(migrationCount(ctx, "source")).toBe(0);
+	});
+
+	test("equivalent preparation commits a target that records with the same digest", async () => {
+		const ctx = setup();
+		const markdown = plan(false);
+		putSource(ctx, "source", markdown);
+		const repo = fakeRepo(markdown);
+		const deps = { ...ctx, origin: ORIGIN, ...repo.deps };
+		const prepared = await preparePlanSchemaMigration(
+			{ runId: "source", mode: "equivalent" },
+			deps,
+		);
+		expect(prepared.committed).toBe(true);
+		expect(prepared.recorded).toBe(false);
+		expect(repo.file).toBe(wrapEquivalentPlan(markdown));
+		expect(prepared.governingBookkeeping).toEqual([]);
+		expect(prepared.notice).toBeUndefined();
+		const commit = prepared.commit;
+		if (!commit) throw new Error("missing commit");
+		expect(prepared.next.at(-1)).toContain(`--commit ${commit}`);
+		expect(migrationCount(ctx, "source")).toBe(0);
+		const recorded = await applyPlanSchemaMigration(
+			{ runId: "source", commit, mode: "equivalent" },
+			{
+				...ctx,
+				origin: ORIGIN,
+				resolveCommit: async (sha) => sha,
+				readPlanAtCommit: repo.deps.readPlanAtCommit,
+				readWorktree: () => ({ bytes: null, require: false }),
+			},
+		);
+		expect(recorded.created).toBe(true);
+		expect(recorded.proposalDigest).toBe(prepared.proposalDigest);
+		expect(recorded.authority).toBe("verified_equivalent");
+		const again = await preparePlanSchemaMigration(
+			{ runId: "source", mode: "equivalent" },
+			deps,
+		);
+		expect(again.committed).toBe(false);
+		expect(again.targetChanged).toBe(false);
+		expect(again.recorded).toBe(true);
+		expect(again.commit).toBe(commit);
+		expect(migrationCount(ctx, "source")).toBe(1);
+	});
+
+	test("a governing edit fails the proof before the file is written", async () => {
+		const ctx = setup();
+		const markdown = plan(false);
+		putSource(ctx, "source", markdown);
+		const repo = fakeRepo(
+			markdown,
+			markdown.replace("Bind execution", "Bind later"),
+		);
+		const refused = await preparePlanSchemaMigration(
+			{ runId: "source", mode: "equivalent" },
+			{ ...ctx, origin: ORIGIN, ...repo.deps },
+		).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(refused).toBeInstanceOf(CliError);
+		expect((refused as CliError).code).toBe("PLAN_MIGRATION_NOT_EQUIVALENT");
+		expect(repo.writes).toBe(0);
+		expect(repo.commits.size).toBe(1);
+	});
+
+	test("selective preparation requires a file the operator already edited", async () => {
+		const ctx = setup();
+		const markdown = plan(true);
+		putSource(ctx, "source", markdown);
+		const unedited = fakeRepo(markdown);
+		const refused = await preparePlanSchemaMigration(
+			{ runId: "source", mode: "selective" },
+			{ ...ctx, origin: ORIGIN, ...unedited.deps },
+		).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect((refused as CliError).code).toBe("PLAN_SCHEMA_INVALID");
+		expect(unedited.commits.size).toBe(1);
+		const edited = fakeRepo(markdown);
+		edited.deps.writePlanFile(selectiveTarget(markdown));
+		const prepared = await preparePlanSchemaMigration(
+			{ runId: "source", mode: "selective" },
+			{ ...ctx, origin: ORIGIN, ...edited.deps },
+		);
+		expect(prepared.committed).toBe(true);
+		expect(prepared.targetChanged).toBe(false);
+		expect(prepared.exclusions.map((entry) => entry.approvedText)).toEqual([
+			"**Status:** Draft",
+		]);
+		expect(prepared.governingBookkeeping).toEqual([]);
+		expect(prepared.next.at(-1)).toContain(
+			`--confirm-exclusions ${prepared.proposalDigest}`,
+		);
+	});
+});
+
+describe("governing bookkeeping detection", () => {
+	test("reports Version, Status, generator comments, and the Revision History section", () => {
+		const raw = wrapEquivalentPlan(`# Plan
+
+**Version:** 1.2
+- **Status:** Approved
+<!-- generated by planner -->
+
+## Phase 1: Work
+
+- [ ] Do work
+
+## Revision History
+
+- 1.1: drafted
+- 1.2: approved
+
+## Appendix
+
+Kept governing.
+`);
+		expect(governingBookkeepingLines(raw).map((line) => line.text)).toEqual([
+			"**Version:** 1.2",
+			"- **Status:** Approved",
+			"<!-- generated by planner -->",
+			"## Revision History",
+			"- 1.1: drafted",
+			"- 1.2: approved",
+		]);
+		expect(governingBookkeepingLines(raw)[0]?.line).toBe(5);
+	});
+
+	test("lines outside the contract are not reported", () => {
+		expect(governingBookkeepingLines(selectiveTarget(plan(true)))).toEqual([]);
 	});
 });

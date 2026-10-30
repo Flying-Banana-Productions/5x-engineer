@@ -1298,6 +1298,10 @@ export interface SchemaMigrationSubject {
 	migrations: PlanSchemaMigrationPayload[];
 }
 
+function preparedMigrationHint(runId: string): string {
+	return `Prepare the schema 1 target with 5x review migrate-schema --run ${runId} --mode equivalent|selective --prepare --dry-run, then follow the 5x-plan-migration skill.`;
+}
+
 /** Null when this plan file has no binding and no completed approval. */
 export function planFileGovernedReason(input: {
 	recordStore: RecordStore;
@@ -1318,7 +1322,7 @@ export function planFileGovernedReason(input: {
 			}
 		}
 		if (binding) {
-			return `Plan ${input.planPath} already has implementation binding ${binding.id} on run ${run.id}. Use 5x review migrate-schema --help and the 5x-plan-migration skill.`;
+			return `Plan ${input.planPath} already has implementation binding ${binding.id} on run ${run.id}. ${preparedMigrationHint(run.id)}`;
 		}
 		const assessed = assessApprovedSource({
 			recordStore: input.recordStore,
@@ -1330,7 +1334,7 @@ export function planFileGovernedReason(input: {
 			return `${assessed.message} Use 5x review migrate-schema --help and the 5x-plan-migration skill for a recorded transition.`;
 		}
 		if (assessed.approval) {
-			return `Plan ${input.planPath} has a completed plan-review approval on run ${run.id}. Use 5x review migrate-schema --help and the 5x-plan-migration skill.`;
+			return `Plan ${input.planPath} has a completed plan-review approval on run ${run.id}. ${preparedMigrationHint(run.id)}`;
 		}
 	}
 	return null;

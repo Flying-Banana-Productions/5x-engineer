@@ -5,7 +5,8 @@
  * confirms an operator exclusion digest. There is no reviewer snapshot.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join, posix } from "node:path";
 import type { ReviewBudgetCommandContext } from "../commands/review-budget-context.js";
 import { createReviewBudgetId } from "../control-plane/ids.js";
 import type { RecordStore } from "../control-plane/record-store.js";
@@ -18,6 +19,7 @@ import {
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import { planSlugFromPath } from "../paths.js";
 import { loadPlanDocument } from "../plan-schema/document.js";
 import {
 	decodePlanSchemaMigrationPayload,
@@ -29,11 +31,11 @@ import {
 	planSchemaMigrationStepKey,
 } from "../review-budget/record-lines.js";
 import type { ParsedDeliveryBudget } from "../review-budget/types.js";
+import { subprocess } from "../utils/subprocess.js";
 import { resolveCodeCommit, workdirCodeDiffGit } from "./code-diff.js";
 import {
 	deliveryLedgersEqual,
 	hashPlanBytes,
-	PLAN_DRIFT_RECOVERY_HELP,
 	readSchemaMigrationSubject,
 	type SchemaMigrationSubject,
 	showPlanAtCommit,
@@ -107,6 +109,95 @@ export function nonGoverningLines(
 	return splitRawLines(raw).filter(
 		(line) => !governingLineNumbers.has(line.line),
 	);
+}
+
+/**
+ * Remediation for a governing change, by where the migration would be
+ * recorded. recover-plan needs an execution run, so an unbound approval
+ * must not be pointed at it.
+ */
+export function migrationGoverningChangeHelp(
+	kind: SchemaMigrationSubject["kind"],
+): string {
+	if (kind === "source") {
+		return "Migration cannot change an obligation. This approved plan-review run has no execution binding, so 5x review implementation recover-plan does not apply. Revise the plan and have the revision approved through a fresh plan review.";
+	}
+	return "Migration cannot change an obligation. Use the amendment workflow (an accepted authorize_amendment decision, then plan re-review). For an already-authorized amendment at an unfinished frontier, an operator may use 5x review implementation recover-plan --help.";
+}
+
+export interface GoverningBookkeepingLine {
+	line: number;
+	text: string;
+}
+
+const BOOKKEEPING_FIELD =
+	/^\s*(?:[-*]\s+)?\*\*(?:Version|Status)(?:\s*:\*\*|\*\*\s*:)/iu;
+const GENERATOR_COMMENT = /^\s*<!--.*-->\s*$/u;
+const REVISION_HISTORY = /^(#{1,6})\s+Revision History\s*$/iu;
+const HEADING = /^(#{1,6})\s/u;
+
+/**
+ * Bookkeeping lines (Version, Status, generator comments, Revision History)
+ * that a schema 1 file keeps inside the contract. Advisory output only; it
+ * does not enter the proposal digest or the record.
+ */
+export function governingBookkeepingLines(
+	targetBytes: string,
+): GoverningBookkeepingLine[] {
+	const loaded = loadPlanDocument(targetBytes, 1);
+	if (!loaded.ok) return [];
+	const found: GoverningBookkeepingLine[] = [];
+	let historyLevel: number | null = null;
+	for (const location of loaded.document.governingLineLocations) {
+		const heading = HEADING.exec(location.text);
+		if (
+			heading?.[1] &&
+			historyLevel !== null &&
+			heading[1].length <= historyLevel
+		) {
+			historyLevel = null;
+		}
+		const history = REVISION_HISTORY.exec(location.text);
+		if (history?.[1]) historyLevel = history[1].length;
+		if (location.text.trim() === "") continue;
+		if (
+			historyLevel !== null ||
+			BOOKKEEPING_FIELD.test(location.text) ||
+			GENERATOR_COMMENT.test(location.text)
+		) {
+			found.push({ line: location.lineNumber, text: location.text });
+		}
+	}
+	return found;
+}
+
+export function bookkeepingNotice(
+	mode: PlanSchemaMigrationMode,
+	lines: readonly GoverningBookkeepingLine[],
+	stage: "approved" | "unapproved" = "approved",
+): string | undefined {
+	if (lines.length === 0) return undefined;
+	if (stage === "unapproved") {
+		return "These bookkeeping lines stay inside the contract. Once approved, a later edit to any of them is governing drift and needs an approved amendment. Move them outside the contract before review to avoid that.";
+	}
+	const notice =
+		"These bookkeeping lines stay inside the contract. A later edit to any of them is governing drift and needs an approved amendment. A run records one schema migration, so this boundary cannot be revised later.";
+	return mode === "equivalent"
+		? `${notice} Use --mode selective to move them outside the contract.`
+		: notice;
+}
+
+function withBookkeeping<T extends object>(
+	view: T,
+	mode: PlanSchemaMigrationMode,
+	targetBytes: string,
+): T & {
+	governingBookkeeping: GoverningBookkeepingLine[];
+	notice?: string;
+} {
+	const governingBookkeeping = governingBookkeepingLines(targetBytes);
+	const notice = bookkeepingNotice(mode, governingBookkeeping);
+	return { ...view, governingBookkeeping, ...(notice ? { notice } : {}) };
 }
 
 export function diffPlanSchemaMigration(input: {
@@ -289,7 +380,7 @@ export function executePlanSchemaMigration(
 	) {
 		throw new CliError(
 			"PLAN_MIGRATION_GOVERNING_CHANGE",
-			`The target governing ledger does not equal the approved ledger. ${PLAN_DRIFT_RECOVERY_HELP}`,
+			`The target governing ledger does not equal the approved ledger. ${migrationGoverningChangeHelp(input.subject.kind)}`,
 		);
 	}
 	const authority = resolveAuthority(input, diff, proposalDigest);
@@ -456,7 +547,7 @@ function resolveAuthority(
 	if (diff.insertions.length > 0) {
 		throw new CliError(
 			"PLAN_MIGRATION_GOVERNING_CHANGE",
-			`Selective migration cannot add or edit a governing line. ${PLAN_DRIFT_RECOVERY_HELP}`,
+			`Selective migration cannot add or edit a governing line. ${migrationGoverningChangeHelp(input.subject.kind)}`,
 		);
 	}
 	if (diff.exclusions.length === 0) {
@@ -517,11 +608,7 @@ export async function applyPlanSchemaMigration(
 			require: boolean;
 		};
 	},
-): Promise<
-	Omit<PlanSchemaMigrationView, "migration"> & {
-		migration?: Omit<PlanSchemaMigrationPayload, "authorizedPlanBytes">;
-	}
-> {
+): Promise<PlanSchemaMigrationOutput> {
 	if (input.mode !== "equivalent" && input.mode !== "selective") {
 		throw new CliError(
 			"INVALID_ARGS",
@@ -582,37 +669,348 @@ export async function applyPlanSchemaMigration(
 			origin: deps.origin,
 		},
 	);
-	return presentMigration(result);
+	return withBookkeeping(presentMigration(result), input.mode, targetBytes);
+}
+
+export type PlanSchemaMigrationOutput = Omit<
+	PlanSchemaMigrationView,
+	"migration"
+> & {
+	migration?: Omit<PlanSchemaMigrationPayload, "authorizedPlanBytes">;
+	governingBookkeeping: GoverningBookkeepingLine[];
+	notice?: string;
+};
+
+export interface PlanSchemaMigrationPreparation
+	extends Omit<PlanSchemaMigrationOutput, "created" | "migration"> {
+	prepare: true;
+	mode: PlanSchemaMigrationMode;
+	planPath: string;
+	/** The working-tree plan differed from the candidate before preparation. */
+	targetChanged: boolean;
+	/** Full sha whose plan bytes the proof ran on. Null on a dry run. */
+	commit: string | null;
+	committed: boolean;
+	/** A migration with this proposal is already recorded. */
+	recorded: boolean;
+	next: string[];
+}
+
+/**
+ * Prepare the schema 1 target for a recorded migration. Equivalent mode
+ * writes the mechanical wrap; selective mode takes the file the operator
+ * already edited. The proof runs before anything is written, then again on
+ * the committed bytes. Recording authority stays with --commit.
+ */
+export async function preparePlanSchemaMigration(
+	input: { runId: string; mode: string; dryRun?: boolean },
+	deps: {
+		recordStore: RecordStore;
+		store: ReviewBudgetStore;
+		origin: RecordOrigin;
+		planPath: string;
+		readPlanAtCommit: (commit: string) => Promise<string | null>;
+		readPlanFile: () => string | null;
+		writePlanFile: (bytes: string) => void;
+		commitPlanFile: (
+			message: string,
+		) => Promise<{ commit: string; committed: boolean }>;
+	},
+): Promise<PlanSchemaMigrationPreparation> {
+	if (input.mode !== "equivalent" && input.mode !== "selective") {
+		throw new CliError(
+			"INVALID_ARGS",
+			"--mode must be equivalent or selective.",
+		);
+	}
+	const mode: PlanSchemaMigrationMode = input.mode;
+	if (!deps.recordStore.getRun(input.runId)) {
+		throw new CliError(
+			"RUN_NOT_FOUND",
+			`Run ${input.runId} was not found. Use 5x plan migrate for an unapproved plan file.`,
+		);
+	}
+	const expectedKeys = capturePlanSchemaMigrationExpectedKeys(
+		deps.recordStore,
+		input.runId,
+	);
+	const subjectResult = await readSchemaMigrationSubject({
+		store: deps.store,
+		recordStore: deps.recordStore,
+		runId: input.runId,
+		readPlanAtCommit: deps.readPlanAtCommit,
+	});
+	if (!subjectResult.ok) {
+		throw new CliError(subjectResult.code, subjectResult.message);
+	}
+	const subject = subjectResult.subject;
+	const current = deps.readPlanFile();
+	if (current === null) {
+		throw new CliError(
+			"PLAN_NOT_FOUND",
+			`Plan file not found: ${deps.planPath}. A missing file is not an empty plan.`,
+		);
+	}
+	const target = prepareTarget(mode, current);
+	const prove = (targetBytes: string) =>
+		executePlanSchemaMigration(
+			{
+				mode,
+				dryRun: true,
+				// Dry runs never build a payload, so no commit is needed yet.
+				afterCommit: "",
+				targetBytes,
+				worktreeBytes: null,
+				requireWorktreeMatch: false,
+				subject,
+				expectedKeys,
+			},
+			{
+				recordStore: deps.recordStore,
+				store: deps.store,
+				origin: deps.origin,
+			},
+		);
+	let proof = prove(target);
+	let commit: string | null = null;
+	let committed = false;
+	let provedBytes = target;
+	if (!input.dryRun) {
+		if (target !== current) deps.writePlanFile(target);
+		const result = await deps.commitPlanFile(
+			`5x: prepare plan schema 1 migration (${mode}) for ${input.runId}`,
+		);
+		commit = result.commit;
+		committed = result.committed;
+		const committedBytes = await deps.readPlanAtCommit(commit);
+		if (committedBytes === null) {
+			throw new CliError(
+				"IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
+				`Plan bytes at ${commit} are unavailable after preparation.`,
+			);
+		}
+		// A commit hook may rewrite the file. Prove the bytes git holds.
+		if (committedBytes !== target) {
+			proof = prove(committedBytes);
+			provedBytes = committedBytes;
+		}
+	}
+	const { created: _created, migration, ...view } = presentMigration(proof);
+	const recordCommand = [
+		"5x review migrate-schema",
+		`--run ${input.runId}`,
+		`--commit ${commit ?? "<sha>"}`,
+		`--mode ${mode}`,
+	];
+	const confirm =
+		mode === "selective"
+			? [`--confirm-exclusions ${proof.proposalDigest}`]
+			: [];
+	const next = input.dryRun
+		? [`5x review migrate-schema --run ${input.runId} --mode ${mode} --prepare`]
+		: [
+				[...recordCommand, "--dry-run"].join(" "),
+				[...recordCommand, ...confirm].join(" "),
+			];
+	return withBookkeeping(
+		{
+			...view,
+			dryRun: Boolean(input.dryRun),
+			prepare: true as const,
+			mode,
+			planPath: deps.planPath,
+			targetChanged: target !== current,
+			commit,
+			committed,
+			recorded: migration !== undefined,
+			next,
+		},
+		mode,
+		provedBytes,
+	);
+}
+
+function prepareTarget(mode: PlanSchemaMigrationMode, current: string): string {
+	const loaded = loadPlanDocument(current, "file");
+	const schema1 = loaded.ok && loaded.document.schema === 1;
+	if (mode === "selective") {
+		if (!schema1) {
+			throw new CliError(
+				loaded.ok ? "PLAN_SCHEMA_INVALID" : loaded.code,
+				`${loaded.ok ? "The plan file is not schema 1." : loaded.message} Selective preparation checks a schema 1 file the operator already edited: put bookkeeping outside the contract markers first, or use --mode equivalent.`,
+			);
+		}
+		return current;
+	}
+	if (equivalentWrapInterior(current) !== null) return current;
+	if (schema1) {
+		throw new CliError(
+			"PLAN_MIGRATION_NOT_EQUIVALENT",
+			"Equivalent mode wraps an unversioned plan. This file is already schema 1 and is not the mechanical contract wrap. Use --mode selective.",
+		);
+	}
+	return wrapEquivalentPlan(current);
+}
+
+export interface MigrationRecordCheckpoint {
+	committed: boolean;
+	commit: string | null;
+	path: string;
 }
 
 export async function migratePlanSchema(
 	input: {
 		runId: string;
-		commit: string;
+		commit?: string;
 		mode: string;
 		dryRun?: boolean;
 		confirmExclusions?: string;
+		prepare?: boolean;
+		checkpoint?: boolean;
 	},
 	ctx: ReviewBudgetCommandContext,
 ): Promise<
-	Omit<PlanSchemaMigrationView, "migration"> & {
-		migration?: Omit<PlanSchemaMigrationPayload, "authorizedPlanBytes">;
-	}
+	| PlanSchemaMigrationPreparation
+	| (PlanSchemaMigrationOutput & { checkpoint?: MigrationRecordCheckpoint })
 > {
 	const workdir = ctx.executionContext.effectiveWorkingDirectory;
 	const planPath = ctx.executionContext.run.plan_path;
+	const readPlanAtCommit = (commit: string) =>
+		showPlanAtCommit(workdir, commit, planPath, {
+			repoRoot: ctx.executionContext.controlPlaneRoot,
+		});
+	const origin = ctx.originFor({ kind: "human", role: "operator" });
+	if (input.prepare) {
+		if (input.commit !== undefined || input.confirmExclusions !== undefined) {
+			throw new CliError(
+				"INVALID_ARGS",
+				"--prepare creates the target commit. Pass --commit and --confirm-exclusions when recording, not when preparing.",
+			);
+		}
+		const effectivePlanPath = ctx.executionContext.effectivePlanPath;
+		return preparePlanSchemaMigration(
+			{ runId: input.runId, mode: input.mode, dryRun: input.dryRun },
+			{
+				recordStore: ctx.recordStore,
+				store: ctx.store,
+				origin,
+				planPath: effectivePlanPath,
+				readPlanAtCommit,
+				readPlanFile: () =>
+					existsSync(effectivePlanPath)
+						? readFileSync(effectivePlanPath, "utf8")
+						: null,
+				writePlanFile: (bytes) => writeFileSync(effectivePlanPath, bytes),
+				commitPlanFile: (message) =>
+					commitOnly(workdir, effectivePlanPath, message, {
+						code: "PLAN_MIGRATION_COMMIT_FAILED",
+						failure:
+							"The prepared plan is written but not committed. Fix the failure, then repeat --prepare.",
+					}).then(async (result) => ({
+						committed: result.committed,
+						commit: result.commit ?? (await headCommit(workdir)),
+					})),
+			},
+		);
+	}
+	if (input.commit === undefined) {
+		throw new CliError(
+			"INVALID_ARGS",
+			"--commit is required to record a migration. Use --prepare to create the schema 1 target commit.",
+		);
+	}
 	const git = workdirCodeDiffGit(workdir);
-	return applyPlanSchemaMigration(input, {
-		recordStore: ctx.recordStore,
-		store: ctx.store,
-		origin: ctx.originFor({ kind: "human", role: "operator" }),
-		resolveCommit: (commit) => resolveCodeCommit(git, commit),
-		readPlanAtCommit: (commit) =>
-			showPlanAtCommit(workdir, commit, planPath, {
-				repoRoot: ctx.executionContext.controlPlaneRoot,
-			}),
-		readWorktree: (kind) => worktreeMatch(ctx, kind),
-	});
+	const result = await applyPlanSchemaMigration(
+		{
+			runId: input.runId,
+			commit: input.commit,
+			mode: input.mode,
+			dryRun: input.dryRun,
+			confirmExclusions: input.confirmExclusions,
+		},
+		{
+			recordStore: ctx.recordStore,
+			store: ctx.store,
+			origin,
+			resolveCommit: (commit) => resolveCodeCommit(git, commit),
+			readPlanAtCommit,
+			readWorktree: (kind) => worktreeMatch(ctx, kind),
+		},
+	);
+	if (input.dryRun || input.checkpoint === false || !result.migration) {
+		return result;
+	}
+	return {
+		...result,
+		checkpoint: await checkpointMigrationRecords(ctx, input.runId),
+	};
+}
+
+/**
+ * Commit this run's records after a recorded migration. Scoped to the run's
+ * records path, so it works on a completed run without reopening it or
+ * admitting any other change. An identical retry re-attempts the checkpoint.
+ */
+async function checkpointMigrationRecords(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+): Promise<MigrationRecordCheckpoint> {
+	const slug = planSlugFromPath(ctx.executionContext.run.plan_path);
+	const path = posix.join(ctx.recordsRelPath, slug, runId);
+	if (!existsSync(join(ctx.recordsAbsPath, slug, runId))) {
+		return { committed: false, commit: null, path };
+	}
+	const result = await commitOnly(
+		ctx.executionContext.effectiveWorkingDirectory,
+		path,
+		`5x: record plan schema migration for ${runId}`,
+		{
+			code: "PLAN_MIGRATION_CHECKPOINT_FAILED",
+			failure: `The migration is recorded but ${path} is not committed. Fix the failure, then repeat the same command: the identical retry returns the stored record and retries the checkpoint. Pass --no-checkpoint to commit the records yourself.`,
+		},
+	);
+	return { ...result, path };
+}
+
+/** Stage one path and commit only it. A path with no change is a no-op. */
+async function commitOnly(
+	workdir: string,
+	path: string,
+	message: string,
+	onError: { code: string; failure: string },
+): Promise<{ committed: boolean; commit: string | null }> {
+	const fail = (detail: { stdout: string; stderr: string }) =>
+		new CliError(
+			onError.code,
+			`${onError.failure} ${(detail.stderr || detail.stdout).trim()}`.trim(),
+		);
+	const staged = await subprocess.execGit(["add", "--", path], workdir);
+	if (staged.exitCode !== 0) throw fail(staged);
+	const pending = await subprocess.execGit(
+		["diff", "--cached", "--name-only", "-z", "--", path],
+		workdir,
+	);
+	if (pending.exitCode !== 0) throw fail(pending);
+	if (pending.stdout.split("\0").filter(Boolean).length === 0) {
+		return { committed: false, commit: null };
+	}
+	const commit = await subprocess.execGit(
+		["commit", "--only", "-m", message, "--", path],
+		workdir,
+	);
+	if (commit.exitCode !== 0) throw fail(commit);
+	return { committed: true, commit: await headCommit(workdir) };
+}
+
+async function headCommit(workdir: string): Promise<string> {
+	const head = await subprocess.execGit(["rev-parse", "HEAD"], workdir);
+	if (head.exitCode !== 0) {
+		throw new CliError(
+			"PLAN_MIGRATION_COMMIT_FAILED",
+			`git rev-parse HEAD failed: ${(head.stderr || head.stdout).trim()}`,
+		);
+	}
+	return head.stdout.trim();
 }
 
 function worktreeMatch(

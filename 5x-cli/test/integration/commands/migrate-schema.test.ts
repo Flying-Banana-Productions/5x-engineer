@@ -525,6 +525,129 @@ describe("5x review migrate-schema", () => {
 	);
 
 	test(
+		"migrates a completed approval end to end through supported commands",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await startRun(dir, planPath);
+				await approvePlan(dir, sourceId);
+				await completeRun(dir, sourceId);
+				const approvalHead = git(dir, "rev-parse", "HEAD");
+				const migrate = (...extra: string[]) =>
+					cli(dir, [
+						"review",
+						"migrate-schema",
+						"--run",
+						sourceId,
+						"--mode",
+						"equivalent",
+						...extra,
+					]);
+
+				// plan migrate refuses the approved plan and names the prepare path.
+				const refused = await cli(dir, [
+					"plan",
+					"migrate",
+					"--plan",
+					planPath,
+					"--mode",
+					"equivalent",
+					"--write",
+				]);
+				const refusal = parseEnvelope(refused);
+				expect(refusal.error?.code).toBe("PLAN_MIGRATION_CONFLICT");
+				expect(refusal.error?.message).toContain(
+					`migrate-schema --run ${sourceId}`,
+				);
+				expect(refusal.error?.message).toContain("--prepare");
+
+				// The preview discloses the equivalent-mode consequence and writes nothing.
+				const preview = parseEnvelope(await migrate("--prepare", "--dry-run"));
+				expect(preview.ok).toBe(true);
+				expect(preview.data?.commit).toBeNull();
+				expect(preview.data?.governingBookkeeping).toEqual([
+					expect.objectContaining({ text: STATUS }),
+				]);
+				expect(String(preview.data?.notice)).toContain(
+					"cannot be revised later",
+				);
+				expect(readFileSync(planPath, "utf8")).toBe(planMarkdown());
+				expect(git(dir, "rev-parse", "HEAD")).toBe(approvalHead);
+
+				// Prepare writes the wrap and commits only the plan file.
+				const prepared = parseEnvelope(await migrate("--prepare"));
+				expect(prepared.ok).toBe(true);
+				expect(prepared.data?.committed).toBe(true);
+				const commit = String(prepared.data?.commit);
+				expect(git(dir, "rev-parse", "HEAD")).toBe(commit);
+				expect(
+					git(dir, "diff-tree", "--no-commit-id", "--name-only", "-r", commit),
+				).toBe("docs/development/plans/governance.md");
+				expect(readFileSync(planPath, "utf8")).toContain(
+					"<!-- 5x:contract:start -->",
+				);
+				expect(prepared.data?.proposalDigest).toBe(
+					preview.data?.proposalDigest,
+				);
+				expect(migrations(dir, sourceId)).toHaveLength(0);
+				const preparedAgain = parseEnvelope(await migrate("--prepare"));
+				expect(preparedAgain.data?.committed).toBe(false);
+				expect(preparedAgain.data?.commit).toBe(commit);
+
+				// Dry-run, then record with the prepared commit.
+				const dry = parseEnvelope(
+					await migrate("--commit", commit, "--dry-run"),
+				);
+				expect(dry.data?.created).toBe(false);
+				expect(dry.data?.proposalDigest).toBe(prepared.data?.proposalDigest);
+				const recorded = parseEnvelope(await migrate("--commit", commit));
+				expect(recorded.ok).toBe(true);
+				expect(recorded.data?.created).toBe(true);
+				expect(recorded.data?.authority).toBe("verified_equivalent");
+				expect(recorded.data?.completionAuthorized).toBe(false);
+				const checkpoint = recorded.data?.checkpoint as {
+					committed: boolean;
+					commit: string;
+					path: string;
+				};
+				expect(checkpoint.committed).toBe(true);
+				expect(git(dir, "rev-parse", "HEAD")).toBe(checkpoint.commit);
+				expect(checkpoint.path).toBe(
+					`docs/development/runs/governance/${sourceId}`,
+				);
+
+				// An identical retry returns the stored record and has nothing to checkpoint.
+				const retry = parseEnvelope(await migrate("--commit", commit));
+				expect(retry.data?.created).toBe(false);
+				expect(retry.data?.checkpoint).toMatchObject({ committed: false });
+				expect(migrations(dir, sourceId)).toHaveLength(1);
+				expect(git(dir, "rev-parse", "HEAD")).toBe(checkpoint.commit);
+
+				// The run stays completed and the worktree is clean.
+				const state = parseEnvelope(
+					await cli(dir, ["run", "state", "--run", sourceId]),
+				);
+				expect(
+					(state.data?.run as { status?: string } | undefined)?.status,
+				).toBe("completed");
+				expect(git(dir, "status", "--porcelain")).toBe("");
+
+				// A clean execution run binds the migrated approval.
+				const executionId = await startRun(dir, planPath);
+				const author = await recordAuthor(dir, executionId, "1");
+				if (author.exitCode !== 0) {
+					throw new Error(`${author.stdout}\n${author.stderr}`);
+				}
+				expect(binding(dir, executionId)?.planSchema).toBe(1);
+				expect(binding(dir, executionId)?.approvedPlanCommit).toBe(commit);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 90_000 },
+	);
+
+	test(
 		"a schema 0 run that never migrates still drifts on a status edit",
 		async () => {
 			const { dir, planPath } = await initRepo();

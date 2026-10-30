@@ -285,14 +285,21 @@ export function registerReview(parent: Command) {
 	review
 		.command("migrate-schema")
 		.description(
-			"Record a schema 0 to schema 1 migration. Equivalent mode is a mechanical proof. Selective mode confirms the operator exclusion digest. There is no snapshot flag.",
+			"Record a schema 0 to schema 1 migration. Equivalent mode is a mechanical proof. Selective mode confirms the operator exclusion digest. There is no snapshot flag. Works on a completed plan-review run without reopening it.",
 		)
 		.requiredOption(
 			"--run <id>",
 			"Bound execution run or approved plan-review run",
 		)
-		.requiredOption("--commit <sha>", "Full sha of the schema 1 plan commit")
+		.option(
+			"--commit <sha>",
+			"Full sha of the schema 1 plan commit (required unless --prepare)",
+		)
 		.requiredOption("--mode <mode>", "equivalent or selective")
+		.option(
+			"--prepare",
+			"Prove the schema 1 target and commit only the plan file; records nothing. Equivalent writes the mechanical wrap; selective checks the file the operator edited",
+		)
 		.option(
 			"--dry-run",
 			"Print exclusions, non-governing text, and the digest without writing",
@@ -300,6 +307,19 @@ export function registerReview(parent: Command) {
 		.option(
 			"--confirm-exclusions <digest>",
 			"Operator confirmation of the selective exclusion digest",
+		)
+		.option(
+			"--no-checkpoint",
+			"Leave the run's records uncommitted after recording",
+		)
+		.addHelpText(
+			"after",
+			"\nFlow (equivalent mode keeps Version, Status, and Revision History governing;\n" +
+				"a run records one migration, so choose the mode before preparing):\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --prepare --dry-run\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --prepare\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --commit <sha> --dry-run\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --commit <sha>\n",
 		)
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);
@@ -311,6 +331,8 @@ export function registerReview(parent: Command) {
 						mode: opts.mode,
 						dryRun: opts.dryRun,
 						confirmExclusions: opts.confirmExclusions,
+						prepare: opts.prepare,
+						checkpoint: opts.checkpoint,
 					},
 					context,
 				),
