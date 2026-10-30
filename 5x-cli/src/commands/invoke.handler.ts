@@ -40,7 +40,10 @@ import {
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
-import { readAuthoritativeBudget } from "../plan-schema/authority.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativeBudget,
+} from "../plan-schema/authority.js";
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
@@ -577,18 +580,16 @@ export async function invokeAgent(
 			)({ runId: params.run, startDir: projectRoot }, warn);
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
-			const parsed =
-				markdown === null
-					? null
-					: (() => {
-							const loaded = readAuthoritativeBudget(markdown, "file");
-							return loaded.ok ? loaded.parsed : null;
-						})();
-			if (parsed?.ok && config.reviewBudget.mode !== "off") {
-				outputError(
-					"IMPLEMENTATION_APPROVAL_REQUIRED",
-					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
-				);
+			if (markdown !== null) {
+				const loaded = readAuthoritativeBudget(markdown, "file");
+				if (!loaded.ok) {
+					outputError(loaded.code, planSchemaCommandMessage(loaded));
+				} else if (loaded.parsed.ok && config.reviewBudget.mode !== "off") {
+					outputError(
+						"IMPLEMENTATION_APPROVAL_REQUIRED",
+						`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+					);
+				}
 			}
 		}
 		if (budgetContext) {

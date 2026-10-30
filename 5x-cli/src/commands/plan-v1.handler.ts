@@ -18,13 +18,11 @@ import {
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
-import { createWorkingTreeRecordStore } from "../control-plane/record-fs.js";
 import { parseRunJson } from "../control-plane/record-layout.js";
 import type {
 	RecordOrigin,
 	RecordRecorder,
 } from "../control-plane/record-types.js";
-import { createReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { getDb } from "../db/connection.js";
 import { type PlanRow, upsertPlan } from "../db/operations.js";
 import {
@@ -49,6 +47,7 @@ import {
 	planSchemaCommandMessage,
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
+import type { ExpectedPlanSchema } from "../plan-schema/document.js";
 import {
 	envelopeAttribution,
 	formatAttributionLines,
@@ -62,11 +61,14 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import {
+	describeBindingReadError,
 	expectedSchemaForStore,
 	planPathsIdentifySamePlan,
 } from "../review-governance/implementation-state.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
+import { RecordContextError } from "./record-context.js";
+import { createReviewBudgetContext } from "./review-budget-context.js";
 
 // ---------------------------------------------------------------------------
 // Param interface
@@ -351,41 +353,46 @@ async function loadPlanRecordAttribution(opts: {
 	return null;
 }
 
-function expectedSchemaForPlanFile(input: {
-	db: DbContext["db"];
-	projectRoot: string;
-	config: FiveXConfig;
-	planPath: string;
-}) {
-	try {
-		const active = listRuns(input.db, { limit: 10000 }).find(
-			(run) =>
-				run.status === "active" &&
-				planPathsIdentifySamePlan(run.plan_path, input.planPath),
-		);
-		if (!active) return "file" as const;
-		const records = resolveRecordsRoot({
-			recordsConfigAbs: input.config.paths.records,
-			controlPlaneRoot: input.projectRoot,
-			effectiveWorkdir: input.projectRoot,
-		});
-		const store = createReviewBudgetStore(
-			createWorkingTreeRecordStore({
-				recordsRoot: records.recordsAbsPath,
-				controlPlaneRoot: input.projectRoot,
-			}),
-		);
-		return expectedSchemaForStore(store, active.id);
-	} catch {
-		return "file" as const;
+function failPlanSchemaIdentity(error: unknown): never {
+	if (error instanceof RecordContextError) {
+		outputError(error.code, error.message, error.detail);
 	}
+	const described = describeBindingReadError(error);
+	outputError(described.code, described.message);
+}
+
+/**
+ * Active-run schema comes from that run's execution records, including a
+ * mapped worktree. No active run, and a run with no binding, stay file mode.
+ * A binding that cannot be read fails closed.
+ */
+async function expectedSchemaForPlanFile(input: {
+	dbContext: DbContext;
+	planPath: string;
+}): Promise<ExpectedPlanSchema> {
+	const active = listRuns(input.dbContext.db, { limit: 10000 }).find(
+		(run) =>
+			run.status === "active" &&
+			planPathsIdentifySamePlan(run.plan_path, input.planPath),
+	);
+	if (!active) return "file";
+	const budgetContext = await createReviewBudgetContext(
+		{
+			runId: active.id,
+			startDir: input.dbContext.projectRoot,
+			dbContext: input.dbContext,
+		},
+		() => {},
+	);
+	return expectedSchemaForStore(budgetContext.store, active.id);
 }
 
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	validateProgressSelection(params);
-	const { config, projectRoot, db } = await resolveDbContext({
+	const dbContext = await resolveDbContext({
 		migrate: false,
 	});
+	const { config, projectRoot } = dbContext;
 	if (params.ref && !(await revParseCommit(projectRoot, params.ref)))
 		outputError("INVALID_ARGUMENT", `Unknown git ref: ${params.ref}`);
 	const planPath = resolvePlanArg(params.path, config.paths.plans);
@@ -437,15 +444,13 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	}
 
 	const markdown = resolved.markdown ?? "";
-	const read = readAuthoritativePlan(
-		markdown,
-		expectedSchemaForPlanFile({
-			db,
-			projectRoot,
-			config,
-			planPath,
-		}),
-	);
+	let expected: ExpectedPlanSchema;
+	try {
+		expected = await expectedSchemaForPlanFile({ dbContext, planPath });
+	} catch (error) {
+		failPlanSchemaIdentity(error);
+	}
+	const read = readAuthoritativePlan(markdown, expected);
 	if (!read.ok) {
 		outputError(read.code, planSchemaCommandMessage(read), {
 			plan_path: planPath,
@@ -540,11 +545,12 @@ export async function planList(
 	params: PlanListParams,
 ): Promise<PlanListResult> {
 	validateProgressSelection(params);
-	const { projectRoot, config, db } =
+	const dbContext =
 		params.dbContext ??
 		(await resolveDbContext({
 			startDir: resolve(params.startDir ?? "."),
 		}));
+	const { projectRoot, config, db } = dbContext;
 	const warn =
 		params.warn ??
 		((message: string) => {
@@ -671,10 +677,8 @@ export async function planList(
 			if (resolved.markdown !== null) {
 				const read = readAuthoritativePlan(
 					resolved.markdown,
-					expectedSchemaForPlanFile({
-						db,
-						projectRoot,
-						config,
+					await expectedSchemaForPlanFile({
+						dbContext,
 						planPath: canonical,
 					}),
 				);

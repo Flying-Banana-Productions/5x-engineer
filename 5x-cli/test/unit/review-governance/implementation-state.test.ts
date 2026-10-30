@@ -39,6 +39,7 @@ import { resolvePlanImpactSpans } from "../../../src/review-governance/implement
 import {
 	detectPlanDrift,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	hashPlanBytes,
 	isImplementationAuthorTemplate,
 	mapDebtTargetToPhaseId,
@@ -1444,6 +1445,24 @@ ${plan().trimEnd()}
 		expect(invalid.reason).toContain("not a legacy fallback");
 	});
 
+	test("a binding read error does not downgrade to file mode", () => {
+		const recordStore = createMemoryRecordStore();
+		putRun(recordStore, "exec");
+		putRun(recordStore, "plain");
+		recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: implementationBindingKey("exec"),
+			payload: { kind: "implementation-binding", version: 1 },
+			createdAt: "2026-09-23 00:00:00",
+			...recordedEnvelope(ORIGIN),
+		});
+		const store = createReviewBudgetStore(recordStore);
+		expect(expectedSchemaForStore(store, "plain")).toBe("file");
+		expect(expectedSchemaForStore(store, "missing")).toBe("file");
+		expect(() => expectedSchemaForStore(store, "exec")).toThrow(TypeError);
+	});
+
 	test("historical bindings decode and the sqlite index keeps a schema 1 binding", () => {
 		const historical = bindingPayload("# Plan\n");
 		const encoded = encodeImplementationBindingPayload(historical) as Record<
@@ -1467,6 +1486,7 @@ ${plan().trimEnd()}
 		});
 		const store = createReviewBudgetStore(recordStore);
 		expect(store.getImplementationBinding("exec")?.planSchema).toBeUndefined();
+		expect(expectedSchemaForStore(store, "exec")).toBe(0);
 		putRun(recordStore, "schema1");
 		const schema1 = store.saveImplementationBinding(
 			{
@@ -1482,6 +1502,7 @@ ${plan().trimEnd()}
 		);
 		expect(schema1.payload.planSchema).toBe(1);
 		expect(schema1.payload.governingHash).toBe("sha256:governing");
+		expect(expectedSchemaForStore(store, "schema1")).toBe(1);
 		recordStore.append({
 			runId: "schema1",
 			stream: "budget",

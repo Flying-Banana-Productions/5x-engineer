@@ -37,6 +37,7 @@ import {
 } from "../review-governance/implementation.js";
 import {
 	admitAuthorTextAmendmentFromGit,
+	describeBindingReadError,
 	expectedSchemaForStore,
 	recordedPlanSchemaFromBinding,
 	verifyImplementationReviewContext,
@@ -310,8 +311,17 @@ export async function evaluatePhaseChecklist(
 				() => {},
 			);
 			expected = expectedSchemaForStore(budgetContext.store, params.run);
-		} catch {
-			expected = "file";
+		} catch (error) {
+			if (error instanceof RecordContextError) {
+				expected = "file";
+			} else {
+				const described = describeBindingReadError(error);
+				return {
+					ok: false,
+					code: described.code,
+					message: described.message,
+				};
+			}
 		}
 	}
 	const read = readAuthoritativePlan(planContent, expected);

@@ -167,6 +167,7 @@ import {
 	type ImplementationGovernanceReadiness,
 } from "../review-governance/implementation-boundary.js";
 import {
+	describeBindingReadError,
 	ensureImplementationAdmission,
 	expectedSchemaForStore,
 	isImplementationAuthorAdmission,
@@ -1578,16 +1579,38 @@ function tryDeriveGoverningReviewState(
  * Build the delivery-budget header from authoritative record lines. The
  * facade deliberately reads through (and repairs) an empty SQLite index.
  */
+function readBoundaryBudget(
+	markdown: string,
+	store: Parameters<typeof expectedSchemaForStore>[0],
+	runId: string,
+): DeliveryBudgetParseResult {
+	let expected: ReturnType<typeof expectedSchemaForStore>;
+	try {
+		expected = expectedSchemaForStore(store, runId);
+	} catch (error) {
+		const described = describeBindingReadError(error);
+		throw new RecordError(described.code, described.message);
+	}
+	const loaded = readAuthoritativeBudget(markdown, expected);
+	if (!loaded.ok) {
+		throw new RecordError(loaded.code, planSchemaCommandMessage(loaded));
+	}
+	return loaded.parsed;
+}
+
 function authoritativeBudgetOk(
 	markdown: string,
 	store: Parameters<typeof expectedSchemaForStore>[0],
 	runId: string,
 ): boolean {
-	const loaded = readAuthoritativeBudget(
-		markdown,
-		expectedSchemaForStore(store, runId),
-	);
-	return loaded.ok && loaded.parsed.ok;
+	try {
+		return readBoundaryBudget(markdown, store, runId).ok;
+	} catch (error) {
+		if (error instanceof RecordError) {
+			outputError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
 }
 
 export function buildReviewBudgetState(input: {
@@ -2826,6 +2849,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 								);
 							}
 						} catch (error) {
+							if (error instanceof CliError) throw error;
 							warn(
 								`Unable to read implementation boundary for run ${gitRecord.summary.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
 							);
@@ -3097,6 +3121,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						);
 					}
 				} catch (error) {
+					if (error instanceof CliError) throw error;
 					warn(
 						`Unable to read implementation boundary for run ${run.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
 					);
@@ -3746,13 +3771,7 @@ async function enforceImplementationBoundary(input: {
 	}
 	const store = createReviewBudgetStore(input.recordStore);
 	const parsed = planMarkdown
-		? (() => {
-				const loaded = readAuthoritativeBudget(
-					planMarkdown,
-					expectedSchemaForStore(store, input.runId),
-				);
-				return loaded.ok ? loaded.parsed : null;
-			})()
+		? readBoundaryBudget(planMarkdown, store, input.runId)
 		: null;
 	const codeEquivalentCommits =
 		headCommit && workdir
@@ -4657,8 +4676,12 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 					() => {},
 				);
 				expected = expectedSchemaForStore(budgetContext.store, runId);
-			} catch {
-				expected = "file";
+			} catch (error) {
+				if (error instanceof RecordContextError) {
+					outputError(error.code, error.message, error.detail);
+				}
+				const described = describeBindingReadError(error);
+				outputError(described.code, described.message);
 			}
 			const read = readAuthoritativePlan(markdown, expected);
 			if (!read.ok) {

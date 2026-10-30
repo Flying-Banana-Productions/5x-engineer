@@ -447,25 +447,32 @@ export function expectedSchemaForStore(
 	store: ReviewBudgetStore,
 	runId: string,
 ): ExpectedPlanSchema {
-	let binding: ImplementationBindingPayload | null;
-	try {
-		binding = store.getImplementationBinding(runId);
-	} catch {
-		return "file";
-	}
+	const binding = readImplementationBinding(store, runId);
 	if (!binding) return "file";
-	let amendments: ImplementationPlanAmendmentPayload[] = [];
-	try {
-		amendments = store.listImplementationTextAmendments(runId, binding.id);
-	} catch {
-		return binding.planSchema === 1 ? 1 : 0;
-	}
+	const amendments = store.listImplementationTextAmendments(runId, binding.id);
 	return resolveRecordedPlanSchema({
 		planSchema: binding.planSchema,
 		approvedPlanBytes: binding.approvedPlanBytes,
 		approvedPlanHash: binding.approvedPlanHash,
 		amendments,
 	});
+}
+
+/** Binding decode and store failures stay typed. Absence is not an error. */
+export function describeBindingReadError(error: unknown): {
+	code: string;
+	message: string;
+} {
+	if (error instanceof RecordStoreError) {
+		return { code: error.code, message: error.message };
+	}
+	return {
+		code: "IMPLEMENTATION_BINDING_UNREADABLE",
+		message:
+			error instanceof Error
+				? error.message
+				: "Implementation binding could not be read",
+	};
 }
 
 export type ImplementationAdmissionResult =

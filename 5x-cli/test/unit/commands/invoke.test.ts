@@ -1425,6 +1425,42 @@ describe("invoke implementation admission", () => {
 				),
 			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
 			expect(providerCalls).toBe(0);
+
+			writeFileSync(
+				planPath,
+				readFileSync(planPath, "utf8").replace(
+					"# Plan\n",
+					"# Plan\n\n<!-- 5x:bogus -->\n",
+				),
+			);
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run_admission01",
+						workdir: dir,
+						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => {
+							throw new RecordContextError(
+								"RECORDS_UNAVAILABLE",
+								"sqlite-only run has no record home",
+							);
+						},
+						createProvider: async () => {
+							providerCalls += 1;
+							throw new Error("provider should not be created");
+						},
+					},
+				),
+			).rejects.toMatchObject({
+				code: "PLAN_SCHEMA_INVALID",
+				message: expect.stringContaining("5x-plan-migration"),
+			});
+			expect(providerCalls).toBe(0);
 		} finally {
 			db?.close();
 			cleanupDir(dir);
