@@ -15,6 +15,7 @@ import {
 	deriveGateId,
 	governanceDecisionKey,
 	type ImplementationDecisionPayload,
+	implementationObservationGateId,
 	listGovernanceDecisions,
 	listImplementationDecisions,
 	type ReviewDecisionPayload,
@@ -326,15 +327,16 @@ export function reindexReviewGovernance(
 				let predecessorGateId: string | undefined;
 				let chainDepth = 0;
 				while (causes.length > 0) {
-					const gateId = deriveGateId({
+					const gateId = implementationObservationGateId({
 						runId: id,
-						snapshotId: observation.id,
-						causes,
-						...(predecessorGateId ? { predecessorGateId } : {}),
-						domain: "implementation",
 						phase: observation.phase,
 						bindingId: observation.bindingId,
 						observationId: observation.id,
+						causes,
+						...(predecessorGateId ? { predecessorGateId } : {}),
+						...(observation.revisionId !== undefined
+							? { revisionId: observation.revisionId }
+							: {}),
 					});
 					const winner = implementation.decisions.find(
 						(decision) =>

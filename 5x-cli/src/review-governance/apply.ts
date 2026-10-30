@@ -74,6 +74,8 @@ export function applyPlanReviewGovernance(input: {
 	diffContextFailure?: PlanDiffFailure;
 	governingState: GoverningReviewState;
 	mode: "advisory" | "enforced";
+	/** Changed amendment bytes withhold the final-correction shortcut. */
+	amendmentReassessment?: boolean;
 }): AppliedPlanReviewGovernance {
 	const pending = input.budgetResult.pendingSnapshot;
 	const priorSnapshots = input.snapshots.filter(
@@ -112,6 +114,7 @@ export function applyPlanReviewGovernance(input: {
 			findings: pending.findings,
 			assessments: pending.assessments,
 		},
+		...(input.amendmentReassessment ? { amendmentReassessment: true } : {}),
 	});
 	const decoratedPending: PendingBudgetSnapshot = {
 		...pending,

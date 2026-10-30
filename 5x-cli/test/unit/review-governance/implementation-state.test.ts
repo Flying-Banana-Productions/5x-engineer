@@ -1191,7 +1191,10 @@ describe("implementation execution binding", () => {
 			"Missing schema 1 markers are malformed input",
 		);
 		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain("5x-plan-migration");
-		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain("recover-plan");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"5x review implementation amend",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).not.toContain("recover-plan");
 		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
 			"Schema 1 runs and migrated runs need a CLI that records `planSchema`.",
 		);
@@ -1225,7 +1228,10 @@ describe("implementation execution binding", () => {
 			"5x review migrate-schema --help",
 		);
 		expect(PLAN_DRIFT_RECOVERY_HELP).toContain("5x-plan-migration");
-		expect(PLAN_DRIFT_RECOVERY_HELP).toContain("recover-plan");
+		expect(PLAN_DRIFT_RECOVERY_HELP).toContain(
+			"5x review implementation amend",
+		);
+		expect(PLAN_DRIFT_RECOVERY_HELP).not.toContain("recover-plan");
 		expect(PLAN_DRIFT_RECOVERY_HELP).toContain("Legacy schema 0");
 		const markdown = plan();
 		const ctx = setup();
@@ -1243,7 +1249,7 @@ describe("implementation execution binding", () => {
 		expect(drifted).toMatchObject({
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_DRIFT",
-			detail: { recoveryHelp: PLAN_DRIFT_RECOVERY_HELP },
+			detail: { amendmentHelp: PLAN_DRIFT_RECOVERY_HELP },
 		});
 	});
 
@@ -1284,7 +1290,7 @@ ${plan().trimEnd()}
 		expect(governing).toMatchObject({
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_DRIFT",
-			detail: { recoveryHelp: PLAN_SCHEMA1_DRIFT_RECOVERY_HELP },
+			detail: { amendmentHelp: PLAN_SCHEMA1_DRIFT_RECOVERY_HELP },
 		});
 	});
 

@@ -1,4 +1,10 @@
-import type { BoundaryChangeLabel, ReviewerVerdict } from "../protocol.js";
+import type {
+	AmendmentClaimEdit,
+	AmendmentPreservedPhase,
+	AmendmentResolvedFinding,
+	BoundaryChangeLabel,
+	ReviewerVerdict,
+} from "../protocol.js";
 import type { TextAmendmentGuard } from "../review-governance/plan-amendment.js";
 import type {
 	ClosureDiagnostic,
@@ -30,6 +36,7 @@ export type BudgetRecordKind =
 	| "implementation-text-amendment"
 	| "implementation-plan-recovery"
 	| "plan-schema-migration"
+	| "implementation-plan-amendment"
 	| "implementation-review-context"
 	| "implementation-review"
 	| "implementation-correction-attempt"
@@ -336,6 +343,8 @@ export interface ImplementationTextAmendmentPayload {
 	beforeBlobHash: string;
 	afterBlobHash: string;
 	authorizedPlanBytes: string;
+	/** Omitted on historical lines. The fold attributes those causally. */
+	revisionId?: string;
 	createdAt: string;
 }
 
@@ -359,6 +368,43 @@ export interface ImplementationPlanRecoveryPayload
 export type ImplementationPlanAmendmentPayload =
 	| ImplementationTextAmendmentPayload
 	| ImplementationPlanRecoveryPayload;
+
+/** Journal identity persisted on a semantic amendment. Not a SQLite row id. */
+export interface PortableJournalReference {
+	idempotencyKey: string;
+}
+
+/**
+ * One registered semantic plan amendment. The binding id stays stable.
+ * This kind is not a plan snapshot and does not reset B0.
+ */
+export interface ImplementationSemanticAmendmentPayload {
+	kind: "implementation-plan-amendment";
+	version: typeof IMPLEMENTATION_STATE_VERSION;
+	id: string;
+	bindingId: string;
+	executionRunId: string;
+	predecessorRevisionId: string;
+	authorizationId: string;
+	humanStep: PortableJournalReference;
+	approvalStep: PortableJournalReference;
+	parentLineageId: string | null;
+	beforeCommit: string;
+	afterCommit: string;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	approvedPlanCommit: string;
+	approvedPlanHash: string;
+	approvedPlanBytes: string;
+	earliestAffectedPhase: string;
+	preservedPhases: AmendmentPreservedPhase[];
+	resolvedFindings: AmendmentResolvedFinding[];
+	claimEdits: AmendmentClaimEdit[];
+	invalidatedContextIds: string[];
+	invalidatedObservationIds: string[];
+	intentDigest: string;
+	createdAt: string;
+}
 
 /** One approved line removed from the governing projection. */
 export interface PlanSchemaExclusion {
@@ -470,6 +516,228 @@ export function decodeImplementationPlanRecoveryPayload(
 	};
 }
 
+const SEMANTIC_AMENDMENT_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"bindingId",
+	"executionRunId",
+	"predecessorRevisionId",
+	"authorizationId",
+	"humanStep",
+	"approvalStep",
+	"parentLineageId",
+	"beforeCommit",
+	"afterCommit",
+	"beforeBlobHash",
+	"afterBlobHash",
+	"approvedPlanCommit",
+	"approvedPlanHash",
+	"approvedPlanBytes",
+	"earliestAffectedPhase",
+	"preservedPhases",
+	"resolvedFindings",
+	"claimEdits",
+	"invalidatedContextIds",
+	"invalidatedObservationIds",
+	"intentDigest",
+	"createdAt",
+]);
+
+const CLAIM_EFFECTS = new Set([
+	"withdraw",
+	"reduce_magnitude",
+	"edit_contract",
+]);
+
+function sha256Field(value: unknown, field: string): string {
+	const text = stringField(value, field);
+	if (!/^sha256:[0-9a-f]{64}$/.test(text)) {
+		throw new TypeError(`${field} must be a SHA-256 hash`);
+	}
+	return text;
+}
+
+function portableStep(raw: unknown, field: string): PortableJournalReference {
+	const value = object(raw, field);
+	rejectUnknownKeys(value, new Set(["idempotencyKey"]), field);
+	return {
+		idempotencyKey: stringField(
+			value.idempotencyKey,
+			`${field}.idempotencyKey`,
+		),
+	};
+}
+
+export function encodeImplementationSemanticAmendmentPayload(
+	payload: ImplementationSemanticAmendmentPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodeImplementationSemanticAmendmentPayload(
+	raw: unknown,
+): ImplementationSemanticAmendmentPayload {
+	const value = object(raw, "implementation plan amendment");
+	rejectUnknownKeys(
+		value,
+		SEMANTIC_AMENDMENT_KEYS,
+		"implementation plan amendment",
+	);
+	if (value.kind !== "implementation-plan-amendment") {
+		throw new TypeError("invalid implementation plan amendment kind");
+	}
+	versionField(value.version);
+	if (!Array.isArray(value.preservedPhases)) {
+		throw new TypeError("preservedPhases must be an array");
+	}
+	if (!Array.isArray(value.resolvedFindings)) {
+		throw new TypeError("resolvedFindings must be an array");
+	}
+	if (!Array.isArray(value.claimEdits)) {
+		throw new TypeError("claimEdits must be an array");
+	}
+	return {
+		kind: "implementation-plan-amendment",
+		version: IMPLEMENTATION_STATE_VERSION,
+		id: stringField(value.id, "id"),
+		bindingId: stringField(value.bindingId, "bindingId"),
+		executionRunId: stringField(value.executionRunId, "executionRunId"),
+		predecessorRevisionId: stringField(
+			value.predecessorRevisionId,
+			"predecessorRevisionId",
+		),
+		authorizationId: stringField(value.authorizationId, "authorizationId"),
+		humanStep: portableStep(value.humanStep, "humanStep"),
+		approvalStep: portableStep(value.approvalStep, "approvalStep"),
+		parentLineageId:
+			value.parentLineageId === null
+				? null
+				: stringField(value.parentLineageId, "parentLineageId"),
+		beforeCommit: stringField(value.beforeCommit, "beforeCommit"),
+		afterCommit: stringField(value.afterCommit, "afterCommit"),
+		beforeBlobHash: sha256Field(value.beforeBlobHash, "beforeBlobHash"),
+		afterBlobHash: sha256Field(value.afterBlobHash, "afterBlobHash"),
+		approvedPlanCommit: stringField(
+			value.approvedPlanCommit,
+			"approvedPlanCommit",
+		),
+		approvedPlanHash: sha256Field(value.approvedPlanHash, "approvedPlanHash"),
+		approvedPlanBytes: stringField(
+			value.approvedPlanBytes,
+			"approvedPlanBytes",
+			true,
+		),
+		earliestAffectedPhase: stringField(
+			value.earliestAffectedPhase,
+			"earliestAffectedPhase",
+		),
+		preservedPhases: (() => {
+			const seen = new Set<string>();
+			return value.preservedPhases.map((entry, index) => {
+				const phase = object(entry, `preservedPhases[${index}]`);
+				rejectUnknownKeys(
+					phase,
+					new Set(["phaseId", "reason"]),
+					`preservedPhases[${index}]`,
+				);
+				const phaseId = stringField(
+					phase.phaseId,
+					`preservedPhases[${index}].phaseId`,
+				);
+				if (seen.has(phaseId)) {
+					throw new TypeError(`preservedPhases repeats ${phaseId}`);
+				}
+				seen.add(phaseId);
+				return {
+					phaseId,
+					reason: stringField(phase.reason, `preservedPhases[${index}].reason`),
+				};
+			});
+		})(),
+		resolvedFindings: (() => {
+			const seen = new Set<string>();
+			return value.resolvedFindings.map((entry, index) => {
+				const finding = object(entry, `resolvedFindings[${index}]`);
+				rejectUnknownKeys(
+					finding,
+					new Set([
+						"phase",
+						"observationId",
+						"findingId",
+						"fingerprint",
+						"reason",
+					]),
+					`resolvedFindings[${index}]`,
+				);
+				const resolved = {
+					phase: stringField(finding.phase, `resolvedFindings[${index}].phase`),
+					observationId: stringField(
+						finding.observationId,
+						`resolvedFindings[${index}].observationId`,
+					),
+					findingId: stringField(
+						finding.findingId,
+						`resolvedFindings[${index}].findingId`,
+					),
+					fingerprint: stringField(
+						finding.fingerprint,
+						`resolvedFindings[${index}].fingerprint`,
+					),
+					reason: stringField(
+						finding.reason,
+						`resolvedFindings[${index}].reason`,
+					),
+				};
+				const key = `${resolved.phase}\u0000${resolved.observationId}\u0000${resolved.findingId}`;
+				if (seen.has(key)) {
+					throw new TypeError(`resolvedFindings repeats ${resolved.findingId}`);
+				}
+				seen.add(key);
+				return resolved;
+			});
+		})(),
+		claimEdits: (() => {
+			const seen = new Set<string>();
+			return value.claimEdits.map((entry, index) => {
+				const claim = object(entry, `claimEdits[${index}]`);
+				rejectUnknownKeys(
+					claim,
+					new Set(["creditClaimId", "effect"]),
+					`claimEdits[${index}]`,
+				);
+				const effect = stringField(claim.effect, `claimEdits[${index}].effect`);
+				if (!CLAIM_EFFECTS.has(effect)) {
+					throw new TypeError(`claimEdits[${index}].effect is invalid`);
+				}
+				const creditClaimId = stringField(
+					claim.creditClaimId,
+					`claimEdits[${index}].creditClaimId`,
+				);
+				const key = `${creditClaimId}\u0000${effect}`;
+				if (seen.has(key)) {
+					throw new TypeError(`claimEdits repeats ${creditClaimId} ${effect}`);
+				}
+				seen.add(key);
+				return {
+					creditClaimId,
+					effect: effect as AmendmentClaimEdit["effect"],
+				};
+			});
+		})(),
+		invalidatedContextIds: recoveryStringArray(
+			value.invalidatedContextIds,
+			"invalidatedContextIds",
+		),
+		invalidatedObservationIds: recoveryStringArray(
+			value.invalidatedObservationIds,
+			"invalidatedObservationIds",
+		),
+		intentDigest: sha256Field(value.intentDigest, "intentDigest"),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
 export function implementationBindingKey(runId: string): string {
 	return `budget:implementation-binding:${runId}`;
 }
@@ -483,6 +751,28 @@ export function implementationTextAmendmentKey(
 	amendmentId: string,
 ): string {
 	return `budget:implementation-text-amendment:${bindingId}:${amendmentId}`;
+}
+
+export function implementationSemanticAmendmentKey(
+	bindingId: string,
+	amendmentId: string,
+): string {
+	return `budget:implementation-plan-amendment:${bindingId}:${amendmentId}`;
+}
+
+function optionalRevisionId(
+	value: Record<string, unknown>,
+): { revisionId: string } | Record<string, never> {
+	if (!Object.hasOwn(value, "revisionId")) return {};
+	return { revisionId: stringField(value.revisionId, "revisionId") };
+}
+
+function withoutEmptyRevision<T extends { revisionId?: string }>(
+	payload: T,
+): T {
+	const encoded = structuredClone(payload);
+	if (encoded.revisionId === undefined) delete encoded.revisionId;
+	return encoded;
 }
 
 function positiveInteger(value: unknown, field: string): number {
@@ -666,7 +956,7 @@ export function decodeImplementationCompatibilityPayload(
 export function encodeImplementationTextAmendmentPayload(
 	payload: ImplementationTextAmendmentPayload,
 ): unknown {
-	return structuredClone(payload);
+	return withoutEmptyRevision(payload);
 }
 
 export function decodeImplementationTextAmendmentPayload(
@@ -701,6 +991,7 @@ export function decodeImplementationTextAmendmentPayload(
 			"authorizedPlanBytes",
 			true,
 		),
+		...optionalRevisionId(value),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
@@ -837,6 +1128,8 @@ export interface ImplementationReviewContextPayload {
 	excludedPaths: string[];
 	hunks: ImplementationReviewHunk[];
 	binaryPaths: string[];
+	/** Omitted on historical lines. The fold attributes those causally. */
+	revisionId?: string;
 	createdAt: string;
 }
 
@@ -847,7 +1140,7 @@ export function implementationReviewContextKey(contextId: string): string {
 export function encodeImplementationReviewContextPayload(
 	payload: ImplementationReviewContextPayload,
 ): unknown {
-	return structuredClone(payload);
+	return withoutEmptyRevision(payload);
 }
 
 export function decodeImplementationReviewContextPayload(
@@ -896,6 +1189,7 @@ export function decodeImplementationReviewContextPayload(
 		binaryPaths: value.binaryPaths.map((entry, index) =>
 			stringField(entry, `binaryPaths[${index}]`),
 		),
+		...optionalRevisionId(value),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
@@ -1041,6 +1335,8 @@ export interface ImplementationReviewObservationPayload {
 	 * Absent for design, budget, and ambiguous text-only routes.
 	 */
 	textGuard?: TextAmendmentGuard;
+	/** Omitted on historical lines. Gate identity uses it only when stored. */
+	revisionId?: string;
 	createdAt: string;
 }
 
@@ -1109,6 +1405,7 @@ const OBSERVATION_KEYS = new Set([
 	"budgetInvariant",
 	"completionAuthorized",
 	"textGuard",
+	"revisionId",
 	"createdAt",
 ]);
 
@@ -1549,7 +1846,7 @@ function decodeTextGuard(raw: unknown): TextAmendmentGuard {
 export function encodeImplementationReviewObservationPayload(
 	payload: ImplementationReviewObservationPayload,
 ): unknown {
-	return structuredClone(payload);
+	return withoutEmptyRevision(payload);
 }
 
 export function decodeImplementationReviewObservationPayload(
@@ -1612,6 +1909,7 @@ export function decodeImplementationReviewObservationPayload(
 		...(value.textGuard === undefined
 			? {}
 			: { textGuard: decodeTextGuard(value.textGuard) }),
+		...optionalRevisionId(value),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
@@ -1659,6 +1957,8 @@ export interface ImplementationCorrectionAttemptPayload {
 	destinationCommit: string;
 	carriedClaims: ImplementationClaimObservation[];
 	qualityRerun: number;
+	/** Omitted on historical lines. The fold attributes those causally. */
+	revisionId?: string;
 	createdAt: string;
 }
 
@@ -1704,13 +2004,14 @@ const CORRECTION_ATTEMPT_KEYS = new Set([
 	"destinationCommit",
 	"carriedClaims",
 	"qualityRerun",
+	"revisionId",
 	"createdAt",
 ]);
 
 export function encodeImplementationCorrectionAttemptPayload(
 	payload: ImplementationCorrectionAttemptPayload,
 ): unknown {
-	return structuredClone(payload);
+	return withoutEmptyRevision(payload);
 }
 
 export function decodeImplementationCorrectionAttemptPayload(
@@ -1818,6 +2119,7 @@ export function decodeImplementationCorrectionAttemptPayload(
 		),
 		carriedClaims: decodeClaimObservations(value.carriedClaims),
 		qualityRerun: nonNegativeInteger(value.qualityRerun, "qualityRerun"),
+		...optionalRevisionId(value),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }

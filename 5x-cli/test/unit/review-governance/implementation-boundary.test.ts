@@ -7,6 +7,7 @@ import type {
 	ImplementationReviewObservationPayload,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import type { EffectiveExecution } from "../../../src/review-governance/implementation-amendment.js";
 import {
 	evaluateImplementationBoundary,
 	exactCorrectionCarryProof,
@@ -463,5 +464,123 @@ describe("evaluateImplementationBoundary", () => {
 				observations: [{ ...observation("complete"), claimObservations: [] }],
 			}).status,
 		).toBe("allow");
+	});
+
+	test("a withdrawn claim does not keep the phase requiring reconciliation", () => {
+		const bytes = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W-DC1 | DC1 | 2 | -1 | DC1 (\`intrinsic\`) | - | Approved |
+
+### Debt Claims
+
+#### DC1
+
+- Target phase: phase-1
+- Minimal-compliant effort delta: 0
+- Minimal-compliant architecture delta: 0
+- Before: many
+- After: one
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+**Completion gate:** Bound.
+
+- [ ] Bind
+`;
+		const execution: EffectiveExecution = {
+			ok: true,
+			runId: "run-1",
+			bindingId: "bind-1",
+			initialRevisionId: "bind-1",
+			currentRevisionId: "rev-1",
+			selectedRevisionId: "rev-1",
+			pinned: {
+				b0: 20,
+				governingB: 20,
+				mode: "enforced",
+				sourceRunId: "source",
+				bindingId: "bind-1",
+			},
+			revisions: [],
+			dispositions: [
+				{
+					revisionId: "rev-1",
+					earliestAffectedPhase: "1",
+					preservedPhases: [],
+					resolvedFindings: [],
+					claimEdits: [{ creditClaimId: "DC1", effect: "withdraw" }],
+				},
+			],
+			evidence: [],
+			findings: [],
+			approvedPlanBytes: bytes,
+			approvedPlanHash: hashPlanBytes(bytes),
+			lineageParentId: null,
+			planSchema: 0,
+			invalidatedContextIds: [],
+			invalidatedObservationIds: [],
+		};
+		const open = input({
+			binding: binding("enforced", bytes),
+			currentPlanBytes: bytes,
+			reconciliations: [reconciliation(false)],
+			effectiveExecution: {
+				...execution,
+				dispositions: [],
+			},
+		});
+		expect(open.status).toBe("deny");
+		const withdrawn = input({
+			binding: binding("enforced", bytes),
+			currentPlanBytes: bytes,
+			reconciliations: [reconciliation(false)],
+			effectiveExecution: execution,
+		});
+		expect(withdrawn.status).toBe("allow");
+		expect(withdrawn.readiness.phases[0]?.claimsReconciled).toBe(true);
+	});
+
+	test("an unreadable effective ledger does not fall back to the binding", () => {
+		const denied = input({
+			effectiveExecution: {
+				ok: true,
+				runId: "run-1",
+				bindingId: "bind-1",
+				initialRevisionId: "bind-1",
+				currentRevisionId: "rev-1",
+				selectedRevisionId: "rev-1",
+				pinned: {
+					b0: 20,
+					governingB: 20,
+					mode: "enforced",
+					sourceRunId: "source",
+					bindingId: "bind-1",
+				},
+				revisions: [],
+				dispositions: [],
+				evidence: [],
+				findings: [],
+				approvedPlanBytes: "not a budget",
+				approvedPlanHash: hashPlanBytes("not a budget"),
+				lineageParentId: null,
+				planSchema: 0,
+				invalidatedContextIds: [],
+				invalidatedObservationIds: [],
+			},
+		});
+		expect(denied.status).toBe("deny");
+		expect(denied.code).toBe("IMPLEMENTATION_EVIDENCE_MALFORMED");
 	});
 });

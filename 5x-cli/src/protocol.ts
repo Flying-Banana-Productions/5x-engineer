@@ -153,6 +153,67 @@ export interface CreditAssessment {
 	reason: string;
 }
 
+export const AMENDMENT_CLAIM_EFFECTS = [
+	"withdraw",
+	"reduce_magnitude",
+	"edit_contract",
+] as const;
+
+export type AmendmentClaimEffect = (typeof AMENDMENT_CLAIM_EFFECTS)[number];
+
+/** Permission to change one approved claim. The plan bytes hold the new magnitude. */
+export interface AmendmentClaimEdit {
+	creditClaimId: string;
+	effect: AmendmentClaimEffect;
+}
+
+export interface AmendmentPreservedPhase {
+	phaseId: string;
+	reason: string;
+}
+
+/** Phase-qualified finding reference. A bare id does not select another phase. */
+export interface AmendmentResolvedFinding {
+	phase: string;
+	observationId: string;
+	findingId: string;
+	fingerprint: string;
+	reason: string;
+}
+
+/**
+ * Plan-domain impact of one semantic amendment. Registration requires it.
+ * Omitted lists are not empty defaults; a ready summary does not imply carry.
+ */
+export interface AmendmentAssessment {
+	predecessorRevisionId: string;
+	reviewedPlanHash: string;
+	earliestAffectedPhase: string;
+	preservedPhases: AmendmentPreservedPhase[];
+	resolvedFindings: AmendmentResolvedFinding[];
+	claimEdits: AmendmentClaimEdit[];
+}
+
+/** Finding a scoped authorization may resolve. The CLI fills the fingerprint. */
+export interface AmendmentScopeResolutionRef {
+	phase: string;
+	observationId: string;
+	findingId: string;
+	fingerprint: string;
+}
+
+/**
+ * Structured scope on a new `authorize_amendment` decision. Historical
+ * decisions omit it. A present object must contain every key.
+ */
+export interface AmendmentScope {
+	predecessorRevisionId: string;
+	earliestAffectedPhase: string;
+	reopenCompletedPhases: boolean;
+	claimEdits: AmendmentClaimEdit[];
+	resolutionRefs: AmendmentScopeResolutionRef[];
+}
+
 export type ReviewerVerdict = {
 	readiness: "ready" | "ready_with_corrections" | "not_ready";
 	items: VerdictItem[];
@@ -163,6 +224,8 @@ export type ReviewerVerdict = {
 	/** Ordinary pre-existing observations. Not actionable review items. */
 	nonblocking?: NonblockingObservation[];
 	priorFindings?: PriorFindingOutcome[];
+	/** Plan reviews only. Implementation verdicts cannot supply this. */
+	amendmentAssessment?: AmendmentAssessment;
 };
 
 export const CLI_OWNED_VERDICT_KEYS = [
@@ -483,6 +546,71 @@ export const ReviewerVerdictSchema = {
 				required: ["id", "status"],
 			},
 		},
+		amendmentAssessment: {
+			type: "object",
+			description:
+				"Plan-domain semantic amendment impact. Required to register an amendment. Do not infer carry, resolution, or claim effects from a ready summary or rationale. Implementation verdicts must omit this object. Every key is required; empty arrays are explicit and are not defaulted.",
+			properties: {
+				predecessorRevisionId: { type: "string" },
+				reviewedPlanHash: { type: "string" },
+				earliestAffectedPhase: { type: "string" },
+				preservedPhases: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							phaseId: { type: "string" },
+							reason: { type: "string" },
+						},
+						required: ["phaseId", "reason"],
+					},
+				},
+				resolvedFindings: {
+					type: "array",
+					description:
+						"Phase-qualified finding refs. A bare finding id does not select the same id on another phase.",
+					items: {
+						type: "object",
+						properties: {
+							phase: { type: "string" },
+							observationId: { type: "string" },
+							findingId: { type: "string" },
+							fingerprint: { type: "string" },
+							reason: { type: "string" },
+						},
+						required: [
+							"phase",
+							"observationId",
+							"findingId",
+							"fingerprint",
+							"reason",
+						],
+					},
+				},
+				claimEdits: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							creditClaimId: { type: "string" },
+							effect: {
+								type: "string",
+								enum: [...AMENDMENT_CLAIM_EFFECTS],
+							},
+						},
+						required: ["creditClaimId", "effect"],
+					},
+				},
+			},
+			required: [
+				"predecessorRevisionId",
+				"reviewedPlanHash",
+				"earliestAffectedPhase",
+				"preservedPhases",
+				"resolvedFindings",
+				"claimEdits",
+			],
+		},
 	},
 	required: ["readiness", "items"],
 } as const;
@@ -538,7 +666,13 @@ export function reviewerVerdictSchemaFor(
 	domain: ReviewerSchemaDomain = "plan",
 ): Record<string, unknown> {
 	const base = reviewerSchemaWithArchitectureDelta(domain);
-	if (domain === "implementation") return base;
+	if (domain === "implementation") {
+		const properties = {
+			...(base.properties as Record<string, unknown>),
+		};
+		delete properties.amendmentAssessment;
+		return { ...base, properties };
+	}
 	if (baselineAssessment === "required") {
 		return {
 			...base,
@@ -782,6 +916,257 @@ function assertCreditRealization(
 			`creditRealization '${value.creditClaimId}' requires nonempty evidence.`,
 		);
 	}
+}
+
+const AMENDMENT_ASSESSMENT_KEYS = [
+	"predecessorRevisionId",
+	"reviewedPlanHash",
+	"earliestAffectedPhase",
+	"preservedPhases",
+	"resolvedFindings",
+	"claimEdits",
+] as const;
+
+const AMENDMENT_SCOPE_KEYS = [
+	"predecessorRevisionId",
+	"earliestAffectedPhase",
+	"reopenCompletedPhases",
+	"claimEdits",
+	"resolutionRefs",
+] as const;
+
+function amendmentObject(
+	value: unknown,
+	label: string,
+): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new TypeError(`${label} must be an object`);
+	}
+	return value as Record<string, unknown>;
+}
+
+function amendmentText(value: unknown, field: string): string {
+	if (typeof value !== "string" || value.trim().length === 0) {
+		throw new TypeError(`${field} must be a non-empty string`);
+	}
+	return value;
+}
+
+function rejectAmendmentKeys(
+	value: Record<string, unknown>,
+	allowed: readonly string[],
+	label: string,
+): void {
+	for (const key of Object.keys(value)) {
+		if (!allowed.includes(key)) {
+			throw new TypeError(`${label} has unknown field '${key}'`);
+		}
+	}
+	for (const key of allowed) {
+		if (!Object.hasOwn(value, key)) {
+			throw new TypeError(`${label} is missing '${key}'`);
+		}
+	}
+}
+
+function parseClaimEdits(value: unknown, label: string): AmendmentClaimEdit[] {
+	if (!Array.isArray(value)) throw new TypeError(`${label} must be an array`);
+	const seen = new Set<string>();
+	return value.map((entry, index) => {
+		const claim = amendmentObject(entry, `${label}[${index}]`);
+		rejectAmendmentKeys(
+			claim,
+			["creditClaimId", "effect"],
+			`${label}[${index}]`,
+		);
+		const effect = claim.effect;
+		if (
+			typeof effect !== "string" ||
+			!AMENDMENT_CLAIM_EFFECTS.includes(effect as AmendmentClaimEffect)
+		) {
+			throw new TypeError(`${label}[${index}].effect is invalid`);
+		}
+		const creditClaimId = amendmentText(
+			claim.creditClaimId,
+			`${label}[${index}].creditClaimId`,
+		);
+		const key = `${creditClaimId}\u0000${effect}`;
+		if (seen.has(key)) {
+			throw new TypeError(`${label} repeats ${creditClaimId} ${effect}`);
+		}
+		seen.add(key);
+		return { creditClaimId, effect: effect as AmendmentClaimEffect };
+	});
+}
+
+/** Strict assessment parse. Does not default omitted keys or infer carry. */
+export function parseAmendmentAssessment(value: unknown): AmendmentAssessment {
+	const record = amendmentObject(value, "amendmentAssessment");
+	rejectAmendmentKeys(record, AMENDMENT_ASSESSMENT_KEYS, "amendmentAssessment");
+	if (!Array.isArray(record.preservedPhases)) {
+		throw new TypeError("amendmentAssessment.preservedPhases must be an array");
+	}
+	if (!Array.isArray(record.resolvedFindings)) {
+		throw new TypeError(
+			"amendmentAssessment.resolvedFindings must be an array",
+		);
+	}
+	const phases = new Set<string>();
+	const preservedPhases = record.preservedPhases.map((entry, index) => {
+		const phase = amendmentObject(
+			entry,
+			`amendmentAssessment.preservedPhases[${index}]`,
+		);
+		rejectAmendmentKeys(
+			phase,
+			["phaseId", "reason"],
+			`amendmentAssessment.preservedPhases[${index}]`,
+		);
+		const phaseId = amendmentText(
+			phase.phaseId,
+			`amendmentAssessment.preservedPhases[${index}].phaseId`,
+		);
+		if (phases.has(phaseId)) {
+			throw new TypeError(
+				`amendmentAssessment.preservedPhases repeats ${phaseId}`,
+			);
+		}
+		phases.add(phaseId);
+		return {
+			phaseId,
+			reason: amendmentText(
+				phase.reason,
+				`amendmentAssessment.preservedPhases[${index}].reason`,
+			),
+		};
+	});
+	const findings = new Set<string>();
+	const resolvedFindings = record.resolvedFindings.map((entry, index) => {
+		const finding = amendmentObject(
+			entry,
+			`amendmentAssessment.resolvedFindings[${index}]`,
+		);
+		rejectAmendmentKeys(
+			finding,
+			["phase", "observationId", "findingId", "fingerprint", "reason"],
+			`amendmentAssessment.resolvedFindings[${index}]`,
+		);
+		const resolved = {
+			phase: amendmentText(
+				finding.phase,
+				`amendmentAssessment.resolvedFindings[${index}].phase`,
+			),
+			observationId: amendmentText(
+				finding.observationId,
+				`amendmentAssessment.resolvedFindings[${index}].observationId`,
+			),
+			findingId: amendmentText(
+				finding.findingId,
+				`amendmentAssessment.resolvedFindings[${index}].findingId`,
+			),
+			fingerprint: amendmentText(
+				finding.fingerprint,
+				`amendmentAssessment.resolvedFindings[${index}].fingerprint`,
+			),
+			reason: amendmentText(
+				finding.reason,
+				`amendmentAssessment.resolvedFindings[${index}].reason`,
+			),
+		};
+		const key = `${resolved.phase}\u0000${resolved.observationId}\u0000${resolved.findingId}`;
+		if (findings.has(key)) {
+			throw new TypeError(
+				`amendmentAssessment.resolvedFindings repeats ${resolved.findingId}`,
+			);
+		}
+		findings.add(key);
+		return resolved;
+	});
+	return {
+		predecessorRevisionId: amendmentText(
+			record.predecessorRevisionId,
+			"amendmentAssessment.predecessorRevisionId",
+		),
+		reviewedPlanHash: amendmentText(
+			record.reviewedPlanHash,
+			"amendmentAssessment.reviewedPlanHash",
+		),
+		earliestAffectedPhase: amendmentText(
+			record.earliestAffectedPhase,
+			"amendmentAssessment.earliestAffectedPhase",
+		),
+		preservedPhases,
+		resolvedFindings,
+		claimEdits: parseClaimEdits(
+			record.claimEdits,
+			"amendmentAssessment.claimEdits",
+		),
+	};
+}
+
+/** Strict scope parse. Historical decisions omit the object entirely. */
+export function parseAmendmentScope(value: unknown): AmendmentScope {
+	const record = amendmentObject(value, "amendmentScope");
+	rejectAmendmentKeys(record, AMENDMENT_SCOPE_KEYS, "amendmentScope");
+	if (typeof record.reopenCompletedPhases !== "boolean") {
+		throw new TypeError(
+			"amendmentScope.reopenCompletedPhases must be a boolean",
+		);
+	}
+	if (!Array.isArray(record.resolutionRefs)) {
+		throw new TypeError("amendmentScope.resolutionRefs must be an array");
+	}
+	const refs = new Set<string>();
+	const resolutionRefs = record.resolutionRefs.map((entry, index) => {
+		const ref = amendmentObject(
+			entry,
+			`amendmentScope.resolutionRefs[${index}]`,
+		);
+		rejectAmendmentKeys(
+			ref,
+			["phase", "observationId", "findingId", "fingerprint"],
+			`amendmentScope.resolutionRefs[${index}]`,
+		);
+		const resolved = {
+			phase: amendmentText(
+				ref.phase,
+				`amendmentScope.resolutionRefs[${index}].phase`,
+			),
+			observationId: amendmentText(
+				ref.observationId,
+				`amendmentScope.resolutionRefs[${index}].observationId`,
+			),
+			findingId: amendmentText(
+				ref.findingId,
+				`amendmentScope.resolutionRefs[${index}].findingId`,
+			),
+			fingerprint: amendmentText(
+				ref.fingerprint,
+				`amendmentScope.resolutionRefs[${index}].fingerprint`,
+			),
+		};
+		const key = `${resolved.phase}\u0000${resolved.observationId}\u0000${resolved.findingId}`;
+		if (refs.has(key)) {
+			throw new TypeError(
+				`amendmentScope.resolutionRefs repeats ${resolved.findingId}`,
+			);
+		}
+		refs.add(key);
+		return resolved;
+	});
+	return {
+		predecessorRevisionId: amendmentText(
+			record.predecessorRevisionId,
+			"amendmentScope.predecessorRevisionId",
+		),
+		earliestAffectedPhase: amendmentText(
+			record.earliestAffectedPhase,
+			"amendmentScope.earliestAffectedPhase",
+		),
+		reopenCompletedPhases: record.reopenCompletedPhases,
+		claimEdits: parseClaimEdits(record.claimEdits, "amendmentScope.claimEdits"),
+		resolutionRefs,
+	};
 }
 
 export interface ReviewerVerdictAssertionResult {
@@ -1039,6 +1424,16 @@ export function assertReviewerVerdict(
 		fail(
 			"implementation reviews prohibit baselineAssessment and creditAssessments.",
 		);
+	}
+	if (verdict.amendmentAssessment !== undefined) {
+		if (implementationVerdict) {
+			fail("implementation reviews cannot supply amendmentAssessment.");
+		}
+		try {
+			parseAmendmentAssessment(verdict.amendmentAssessment);
+		} catch (error) {
+			fail(error instanceof Error ? error.message : String(error));
+		}
 	}
 	if (verdict.creditRealizations !== undefined) {
 		if (!Array.isArray(verdict.creditRealizations)) {

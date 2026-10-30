@@ -31,6 +31,7 @@ import {
 	type RecordRecorder,
 	type RecordStore,
 	RecordStoreError,
+	type RecordStream,
 	RUN_RECORD_FORMAT_VERSION,
 	recordedEnvelope,
 	redactStepPayload,
@@ -162,6 +163,13 @@ import {
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
+import {
+	foldEffectiveExecution,
+	phaseReopenedByRevision,
+	type RevisionProvenance,
+	type RevisionProvenanceFailure,
+	readRevisionProvenance,
+} from "../review-governance/implementation-amendment.js";
 import {
 	evaluateStoredImplementationBoundary,
 	type ImplementationGovernanceReadiness,
@@ -1264,6 +1272,11 @@ export interface ImplementationGovernanceState
 	credit: ImplementationGovernanceCreditView | null;
 	/** Accepted operating restrictions on this binding, every phase. */
 	restrictions: OperatingRestriction[];
+	/**
+	 * Original binding provenance versus the effective revision. Absent when
+	 * the caller did not supply a record store. Never implementation completion.
+	 */
+	revision?: RevisionProvenance | RevisionProvenanceFailure;
 }
 
 function phaseOrdinal(
@@ -1403,6 +1416,8 @@ export function presentImplementationGovernance(input: {
 	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
 	activeGate: DerivedImplementationGate | null;
 	restrictions?: readonly OperatingRestriction[];
+	recordStore?: RecordStore;
+	runId?: string;
 }): ImplementationGovernanceState {
 	const binding = input.binding;
 	const observations = binding
@@ -1502,6 +1517,15 @@ export function presentImplementationGovernance(input: {
 				: null,
 		credit: binding ? creditView(binding, input.reconciliations) : null,
 		restrictions: structuredClone([...(input.restrictions ?? [])]),
+		...(binding && input.recordStore && input.runId
+			? {
+					revision: readRevisionProvenance({
+						binding,
+						recordStore: input.recordStore,
+						runId: input.runId,
+					}),
+				}
+			: {}),
 	};
 }
 
@@ -1562,6 +1586,8 @@ function tryPresentImplementationGovernance(
 						bindingId: binding.id,
 					})
 				: [],
+			recordStore: input.recordStore,
+			runId: input.runId,
 		});
 	} catch (error) {
 		warn(
@@ -1942,6 +1968,42 @@ export function formatStateText(data: {
 		if (governance.binding) {
 			console.log(
 				`Implementation binding: id=${governance.binding.id} source_run=${governance.binding.sourceRunId} source_snapshot=${governance.binding.sourceSnapshotId} mode=${governance.binding.mode}`,
+			);
+		}
+		if (governance.revision?.ok) {
+			const revision = governance.revision;
+			const history = revision.history
+				.map((entry) => `${entry.kind}:${entry.id}`)
+				.join(" -> ");
+			const pending = revision.pendingFindings
+				.map((finding) => finding.findingId)
+				.join(",");
+			const resolved = revision.resolvedFindings
+				.map((finding) => finding.findingId)
+				.join(",");
+			const credits =
+				revision.creditDifferences
+					.map((edit) => `${edit.creditClaimId}=${edit.effect}`)
+					.join(",") || "none";
+			console.log(
+				`Implementation provenance: original_binding=${revision.original.bindingId} original_source=${revision.original.sourceRunId} original_commit=${revision.original.approvedPlanCommit} original_hash=${revision.original.approvedPlanHash} effective_revision=${revision.effective.revisionId} effective_kind=${revision.effective.kind} effective_hash=${revision.effective.approvedPlanHash} completion_authorized=no`,
+			);
+			console.log(`Implementation history: ${history}`);
+			console.log(
+				`Implementation affected phases: ${revision.affectedPhases.join(",") || "none"}`,
+			);
+			console.log(
+				`Implementation retained evidence: ${revision.retainedEvidence.length}`,
+			);
+			console.log(
+				`Implementation findings: pending=${pending || "none"} resolved=${resolved || "none"}`,
+			);
+			console.log(
+				`Implementation credit differences: ${credits} unchanged=${revision.unchangedClaimIds.join(",") || "none"} baseline_unchanged=yes`,
+			);
+		} else if (governance.revision) {
+			console.log(
+				`Implementation provenance: original_binding=${governance.revision.original.bindingId} lineage=invalid completion_authorized=no diagnostic=${governance.revision.diagnostic.message}`,
 			);
 		}
 		if (governance.reviewedRange) {
@@ -3377,6 +3439,8 @@ export async function finalizeAndWritePreparedStep(
 	},
 	opts: {
 		mode: FinalizeWriteMode;
+		/** Journal keys captured before validation. Paired mode rejects a stale history. */
+		expectedKeys?: Partial<Record<RecordStream, string[]>>;
 		extraOps?: (
 			finalized: FinalizedRecordStep,
 			envelope: ReturnType<typeof recordedEnvelope>,
@@ -3485,7 +3549,10 @@ export async function finalizeAndWritePreparedStep(
 				result?.line ??
 				storeGetLine(ctx.recordStore, prepared.runId, "steps", stepKey);
 		} else {
-			const result = ctx.recordStore.atomicAppendIfAllNew(ops);
+			const result = ctx.recordStore.atomicAppendIfAllNew(
+				ops,
+				opts.expectedKeys,
+			);
 			created = result.created;
 			stepLine = result.created
 				? (result.results[0]?.line ?? null)
@@ -3945,7 +4012,23 @@ export async function recordStepInternal(
 							step.step_name.startsWith("reviewer:")) &&
 							(canonicalPhaseId(step.phase ?? "") ?? step.phase) === phaseId)),
 			);
-		if (existing && !reopened) {
+		const folded = foldEffectiveExecution({
+			recordStore,
+			runId: params.run,
+		});
+		const binding = createReviewBudgetStore(
+			recordStore,
+		).getImplementationBinding(params.run);
+		const revisionReopened =
+			!folded.ok ||
+			(binding !== null &&
+				phaseReopenedByRevision({
+					phaseMap: binding.phaseMap,
+					execution: folded,
+					phaseId,
+					steps: recordStore.listLines(params.run, "steps"),
+				}));
+		if (existing && !reopened && !revisionReopened) {
 			const after = computeRunSummary(db, params.run);
 			return {
 				step_id: existing.id,

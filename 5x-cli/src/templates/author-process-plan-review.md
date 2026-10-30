@@ -53,6 +53,7 @@ This is a **document-only** task. You are revising the implementation plan, not 
 - Keep each negative row's matching `#### DCn` evidence synchronized. Its Debt claim cell must retain the literal parser-accepted form ``DC0 (`intrinsic`)`` (or ``DC0 (`adjacent`)`` / ``DC0 (`unrelated`)``): never backtick the claim ID, and always backtick the coupling. Coupling, architecture delta, target phase, minimal-compliant effort/architecture deltas, and non-empty concrete `Before` / `After` are all part of the claim; changing any of them makes the claim changed for reviewer re-assessment.
 - Keep `## Delivery Budget` and `### Surface Snapshot` in the plan. Do not add or edit prose totals, ceilings, baseline values, or budget status; those values are CLI-owned.
 - Do **not** create, modify, or delete any source code, test files, or configuration files.
+- When this pass corrects an implementation-run amendment, the commit is a new exact plan hash. Do not treat the previous `amendmentAssessment` as still valid. The next plan review must reassess that hash before registration. Rationale prose is not `amendmentScope`.
 - Do **not** run tests or quality gates.
 
 ### Quality Checks

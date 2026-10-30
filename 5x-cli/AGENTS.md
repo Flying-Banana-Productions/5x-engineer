@@ -90,7 +90,7 @@ bun test test/integration/    # integration tests only
 bun test --concurrent         # parallel execution (CI default)
 ```
 
-`bunfig.toml` preloads `./test/setup.ts`. Bun ignores `[test].timeout` there, so `bun run test` passes `--timeout 15000`.
+Config in `bunfig.toml`: `preload = ["./test/setup.ts"]`. Bun ignores a `[test] timeout` key and keeps a 5000ms default (oven-sh/bun#7789). `package.json`'s `test` script passes `--timeout 15000`.
 
 ## Required Patterns for Integration Tests
 

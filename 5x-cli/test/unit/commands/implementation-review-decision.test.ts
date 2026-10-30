@@ -13,6 +13,7 @@ import type { ImplementationReviewObservationPayload } from "../../../src/review
 import { encodeImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { readImplementationCodeClosure } from "../../../src/review-governance/implementation.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import {
 	deriveOpenImplementationGate,
@@ -92,8 +93,10 @@ function seed(
 	options: {
 		reviewerKey?: string;
 		observation?: Partial<ImplementationReviewObservationPayload>;
+		planBytes?: string;
 	} = {},
 ) {
+	const planBytes = options.planBytes ?? "# Plan\n";
 	const ctx = makeBudgetContext({ mode });
 	ctx.store.saveImplementationBinding(
 		{
@@ -105,8 +108,8 @@ function seed(
 			sourceSnapshotId: "snap",
 			sourceBaselineId: "base",
 			approvedPlanCommit: "c".repeat(40),
-			approvedPlanHash: "sha256:plan",
-			approvedPlanBytes: "# Plan\n",
+			approvedPlanHash: hashPlanBytes(planBytes),
+			approvedPlanBytes: planBytes,
 			b0: 5,
 			governingB: 5,
 			mode,
@@ -747,5 +750,141 @@ describe("implementation review decide", () => {
 			),
 		).rejects.toMatchObject({ code: "REVIEW_DECISION_FINDING_INVALID" });
 		ctx.db.close();
+	});
+
+	test("restore_simplification uses the effective ledger and rejects a withdrawn claim", async () => {
+		const reduced = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Work | 2 | -3 | DC1 (\`intrinsic\`) | - | Required |
+
+### Debt Claims
+
+#### DC1
+
+- Target phase: phase-1
+- Minimal-compliant effort delta: 0
+- Minimal-compliant architecture delta: 0
+- Before: many
+- After: one
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+**Completion gate:** Bound.
+
+- [ ] Bind
+`;
+		const withdrawn = reduced
+			.replace(
+				"| W1 | Work | 2 | -3 | DC1 (`intrinsic`) | - | Required |",
+				"| W1 | Work | 2 | 0 | - | - | Required |",
+			)
+			.replace(
+				/### Debt Claims[\s\S]*?### Surface Snapshot/,
+				"### Surface Snapshot",
+			);
+		const dropped = seed("enforced", { planBytes: withdrawn });
+		try {
+			const shown = await showReviewGate(
+				RUN,
+				{ context: dropped.ctx, promptStore: dropped.promptStore },
+				{ phase: "1" },
+			);
+			if (!shown.open) throw new Error("expected an open gate");
+			await expect(
+				submitReviewDecision(
+					{
+						runId: RUN,
+						gateId: shown.gate.gateId,
+						phase: "1",
+						claimAdjustments: [
+							{
+								creditClaimId: "DC1",
+								approvedArchitectureDelta: -5,
+								supersedesObservationId: "obs-1",
+							},
+						],
+						payload: {
+							choice: "restore_simplification",
+							rationale: "The withdrawn claim is not restorable",
+						},
+					},
+					{ context: dropped.ctx, promptStore: dropped.promptStore },
+				),
+			).rejects.toThrow(/not on the approved ledger/);
+		} finally {
+			dropped.ctx.db.close();
+		}
+
+		const { ctx, promptStore } = seed("enforced", { planBytes: reduced });
+		try {
+			const shown = await showReviewGate(
+				RUN,
+				{ context: ctx, promptStore },
+				{ phase: "1" },
+			);
+			if (!shown.open) throw new Error("expected an open gate");
+			await expect(
+				submitReviewDecision(
+					{
+						runId: RUN,
+						gateId: shown.gate.gateId,
+						phase: "1",
+						claimAdjustments: [
+							{
+								creditClaimId: "DC1",
+								approvedArchitectureDelta: -5,
+								supersedesObservationId: "obs-1",
+							},
+						],
+						payload: {
+							choice: "restore_simplification",
+							rationale: "The binding magnitude is no longer approved",
+						},
+					},
+					{ context: ctx, promptStore },
+				),
+			).rejects.toThrow(/cannot broaden approved credit/);
+			const restored = await submitReviewDecision(
+				{
+					runId: RUN,
+					gateId: shown.gate.gateId,
+					phase: "1",
+					claimAdjustments: [
+						{
+							creditClaimId: "DC1",
+							approvedArchitectureDelta: -3,
+							supersedesObservationId: "obs-1",
+						},
+					],
+					payload: {
+						choice: "restore_simplification",
+						rationale: "Keep the amended magnitude",
+					},
+				},
+				{ context: ctx, promptStore },
+			);
+			expect(restored.created).toBe(true);
+			if (!("claimAdjustments" in restored.decision)) {
+				throw new Error("expected an implementation decision");
+			}
+			expect(restored.decision.claimAdjustments[0]).toMatchObject({
+				creditClaimId: "DC1",
+				approvedArchitectureDelta: -3,
+			});
+		} finally {
+			ctx.db.close();
+		}
 	});
 });

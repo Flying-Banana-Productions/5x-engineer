@@ -383,6 +383,8 @@ describe("5x upgrade", () => {
 							expect(prompt).toContain("suppressed-alert decision references");
 							expect(prompt).toContain("New or increased architecture");
 						} else {
+							expect(prompt).toContain("effective revision");
+							expect(prompt).not.toContain("recover-plan");
 							expect(prompt).toContain(
 								"implement only those admitted findings",
 							);
@@ -449,12 +451,21 @@ describe("5x upgrade", () => {
 				);
 				expect(skill).toContain(".data.result.governance.route");
 				expect(skill).toContain("5x review corrections finish");
-				expect(skill).toContain("5x review implementation recover-plan");
-				expect(skill).toContain("--confirm-preserved-phases");
-				expect(skill).toContain("Recovery never completes a phase");
 				expect(skill).toContain(
-					"supports repeated\nrecoveries, each with a new authorization and plan review",
+					"authorize → amend → assess → register → resume",
 				);
+				expect(skill).toContain("amendmentScope");
+				expect(skill).toContain("Rationale prose is not scope");
+				expect(skill).toContain("exact hash");
+				expect(skill).toContain("5x review implementation amend");
+				expect(skill).toContain("Registration does not complete a phase");
+				expect(skill).toContain("recover-plan` is retired");
+				expect(skill).not.toContain("--confirm-preserved-phases");
+				expect(upgraded.stdout).toContain("Legacy recoveries:");
+				expect(upgraded.stdout).toContain(
+					"Discovery does not resume runs, rewrite journals, synthesize approvals, or commit project history.",
+				);
+				expect(upgraded.stdout).toContain("implementation-plan-amendment");
 				expect(skill).toContain("5x review decide --gate");
 				expect(skill).toContain("revise_plan");
 				expect(skill).toContain("inheritedBudgetGovernance");

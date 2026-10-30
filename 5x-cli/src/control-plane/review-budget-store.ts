@@ -11,6 +11,7 @@ import {
 	decodeImplementationPlanRecoveryPayload,
 	decodeImplementationReviewContextPayload,
 	decodeImplementationReviewObservationPayload,
+	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
 	decodePlanSchemaMigrationPayload,
 	encodeBudgetBaselinePayload,
@@ -29,6 +30,7 @@ import {
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationReviewStepKey,
+	type ImplementationSemanticAmendmentPayload,
 	type ImplementationTextAmendmentPayload,
 	implementationBindingKey,
 	implementationCompatibilityKey,
@@ -50,6 +52,8 @@ import type {
 	ReviewBudgetThresholds,
 	SurfaceSnapshot,
 } from "../review-budget/types.js";
+import type { EffectiveExecutionResult } from "../review-governance/implementation-amendment.js";
+import { foldEffectiveExecution } from "../review-governance/implementation-amendment.js";
 import type {
 	ClosureDiagnostic,
 	PriorFindingOutcome,
@@ -151,6 +155,19 @@ export interface ReviewBudgetStore {
 	): ImplementationLineagePayload[];
 	/** Schema migrations on this run, in journal order. Unknown budget kinds stay omitted. */
 	listPlanSchemaMigrations(runId: string): PlanSchemaMigrationPayload[];
+	/** Semantic amendment receipts in journal order. Not plan snapshots. */
+	listImplementationSemanticAmendments(
+		runId: string,
+		bindingId: string,
+	): ImplementationSemanticAmendmentPayload[];
+	/**
+	 * Effective revision and evidence disposition. Null when the run has no
+	 * binding. Does not append, and does not retarget the binding id.
+	 */
+	readEffectiveImplementationRevision(
+		runId: string,
+		revisionId?: string,
+	): EffectiveExecutionResult | null;
 	saveImplementationBinding(
 		payload: ImplementationBindingPayload,
 		origin: RecordOrigin,
@@ -506,6 +523,37 @@ export function createReviewBudgetStore(
 				migrations.push(decodePlanSchemaMigrationPayload(line.payload));
 			}
 			return migrations;
+		},
+
+		listImplementationSemanticAmendments(runId, bindingId) {
+			const amendments: ImplementationSemanticAmendmentPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					(line.payload as { kind?: unknown } | null)?.kind !==
+					"implementation-plan-amendment"
+				) {
+					continue;
+				}
+				const decoded = decodeImplementationSemanticAmendmentPayload(
+					line.payload,
+				);
+				if (decoded.bindingId === bindingId) amendments.push(decoded);
+			}
+			return amendments;
+		},
+
+		readEffectiveImplementationRevision(runId, revisionId) {
+			const line = recordStore.getLine(
+				runId,
+				"budget",
+				implementationBindingKey(runId),
+			);
+			if (!line) return null;
+			return foldEffectiveExecution({
+				recordStore,
+				runId,
+				...(revisionId === undefined ? {} : { revisionId }),
+			});
 		},
 
 		saveImplementationBinding(payload, origin) {

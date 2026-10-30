@@ -13,16 +13,34 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import {
 	parse as tomlParse,
 	patch as tomlPatch,
 } from "@decimalturn/toml-patch";
 import { discoverConfigFile, resolveLayeredConfig } from "../config.js";
+import {
+	createMemoryRecordStore,
+	createWorkingTreeRecordStore,
+} from "../control-plane/index.js";
+import {
+	decodeJsonlFile,
+	parseRunJson,
+} from "../control-plane/record-layout.js";
+import type { RecordStore } from "../control-plane/record-store.js";
+import type {
+	RecordLine,
+	RunRecordSummary,
+} from "../control-plane/record-types.js";
 import { closeDb, getDb } from "../db/connection.js";
 import { getSchemaVersion, runMigrations } from "../db/schema.js";
+import { getLatestCommit, gitLsTreePaths, gitShowFile } from "../git.js";
 import { runHarnessFreshnessChecks } from "../harnesses/freshness.js";
 import type { LosslessBlocker } from "../harnesses/manifest.js";
+import {
+	foldEffectiveExecution,
+	type RevisionFoldDiagnostic,
+} from "../review-governance/implementation-amendment.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 import { harnessSyncCore } from "./harness.handler.js";
 import {
@@ -485,6 +503,417 @@ export async function upgradeHarnessAssets(
 }
 
 // ---------------------------------------------------------------------------
+// Legacy recovery discovery (read-only)
+// ---------------------------------------------------------------------------
+
+/** Amended runs need this CLI. Older binaries must not execute them. */
+export const AMENDED_RUN_MINIMUM_TOOLCHAIN =
+	"Execute amended runs only with a CLI that understands implementation-plan-amendment and amendmentScope. Older binaries may report drift or ignore unfamiliar records and must not execute those runs. Historical implementation-plan-recovery receipts remain readable and are not rewritten. Refresh installed workflow assets with `5x harness sync`.";
+
+export interface LegacyRecoveryRunReport {
+	runId: string;
+	status: string;
+	planPath: string;
+	source: "records" | "git";
+	recoveryIds: string[];
+	lineageValid: boolean;
+	/** Compatibility to resume. Never implementation completion approval. */
+	resumeCompatible: boolean;
+	completionAuthorized: false;
+	currentRevisionId: string | null;
+	history: Array<{ id: string; kind: string }>;
+	diagnostic: RevisionFoldDiagnostic | null;
+	minimumToolchain: string;
+}
+
+export interface LegacyRecoveryDiscovery {
+	scanned: {
+		active: number;
+		completed: number;
+		aborted: number;
+		other: number;
+	};
+	reports: LegacyRecoveryRunReport[];
+	resumed: false;
+	journalRewritten: false;
+	syntheticApproval: false;
+	minimumToolchain: string;
+}
+
+function emptyScan(): LegacyRecoveryDiscovery["scanned"] {
+	return { active: 0, completed: 0, aborted: 0, other: 0 };
+}
+
+function countStatus(
+	scanned: LegacyRecoveryDiscovery["scanned"],
+	status: string,
+): void {
+	if (status === "active") scanned.active += 1;
+	else if (status === "completed") scanned.completed += 1;
+	else if (status === "aborted") scanned.aborted += 1;
+	else scanned.other += 1;
+}
+
+function recoveryIdsFrom(lines: readonly RecordLine[]): string[] {
+	const ids: string[] = [];
+	for (const line of lines) {
+		if (line.stream !== "budget") continue;
+		const payload = line.payload;
+		if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+			continue;
+		}
+		const record = payload as { kind?: unknown; id?: unknown };
+		if (record.kind !== "implementation-plan-recovery") continue;
+		ids.push(typeof record.id === "string" ? record.id : line.idempotencyKey);
+	}
+	return ids;
+}
+
+/** Recovery identities that still decode, including from a journal that also has a bad line. */
+function knownRecoveryIds(
+	lines: readonly RecordLine[],
+	budgetBody: string | null,
+	runId: string,
+): string[] {
+	const ids = recoveryIdsFrom(lines);
+	if (!budgetBody?.includes("implementation-plan-recovery")) return ids;
+	for (const rawLine of budgetBody.split("\n")) {
+		if (!rawLine.includes("implementation-plan-recovery")) continue;
+		try {
+			ids.push(...recoveryIdsFrom(decodeJsonlFile(`${rawLine}\n`, runId)));
+		} catch {
+			// This line names a recovery but does not decode.
+		}
+	}
+	return [...new Set(ids)];
+}
+
+interface UnreadableCommittedJournal {
+	stream: RevisionFoldDiagnostic["stream"];
+	recordId: string;
+	recoveryIds: string[];
+	message: string;
+}
+
+function reportRecoveredRun(input: {
+	store: RecordStore;
+	summary: RunRecordSummary;
+	source: "records" | "git";
+}): LegacyRecoveryRunReport | null {
+	let budget: RecordLine[] = [];
+	try {
+		budget = input.store.listLines(input.summary.id, "budget");
+	} catch (error) {
+		return {
+			runId: input.summary.id,
+			status: input.summary.status,
+			planPath: input.summary.plan_path,
+			source: input.source,
+			recoveryIds: [],
+			lineageValid: false,
+			resumeCompatible: false,
+			completionAuthorized: false,
+			currentRevisionId: null,
+			history: [],
+			diagnostic: {
+				runId: input.summary.id,
+				stream: "budget",
+				recordId: input.summary.id,
+				recoveryIds: [],
+				message:
+					error instanceof Error
+						? error.message
+						: "Legacy recovery journal could not be read.",
+			},
+			minimumToolchain: AMENDED_RUN_MINIMUM_TOOLCHAIN,
+		};
+	}
+	const recoveryIds = recoveryIdsFrom(budget);
+	if (recoveryIds.length === 0) return null;
+	let folded: ReturnType<typeof foldEffectiveExecution>;
+	try {
+		folded = foldEffectiveExecution({
+			recordStore: input.store,
+			runId: input.summary.id,
+		});
+	} catch (error) {
+		folded = {
+			ok: false,
+			diagnostic: {
+				runId: input.summary.id,
+				stream: "budget",
+				recordId: recoveryIds[0] ?? input.summary.id,
+				recoveryIds,
+				message: error instanceof Error ? error.message : String(error),
+			},
+		};
+	}
+	if (!folded.ok) {
+		return {
+			runId: input.summary.id,
+			status: input.summary.status,
+			planPath: input.summary.plan_path,
+			source: input.source,
+			recoveryIds,
+			lineageValid: false,
+			resumeCompatible: false,
+			completionAuthorized: false,
+			currentRevisionId: null,
+			history: [],
+			diagnostic: folded.diagnostic,
+			minimumToolchain: AMENDED_RUN_MINIMUM_TOOLCHAIN,
+		};
+	}
+	return {
+		runId: input.summary.id,
+		status: input.summary.status,
+		planPath: input.summary.plan_path,
+		source: input.source,
+		recoveryIds,
+		lineageValid: true,
+		resumeCompatible: true,
+		completionAuthorized: false,
+		currentRevisionId: folded.currentRevisionId,
+		history: folded.revisions.map((revision) => ({
+			id: revision.id,
+			kind: revision.kind,
+		})),
+		diagnostic: null,
+		minimumToolchain: AMENDED_RUN_MINIMUM_TOOLCHAIN,
+	};
+}
+
+const COMMITTED_JOURNALS = [
+	{ file: "steps.jsonl", stream: "steps" },
+	{ file: "budget.jsonl", stream: "budget" },
+	{ file: "decisions.jsonl", stream: "decisions" },
+] as const;
+
+async function gitRunsMissingFrom(input: {
+	seen: ReadonlySet<string>;
+	commit: string;
+	workdir: string;
+	recordsRelPath: string;
+}): Promise<
+	Array<
+		| { summary: RunRecordSummary; store: RecordStore; unreadable: null }
+		| {
+				summary: RunRecordSummary;
+				store: null;
+				unreadable: UnreadableCommittedJournal;
+		  }
+	>
+> {
+	const prefix = input.recordsRelPath.replace(/\\/g, "/").replace(/\/$/, "");
+	const paths = await gitLsTreePaths(input.workdir, input.commit, prefix);
+	const found: Array<
+		| { summary: RunRecordSummary; store: RecordStore; unreadable: null }
+		| {
+				summary: RunRecordSummary;
+				store: null;
+				unreadable: UnreadableCommittedJournal;
+		  }
+	> = [];
+	for (const path of paths) {
+		if (!path.endsWith("/run.json")) continue;
+		const text = await gitShowFile(input.workdir, input.commit, path);
+		if (text == null) continue;
+		let summary: RunRecordSummary;
+		try {
+			summary = parseRunJson(text);
+		} catch {
+			continue;
+		}
+		if (input.seen.has(summary.id)) continue;
+		const lines: RecordLine[] = [];
+		let budgetBody: string | null = null;
+		let decodeFailure: {
+			stream: UnreadableCommittedJournal["stream"];
+			message: string;
+		} | null = null;
+		for (const journal of COMMITTED_JOURNALS) {
+			const rel = path.replace(/run\.json$/, journal.file);
+			const body = await gitShowFile(input.workdir, input.commit, rel);
+			if (body == null) continue;
+			if (journal.file === "budget.jsonl") budgetBody = body;
+			try {
+				lines.push(...decodeJsonlFile(body, summary.id));
+			} catch (error) {
+				if (decodeFailure) continue;
+				const detail =
+					error instanceof Error
+						? error.message
+						: "Committed recovery journal could not be decoded.";
+				decodeFailure = {
+					stream: journal.stream,
+					message: `${journal.file}: ${detail}`,
+				};
+			}
+		}
+		const recoveryIds = knownRecoveryIds(lines, budgetBody, summary.id);
+		const hasRecovery =
+			recoveryIds.length > 0 ||
+			(budgetBody?.includes("implementation-plan-recovery") ?? false);
+		if (decodeFailure && hasRecovery) {
+			found.push({
+				summary,
+				store: null,
+				unreadable: {
+					stream: decodeFailure.stream,
+					recordId: recoveryIds[0] ?? summary.id,
+					recoveryIds,
+					message: decodeFailure.message,
+				},
+			});
+			continue;
+		}
+		const store = createMemoryRecordStore();
+		store.putRun(summary);
+		try {
+			for (const line of lines) {
+				store.append({
+					runId: line.runId,
+					stream: line.stream,
+					idempotencyKey: line.idempotencyKey,
+					payload: line.payload,
+					createdAt: line.createdAt,
+					schemaVersion: line.schemaVersion,
+					provenance: line.provenance,
+					origin: line.origin,
+					...(line.materializer ? { materializer: line.materializer } : {}),
+				});
+			}
+		} catch (error) {
+			if (!hasRecovery) {
+				const empty = createMemoryRecordStore();
+				empty.putRun(summary);
+				found.push({ summary, store: empty, unreadable: null });
+				continue;
+			}
+			found.push({
+				summary,
+				store: null,
+				unreadable: {
+					stream: "budget",
+					recordId: recoveryIds[0] ?? summary.id,
+					recoveryIds,
+					message:
+						error instanceof Error
+							? error.message
+							: "Committed recovery journal could not be replayed.",
+				},
+			});
+			continue;
+		}
+		found.push({ summary, store, unreadable: null });
+	}
+	return found;
+}
+
+/**
+ * Report historical frontier recoveries from the configured record root and,
+ * when a commit is supplied, from git history. Does not resume runs, rewrite
+ * journals, synthesize approvals, or commit project history.
+ */
+export async function discoverLegacyRecoveryLineage(input: {
+	recordStore: RecordStore;
+	git?: {
+		commit: string;
+		workdir: string;
+		recordsRelPath: string;
+	} | null;
+}): Promise<LegacyRecoveryDiscovery> {
+	const scanned = emptyScan();
+	const reports: LegacyRecoveryRunReport[] = [];
+	const seen = new Set<string>();
+	for (const summary of input.recordStore.listRuns()) {
+		seen.add(summary.id);
+		countStatus(scanned, summary.status);
+		const report = reportRecoveredRun({
+			store: input.recordStore,
+			summary,
+			source: "records",
+		});
+		if (report) reports.push(report);
+	}
+	if (input.git) {
+		const missing = await gitRunsMissingFrom({
+			seen,
+			commit: input.git.commit,
+			workdir: input.git.workdir,
+			recordsRelPath: input.git.recordsRelPath,
+		});
+		for (const entry of missing) {
+			seen.add(entry.summary.id);
+			countStatus(scanned, entry.summary.status);
+			if (!entry.store) {
+				reports.push({
+					runId: entry.summary.id,
+					status: entry.summary.status,
+					planPath: entry.summary.plan_path,
+					source: "git",
+					recoveryIds: entry.unreadable.recoveryIds,
+					lineageValid: false,
+					resumeCompatible: false,
+					completionAuthorized: false,
+					currentRevisionId: null,
+					history: [],
+					diagnostic: {
+						runId: entry.summary.id,
+						stream: entry.unreadable.stream,
+						recordId: entry.unreadable.recordId,
+						recoveryIds: entry.unreadable.recoveryIds,
+						message: entry.unreadable.message,
+					},
+					minimumToolchain: AMENDED_RUN_MINIMUM_TOOLCHAIN,
+				});
+				continue;
+			}
+			const report = reportRecoveredRun({
+				store: entry.store,
+				summary: entry.summary,
+				source: "git",
+			});
+			if (report) reports.push(report);
+		}
+	}
+	reports.sort((left, right) => left.runId.localeCompare(right.runId));
+	return {
+		scanned,
+		reports,
+		resumed: false,
+		journalRewritten: false,
+		syntheticApproval: false,
+		minimumToolchain: AMENDED_RUN_MINIMUM_TOOLCHAIN,
+	};
+}
+
+export function formatLegacyRecoveryDiscovery(
+	discovery: LegacyRecoveryDiscovery,
+): string[] {
+	const lines = [
+		`  ${discovery.minimumToolchain}`,
+		`  scanned: active=${discovery.scanned.active} completed=${discovery.scanned.completed} aborted=${discovery.scanned.aborted} other=${discovery.scanned.other}`,
+	];
+	if (discovery.reports.length === 0) lines.push("  none");
+	for (const report of discovery.reports) {
+		const history =
+			report.history.map((entry) => `${entry.kind}:${entry.id}`).join(" -> ") ||
+			"none";
+		const diagnostic = report.diagnostic
+			? ` diagnostic=${report.diagnostic.message}`
+			: "";
+		lines.push(
+			`  run ${report.runId} status=${report.status} source=${report.source} lineage=${report.lineageValid ? "valid" : "invalid"} resume_compatible=${report.resumeCompatible ? "yes" : "no"} completion_authorized=no current=${report.currentRevisionId ?? "none"} history=${history} recoveries=${report.recoveryIds.join(",") || "none"}${diagnostic}`,
+		);
+	}
+	lines.push(
+		"  Discovery does not resume runs, rewrite journals, synthesize approvals, or commit project history.",
+	);
+	return lines;
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -576,6 +1005,42 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 		homeDir: params.homeDir,
 	});
 	for (const line of harnessLog) console.log(line);
+	console.log();
+
+	// 6. Historical frontier recoveries. Read-only: no resume, rewrite, or commit.
+	console.log("Legacy recoveries:");
+	try {
+		const recordsAbs = layered.config.paths.records;
+		const recordStore = createWorkingTreeRecordStore({
+			recordsRoot: recordsAbs,
+		});
+		let commit: string | null = null;
+		try {
+			commit = await getLatestCommit(projectRoot);
+		} catch {
+			commit = null;
+		}
+		const recordsRel = relative(projectRoot, recordsAbs).replace(/\\/g, "/");
+		const discovery = await discoverLegacyRecoveryLineage({
+			recordStore,
+			git:
+				commit && recordsRel && !recordsRel.startsWith("..")
+					? {
+							commit,
+							workdir: projectRoot,
+							recordsRelPath: recordsRel,
+						}
+					: null,
+		});
+		for (const line of formatLegacyRecoveryDiscovery(discovery)) {
+			console.log(line);
+		}
+	} catch (error) {
+		console.log(
+			`  discovery failed closed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		console.log(`  ${AMENDED_RUN_MINIMUM_TOOLCHAIN}`);
+	}
 	console.log();
 
 	console.log("Upgrade complete.");

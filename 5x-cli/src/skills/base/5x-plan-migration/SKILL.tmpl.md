@@ -124,10 +124,11 @@ migration to change an obligation. The remediation depends on the run:
 
 - Approved plan-review run with no execution binding: revise the plan and
   have the revision approved through a fresh plan review. `5x review
-  implementation recover-plan` needs an execution run and does not apply.
-- Bound execution run: use the amendment workflow. For an
-  already-authorized amendment at an unfinished frontier, an operator may
-  use `5x review implementation recover-plan`.
+  implementation amend` needs an execution run and does not apply.
+- Bound execution run: use the amendment workflow. Record a scoped
+  `authorize_amendment`, have the plan re-reviewed with an exact-hash
+  `amendmentAssessment`, then register it with `5x review implementation
+  amend`.
 
 The target ledger must deep-equal the approved ledger. Migration does not
 reopen phases and does not authorize completion.

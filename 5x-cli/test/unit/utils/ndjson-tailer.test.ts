@@ -197,6 +197,47 @@ describe("NdjsonTailer", () => {
 		expect(lines.map((l) => l.entry.delta)).toEqual(["a", "b", "c"]);
 	});
 
+	test("abort yields a line written after the iterator is waiting", async () => {
+		// Capture locals before the await. This file's dir/controller are shared
+		// and concurrent tests replace them at the next beforeEach.
+		const localDir = dir;
+		const localController = controller;
+		const tailer = new NdjsonTailer({
+			dir: localDir,
+			pollInterval: 60_000,
+			signal: localController.signal,
+		});
+		const next = tailer[Symbol.asyncIterator]().next();
+		await Bun.sleep(20);
+		appendFileSync(
+			join(localDir, "agent-001.ndjson"),
+			`${JSON.stringify({ type: "text", delta: "on-disk" })}\n`,
+		);
+		localController.abort();
+		const result = await next;
+		expect(result.done).toBe(false);
+		if (result.done) return;
+		expect(result.value.entry.delta).toBe("on-disk");
+	});
+
+	test("abort before iteration still yields a line already on disk", async () => {
+		const localDir = dir;
+		const localController = controller;
+		appendFileSync(
+			join(localDir, "agent-001.ndjson"),
+			`${JSON.stringify({ type: "text", delta: "before-start" })}\n`,
+		);
+		const tailer = new NdjsonTailer({
+			dir: localDir,
+			pollInterval: 0,
+			signal: localController.signal,
+		});
+		localController.abort();
+		const lines: string[] = [];
+		for await (const line of tailer) lines.push(String(line.entry.delta));
+		expect(lines).toEqual(["before-start"]);
+	});
+
 	test("session_start entries are parsed normally", () => {
 		writeLine("agent-001.ndjson", {
 			ts: "t0",

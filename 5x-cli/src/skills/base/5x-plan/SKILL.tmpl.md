@@ -49,6 +49,7 @@ timeout handling.
   Enforced review routing comes only from the recorded
   `.data.result.governance.route`; never recompute thresholds or infer a route
   from reviewer prose. Advisory/off and `v1_compat` preserve v1 routing.
+- A semantic change to a plan already bound to an active implementation run is not attached by a ready plan review. Hand off authorize → amend → assess → register → resume, and record structured `amendmentScope`. Rationale prose is not scope. If final corrections change the assessed bytes, the next review must reassess that exact hash. Do not create a new frontier recovery.
 - `run init --worktree` automatically skips the dirty-worktree check
   (worktrees are isolated). Without `--worktree`, use `--allow-dirty`
   if untracked IDE files (`.cursor/`, `.idea/`, etc.) trigger `DIRTY_WORKTREE`

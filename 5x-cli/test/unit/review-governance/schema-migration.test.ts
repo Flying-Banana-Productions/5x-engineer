@@ -493,9 +493,9 @@ describe("plan schema migration", () => {
 		expect(governing.message).toContain(
 			migrationGoverningChangeHelp("execution"),
 		);
-		expect(governing.message).toContain("recover-plan");
+		expect(governing.message).toContain("5x review implementation amend");
 		expect(migrationCount(ctx)).toBe(0);
-		// recover-plan needs an execution run. An unbound approval must not be
+		// Amendment registration needs an execution run. An unbound approval must not be
 		// pointed at it.
 		const unbound = caught(() =>
 			runMigration(ctx, approved, edited, {
@@ -507,7 +507,7 @@ describe("plan schema migration", () => {
 		expect(unbound.code).toBe("PLAN_MIGRATION_GOVERNING_CHANGE");
 		expect(unbound.message).toContain(migrationGoverningChangeHelp("source"));
 		expect(unbound.message).toContain("fresh plan review");
-		expect(unbound.message).not.toContain("recover-plan --help");
+		expect(unbound.message).not.toContain("amend --help");
 		const wrapped = wrapEquivalentPlan(approved);
 		const mismatched = subjectFor(approved);
 		mismatched.ledger = {

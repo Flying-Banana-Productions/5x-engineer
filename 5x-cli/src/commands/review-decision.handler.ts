@@ -1,16 +1,32 @@
 import type { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import type {
+	AppendOp,
+	AtomicAppendIfAllNewResult,
 	RecordPerformer,
+	RecordStream,
 	StepRecordPayload,
 } from "../control-plane/index.js";
+import { stepIdempotencyKey } from "../control-plane/record-types.js";
 import { createSqlitePromptStore } from "../control-plane/sqlite-store.js";
 import type { PromptStore } from "../control-plane/store.js";
-import { completeRun, getRunV1 } from "../db/operations-v1.js";
+import { completeRun, getRunV1, recordStep } from "../db/operations-v1.js";
 import { CliError } from "../output.js";
-import type { ReviewerVerdict } from "../protocol.js";
+import { parsePlan } from "../parsers/plan.js";
+import {
+	readAuthoritativeBudget,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
+import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
-import { workdirCodeDiffGit } from "../review-governance/code-diff.js";
+import {
+	assertCleanCodeWorktree,
+	CodeDiffError,
+	changedCodePaths,
+	isCodeAncestor,
+	readHeadCommit,
+	workdirCodeDiffGit,
+} from "../review-governance/code-diff.js";
 import {
 	decodeImplementationDecisionPayload,
 	decodeReviewDecisionPayload,
@@ -32,9 +48,16 @@ import {
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
 import { unsettledAuthorFindingIds } from "../review-governance/implementation.js";
 import {
+	type EffectiveExecution,
+	foldEffectiveExecution,
+	prepareAuthorizeAmendmentScope,
+	registerImplementationAmendment,
+} from "../review-governance/implementation-amendment.js";
+import {
 	ensureImplementationAdmission,
 	listRecordedImplementationReviews,
 	planRepoPath,
+	showPlanAtCommit,
 } from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
@@ -79,6 +102,12 @@ export interface SubmitPlanReviewDecisionPayload {
 	snapshotId?: string;
 	/** Implementation accept_with_restriction only. */
 	restriction?: string;
+	/**
+	 * Structured scope for a new authorize_amendment decision.
+	 * Omitted keys are not defaulted. Rationale is not scope.
+	 * Fingerprints may be omitted; recording fills them from observations.
+	 */
+	amendmentScope?: unknown;
 }
 
 export interface SubmitPlanReviewDecisionInput {
@@ -1167,6 +1196,21 @@ async function acceptStoredImplementationDecision(
 			ledgerHash: stored.ledgerHash,
 			decisionsHash: stored.decisionsHash,
 			createdAt: stored.createdAt,
+			...(input.payload.amendmentScope !== undefined
+				? {
+						amendmentScope: recordedAmendmentScope(
+							ctx,
+							input.runId,
+							{
+								choice: input.payload.choice,
+								amendmentScope: input.payload.amendmentScope,
+								findingRefs,
+								sourceObservationId: stored.observationId,
+							},
+							{ requireCurrentPredecessor: false },
+						),
+					}
+				: {}),
 		});
 	} catch (error) {
 		fail(
@@ -1244,6 +1288,500 @@ function implementationFindingRefs(input: {
 	return findingRefs;
 }
 
+/** Schema 1 phase ids come from the governing projection of the authorized bytes. */
+function effectivePhaseIds(
+	folded: EffectiveExecution,
+	revisionBytes: string,
+): string[] {
+	const read = readAuthoritativePlan(
+		folded.approvedPlanBytes,
+		folded.planSchema,
+	);
+	const plan = read.ok ? read.plan : parsePlan(revisionBytes);
+	return plan.phases.map((phase) => phase.number);
+}
+
+function effectiveApprovedClaims(
+	binding: NonNullable<
+		ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
+	>,
+	folded: EffectiveExecution,
+): { claimIds: Set<string>; deltas: Map<string, number> } {
+	// Schema 1 reads the ledger from the governing projection.
+	const read = readAuthoritativeBudget(
+		folded.approvedPlanBytes,
+		folded.planSchema,
+	);
+	const parsed = read.ok ? read.parsed : { ok: false as const };
+	if (!parsed.ok && folded.approvedPlanBytes !== binding.approvedPlanBytes) {
+		throw new TypeError("The effective approved ledger could not be parsed.");
+	}
+	const ledger = parsed.ok ? parsed.value : binding.ledger;
+	const withdrawn = new Set(
+		folded.dispositions.flatMap((entry) =>
+			entry.claimEdits
+				.filter((edit) => edit.effect === "withdraw")
+				.map((edit) => edit.creditClaimId),
+		),
+	);
+	const claimIds = new Set<string>();
+	const deltas = new Map<string, number>();
+	for (const item of ledger.workItems) {
+		const id = item.debtClaim?.debtClaimId;
+		if (!id || withdrawn.has(id)) continue;
+		claimIds.add(id);
+		deltas.set(id, item.architectureDelta);
+	}
+	return { claimIds, deltas };
+}
+
+function recordedAmendmentScope(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	input: {
+		choice: string;
+		amendmentScope: unknown;
+		findingRefs: readonly FindingIdentity[];
+		sourceObservationId: string;
+	},
+	options?: { requireCurrentPredecessor?: boolean },
+): AmendmentScope | undefined {
+	if (
+		input.choice !== "authorize_amendment" &&
+		input.amendmentScope === undefined
+	) {
+		return undefined;
+	}
+	const folded = foldEffectiveExecution({
+		recordStore: ctx.recordStore,
+		runId,
+	});
+	if (!folded.ok) throw new TypeError(folded.diagnostic.message);
+	const current = folded.revisions.find(
+		(revision) => revision.id === folded.currentRevisionId,
+	);
+	if (!current) throw new TypeError("The current revision is missing.");
+	const binding = ctx.store.getImplementationBinding(runId);
+	if (!binding) throw new TypeError("implementation binding is missing");
+	const ledgerClaimIds = effectiveApprovedClaims(binding, folded).claimIds;
+	return prepareAuthorizeAmendmentScope({
+		choice: input.choice,
+		amendmentScope: input.amendmentScope,
+		findingRefs: input.findingRefs,
+		sourceObservationId: input.sourceObservationId,
+		observations: ctx.store
+			.listImplementationReviews(runId)
+			.filter((observation) => observation.bindingId === binding.id),
+		phaseIds: effectivePhaseIds(folded, current.approvedPlanBytes),
+		currentRevisionId: folded.currentRevisionId,
+		ledgerClaimIds,
+		requireCurrentPredecessor: options?.requireCurrentPredecessor,
+	});
+}
+
+function unresolvedApprovalGate(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	mode: "advisory" | "enforced",
+): boolean {
+	const open = createReviewGovernanceStore(ctx.recordStore).deriveOpenGate(
+		runId,
+	);
+	if (!open) return false;
+	if (mode === "advisory") {
+		return open.causes.some(
+			(cause) => cause.kind !== "budget_alert" && cause.kind !== "budget_band",
+		);
+	}
+	return true;
+}
+
+function resolveJournalStep(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	selector: string,
+) {
+	const lines = ctx.recordStore.listLines(runId, "steps");
+	const exact = lines.find((line) => line.idempotencyKey === selector);
+	if (exact) return exact;
+	if (/^\d+$/.test(selector)) {
+		const row = ctx.db
+			.query(
+				`SELECT step_name, phase, iteration FROM steps WHERE id = ?1 AND run_id = ?2`,
+			)
+			.get(Number(selector), runId) as {
+			step_name: string;
+			phase: string | null;
+			iteration: number;
+		} | null;
+		if (!row) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				`Step ${selector} is not in this run.`,
+			);
+		}
+		const key = stepIdempotencyKey({
+			runId,
+			stepName: row.step_name,
+			phase: row.phase,
+			iteration: row.iteration,
+		});
+		const line = lines.find((candidate) => candidate.idempotencyKey === key);
+		if (!line) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				`Step ${selector} has no authoritative journal identity.`,
+			);
+		}
+		return line;
+	}
+	if (selector.startsWith("step:") && !selector.startsWith(`step:${runId}:`)) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"Human and approval steps must belong to the execution run.",
+		);
+	}
+	const qualified = selector.startsWith("step:")
+		? selector
+		: `step:${runId}:${selector}`;
+	const line = lines.find(
+		(candidate) => candidate.idempotencyKey === qualified,
+	);
+	if (!line) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			`Step ${selector} is not in this run.`,
+		);
+	}
+	return line;
+}
+
+function journalStep(line: { payload: unknown }): StepRecordPayload | null {
+	const payload = line.payload;
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+		return null;
+	}
+	const step = payload as StepRecordPayload;
+	if (
+		typeof step.step_name !== "string" ||
+		typeof step.iteration !== "number"
+	) {
+		return null;
+	}
+	return step;
+}
+
+function stepResultRecord(
+	step: StepRecordPayload | null,
+): Record<string, unknown> | null {
+	const result = step?.result_json;
+	if (!result || typeof result !== "object" || Array.isArray(result))
+		return null;
+	return result as Record<string, unknown>;
+}
+
+function completedAuthorCommit(
+	steps: readonly { idempotencyKey: string; payload: unknown }[],
+	humanKey: string,
+	approvalKey: string,
+): string {
+	const humanIndex = steps.findIndex(
+		(line) => line.idempotencyKey === humanKey,
+	);
+	const approvalIndex = steps.findIndex(
+		(line) => line.idempotencyKey === approvalKey,
+	);
+	const author = steps
+		.slice(humanIndex + 1, approvalIndex)
+		.reverse()
+		.find((line) => {
+			const step = journalStep(line);
+			const result = stepResultRecord(step);
+			return (
+				step?.phase === "plan" &&
+				step.step_name.startsWith("author:") &&
+				result?.result === "complete" &&
+				typeof result.commit === "string" &&
+				result.commit.length > 0
+			);
+		});
+	const commit = stepResultRecord(author ? journalStep(author) : null)?.commit;
+	if (typeof commit !== "string" || commit.length === 0) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"The plan approval has no completed author commit between the human authorization and the review.",
+		);
+	}
+	return commit;
+}
+
+function reviewBoundaryCommit(
+	steps: readonly { idempotencyKey: string; payload: unknown }[],
+	approvalKey: string,
+): string {
+	const approvalIndex = steps.findIndex(
+		(line) => line.idempotencyKey === approvalKey,
+	);
+	const boundary = steps
+		.slice(0, approvalIndex)
+		.reverse()
+		.find((line) => journalStep(line)?.step_name === "git:commit");
+	const hash = stepResultRecord(boundary ? journalStep(boundary) : null)?.hash;
+	if (typeof hash !== "string" || hash.length === 0) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"The plan approval has no recorded review-boundary commit.",
+		);
+	}
+	return hash;
+}
+
+async function appendAmendmentThroughAdmission(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	ops: AppendOp[],
+	expectedKeys: Partial<Record<RecordStream, string[]>>,
+): Promise<AtomicAppendIfAllNewResult> {
+	const stepOp = ops.find((op) => op.stream === "steps");
+	const budgetOp = ops.find((op) => op.stream === "budget");
+	const step = stepOp ? journalStep(stepOp) : null;
+	if (!stepOp || !budgetOp || !step?.phase) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"Registration did not commit. Repeat the dry-run.",
+		);
+	}
+	const run = getRunV1(ctx.db, runId);
+	if (!run) {
+		throw new CliError("RUN_NOT_FOUND", `Run ${runId} not found`);
+	}
+	let admitted: Awaited<ReturnType<typeof prepareRecordStepAppend>>;
+	try {
+		admitted = await prepareRecordStepAppend(
+			{
+				run: runId,
+				stepName: "implementation:amendment",
+				phase: step.phase,
+				iteration: step.iteration,
+				result: JSON.stringify(step.result_json),
+				performer: { kind: "human", role: "operator" },
+			},
+			{
+				db: ctx.db,
+				config: ctx.config,
+				recordStore: ctx.recordStore,
+				...(ctx.controlPlane ? { controlPlane: ctx.controlPlane } : {}),
+			},
+		);
+	} catch (error) {
+		if (error instanceof RecordError) {
+			throw new CliError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
+	let written: Awaited<ReturnType<typeof finalizeAndWritePreparedStep>>;
+	try {
+		written = await finalizeAndWritePreparedStep(
+			admitted.prepared,
+			{
+				db: ctx.db,
+				config: ctx.config,
+				recordStore: ctx.recordStore,
+				originFor: ctx.originFor,
+				run,
+			},
+			{
+				mode: "paired-all-new",
+				expectedKeys,
+				extraOps: (_finalized, envelope) => [
+					{
+						runId: budgetOp.runId,
+						stream: "budget",
+						idempotencyKey: budgetOp.idempotencyKey,
+						payload: budgetOp.payload,
+						createdAt: budgetOp.createdAt,
+						...envelope,
+					},
+				],
+			},
+		);
+	} catch (error) {
+		if (error instanceof RecordError) {
+			throw new CliError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
+	if (written.outcome === "coupled-key-exists") {
+		return { created: false, duplicates: [{ index: 1, line: written.line }] };
+	}
+	const budgetLine = ctx.recordStore.getLine(
+		runId,
+		"budget",
+		budgetOp.idempotencyKey,
+	);
+	if (!written.recorded) {
+		return budgetLine
+			? { created: false, duplicates: [{ index: 1, line: budgetLine }] }
+			: { created: false, duplicates: [] };
+	}
+	return {
+		created: true,
+		results: [
+			{ created: true, line: written.stepLine },
+			...(budgetLine ? [{ created: true, line: budgetLine }] : []),
+		],
+	};
+}
+
+export async function amendImplementationPlanCommand(
+	input: {
+		runId: string;
+		humanStep: string;
+		approvalStep: string;
+		fromPhase: string;
+		resolves: readonly string[];
+		dryRun?: boolean;
+	},
+	ctx: ReviewBudgetCommandContext,
+) {
+	const binding = ctx.store.getImplementationBinding(input.runId);
+	if (!binding) {
+		throw new CliError(
+			"IMPLEMENTATION_AMENDMENT_REJECTED",
+			"No existing binding to amend.",
+		);
+	}
+	const human = resolveJournalStep(ctx, input.runId, input.humanStep);
+	const approval = resolveJournalStep(ctx, input.runId, input.approvalStep);
+	const steps = ctx.recordStore.listLines(input.runId, "steps");
+	const approvedPlanCommit = completedAuthorCommit(
+		steps,
+		human.idempotencyKey,
+		approval.idempotencyKey,
+	);
+	const boundaryCommit = reviewBoundaryCommit(steps, approval.idempotencyKey);
+	const workdir = ctx.executionContext.effectiveWorkingDirectory;
+	const git = workdirCodeDiffGit(workdir);
+	const planPath = ctx.executionContext.run.plan_path;
+	const showOptions = { repoRoot: ctx.executionContext.controlPlaneRoot };
+	const excluded =
+		ctx.store.listImplementationReviewContexts(input.runId, binding.id).at(-1)
+			?.excludedPaths ?? [];
+	let committedPlanBytes: string;
+	try {
+		const head = await readHeadCommit(git);
+		if (
+			!(await isCodeAncestor(git, approvedPlanCommit, boundaryCommit)) ||
+			!(await isCodeAncestor(git, boundaryCommit, head))
+		) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				"The approved plan commit must be an ancestor of the review boundary, and the boundary an ancestor of HEAD.",
+			);
+		}
+		await assertCleanCodeWorktree(git, excluded);
+		const drifted = [
+			...(await changedCodePaths(
+				git,
+				approvedPlanCommit,
+				boundaryCommit,
+				excluded,
+			)),
+			...(await changedCodePaths(git, boundaryCommit, head, excluded)),
+		];
+		if (drifted.length > 0) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				"Non-workflow files changed after the approved plan commit.",
+			);
+		}
+		const approvedBytes = await showPlanAtCommit(
+			workdir,
+			approvedPlanCommit,
+			planPath,
+			showOptions,
+		);
+		const boundaryBytes = await showPlanAtCommit(
+			workdir,
+			boundaryCommit,
+			planPath,
+			showOptions,
+		);
+		const headBytes = await showPlanAtCommit(
+			workdir,
+			head,
+			planPath,
+			showOptions,
+		);
+		if (
+			approvedBytes === null ||
+			approvedBytes !== boundaryBytes ||
+			approvedBytes !== headBytes
+		) {
+			throw new CliError(
+				"IMPLEMENTATION_AMENDMENT_REJECTED",
+				"The plan bytes at the approved commit, the review boundary, and HEAD must match.",
+			);
+		}
+		committedPlanBytes = approvedBytes;
+	} catch (error) {
+		if (error instanceof CliError) throw error;
+		if (error instanceof CodeDiffError) {
+			throw new CliError("IMPLEMENTATION_AMENDMENT_REJECTED", error.message);
+		}
+		throw error;
+	}
+	const result = await registerImplementationAmendment(
+		{
+			runId: input.runId,
+			humanStepKey: human.idempotencyKey,
+			approvalStepKey: approval.idempotencyKey,
+			fromPhase: input.fromPhase,
+			resolves: input.resolves,
+			dryRun: input.dryRun,
+			committedPlanBytes,
+			worktreePlanBytes: readFileSync(
+				ctx.executionContext.effectivePlanPath,
+				"utf8",
+			),
+			approvedPlanCommit,
+			boundaryCommit,
+			headAccepted: true,
+			unresolvedApprovalGate: unresolvedApprovalGate(
+				ctx,
+				input.runId,
+				binding.mode,
+			),
+		},
+		{
+			recordStore: ctx.recordStore,
+			origin: ctx.originFor({ kind: "human", role: "operator" }),
+			appendPair: (ops, expectedKeys) =>
+				appendAmendmentThroughAdmission(ctx, input.runId, ops, expectedKeys),
+		},
+	);
+	if (!result.dryRun) {
+		recordStep(ctx.db, {
+			run_id: input.runId,
+			step_name: "implementation:amendment",
+			phase: result.step.phase,
+			iteration: result.step.iteration,
+			result_json: JSON.stringify(result.step.result),
+			head_commit: result.approvedPlanCommit,
+		});
+	}
+	return {
+		...result,
+		preservedBinding: {
+			id: binding.id,
+			sourceRunId: binding.sourceRunId,
+			b0: binding.b0,
+			governingB: binding.governingB,
+			mode: binding.mode,
+		},
+	};
+}
+
 function findImplementationGate(
 	ctx: ReviewBudgetCommandContext,
 	runId: string,
@@ -1299,14 +1837,16 @@ async function submitImplementationReviewDecision(
 	const allowed = allowedImplementationChoices(gate.causes);
 	if (!allowed.includes(choice))
 		fail("REVIEW_DECISION_INVALID", `${choice} is not allowed for this gate`);
-	const claimIds = new Set(binding.debtTargets.map((target) => target.claimId));
-	const originals = new Map(
-		binding.ledger.workItems.flatMap((item) =>
-			item.debtClaim
-				? [[item.debtClaim.debtClaimId, item.architectureDelta] as const]
-				: [],
-		),
-	);
+	const folded = foldEffectiveExecution({
+		recordStore: ctx.recordStore,
+		runId: input.runId,
+	});
+	if (!folded.ok) {
+		fail("IMPLEMENTATION_EVIDENCE_MALFORMED", folded.diagnostic.message);
+	}
+	const approvedClaims = effectiveApprovedClaims(binding, folded);
+	const claimIds = approvedClaims.claimIds;
+	const originals = approvedClaims.deltas;
 	const findingRefs = implementationFindingRefs({
 		eligible: new Map(
 			gate.causes.flatMap((cause) =>
@@ -1326,7 +1866,14 @@ async function submitImplementationReviewDecision(
 		),
 	);
 	let decision: ImplementationDecisionPayload;
+	let amendmentScope: AmendmentScope | undefined;
 	try {
+		amendmentScope = recordedAmendmentScope(ctx, input.runId, {
+			choice,
+			amendmentScope: input.payload.amendmentScope,
+			findingRefs,
+			sourceObservationId: gate.observationId,
+		});
 		decision = createImplementationDecision({
 			gateId: gate.gateId,
 			observationId: gate.observationId,
@@ -1343,6 +1890,7 @@ async function submitImplementationReviewDecision(
 			ledgerHash: binding.ledgerHash,
 			decisionsHash: binding.decisionsHash,
 			createdAt: deps.now?.() ?? new Date().toISOString(),
+			...(amendmentScope ? { amendmentScope } : {}),
 		});
 		assertImplementationDecisionScope({
 			decision,

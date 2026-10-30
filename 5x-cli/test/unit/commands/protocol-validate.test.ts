@@ -33,6 +33,7 @@ import {
 	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import type { EffectiveExecution } from "../../../src/review-governance/implementation-amendment.js";
 import {
 	capturePhaseAuthorAdmission,
 	hashPlanBytes,
@@ -2084,8 +2085,8 @@ function implementationBinding() {
 		sourceSnapshotId: "snap",
 		sourceBaselineId: "base",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
 		approvedPlanBytes: "# Plan\n",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		b0: 2,
 		governingB: 2,
 		mode: "enforced" as const,
@@ -2145,6 +2146,9 @@ function verdictProvider(structured: unknown): AgentProvider {
 	};
 }
 
+// Serial: these tests spawn real git (see the note in
+// implementation-amendment-command.test.ts) and swap the global
+// `console.log` to capture envelopes.
 describe("protocol and invoke implementation recording", () => {
 	// These await a chain of git processes on this file's single thread.
 	// test.serial keeps sibling setup off their 15s budget.
@@ -2549,6 +2553,12 @@ The binding is unchanged.
 |---|---|---:|---:|---|---|---|
 | W1 | Bind | 2 | 0 | - | - | Required |
 
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
 ## Design Decisions
 
 Keep the approved ledger.
@@ -2798,6 +2808,8 @@ function stubImplementationBinding(
 	ctx: ReturnType<typeof makeBudgetContext>,
 	binding: { mode: "advisory" | "enforced"; workItemIds?: string[] },
 ): void {
+	const approvedPlanBytes = "# Plan\n";
+	const approvedPlanHash = "sha256:unused";
 	ctx.store.getImplementationBinding = () =>
 		({
 			id: "binding-1",
@@ -2809,9 +2821,37 @@ function stubImplementationBinding(
 					debtClaim: null,
 				})),
 			},
-			approvedPlanBytes: "# Plan\n",
-			approvedPlanHash: "sha256:unused",
+			approvedPlanBytes,
+			approvedPlanHash,
 		}) as unknown as ReturnType<typeof ctx.store.getImplementationBinding>;
 	ctx.store.getImplementationCompatibility = () => null;
 	ctx.store.listImplementationTextAmendments = () => [];
+	// Matching bytes keep the bound ledger when the plan text does not parse.
+	// A missing or disagreeing fold stays fail-closed in production.
+	ctx.store.readEffectiveImplementationRevision = () =>
+		({
+			ok: true,
+			runId: "run1",
+			bindingId: "binding-1",
+			initialRevisionId: "binding-1",
+			currentRevisionId: "binding-1",
+			selectedRevisionId: "binding-1",
+			pinned: {
+				b0: 0,
+				governingB: 0,
+				mode: binding.mode,
+				sourceRunId: "run1",
+				bindingId: "binding-1",
+			},
+			revisions: [],
+			dispositions: [],
+			evidence: [],
+			findings: [],
+			approvedPlanBytes,
+			approvedPlanHash,
+			lineageParentId: null,
+			planSchema: 0,
+			invalidatedContextIds: [],
+			invalidatedObservationIds: [],
+		}) satisfies EffectiveExecution;
 }

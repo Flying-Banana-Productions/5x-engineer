@@ -35,6 +35,7 @@ import {
 	type ReviewDecisionPayload,
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
+import { foldEffectiveExecution } from "./implementation-amendment.js";
 import {
 	detectPlanDrift,
 	type ReplayableLineageRecord,
@@ -78,6 +79,7 @@ export interface ImplementationValidationInput {
 	/** Recorded schema for the approved lineage. Omit for schema 0. */
 	recordedSchema?: 0 | 1;
 	governingHash?: string;
+	governingAnchorBytes?: string;
 	/**
 	 * True when validation is bound to a run. False is standalone protocol
 	 * validate: a missing phase is structural acceptance, not `UNKNOWN_PHASE`.
@@ -145,6 +147,7 @@ export function verdictUsesImplementationContract(
 export function verdictUsesPlanContract(verdict: ReviewerVerdict): boolean {
 	if (verdict.baselineAssessment !== undefined) return true;
 	if (verdict.creditAssessments !== undefined) return true;
+	if (verdict.amendmentAssessment !== undefined) return true;
 	return verdict.items.some(
 		(item) =>
 			isPlanScopeClass(item.scopeClass) || item.creditClaim !== undefined,
@@ -756,13 +759,23 @@ export function readImplementationCodeClosure(
 				.map((ref) => ref.findingId),
 		),
 	);
+	const folded = binding
+		? foldEffectiveExecution({ recordStore, runId })
+		: null;
+	const pendingFindings =
+		folded?.ok === true
+			? folded.findings
+					.filter(
+						(finding) =>
+							finding.phase === phaseId && finding.status === "pending",
+					)
+					.map((finding) => ({ id: finding.findingId }))
+			: null;
 	return {
 		priorReviewCount,
-		priorCodeFindings: latest
-			? openCodeFindings(latest).filter(
-					(finding) => !settledIds.has(finding.id),
-				)
-			: [],
+		priorCodeFindings: (
+			pendingFindings ?? (latest ? openCodeFindings(latest) : [])
+		).filter((finding) => !settledIds.has(finding.id)),
 		priorCodeDecisions: [
 			...codeClosureDecisions(
 				listGovernanceDecisions(recordStore, runId).decisions,
@@ -1049,6 +1062,9 @@ export function validateImplementationReview(
 				currentPlanBytes: input.approvedPlanBytes,
 				recordedSchema,
 				...(input.governingHash ? { governingHash: input.governingHash } : {}),
+				...(input.governingAnchorBytes
+					? { governingAnchorBytes: input.governingAnchorBytes }
+					: {}),
 			});
 			if (amendments.length > 0 && !drift.chainValid) {
 				diagnostics.push(

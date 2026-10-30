@@ -207,63 +207,63 @@ human authorization -> committed amendment -> scoped plan reviewer assessment
 
 **Completion gate:** Actual integrated plan-210 interfaces, paired append semantics and serialization permit this design; implementation begins only after this plan is reviewed and approved.
 
-- [ ] Verify plan 210 is completed and merged; record the integrated commit and interface reconciliation in run records, not unapproved structural plan edits.
-- [ ] Confirm binding, closure, gate, text-lineage, credit and archived-state readers; inventory raw record scans that need effective-revision semantics, including the `sqlite-index.ts` gate-chain copy and the `routing.ts` final-correction branch.
-- [ ] Reconcile legacy recovery codecs/keys, repeated recovery and text-lineage ordering; specify deterministic cross-stream causal evidence attribution and fail-closed ambiguity diagnostics before implementing the fold.
-- [ ] Confirm upgrade can discover active/completed/archived authoritative records without SQLite or source worktrees; inventory retirement of recovery-only command/handler/state branches while retaining historical decoding.
-- [ ] Verify atomic append plus existing mutation lock/CAS covers approval/predecessor revalidation; resolve any gap by revising this plan before implementation.
-- [ ] Verify the reviewed impact assessment contract, phase-qualified resolution selectors, and version-1 `amendmentScope` codec fit existing protocol/parser conventions. Confirm historical decisions that omit `amendmentScope` still decode and that no SQLite migration is needed.
+- [x] Verify plan 210 is completed and merged; record the integrated commit and interface reconciliation in run records, not unapproved structural plan edits.
+- [x] Confirm binding, closure, gate, text-lineage, credit and archived-state readers; inventory raw record scans that need effective-revision semantics, including the `sqlite-index.ts` gate-chain copy and the `routing.ts` final-correction branch.
+- [x] Reconcile legacy recovery codecs/keys, repeated recovery and text-lineage ordering; specify deterministic cross-stream causal evidence attribution and fail-closed ambiguity diagnostics before implementing the fold.
+- [x] Confirm upgrade can discover active/completed/archived authoritative records without SQLite or source worktrees; inventory retirement of recovery-only command/handler/state branches while retaining historical decoding.
+- [x] Verify atomic append plus existing mutation lock/CAS covers approval/predecessor revalidation; resolve any gap by revising this plan before implementation.
+- [x] Verify the reviewed impact assessment contract, phase-qualified resolution selectors, and version-1 `amendmentScope` codec fit existing protocol/parser conventions. Confirm historical decisions that omit `amendmentScope` still decode and that no SQLite migration is needed.
 
 ## Phase 1: Revision Records and Reviewed Impact Contract (W1, W3)
 
 **Completion gate:** Pure record/assessment codecs and effective revision fold reconstruct valid lineage and reject ambiguous or corrupt authority without changing existing runs.
 
-- [ ] Define amendment payload, initial/current revision identities, portable evidence references, strict codecs, and rebuild kind handling.
-- [ ] Add optional revision qualification to implementation evidence; omitted fields use initial-revision fallback only absent intervening legacy recovery, otherwise use Decision 9's causal attribution.
-- [ ] Add plan-only `amendmentAssessment` schema/help/normalization and reviewer prompt context containing trusted predecessor/hash/diff.
-- [ ] Implement effective execution/finding/evidence fold with explicit carry, invalidation and amendment-resolution dispositions.
-- [ ] Fold original-format and repeated frontier recovery receipts as explicitly legacy revisions; reconstruct evidence between boundaries without synthetic reviewer assessments or history rewrites.
-- [ ] Cover unknown versions, missing causal pairs, forked predecessor chains, wrong hashes, phase identity changes, and old-run compatibility, including former-contract recovery decisions that omit `amendmentScope`. Omitted `amendmentScope` leaves historical decision intent hashes unchanged.
+- [x] Define amendment payload, initial/current revision identities, portable evidence references, strict codecs, and rebuild kind handling.
+- [x] Add optional revision qualification to implementation evidence; omitted fields use initial-revision fallback only absent intervening legacy recovery, otherwise use Decision 9's causal attribution.
+- [x] Add plan-only `amendmentAssessment` schema/help/normalization and reviewer prompt context containing trusted predecessor/hash/diff.
+- [x] Implement effective execution/finding/evidence fold with explicit carry, invalidation and amendment-resolution dispositions.
+- [x] Fold original-format and repeated frontier recovery receipts as explicitly legacy revisions; reconstruct evidence between boundaries without synthetic reviewer assessments or history rewrites.
+- [x] Cover unknown versions, missing causal pairs, forked predecessor chains, wrong hashes, phase identity changes, and old-run compatibility, including former-contract recovery decisions that omit `amendmentScope`. Omitted `amendmentScope` leaves historical decision intent hashes unchanged.
 
 ## Phase 2: Provenance Validation and Registration (W2)
 
 **Completion gate:** Dry-run and record validate identical intent; durable registration is paired, idempotent, and stale/concurrent evidence cannot win.
 
-- [ ] Add `review implementation amend` options/help and framework-independent handler using existing command context and canonical plan identity.
-- [ ] Validate active run, accepted human reference, coupled scoped plan approval, exact committed blob/ledger and current revision/hash.
-- [ ] Require a new typed `authorize_amendment` with `amendmentScope` and its coupled human step. Reject generic continue/override, unrelated or superseded authorizations, historical decisions that omit the scope, and any effect outside the intersection of that scope and the assessment.
-- [ ] Record `amendmentScope` only from the structured decision input and the one-to-one flags in Decision 2. Reject scope inferred from rationale or gate prose, a missing boolean or list key, a bare reopen flag, the object on any other choice, an unknown phase, and a predecessor that is not current. Empty claim and resolution lists are explicit empty arrays.
-- [ ] Require the requested `--resolves` set to equal the assessment's amendment-resolved findings, and require that set to be covered by `resolutionRefs`. The assessment may name fewer resolutions than the authorization and must not name more. Plain `--resolves` selects only the source observation; cross-phase refs require the phase/observation/finding selector. Reject unresolved approval gates and unsupported credit/phase changes.
-- [ ] Derive preview output without authoritative writes; pair receipt/record through shared admission/finalization and read back the winner.
-- [ ] Test retry after partial local projection, identical-intent retry, changed-intent conflicts, authorization reuse against a later predecessor, competing amendments, concurrent reviewers/decisions, stale plan/head and missing authorization.
-- [ ] Add negative registration tests for an assessed boundary earlier than `earliestAffectedPhase`, completed-phase reopening when `reopenCompletedPhases` is false, a claim effect that is not enumerated, a resolved finding outside `resolutionRefs`, a plain `--resolves` ID that exists only on another phase, a rationale that names an effect the structured scope does not, a broader assessment accepted or clamped, and `amendmentScope` on a non-`authorize_amendment` choice.
+- [x] Add `review implementation amend` options/help and framework-independent handler using existing command context and canonical plan identity.
+- [x] Validate active run, accepted human reference, coupled scoped plan approval, exact committed blob/ledger and current revision/hash.
+- [x] Require a new typed `authorize_amendment` with `amendmentScope` and its coupled human step. Reject generic continue/override, unrelated or superseded authorizations, historical decisions that omit the scope, and any effect outside the intersection of that scope and the assessment.
+- [x] Record `amendmentScope` only from the structured decision input and the one-to-one flags in Decision 2. Reject scope inferred from rationale or gate prose, a missing boolean or list key, a bare reopen flag, the object on any other choice, an unknown phase, and a predecessor that is not current. Empty claim and resolution lists are explicit empty arrays.
+- [x] Require the requested `--resolves` set to equal the assessment's amendment-resolved findings, and require that set to be covered by `resolutionRefs`. The assessment may name fewer resolutions than the authorization and must not name more. Plain `--resolves` selects only the source observation; cross-phase refs require the phase/observation/finding selector. Reject unresolved approval gates and unsupported credit/phase changes.
+- [x] Derive preview output without authoritative writes; pair receipt/record through shared admission/finalization and read back the winner.
+- [x] Test retry after partial local projection, identical-intent retry, changed-intent conflicts, authorization reuse against a later predecessor, competing amendments, concurrent reviewers/decisions, stale plan/head and missing authorization.
+- [x] Add negative registration tests for an assessed boundary earlier than `earliestAffectedPhase`, completed-phase reopening when `reopenCompletedPhases` is false, a claim effect that is not enumerated, a resolved finding outside `resolutionRefs`, a plain `--resolves` ID that exists only on another phase, a rationale that names an effect the structured scope does not, a broader assessment accepted or clamped, and `amendmentScope` on a non-`authorize_amendment` choice.
 
 ## Phase 3: Revision-Aware Execution and Claim Continuity (W4, W5)
 
 **Completion gate:** A registered amendment permits correctly scoped author admission but cannot reuse affected completion authority or obsolete credit.
 
-- [ ] Route author admission, render/invoke/protocol paths and text-lineage replay through effective state without resetting binding/pre-author identities.
-- [ ] Replace recovery-specific authority/routing branches with the canonical fold and remove the independent `recover-plan` mutation path; preserve historical acceptance and allow legacy-to-new revision predecessors.
-- [ ] In `routing.ts`, withhold `final_corrections` when an amendment review's assessed bytes changed, and require continued scoped reassessment on native and invoke paths. Initial plan reviews retain the existing shortcut. `run-v1.handler.ts` only reads the persisted route.
-- [ ] Refresh revision-qualified code contexts even for unchanged endpoints; retain original continued-review range history and round counts.
-- [ ] Carry unresolved findings; suppress only explicitly amendment-resolved identities; preserve unchanged accepted decisions with recorded applicability.
-- [ ] Include revision in gate/decision/shortcut authority in both `store.ts` and `sqlite-index.ts`, using the same derivation inputs, and prevent stale guards, contexts, decisions and correction attempts from certifying affected phases. A rebuild must project the same gate identities and readiness.
-- [ ] Recompute approved budget under pinned B0/B/mode/thresholds; withdraw or edit a reserved claim only when both the authorization and the assessment enumerate that effect, and invalidate changed claim contracts without minting credit.
-- [ ] Apply carry/invalidation to phase advancement, completed-phase progress, phase completion and final run sealing; no bypass through old checklist/progress records.
+- [x] Route author admission, render/invoke/protocol paths and text-lineage replay through effective state without resetting binding/pre-author identities.
+- [x] Replace recovery-specific authority/routing branches with the canonical fold and remove the independent `recover-plan` mutation path; preserve historical acceptance and allow legacy-to-new revision predecessors.
+- [x] In `routing.ts`, withhold `final_corrections` when an amendment review's assessed bytes changed, and require continued scoped reassessment on native and invoke paths. Initial plan reviews retain the existing shortcut. `run-v1.handler.ts` only reads the persisted route.
+- [x] Refresh revision-qualified code contexts even for unchanged endpoints; retain original continued-review range history and round counts.
+- [x] Carry unresolved findings; suppress only explicitly amendment-resolved identities; preserve unchanged accepted decisions with recorded applicability.
+- [x] Include revision in gate/decision/shortcut authority in both `store.ts` and `sqlite-index.ts`, using the same derivation inputs, and prevent stale guards, contexts, decisions and correction attempts from certifying affected phases. A rebuild must project the same gate identities and readiness.
+- [x] Recompute approved budget under pinned B0/B/mode/thresholds; withdraw or edit a reserved claim only when both the authorization and the assessment enumerate that effect, and invalidate changed claim contracts without minting credit.
+- [x] Apply carry/invalidation to phase advancement, completed-phase progress, phase completion and final run sealing; no bypass through old checklist/progress records.
 
 ## Phase 4: State, Guidance and End-to-End Acceptance (W6)
 
 **Completion gate:** Every orchestration path and current/archived reader agrees on effective revision, pending fixes and readiness; documented workflow is executable after a restart/rebuild.
 
-- [ ] Present original/effective provenance and amendment history, affected phases, retained evidence, resolved/pending findings and credit differences in state and registration output.
-- [ ] Add upgrade discovery/validation/reporting for legacy recoveries across active/completed/archived authoritative records; repeat safely without journal conversion, synthetic approval, run resumption or automatic project commits.
-- [ ] Update author/reviewer templates and phase-execution/plan-review skills across supported delegation modes with authorize → amend → assess → register → resume, including structured `amendmentScope` recording. Rationale prose is not scope.
-- [ ] Replace misleading bind/drift remediation with actual supported commands and amendment-assessment requirements; document toolchain compatibility and initial binding distinction.
-- [ ] Add deterministic Player Desk-shaped acceptance: unchanged Phase 1, affected Phase 2+, R7 scope-resolution, seven retained fixes, DC1 withdrawal, DC0 conservative carry, and unchanged baseline.
-- [ ] Verify read-only dry-run/state against recorded fixtures, index rebuild/source-worktree removal, repeated amendments and interleaved guarded text amendments.
-- [ ] Exercise a deterministic legacy-to-new lifecycle: repeated frontier recoveries, intervening reviews, earlier phase completion and text amendments → upgrade/rebuild with identical historical authority → resume → register a new-format amendment against the final legacy predecessor; malformed/ambiguous histories fail closed.
-- [ ] Verify the effective installed/rendered asset contract, including retired recovery guidance and amendment reassessment, using `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`.
-- [ ] Run focused suites, `bun run typecheck`, `bun run lint`, and the full configured quality gates before final review; complete only after all work items and acceptance cases pass.
+- [x] Present original/effective provenance and amendment history, affected phases, retained evidence, resolved/pending findings and credit differences in state and registration output.
+- [x] Add upgrade discovery/validation/reporting for legacy recoveries across active/completed/archived authoritative records; repeat safely without journal conversion, synthetic approval, run resumption or automatic project commits.
+- [x] Update author/reviewer templates and phase-execution/plan-review skills across supported delegation modes with authorize → amend → assess → register → resume, including structured `amendmentScope` recording. Rationale prose is not scope.
+- [x] Replace misleading bind/drift remediation with actual supported commands and amendment-assessment requirements; document toolchain compatibility and initial binding distinction.
+- [x] Add deterministic Player Desk-shaped acceptance: unchanged Phase 1, affected Phase 2+, R7 scope-resolution, seven retained fixes, DC1 withdrawal, DC0 conservative carry, and unchanged baseline.
+- [x] Verify read-only dry-run/state against recorded fixtures, index rebuild/source-worktree removal, repeated amendments and interleaved guarded text amendments.
+- [x] Exercise a deterministic legacy-to-new lifecycle: repeated frontier recoveries, intervening reviews, earlier phase completion and text amendments → upgrade/rebuild with identical historical authority → resume → register a new-format amendment against the final legacy predecessor; malformed/ambiguous histories fail closed.
+- [x] Verify the effective installed/rendered asset contract, including retired recovery guidance and amendment reassessment, using `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`.
+- [x] Run focused suites, `bun run typecheck`, `bun run lint`, and the full configured quality gates before final review; complete only after all work items and acceptance cases pass.
 
 ## Files Touched
 

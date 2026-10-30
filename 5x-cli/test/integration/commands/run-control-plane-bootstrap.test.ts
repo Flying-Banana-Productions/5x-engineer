@@ -62,7 +62,15 @@ function run5x(cwd: string, args: string[]) {
 	};
 }
 
-/** Write the first log only after watch has created its initially absent directory. */
+/**
+ * Write the first log only after watch has created its initially absent directory.
+ *
+ * A fixed kill measured from spawn is unreliable under `bun test --concurrent`:
+ * Bun startup contends for CPU, and SIGINT before the tailer polls drops a line
+ * that is already on disk (empty stdout, exit 0). Stop when the record appears.
+ * If it is on disk but not yet polled, SIGINT after a short observe window
+ * drains it. The cap only bounds a watch that never creates the directory.
+ */
 async function watchFirstLog(cwd: string, logDir: string) {
 	expect(existsSync(logDir)).toBe(false);
 	const proc = Bun.spawn(
@@ -76,7 +84,12 @@ async function watchFirstLog(cwd: string, logDir: string) {
 		},
 	);
 	let wroteLog = false;
+	let wroteAt = 0;
 	let stdout = "";
+	const started = Date.now();
+	const kill = () => {
+		if (proc.exitCode === null) proc.kill("SIGINT");
+	};
 	const poll = setInterval(() => {
 		if (!wroteLog && existsSync(logDir)) {
 			writeFileSync(
@@ -84,14 +97,18 @@ async function watchFirstLog(cwd: string, logDir: string) {
 				`${JSON.stringify({ type: "text", delta: "first log" })}\n`,
 			);
 			wroteLog = true;
+			wroteAt = Date.now();
 		}
+		if (stdout.includes("first log")) kill();
+		else if (wroteLog && Date.now() - wroteAt >= 2_000) kill();
+		else if (Date.now() - started >= 25_000) kill();
 	}, 10);
-	const timer = setTimeout(() => proc.kill("SIGINT"), 10000);
 	try {
 		const readOutput = async () => {
+			const decoder = new TextDecoder();
 			for await (const chunk of proc.stdout) {
-				stdout += new TextDecoder().decode(chunk);
-				if (stdout.includes("first log")) proc.kill("SIGINT");
+				stdout += decoder.decode(chunk, { stream: true });
+				if (stdout.includes("first log")) kill();
 			}
 		};
 		const [, stderr, code] = await Promise.all([
@@ -109,7 +126,6 @@ async function watchFirstLog(cwd: string, logDir: string) {
 		});
 	} finally {
 		clearInterval(poll);
-		clearTimeout(timer);
 		if (proc.exitCode === null) {
 			proc.kill("SIGKILL");
 			await proc.exited;

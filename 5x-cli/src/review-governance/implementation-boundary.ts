@@ -10,6 +10,7 @@
 
 import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationClaimObservation,
@@ -22,10 +23,14 @@ import type {
 } from "../review-budget/record-lines.js";
 import {
 	isCompleteDebtClaimEvidence,
+	type ParsedDeliveryBudget,
 	type ReviewBudgetMode,
 } from "../review-budget/types.js";
+import type { EffectiveExecution } from "./implementation-amendment.js";
+import { foldEffectiveExecution } from "./implementation-amendment.js";
 import {
 	detectPlanDrift,
+	effectivePlanSchema,
 	recordedPlanSchemaFromBinding,
 } from "./implementation-state.js";
 import { deriveOpenImplementationGate } from "./store.js";
@@ -97,6 +102,8 @@ export interface ImplementationBoundaryInput {
 	hasImplementationHistory: boolean;
 	hasDeliveryBudget: boolean;
 	malformed?: { message: string } | null;
+	/** Current prefix from the canonical fold. Raw recovery scans are the fallback. */
+	effectiveExecution?: EffectiveExecution | null;
 }
 
 interface DueClaim {
@@ -111,13 +118,18 @@ function phaseIndex(
 	return phaseMap.findIndex((phase) => phase.id === phaseId);
 }
 
-function dueClaims(binding: ImplementationBindingPayload): DueClaim[] {
+function dueClaims(
+	binding: ImplementationBindingPayload,
+	ledger: ParsedDeliveryBudget,
+	withdrawnClaimIds: ReadonlySet<string>,
+): DueClaim[] {
 	const claims: DueClaim[] = [];
-	for (const item of binding.ledger.workItems) {
+	for (const item of ledger.workItems) {
 		if (item.architectureDelta >= 0) continue;
 		const claim = item.debtClaim;
 		if (!isCompleteDebtClaimEvidence(claim)) continue;
 		if (claim.coupling !== "intrinsic") continue;
+		if (withdrawnClaimIds.has(claim.debtClaimId)) continue;
 		const target = binding.debtTargets.find(
 			(entry) => entry.claimId === claim.debtClaimId,
 		);
@@ -195,6 +207,8 @@ function phaseSettlement(input: {
 	headCommit: string | null;
 	codeEquivalentCommits?: readonly string[];
 	requireHeadMatch: boolean;
+	ledger: ParsedDeliveryBudget;
+	withdrawnClaimIds: ReadonlySet<string>;
 }): ImplementationBoundaryPhaseReadiness {
 	const observation = latestForPhase(
 		input.observations,
@@ -236,9 +250,11 @@ function phaseSettlement(input: {
 			observation?.route === "author_revision");
 	const reviewed = ordinaryComplete || correctedComplete;
 
-	const phaseClaims = dueClaims(input.binding).filter(
-		(claim) => claim.phaseId === input.phase,
-	);
+	const phaseClaims = dueClaims(
+		input.binding,
+		input.ledger,
+		input.withdrawnClaimIds,
+	).filter((claim) => claim.phaseId === input.phase);
 	const reconciliation = latestForPhase(
 		input.reconciliations,
 		input.binding.id,
@@ -343,19 +359,51 @@ export function evaluateImplementationBoundary(
 	}
 
 	const pinned = input.binding.mode;
+	const effective = input.effectiveExecution;
+	// Schema 1 reads the ledger from the governing projection.
+	const effectiveBudget = effective
+		? readAuthoritativeBudget(effective.approvedPlanBytes, effective.planSchema)
+		: null;
+	const parsedLedger = effectiveBudget
+		? effectiveBudget.ok
+			? effectiveBudget.parsed
+			: { ok: false as const }
+		: null;
+	if (
+		effective &&
+		parsedLedger &&
+		!parsedLedger.ok &&
+		effective.approvedPlanBytes !== input.binding.approvedPlanBytes
+	) {
+		return deny(
+			"IMPLEMENTATION_EVIDENCE_MALFORMED",
+			"The effective approved ledger could not be parsed.",
+			emptyReadiness(true),
+			["The effective approved ledger could not be parsed."],
+		);
+	}
+	const ledger = parsedLedger?.ok ? parsedLedger.value : input.binding.ledger;
+	const withdrawnClaimIds = new Set(
+		effective?.dispositions.flatMap((entry) =>
+			entry.claimEdits
+				.filter((edit) => edit.effect === "withdraw")
+				.map((edit) => edit.creditClaimId),
+		) ?? [],
+	);
 	const lineage = input.amendments.filter(
 		(amendment) => amendment.bindingId === input.binding?.id,
 	);
-	const recorded = recordedPlanSchemaFromBinding(input.binding, lineage);
+	const recorded = effective
+		? effectivePlanSchema(effective)
+		: recordedPlanSchemaFromBinding(input.binding, lineage);
 	const drift = detectPlanDrift({
-		approvedPlanBytes: input.binding.approvedPlanBytes,
-		approvedPlanHash: input.binding.approvedPlanHash,
-		amendments: lineage,
+		approvedPlanBytes:
+			effective?.approvedPlanBytes ?? input.binding.approvedPlanBytes,
+		approvedPlanHash:
+			effective?.approvedPlanHash ?? input.binding.approvedPlanHash,
+		amendments: effective ? [] : lineage,
 		currentPlanBytes: input.currentPlanBytes ?? "",
-		recordedSchema: recorded.recordedSchema,
-		...(recorded.governingHash
-			? { governingHash: recorded.governingHash }
-			: {}),
+		...recorded,
 	});
 	const planMissing = input.currentPlanBytes === null;
 	const phasesToCheck = phasesForIntent(
@@ -369,18 +417,22 @@ export function evaluateImplementationBoundary(
 			phaseIndex(input.binding.phaseMap, input.phase) < 0);
 	const freshPhase = freshnessPhaseId(input.binding, input.intent, input.phase);
 	const invalidatedContexts = new Set(
-		input.amendments.flatMap((entry) =>
-			entry.kind === "implementation-plan-recovery"
-				? entry.invalidatedContextIds
-				: [],
-		),
+		effective
+			? effective.invalidatedContextIds
+			: input.amendments.flatMap((entry) =>
+					entry.kind === "implementation-plan-recovery"
+						? entry.invalidatedContextIds
+						: [],
+				),
 	);
 	const invalidatedObservations = new Set(
-		input.amendments.flatMap((entry) =>
-			entry.kind === "implementation-plan-recovery"
-				? entry.invalidatedObservationIds
-				: [],
-		),
+		effective
+			? effective.invalidatedObservationIds
+			: input.amendments.flatMap((entry) =>
+					entry.kind === "implementation-plan-recovery"
+						? entry.invalidatedObservationIds
+						: [],
+				),
 	);
 	const settlements = phasesToCheck.map((phase) =>
 		phaseSettlement({
@@ -392,31 +444,58 @@ export function evaluateImplementationBoundary(
 					!invalidatedContexts.has(entry.contextId),
 			),
 			contexts: input.contexts,
-			reconciliations: input.reconciliations,
-			correctionAttempts: input.correctionAttempts,
+			reconciliations: input.reconciliations.filter(
+				(entry) => !invalidatedObservations.has(entry.observationId),
+			),
+			correctionAttempts: input.correctionAttempts.filter(
+				(entry) => !invalidatedObservations.has(entry.observationId),
+			),
 			openMaterialGatePhases: input.openMaterialGatePhases,
 			headCommit: input.headCommit,
 			...(input.codeEquivalentCommits
 				? { codeEquivalentCommits: input.codeEquivalentCommits }
 				: {}),
 			requireHeadMatch: phase.id === freshPhase,
+			ledger,
+			withdrawnClaimIds,
 		}),
 	);
+	const legacyRecovery = effective
+		? effective.revisions.findLast(
+				(entry) =>
+					entry.kind === "legacy_frontier_recovery" &&
+					entry.legacy !== undefined,
+			)
+		: undefined;
 	const readiness: ImplementationGovernanceReadiness = {
-		...input.amendments
-			.filter((entry) => entry.kind === "implementation-plan-recovery")
-			.map((entry) => ({
-				acceptedPlanRecovery: {
-					id: entry.id,
-					phase: entry.phase,
-					commit: entry.afterCommit,
-					planHash: entry.afterBlobHash,
-					authorizationId: entry.authorizationId,
-					scope: entry.scopeConfirmation,
-					preservedPhases: entry.preservedPhaseConfirmation,
-				},
-			}))
-			.at(-1),
+		...(effective
+			? legacyRecovery?.legacy && legacyRecovery.earliestAffectedPhase
+				? {
+						acceptedPlanRecovery: {
+							id: legacyRecovery.id,
+							phase: legacyRecovery.earliestAffectedPhase,
+							commit: legacyRecovery.legacy.commit,
+							planHash: legacyRecovery.approvedPlanHash,
+							authorizationId: legacyRecovery.authorizationId ?? "",
+							scope: legacyRecovery.legacy.scopeConfirmation,
+							preservedPhases: legacyRecovery.legacy.preservedPhaseConfirmation,
+						},
+					}
+				: {}
+			: input.amendments
+					.filter((entry) => entry.kind === "implementation-plan-recovery")
+					.map((entry) => ({
+						acceptedPlanRecovery: {
+							id: entry.id,
+							phase: entry.phase,
+							commit: entry.afterCommit,
+							planHash: entry.afterBlobHash,
+							authorizationId: entry.authorizationId,
+							scope: entry.scopeConfirmation,
+							preservedPhases: entry.preservedPhaseConfirmation,
+						},
+					}))
+					.at(-1)),
 		executionObligations: true,
 		checklistSufficient: false,
 		planDrifted: planMissing || drift.drifted,
@@ -586,6 +665,35 @@ export function evaluateStoredImplementationBoundary(input: {
 			},
 		});
 	}
+	const folded = binding
+		? foldEffectiveExecution({
+				recordStore: input.recordStore,
+				runId: input.runId,
+			})
+		: null;
+	if (folded && !folded.ok) {
+		return evaluateImplementationBoundary({
+			intent: input.intent,
+			...(input.phase ? { phase: input.phase } : {}),
+			mode: input.mode,
+			binding,
+			compatibility,
+			currentPlanBytes: input.currentPlanBytes,
+			amendments,
+			observations,
+			contexts,
+			reconciliations,
+			correctionAttempts,
+			openMaterialGatePhases: [],
+			headCommit: input.headCommit,
+			...(input.codeEquivalentCommits
+				? { codeEquivalentCommits: input.codeEquivalentCommits }
+				: {}),
+			hasImplementationHistory: input.hasImplementationHistory,
+			hasDeliveryBudget: input.hasDeliveryBudget,
+			malformed: { message: folded.diagnostic.message },
+		});
+	}
 	const openMaterialGatePhases: string[] = [];
 	if (binding) {
 		for (const phase of binding.phaseMap) {
@@ -616,5 +724,6 @@ export function evaluateStoredImplementationBoundary(input: {
 			: {}),
 		hasImplementationHistory: input.hasImplementationHistory,
 		hasDeliveryBudget: input.hasDeliveryBudget,
+		...(folded?.ok ? { effectiveExecution: folded } : {}),
 	});
 }

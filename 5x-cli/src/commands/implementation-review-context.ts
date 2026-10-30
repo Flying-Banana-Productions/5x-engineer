@@ -14,6 +14,7 @@ import {
 	getRunV1,
 	recordStep,
 } from "../db/operations-v1.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	isImplementationScopeClass,
 	type ReviewerVerdict,
@@ -33,7 +34,11 @@ import {
 	implementationCreditReconciliationKey,
 	implementationReviewObservationKey,
 } from "../review-budget/record-lines.js";
-import type { BudgetAlert, BudgetBand } from "../review-budget/types.js";
+import type {
+	BudgetAlert,
+	BudgetBand,
+	ParsedDeliveryBudget,
+} from "../review-budget/types.js";
 import { deriveInheritedBudgetGovernance } from "../review-governance/architecture-approval.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
@@ -55,11 +60,12 @@ import {
 	readImplementationCodeClosure,
 	validateImplementationReview,
 } from "../review-governance/implementation.js";
+import type { EffectiveExecution } from "../review-governance/implementation-amendment.js";
 import {
 	detectPlanDrift,
+	effectivePlanSchema,
 	listCreditReconciliations,
 	listRecordedImplementationReviews,
-	recordedPlanSchemaFromBinding,
 } from "../review-governance/implementation-state.js";
 import { prepareTextAmendmentGuard } from "../review-governance/plan-amendment.js";
 import type {
@@ -341,27 +347,139 @@ function gateCausesFor(input: {
 	return causes;
 }
 
+type ImplementationBinding = NonNullable<
+	ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
+>;
+
+/**
+ * Effective bytes, hash, and ledger for review validation. A fold diagnostic
+ * does not fall back to the original binding.
+ */
+export function readEffectiveImplementationReviewAnchor(input: {
+	store: {
+		readEffectiveImplementationRevision(
+			runId: string,
+		):
+			| EffectiveExecution
+			| { ok: false; diagnostic: { message: string } }
+			| null;
+	};
+	runId: string;
+	binding: ImplementationBinding;
+}):
+	| {
+			ok: true;
+			execution: EffectiveExecution;
+			ledger: ParsedDeliveryBudget;
+			approvedPlanBytes: string;
+			approvedPlanHash: string;
+	  }
+	| { ok: false; message: string } {
+	const folded = input.store.readEffectiveImplementationRevision(input.runId);
+	if (!folded?.ok) {
+		return {
+			ok: false,
+			message: folded
+				? folded.diagnostic.message
+				: "The effective approved revision could not be read.",
+		};
+	}
+	// Schema 1 reads the ledger from the governing projection.
+	const read = readAuthoritativeBudget(
+		folded.approvedPlanBytes,
+		folded.planSchema,
+	);
+	const parsed = read.ok ? read.parsed : { ok: false as const };
+	if (
+		!parsed.ok &&
+		folded.approvedPlanBytes !== input.binding.approvedPlanBytes
+	) {
+		return {
+			ok: false,
+			message: "The effective approved ledger could not be parsed.",
+		};
+	}
+	return {
+		ok: true,
+		execution: folded,
+		ledger: parsed.ok ? parsed.value : input.binding.ledger,
+		approvedPlanBytes: folded.approvedPlanBytes,
+		approvedPlanHash: folded.approvedPlanHash,
+	};
+}
+
+function claimCarryRevisionBounds(execution: EffectiveExecution) {
+	const revisionOrder = execution.revisions.map((revision) => revision.id);
+	const claimEditRevisionId = new Map<string, string>();
+	for (const disposition of execution.dispositions) {
+		for (const edit of disposition.claimEdits) {
+			if (
+				edit.effect !== "edit_contract" &&
+				edit.effect !== "reduce_magnitude" &&
+				edit.effect !== "withdraw"
+			) {
+				continue;
+			}
+			const previous = claimEditRevisionId.get(edit.creditClaimId);
+			if (
+				!previous ||
+				revisionOrder.indexOf(disposition.revisionId) >=
+					revisionOrder.indexOf(previous)
+			) {
+				claimEditRevisionId.set(edit.creditClaimId, disposition.revisionId);
+			}
+		}
+	}
+	const observationRevisionId = new Map<string, string>();
+	for (const entry of execution.evidence) {
+		if (entry.kind === "observation" && entry.observationId) {
+			observationRevisionId.set(entry.observationId, entry.revisionId);
+		}
+	}
+	return { revisionOrder, claimEditRevisionId, observationRevisionId };
+}
+
 function humanDebtDecisionsForReconciliation(
 	recordStore: ReviewBudgetCommandContext["recordStore"],
 	runId: string,
-	binding: NonNullable<
-		ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
-	>,
+	binding: ImplementationBinding,
+	execution: EffectiveExecution,
 ) {
 	const steps = recordStore.listLines(runId, "steps");
 	const budget = recordStore.listLines(runId, "budget");
+	const invalidatedDecisions = new Set(
+		execution.evidence
+			.filter(
+				(entry) =>
+					entry.stream === "decisions" && entry.applicability === "invalidated",
+			)
+			.map((entry) => entry.recordId),
+	);
+	const editedClaims = new Set(
+		execution.dispositions.flatMap((entry) =>
+			entry.claimEdits.map((edit) => edit.creditClaimId),
+		),
+	);
 	const accepted = listImplementationDecisions(
 		recordStore,
 		runId,
 	).decisions.filter(
 		(decision) =>
 			decision.bindingId === binding.id &&
-			classifyDecisionAcceptance({ decision, steps, budget }).accepted,
+			!invalidatedDecisions.has(decision.decisionId) &&
+			classifyDecisionAcceptance({ decision, steps, budget }).accepted &&
+			decision.claimAdjustments.every(
+				(adjustment) => !editedClaims.has(adjustment.creditClaimId),
+			),
 	);
 	return [
 		...humanDebtDecisionsFromBinding(binding),
 		...humanDebtDecisionsFromImplementationDecisions(accepted),
-	];
+	].filter(
+		(decision) =>
+			!invalidatedDecisions.has(decision.decisionId) &&
+			!editedClaims.has(decision.creditClaimId),
+	);
 }
 
 function activitySteps(ctx: ReviewBudgetCommandContext, runId: string) {
@@ -403,6 +521,20 @@ export async function composeImplementationReviewerRecord(input: {
 	if (!binding) {
 		return { status: "skipped", reason: "not_implementation" };
 	}
+	const anchor = readEffectiveImplementationReviewAnchor({
+		store: input.ctx.store,
+		runId: input.runId,
+		binding,
+	});
+	if (!anchor.ok) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_RECORD_CORRUPT",
+			message: anchor.message,
+		};
+	}
+	const folded = anchor.execution;
+	const ledger = anchor.ledger;
 	const phaseId = canonicalPhaseId(input.phase);
 	if (!phaseId || phaseId === "plan") {
 		return {
@@ -473,20 +605,14 @@ export async function composeImplementationReviewerRecord(input: {
 		envelopeDomain: input.envelopeDomain,
 		mode: binding.mode,
 		phaseIds: binding.phaseMap.map((entry) => entry.id),
-		workItemIds: binding.ledger.workItems.map((item) => item.id),
-		creditClaimIds: binding.ledger.workItems.flatMap((item) =>
+		workItemIds: ledger.workItems.map((item) => item.id),
+		creditClaimIds: ledger.workItems.flatMap((item) =>
 			item.debtClaim ? [item.debtClaim.debtClaimId] : [],
 		),
-		approvedPlanBytes: binding.approvedPlanBytes,
-		approvedPlanHash: binding.approvedPlanHash,
-		amendments: input.ctx.store.listImplementationTextAmendments(
-			input.runId,
-			binding.id,
-		),
-		...recordedPlanSchemaFromBinding(
-			binding,
-			input.ctx.store.listImplementationTextAmendments(input.runId, binding.id),
-		),
+		approvedPlanBytes: anchor.approvedPlanBytes,
+		approvedPlanHash: anchor.approvedPlanHash,
+		amendments: [],
+		...effectivePlanSchema(folded),
 		hasRun: true,
 		priorReviewCount: closure.priorReviewCount,
 		sessionId: input.sessionId,
@@ -518,7 +644,7 @@ export async function composeImplementationReviewerRecord(input: {
 		B0: binding.b0,
 		B: binding.governingB,
 		I: null,
-		workItems: binding.ledger.workItems,
+		workItems: ledger.workItems,
 		findings: [],
 		assessments: [],
 		config: binding.thresholds,
@@ -543,48 +669,42 @@ export async function composeImplementationReviewerRecord(input: {
 		input.runId,
 		binding.id,
 	);
-	const recorded = recordedPlanSchemaFromBinding(binding, textAmendments);
-	const anchor = detectPlanDrift({
-		approvedPlanBytes: binding.approvedPlanBytes,
-		approvedPlanHash: binding.approvedPlanHash,
-		amendments: textAmendments,
-		currentPlanBytes: binding.approvedPlanBytes,
-		recordedSchema: recorded.recordedSchema,
-		...(recorded.governingHash
-			? { governingHash: recorded.governingHash }
-			: {}),
+	const semanticAmendments =
+		input.ctx.store.listImplementationSemanticAmendments(
+			input.runId,
+			binding.id,
+		);
+	const lineageTail = [...textAmendments, ...semanticAmendments].find(
+		(entry) => entry.id === folded.lineageParentId,
+	);
+	const drift = detectPlanDrift({
+		approvedPlanBytes: anchor.approvedPlanBytes,
+		approvedPlanHash: anchor.approvedPlanHash,
+		amendments: [],
+		currentPlanBytes: anchor.approvedPlanBytes,
+		...effectivePlanSchema(folded),
 	});
 	let exemptionAuthorized = reviewed.governance.exemptionAuthorized;
 	let textGuard: PendingImplementationObservation["textGuard"];
 	if (exemptionAuthorized && reviewed.spans.length > 0) {
-		if (textAmendments.length > 0 && !anchor.chainValid) {
+		const parent = lineageTail;
+		const preparedGuard = prepareTextAmendmentGuard({
+			id: createReviewBudgetId(),
+			anchorBytes: drift.authorizedBytes,
+			anchorCommit: parent?.afterCommit ?? binding.approvedPlanCommit,
+			parentLineageId: parent?.id ?? null,
+			allowedSpans: reviewed.spans,
+			recordedSchema: folded.planSchema,
+		});
+		if (!preparedGuard.ok) {
 			exemptionAuthorized = false;
 			reviewed.governance.diagnostics.push({
 				code: "PLAN_IMPACT_NOT_AUTHORIZED",
 				severity: "error",
-				message:
-					"The text-amendment lineage is unverified. A text guard cannot be snapshotted.",
+				message: preparedGuard.message,
 			});
 		} else {
-			const parent = anchor.chainValid ? textAmendments.at(-1) : undefined;
-			const preparedGuard = prepareTextAmendmentGuard({
-				id: createReviewBudgetId(),
-				anchorBytes: anchor.authorizedBytes,
-				anchorCommit: parent?.afterCommit ?? binding.approvedPlanCommit,
-				parentLineageId: parent?.id ?? null,
-				allowedSpans: reviewed.spans,
-				recordedSchema: recorded.recordedSchema,
-			});
-			if (!preparedGuard.ok) {
-				exemptionAuthorized = false;
-				reviewed.governance.diagnostics.push({
-					code: "PLAN_IMPACT_NOT_AUTHORIZED",
-					severity: "error",
-					message: preparedGuard.message,
-				});
-			} else {
-				textGuard = preparedGuard.guard;
-			}
+			textGuard = preparedGuard.guard;
 		}
 	}
 	const inheritedBudgetGovernance = deriveInheritedBudgetGovernance(
@@ -724,6 +844,7 @@ export async function composeImplementationReviewerRecord(input: {
 			input.ctx.recordStore,
 			input.runId,
 			binding,
+			folded,
 		),
 		bindingEvidence: bindingEvidenceFromImplementationDecisions({
 			recordStore: input.ctx.recordStore,
@@ -731,6 +852,10 @@ export async function composeImplementationReviewerRecord(input: {
 			bindingId: binding.id,
 		}),
 		stepKey,
+		effectiveLedger: ledger,
+		claimEdits: folded.dispositions.flatMap((entry) => entry.claimEdits),
+		invalidatedObservationIds: new Set(folded.invalidatedObservationIds),
+		...claimCarryRevisionBounds(folded),
 	});
 	if (reconciled.status === "rejected") {
 		return {
@@ -768,6 +893,9 @@ export async function composeImplementationReviewerRecord(input: {
 		inheritedBudgetGovernance,
 		completionAuthorized: false,
 		...(textGuard ? { textGuard } : {}),
+		...(folded.currentRevisionId !== folded.initialRevisionId
+			? { revisionId: folded.currentRevisionId }
+			: {}),
 	};
 	return {
 		status: "applied",

@@ -622,23 +622,28 @@ pauses for author amendment and plan re-review; it is not permission to
 implement new scope. Do not record a generic `human:gate` or approve-override
 for this gate. On restart, show the gate again and resume from its route.
 
-For an already-authorized, committed and ready-reviewed amendment on this same
-active run, an operator may use the narrow `5x review implementation recover-plan`
-path at an unfinished frontier. Inspect `--help`, then supply the original
-`--authorization`, latest plan `--snapshot`, full author `--commit`, and earliest
-affected `--phase`, with explicit operator `--confirm-scope` and
-`--confirm-preserved-phases` attestations. The latter must cover shared/design
-document effects on earlier phases; do not invent these confirmations from a
-freeform ready summary. Run with `--dry-run`, inspect the receipt, then repeat
-without it to accept. The command requires unchanged phase identities, work-item
-contracts/scores/surface, no debt claims, and no completed/approved affected phases.
-It preserves the original binding and budget baseline and supports repeated
-recoveries, each with a new authorization and plan review. If rejected, escalate
-for the full amendment workflow; never rebind
-or edit records to bypass it. After acceptance, render a fresh author context,
-fix all admitted findings, run ordinary quality gates, and prepare a fresh
-reviewer context at the next unused iteration. Keep prior findings and code
-range history. Recovery never completes a phase or clears operator restrictions.
+Semantic plan changes on this same active run follow authorize → amend → assess → register → resume. `5x review implementation bind` only attaches the initial
+approved source and cannot replace that binding or repair drift. Record
+`authorize_amendment` with structured `amendmentScope`: `--predecessor-revision`,
+`--earliest-affected-phase`, `--reopen-completed-phases true|false`, repeatable
+`--claim-edit`, and repeatable `--resolution-ref`. Rationale prose is not scope.
+It cannot reopen an earlier phase, a completed phase, a claim edit, or a
+cross-phase resolution. Have the plan reviewer assess the exact committed hash
+from the trusted amendment context. A final-corrections author pass that changes
+those bytes must be reassessed against the new exact hash before registration;
+do not reuse the previous assessment, and do not stop after final corrections.
+Initial plan reviews keep their existing final-correction shortcut. Register
+with `5x review implementation amend --run $FIVEX_RUN --human-step <step>
+--approval-step <step> --from-phase <phase>` and optional repeatable `--resolves`.
+Run `--dry-run` first. Registration does not complete a phase or approve
+implementation. Resume author work from the effective revision, fix admitted
+findings, run ordinary quality gates, and prepare a fresh reviewer context at
+the next unused iteration. Keep prior findings and code range history.
+`5x review implementation recover-plan` is retired. Do not create a new
+frontier recovery. Historical receipts remain readable. `5x upgrade` reports
+legacy lineage and does not rewrite journals, synthesize approval, or resume
+the run. Amended runs require this CLI; older binaries must not execute them.
+Refresh installed skills with `5x harness sync`.
 
 #### Step 5a: Escalate
 

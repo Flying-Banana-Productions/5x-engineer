@@ -4,6 +4,7 @@ import type {
 	RecordStore,
 	StepRecordPayload,
 } from "../control-plane/index.js";
+import { type AmendmentScope, parseAmendmentScope } from "../protocol.js";
 import {
 	decodeBudgetSnapshotPayload,
 	decodeImplementationReviewObservationPayload,
@@ -438,6 +439,11 @@ export function deriveGateId(input: {
 	phase?: string;
 	bindingId?: string;
 	observationId?: string;
+	/**
+	 * Included only when the stored observation has the field. Attributed
+	 * revisions are not substituted, so historical gate ids stay stable.
+	 */
+	revisionId?: string;
 }): string {
 	const value = canonical({
 		runId: input.runId,
@@ -450,10 +456,38 @@ export function deriveGateId(input: {
 					phase: input.phase,
 					bindingId: input.bindingId,
 					observationId: input.observationId,
+					...(input.revisionId !== undefined
+						? { revisionId: input.revisionId }
+						: {}),
 				}
 			: {}),
 	});
 	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+/** Same gate identity inputs for live derivation and index rebuild. */
+export function implementationObservationGateId(input: {
+	runId: string;
+	phase: string;
+	bindingId: string;
+	observationId: string;
+	causes: readonly ImplementationObservationGateCause[];
+	predecessorGateId?: string;
+	revisionId?: string;
+}): string {
+	return deriveGateId({
+		runId: input.runId,
+		snapshotId: input.observationId,
+		causes: input.causes,
+		...(input.predecessorGateId
+			? { predecessorGateId: input.predecessorGateId }
+			: {}),
+		domain: "implementation",
+		phase: input.phase,
+		bindingId: input.bindingId,
+		observationId: input.observationId,
+		...(input.revisionId !== undefined ? { revisionId: input.revisionId } : {}),
+	});
 }
 
 export function governanceDecisionKey(gateId: string): string {
@@ -544,6 +578,11 @@ export interface ImplementationDecisionPayload {
 	claimAdjustments: ImplementationClaimAdjustment[];
 	/** Operator condition the work proceeds under. Only accept_with_restriction. */
 	restriction?: string;
+	/**
+	 * Present only on new `authorize_amendment` decisions. Omission keeps the
+	 * historical intent-hash field set. Do not store null or `{}`.
+	 */
+	amendmentScope?: AmendmentScope;
 	ledgerHash: string;
 	decisionsHash: string;
 	supersedesDecisionId?: string;
@@ -599,6 +638,9 @@ export function createImplementationDecision(
 		decisionsHash: input.decisionsHash,
 		...(input.supersedesDecisionId
 			? { supersedesDecisionId: input.supersedesDecisionId }
+			: {}),
+		...(input.amendmentScope !== undefined
+			? { amendmentScope: structuredClone(input.amendmentScope) }
 			: {}),
 	};
 	return validateImplementationDecision({
@@ -695,6 +737,14 @@ export function validateImplementationDecision(
 		input.claimAdjustments.length > 0
 	)
 		throw new TypeError("authorize_amendment rejects claim adjustments");
+	if (
+		input.choice !== "authorize_amendment" &&
+		input.amendmentScope !== undefined
+	)
+		throw new TypeError("amendmentScope is only valid on authorize_amendment");
+	if (input.amendmentScope !== undefined) {
+		input.amendmentScope = parseAmendmentScope(input.amendmentScope);
+	}
 	if (input.choice === "abort" && input.claimAdjustments.length > 0)
 		throw new TypeError("abort cannot change approved credit");
 	if (
@@ -754,6 +804,9 @@ export function validateImplementationDecision(
 		ledgerHash: input.ledgerHash,
 		decisionsHash: input.decisionsHash,
 		supersedesDecisionId: input.supersedesDecisionId,
+		...(input.amendmentScope !== undefined
+			? { amendmentScope: input.amendmentScope }
+			: {}),
 	});
 	if (expected !== input.decisionIntentHash)
 		throw new TypeError("decisionIntentHash does not match decision fields");

@@ -38,8 +38,8 @@ import {
 import {
 	admitAuthorTextAmendmentFromGit,
 	describeBindingReadError,
+	effectivePlanSchema,
 	expectedSchemaForStore,
-	recordedPlanSchemaFromBinding,
 	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
@@ -51,6 +51,7 @@ import {
 	composeImplementationReviewerRecord,
 	implementationGovernanceDecoration,
 	type PendingImplementationObservation,
+	readEffectiveImplementationReviewAnchor,
 	recordImplementationReviewerStepWithObservation,
 } from "./implementation-review-context.js";
 import { validateStructuredOutputOrThrow } from "./protocol-helpers.js";
@@ -631,6 +632,7 @@ export async function protocolValidate(
 						ReviewBudgetCommandContext["store"]["listImplementationTextAmendments"]
 				  >
 				| undefined;
+			let recordedSchema: ReturnType<typeof effectivePlanSchema> | undefined;
 			let mode: "off" | "advisory" | "enforced" = "advisory";
 			let compatibility = false;
 			let priorReviewCount = 0;
@@ -657,18 +659,23 @@ export async function protocolValidate(
 						implementationBinding = binding;
 						implementationRecordContext = implementationContext;
 						mode = binding.mode;
+						const anchor = readEffectiveImplementationReviewAnchor({
+							store: implementationContext.store,
+							runId: params.run,
+							binding,
+						});
+						if (!anchor.ok) {
+							outputError("IMPLEMENTATION_EVIDENCE_MALFORMED", anchor.message);
+						}
 						phaseIds = binding.phaseMap.map((entry) => entry.id);
-						workItemIds = binding.ledger.workItems.map((item) => item.id);
-						creditClaimIds = binding.ledger.workItems.flatMap((item) =>
+						workItemIds = anchor.ledger.workItems.map((item) => item.id);
+						creditClaimIds = anchor.ledger.workItems.flatMap((item) =>
 							item.debtClaim ? [item.debtClaim.debtClaimId] : [],
 						);
-						approvedPlanBytes = binding.approvedPlanBytes;
-						approvedPlanHash = binding.approvedPlanHash;
-						amendments =
-							implementationContext.store.listImplementationTextAmendments(
-								params.run,
-								binding.id,
-							);
+						approvedPlanBytes = anchor.approvedPlanBytes;
+						approvedPlanHash = anchor.approvedPlanHash;
+						amendments = [];
+						recordedSchema = effectivePlanSchema(anchor.execution);
 						codeClosure = readImplementationCodeClosure(
 							implementationContext.recordStore,
 							params.run,
@@ -763,12 +770,7 @@ export async function protocolValidate(
 					approvedPlanBytes,
 					approvedPlanHash,
 					amendments,
-					...(implementationBinding
-						? recordedPlanSchemaFromBinding(
-								implementationBinding,
-								amendments ?? [],
-							)
-						: {}),
+					...(recordedSchema ?? {}),
 					hasRun: Boolean(params.run),
 					priorReviewCount,
 					sessionId: invocation?.sessionId,

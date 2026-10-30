@@ -16,12 +16,7 @@ approved by the reviewer or the human overrides.
 
 ## Prerequisites
 
-For a plan amendment inside an active implementation run, a ready plan review
-does not attach the amendment to its existing binding. Preserve the committed
-author result and coupled plan-review snapshot for the operator's supported
-registration/recovery step. The narrow `5x review implementation recover-plan`
-path requires explicit bounded-scope and earlier-phase non-impact confirmations,
-including shared-design effects; do not infer them from readiness alone.
+For a plan amendment inside an active implementation run, a ready plan review does not attach the amendment to its existing binding. Follow authorize → amend → assess → register → resume. Record structured `amendmentScope` on `authorize_amendment`. Rationale prose is not scope. Assess the exact committed plan hash, including shared-design impact. If a final-corrections pass changes those bytes, reassess the new exact hash before `5x review implementation amend`. Do not create a new frontier recovery. `5x review implementation recover-plan` is retired. Historical receipts stay readable, and `5x upgrade` only reports them.
 
 - An implementation plan exists and is associated with the run
 - The plan parses successfully (`5x plan phases` returns phases)

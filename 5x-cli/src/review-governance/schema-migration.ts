@@ -113,16 +113,16 @@ export function nonGoverningLines(
 
 /**
  * Remediation for a governing change, by where the migration would be
- * recorded. recover-plan needs an execution run, so an unbound approval
- * must not be pointed at it.
+ * recorded. Amendment registration needs an execution run, so an unbound
+ * approval must not be pointed at it.
  */
 export function migrationGoverningChangeHelp(
 	kind: SchemaMigrationSubject["kind"],
 ): string {
 	if (kind === "source") {
-		return "Migration cannot change an obligation. This approved plan-review run has no execution binding, so 5x review implementation recover-plan does not apply. Revise the plan and have the revision approved through a fresh plan review.";
+		return "Migration cannot change an obligation. This approved plan-review run has no execution binding, so 5x review implementation amend does not apply. Revise the plan and have the revision approved through a fresh plan review.";
 	}
-	return "Migration cannot change an obligation. Use the amendment workflow (an accepted authorize_amendment decision, then plan re-review). For an already-authorized amendment at an unfinished frontier, an operator may use 5x review implementation recover-plan --help.";
+	return "Migration cannot change an obligation. Use the amendment workflow: a scoped authorize_amendment, plan re-review with an exact-hash amendmentAssessment, then 5x review implementation amend --help.";
 }
 
 export interface GoverningBookkeepingLine {
@@ -624,7 +624,7 @@ export async function applyPlanSchemaMigration(
 			`Run ${input.runId} was not found. Use 5x plan migrate for an unapproved plan file.`,
 		);
 	}
-	// Same order as recover-plan: snapshot the three streams, then read lineage.
+	// Same order as amendment registration: snapshot the three streams, then read lineage.
 	// Git reads stay after the snapshot so they cannot widen the baseline.
 	const expectedKeys = capturePlanSchemaMigrationExpectedKeys(
 		deps.recordStore,
