@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import type { PlanImpactKind } from "../protocol.js";
 import type { ParsedDeliveryBudget } from "../review-budget/types.js";
 import {
+	CHECKBOX_MARKER_SOURCE,
 	normalizeCheckboxMarkers,
 	PLAN_CHECKBOX_LINE,
 	type PlanHeadingSpan,
@@ -172,8 +173,13 @@ export function extractBudgetTableBytes(
 	return { ok: true, tableBytes: markdown.slice(start, end) };
 }
 
+/**
+ * Normalize only the checkbox at the start of one newline-split line.
+ * A single non-multiline replace, so a lone CR does not open another match.
+ * `normalizeCheckboxMarkers` stays the global multiline document normalizer.
+ */
 function checkboxIdentity(line: string): string {
-	return normalizeCheckboxMarkers(line);
+	return line.replace(new RegExp(CHECKBOX_MARKER_SOURCE), "$1[ ]");
 }
 
 /** Phase headings, checklist identities, and protected section bytes. */

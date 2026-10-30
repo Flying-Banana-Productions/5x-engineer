@@ -449,6 +449,18 @@ describe("plan amendment guards", () => {
 		).toBe(false);
 	});
 
+	test("keeps the pre-move structural signature when a checkbox line contains a lone CR", () => {
+		// 4adb443b hashed this line with one non-multiline replace. The second
+		// checkbox sits after a lone CR inside the same newline-split line.
+		const markdown = "# T\n- [x] a\r- [x] b\n";
+		expect(structuralSignature(markdown)).toBe(
+			"sha256:5780f9b4dc996c6fafd536481dbcf14c392ac00141db5e158effb8c222b92182",
+		);
+		expect(structuralSignature("# T\n- [x] a\r- [ ] b\n")).not.toBe(
+			structuralSignature(markdown),
+		);
+	});
+
 	test("matches CRLF and non-ASCII anchors inside the authorized span", () => {
 		const markdown = plan("Bind execution — to the approved plan.").replace(
 			/\n/g,
