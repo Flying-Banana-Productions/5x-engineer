@@ -111,3 +111,21 @@ Concrete failure: an execution run binds the schema 0 approval. The operator the
 - [ ] P2.1 — Make selective `plan migrate` skip the identical rewrite and report `wrote: false`.
 
 **Ready for next phase:** ⚠️ After P1.1 and P1.2. Phase 4 (workflow assets) does not depend on these fixes, but the migration skill will document this command's conflict semantics.
+
+---
+
+## Addendum (2026-10-30) — Closure of P1.1, P1.2, P2.1
+
+**Reviewed:** `2dec16d6..f942635b` (commit `f942635b`)
+
+### What's addressed (✅)
+- **P1.1 (`expectedKeys` captured late)**: Addressed. `applyPlanSchemaMigration` now calls `capturePlanSchemaMigrationExpectedKeys` for steps, budget, and decisions before the commit resolution, the subject read, and the target read. It passes those lists through `executePlanSchemaMigration` to `atomicAppendIfAllNew`. The old late `listLines` calls are gone. New unit tests cover the race path.
+- **P1.2 (source migration blocked the execution run)**: Addressed. The `sourceMigrations` field and the conflict clause are removed. Only `bindingPlanSchema === 1` and `migrations.length > 0` refuse a second migration. A new test covers bind first, then source migration, then execution migration.
+- **P2.1 (selective `--write` rewrote identical bytes)**: Addressed. The selective branch no longer writes and returns `wrote: false`. The equivalent branch still writes only when the output changes. A new integration test covers this.
+
+### Remaining concerns
+- None. The refactor into `applyPlanSchemaMigration` with injected dependencies keeps `migratePlanSchema` as a thin wrapper.
+
+### Updated readiness
+- **Phase 3 completion:** ✅ Typecheck is clean, and the focused suites pass (22 tests, 0 failures).
+- **Ready for next phase:** ✅
