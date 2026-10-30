@@ -50,6 +50,14 @@ export interface ExecutePlanSchemaMigrationInput {
 	worktreeBytes: string | null;
 	requireWorktreeMatch: boolean;
 	subject: SchemaMigrationSubject;
+	/** Key lists captured before the subject read. Passed through to the append. */
+	expectedKeys: PlanSchemaMigrationExpectedKeys;
+}
+
+export interface PlanSchemaMigrationExpectedKeys {
+	steps: string[];
+	budget: string[];
+	decisions: string[];
 }
 
 export interface PlanSchemaMigrationView {
@@ -251,11 +259,12 @@ export function executePlanSchemaMigration(
 			migration: identical,
 		};
 	}
+	// A source-run migration does not attach to an execution binding that
+	// already exists. Schema 1 on this binding, and a migration recorded on
+	// this run, still refuse a second migration.
 	if (
 		input.subject.bindingPlanSchema === 1 ||
-		input.subject.migrations.length > 0 ||
-		(input.subject.kind === "execution" &&
-			input.subject.sourceMigrations.length > 0)
+		input.subject.migrations.length > 0
 	) {
 		throw new CliError(
 			"PLAN_MIGRATION_CONFLICT",
@@ -336,12 +345,6 @@ export function executePlanSchemaMigration(
 		cost_usd: null,
 		model: null,
 	};
-	const steps = deps.recordStore.listLines(input.subject.runId, "steps");
-	const budget = deps.recordStore.listLines(input.subject.runId, "budget");
-	const decisions = deps.recordStore.listLines(
-		input.subject.runId,
-		"decisions",
-	);
 	let appended: ReturnType<RecordStore["atomicAppendIfAllNew"]>;
 	try {
 		appended = deps.recordStore.atomicAppendIfAllNew(
@@ -370,9 +373,9 @@ export function executePlanSchemaMigration(
 				},
 			],
 			{
-				steps: steps.map((line) => line.idempotencyKey),
-				budget: budget.map((line) => line.idempotencyKey),
-				decisions: decisions.map((line) => line.idempotencyKey),
+				steps: input.expectedKeys.steps,
+				budget: input.expectedKeys.budget,
+				decisions: input.expectedKeys.decisions,
 			},
 		);
 	} catch (error) {
@@ -477,7 +480,25 @@ function resolveAuthority(
 	return "operator";
 }
 
-export async function migratePlanSchema(
+/** Full steps, budget, and decisions key lists for one migration attempt. */
+export function capturePlanSchemaMigrationExpectedKeys(
+	recordStore: RecordStore,
+	runId: string,
+): PlanSchemaMigrationExpectedKeys {
+	return {
+		steps: recordStore
+			.listLines(runId, "steps")
+			.map((line) => line.idempotencyKey),
+		budget: recordStore
+			.listLines(runId, "budget")
+			.map((line) => line.idempotencyKey),
+		decisions: recordStore
+			.listLines(runId, "decisions")
+			.map((line) => line.idempotencyKey),
+	};
+}
+
+export async function applyPlanSchemaMigration(
 	input: {
 		runId: string;
 		commit: string;
@@ -485,7 +506,17 @@ export async function migratePlanSchema(
 		dryRun?: boolean;
 		confirmExclusions?: string;
 	},
-	ctx: ReviewBudgetCommandContext,
+	deps: {
+		recordStore: RecordStore;
+		store: ReviewBudgetStore;
+		origin: RecordOrigin;
+		resolveCommit: (commit: string) => Promise<string>;
+		readPlanAtCommit: (commit: string) => Promise<string | null>;
+		readWorktree: (kind: SchemaMigrationSubject["kind"]) => {
+			bytes: string | null;
+			require: boolean;
+		};
+	},
 ): Promise<
 	Omit<PlanSchemaMigrationView, "migration"> & {
 		migration?: Omit<PlanSchemaMigrationPayload, "authorizedPlanBytes">;
@@ -500,35 +531,39 @@ export async function migratePlanSchema(
 	if (!/^[0-9a-f]{40}$/u.test(input.commit)) {
 		throw new CliError("INVALID_ARGS", "--commit must be a full sha.");
 	}
-	const workdir = ctx.executionContext.effectiveWorkingDirectory;
-	const git = workdirCodeDiffGit(workdir);
-	const resolved = await resolveCodeCommit(git, input.commit);
+	if (!deps.recordStore.getRun(input.runId)) {
+		throw new CliError(
+			"RUN_NOT_FOUND",
+			`Run ${input.runId} was not found. Use 5x plan migrate for an unapproved plan file.`,
+		);
+	}
+	// Same order as recover-plan: snapshot the three streams, then read lineage.
+	// Git reads stay after the snapshot so they cannot widen the baseline.
+	const expectedKeys = capturePlanSchemaMigrationExpectedKeys(
+		deps.recordStore,
+		input.runId,
+	);
+	const resolved = await deps.resolveCommit(input.commit);
 	if (resolved !== input.commit) {
 		throw new CliError("INVALID_ARGS", "--commit must be a full sha.");
 	}
-	const planPath = ctx.executionContext.run.plan_path;
 	const subjectResult = await readSchemaMigrationSubject({
-		store: ctx.store,
-		recordStore: ctx.recordStore,
+		store: deps.store,
+		recordStore: deps.recordStore,
 		runId: input.runId,
-		readPlanAtCommit: (commit) =>
-			showPlanAtCommit(workdir, commit, planPath, {
-				repoRoot: ctx.executionContext.controlPlaneRoot,
-			}),
+		readPlanAtCommit: deps.readPlanAtCommit,
 	});
 	if (!subjectResult.ok) {
 		throw new CliError(subjectResult.code, subjectResult.message);
 	}
-	const targetBytes = await showPlanAtCommit(workdir, input.commit, planPath, {
-		repoRoot: ctx.executionContext.controlPlaneRoot,
-	});
+	const targetBytes = await deps.readPlanAtCommit(input.commit);
 	if (targetBytes === null) {
 		throw new CliError(
 			"IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
 			`Plan bytes at ${input.commit} are unavailable. A missing worktree is not an empty file.`,
 		);
 	}
-	const worktree = worktreeMatch(ctx, subjectResult.subject.kind);
+	const worktree = deps.readWorktree(subjectResult.subject.kind);
 	const result = executePlanSchemaMigration(
 		{
 			mode: input.mode,
@@ -539,14 +574,45 @@ export async function migratePlanSchema(
 			worktreeBytes: worktree.bytes,
 			requireWorktreeMatch: worktree.require,
 			subject: subjectResult.subject,
+			expectedKeys,
 		},
 		{
-			recordStore: ctx.recordStore,
-			store: ctx.store,
-			origin: ctx.originFor({ kind: "human", role: "operator" }),
+			recordStore: deps.recordStore,
+			store: deps.store,
+			origin: deps.origin,
 		},
 	);
 	return presentMigration(result);
+}
+
+export async function migratePlanSchema(
+	input: {
+		runId: string;
+		commit: string;
+		mode: string;
+		dryRun?: boolean;
+		confirmExclusions?: string;
+	},
+	ctx: ReviewBudgetCommandContext,
+): Promise<
+	Omit<PlanSchemaMigrationView, "migration"> & {
+		migration?: Omit<PlanSchemaMigrationPayload, "authorizedPlanBytes">;
+	}
+> {
+	const workdir = ctx.executionContext.effectiveWorkingDirectory;
+	const planPath = ctx.executionContext.run.plan_path;
+	const git = workdirCodeDiffGit(workdir);
+	return applyPlanSchemaMigration(input, {
+		recordStore: ctx.recordStore,
+		store: ctx.store,
+		origin: ctx.originFor({ kind: "human", role: "operator" }),
+		resolveCommit: (commit) => resolveCodeCommit(git, commit),
+		readPlanAtCommit: (commit) =>
+			showPlanAtCommit(workdir, commit, planPath, {
+				repoRoot: ctx.executionContext.controlPlaneRoot,
+			}),
+		readWorktree: (kind) => worktreeMatch(ctx, kind),
+	});
 }
 
 function worktreeMatch(

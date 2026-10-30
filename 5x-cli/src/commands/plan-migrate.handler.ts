@@ -88,9 +88,8 @@ export async function planMigrate(input: PlanMigrateInput): Promise<{
 				loaded.document.governingLineLocations.map((line) => line.lineNumber),
 			),
 		);
-		if (write) writeFileSync(absolute, raw);
 		return {
-			wrote: write,
+			wrote: false,
 			unchanged: true,
 			mode: "selective",
 			schema: 1,

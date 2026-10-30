@@ -6,10 +6,12 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { wrapEquivalentPlan } from "../../../src/review-governance/schema-migration.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
@@ -305,6 +307,38 @@ describe("5x plan migrate", () => {
 				expect(error.error?.code).toBe("PLAN_MIGRATION_CONFLICT");
 				expect(error.error?.message).toContain("5x review migrate-schema");
 				expect(readFileSync(planPath, "utf8")).toBe(before);
+				expect(migrationPayloads(dir)).toHaveLength(0);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60_000 },
+	);
+
+	test(
+		"selective --write validates an edited schema 1 file and does not rewrite it",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const edited = wrapEquivalentPlan(planMarkdown());
+				writeFileSync(planPath, edited);
+				const before = statSync(planPath);
+				const result = await cli(dir, [
+					"plan",
+					"migrate",
+					"--plan",
+					planPath,
+					"--mode",
+					"selective",
+					"--write",
+				]);
+				const written = parseEnvelope(result);
+				expect(result.exitCode).toBe(0);
+				expect(written.data?.wrote).toBe(false);
+				expect(written.data?.unchanged).toBe(true);
+				expect(written.data?.schema).toBe(1);
+				expect(readFileSync(planPath, "utf8")).toBe(edited);
+				expect(statSync(planPath).mtimeMs).toBe(before.mtimeMs);
 				expect(migrationPayloads(dir)).toHaveLength(0);
 			} finally {
 				rmSync(dir, { recursive: true, force: true });

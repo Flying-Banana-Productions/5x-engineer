@@ -1275,7 +1275,6 @@ export interface SchemaMigrationSubject {
 	parentLineageId: string | null;
 	ledger: ParsedDeliveryBudget;
 	migrations: PlanSchemaMigrationPayload[];
-	sourceMigrations: PlanSchemaMigrationPayload[];
 }
 
 /** Null when this plan file has no binding and no completed approval. */
@@ -1380,9 +1379,6 @@ export async function readSchemaMigrationSubject(input: {
 				parentLineageId: parent?.id ?? null,
 				ledger: binding.binding.ledger,
 				migrations: input.store.listPlanSchemaMigrations(input.runId),
-				sourceMigrations: input.store.listPlanSchemaMigrations(
-					binding.binding.sourceRunId,
-				),
 			},
 		};
 	}
@@ -1426,7 +1422,6 @@ export async function readSchemaMigrationSubject(input: {
 			parentLineageId: null,
 			ledger: assessed.approval.ledger,
 			migrations,
-			sourceMigrations: migrations,
 		},
 	};
 }

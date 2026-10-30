@@ -12,6 +12,9 @@ import { loadPlanDocument } from "../../../src/plan-schema/document.js";
 import {
 	decodePlanSchemaMigrationPayload,
 	encodePlanSchemaMigrationPayload,
+	IMPLEMENTATION_STATE_VERSION,
+	type ImplementationTextAmendmentPayload,
+	implementationTextAmendmentKey,
 	type PlanSchemaMigrationPayload,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
@@ -25,6 +28,8 @@ import {
 	resolveRecordedPlanSchema,
 } from "../../../src/review-governance/implementation-state.js";
 import {
+	applyPlanSchemaMigration,
+	capturePlanSchemaMigrationExpectedKeys,
 	diffPlanSchemaMigration,
 	type ExecutePlanSchemaMigrationInput,
 	executePlanSchemaMigration,
@@ -103,14 +108,15 @@ function subjectFor(
 	options?: {
 		bindingPlanSchema?: 0 | 1;
 		migrations?: PlanSchemaMigrationPayload[];
-		sourceMigrations?: PlanSchemaMigrationPayload[];
 		kind?: "execution" | "source";
+		bindingId?: string;
 	},
 ): ExecutePlanSchemaMigrationInput["subject"] {
 	return {
 		kind: options?.kind ?? "execution",
 		runId: "exec",
-		bindingId: options?.kind === "source" ? null : "binding-1",
+		bindingId:
+			options?.bindingId ?? (options?.kind === "source" ? null : "binding-1"),
 		...(options?.bindingPlanSchema !== undefined
 			? { bindingPlanSchema: options.bindingPlanSchema }
 			: {}),
@@ -121,7 +127,6 @@ function subjectFor(
 		parentLineageId: null,
 		ledger: ledgerOf(markdown),
 		migrations: options?.migrations ?? [],
-		sourceMigrations: options?.sourceMigrations ?? [],
 	};
 }
 
@@ -144,6 +149,9 @@ function runMigration(
 			worktreeBytes: options?.worktreeBytes ?? target,
 			requireWorktreeMatch: options?.requireWorktreeMatch ?? true,
 			subject,
+			expectedKeys:
+				options?.expectedKeys ??
+				capturePlanSchemaMigrationExpectedKeys(ctx.recordStore, subject.runId),
 		},
 		{ recordStore: ctx.recordStore, store: ctx.store, origin: ORIGIN },
 	);
@@ -167,6 +175,92 @@ function caught(fn: () => void): CliError {
 		throw error;
 	}
 	throw new Error("expected CliError");
+}
+
+async function caughtAsync(fn: () => Promise<unknown>): Promise<CliError> {
+	try {
+		await fn();
+	} catch (error) {
+		if (error instanceof CliError) return error;
+		throw error;
+	}
+	throw new Error("expected CliError");
+}
+
+function putActiveRun(ctx: ReturnType<typeof setup>, id: string) {
+	ctx.recordStore.putRun({
+		id,
+		plan_path: PLAN_PATH,
+		config_json: null,
+		created_at: "2026-09-23 00:00:00",
+		sealed_at: null,
+		status: "active",
+		final_head_commit: null,
+		cli_version: "0.0.0",
+		format_version: RUN_RECORD_FORMAT_VERSION,
+		creator: ORIGIN.recorder,
+	});
+}
+
+function migrationIo(
+	ctx: ReturnType<typeof setup>,
+	readPlanAtCommit: (commit: string) => Promise<string | null>,
+	readWorktree: () => { bytes: string | null; require: boolean },
+) {
+	return {
+		recordStore: ctx.recordStore,
+		store: ctx.store,
+		origin: ORIGIN,
+		resolveCommit: async (commit: string) => commit,
+		readPlanAtCommit,
+		readWorktree: () => readWorktree(),
+	};
+}
+
+async function bindExecution(
+	ctx: ReturnType<typeof setup>,
+	executionRunId: string,
+	markdown: string,
+	readPlanAtCommit: (commit: string) => Promise<string | null>,
+) {
+	const bound = await bindImplementationExecution({
+		store: ctx.store,
+		recordStore: ctx.recordStore,
+		executionRunId,
+		sourceRunId: "source",
+		planPath: PLAN_PATH,
+		planMarkdown: markdown,
+		origin: ORIGIN,
+		readPlanAtCommit,
+	});
+	if (bound.status !== "bound") {
+		throw new Error(
+			bound.status === "error"
+				? `${bound.code}: ${bound.message}`
+				: bound.status,
+		);
+	}
+	return bound.binding;
+}
+
+function lineageDrift(
+	ctx: ReturnType<typeof setup>,
+	runId: string,
+	bindingId: string,
+	markdown: string,
+) {
+	const amendments = ctx.store.listImplementationTextAmendments(
+		runId,
+		bindingId,
+	);
+	const drift = detectPlanDrift({
+		approvedPlanBytes: markdown,
+		approvedPlanHash: hashPlanBytes(markdown),
+		amendments,
+		currentPlanBytes: markdown,
+		recordedSchema: 0,
+	});
+	return { amendments, chainValid: drift.chainValid };
 }
 
 describe("plan schema migration", () => {
@@ -876,5 +970,329 @@ describe("source migration and completed-run steps", () => {
 		if (again.status !== "bound") return;
 		expect(again.created).toBe(false);
 		expect(again.binding.approvedPlanCommit).toBe(MIGRATED_COMMIT);
+	});
+
+	test("an execution bound before the source migration can migrate on its own", async () => {
+		const ctx = setup();
+		const markdown = plan(false);
+		const approved = putSource(ctx, "source", markdown);
+		const target = wrapEquivalentPlan(markdown);
+		const read = async (commit: string) => {
+			if (commit === MIGRATED_COMMIT) return target;
+			if (commit === APPROVED_COMMIT) return markdown;
+			return null;
+		};
+		const binding = await bindExecution(
+			ctx,
+			"exec",
+			markdown,
+			async () => markdown,
+		);
+		expect(binding.planSchema).toBeUndefined();
+		expect(binding.schemaMigrationId).toBeUndefined();
+		expect(binding.approvedPlanCommit).toBe(APPROVED_COMMIT);
+		expect(binding.sourceSnapshotId).toBe(approved.snapshot.id);
+
+		const sourceSubject = subjectFor(markdown, { kind: "source" });
+		sourceSubject.runId = "source";
+		const sourceMigration = runMigration(ctx, markdown, target, {
+			mode: "equivalent",
+			afterCommit: MIGRATED_COMMIT,
+			subject: sourceSubject,
+		});
+		expect(sourceMigration.created).toBe(true);
+		const afterSource = ctx.store.getImplementationBinding("exec");
+		expect(afterSource?.planSchema).toBeUndefined();
+		expect(afterSource?.schemaMigrationId).toBeUndefined();
+		expect(afterSource?.predecessorPlanCommit).toBeUndefined();
+		expect(afterSource?.approvedPlanCommit).toBe(APPROVED_COMMIT);
+		expect(afterSource?.approvedPlanBytes).toBe(markdown);
+		expect(afterSource?.sourceSnapshotId).toBe(approved.snapshot.id);
+		expect(afterSource?.sourceBaselineId).toBe(approved.baseline.id);
+
+		const migrated = await applyPlanSchemaMigration(
+			{ runId: "exec", commit: MIGRATED_COMMIT, mode: "equivalent" },
+			migrationIo(ctx, read, () => ({ bytes: target, require: true })),
+		);
+		expect(migrated.created).toBe(true);
+		expect(migrated.authority).toBe("verified_equivalent");
+		expect(migrated.completionAuthorized).toBe(false);
+		expect(ctx.store.listPlanSchemaMigrations("exec")).toHaveLength(1);
+		expect(ctx.store.listPlanSchemaMigrations("source")).toHaveLength(1);
+		const afterExec = ctx.store.getImplementationBinding("exec");
+		expect(afterExec?.planSchema).toBeUndefined();
+		expect(afterExec?.schemaMigrationId).toBeUndefined();
+		expect(afterExec?.approvedPlanCommit).toBe(APPROVED_COMMIT);
+		expect(afterExec?.approvedPlanBytes).toBe(markdown);
+
+		const retry = await applyPlanSchemaMigration(
+			{ runId: "exec", commit: MIGRATED_COMMIT, mode: "equivalent" },
+			migrationIo(ctx, read, () => ({ bytes: target, require: true })),
+		);
+		expect(retry.created).toBe(false);
+		expect(retry.migration?.id).toBe(migrated.migration?.id);
+		expect(ctx.store.listPlanSchemaMigrations("exec")).toHaveLength(1);
+
+		const distinctBytes = selectiveTarget(markdown);
+		const distinctCommit = "d".repeat(40);
+		const distinct = await caughtAsync(() =>
+			applyPlanSchemaMigration(
+				{ runId: "exec", commit: distinctCommit, mode: "equivalent" },
+				migrationIo(
+					ctx,
+					async (commit) =>
+						commit === distinctCommit ? distinctBytes : read(commit),
+					() => ({ bytes: distinctBytes, require: true }),
+				),
+			),
+		);
+		expect(distinct.code).toBe("PLAN_MIGRATION_CONFLICT");
+		expect(ctx.store.listPlanSchemaMigrations("exec")).toHaveLength(1);
+
+		const sourceDistinct = await caughtAsync(() =>
+			applyPlanSchemaMigration(
+				{ runId: "source", commit: "e".repeat(40), mode: "equivalent" },
+				migrationIo(
+					ctx,
+					async (commit) => {
+						if (commit === APPROVED_COMMIT) return markdown;
+						if (commit === "e".repeat(40)) return distinctBytes;
+						return read(commit);
+					},
+					() => ({ bytes: null, require: false }),
+				),
+			),
+		);
+		expect(sourceDistinct.code).toBe("PLAN_MIGRATION_CONFLICT");
+		expect(ctx.store.listPlanSchemaMigrations("source")).toHaveLength(1);
+
+		putActiveRun(ctx, "exec-2");
+		const later = await bindExecution(ctx, "exec-2", target, read);
+		expect(later.planSchema).toBe(1);
+		expect(later.schemaMigrationId).toBe(sourceMigration.migration?.id);
+		const schema1 = await caughtAsync(() =>
+			applyPlanSchemaMigration(
+				{ runId: "exec-2", commit: MIGRATED_COMMIT, mode: "equivalent" },
+				migrationIo(ctx, read, () => ({ bytes: target, require: true })),
+			),
+		);
+		expect(schema1.code).toBe("PLAN_MIGRATION_CONFLICT");
+		expect(ctx.store.listPlanSchemaMigrations("exec-2")).toHaveLength(0);
+		expect(ctx.store.getImplementationBinding("exec-2")?.planSchema).toBe(1);
+		expect(ctx.store.getImplementationBinding("exec")?.approvedPlanCommit).toBe(
+			APPROVED_COMMIT,
+		);
+	});
+});
+
+describe("schema migration expectedKeys snapshot", () => {
+	async function raceEquivalent(
+		ctx: ReturnType<typeof setup>,
+		markdown: string,
+		intervene: () => Promise<void> | void,
+	) {
+		const target = wrapEquivalentPlan(markdown);
+		let intervened = false;
+		return applyPlanSchemaMigration(
+			{ runId: "exec", commit: MIGRATED_COMMIT, mode: "equivalent" },
+			migrationIo(
+				ctx,
+				async () => {
+					if (!intervened) {
+						intervened = true;
+						await intervene();
+					}
+					return target;
+				},
+				() => ({ bytes: target, require: true }),
+			),
+		);
+	}
+
+	test("a distinct migration after the subject read leaves one valid winner", async () => {
+		const ctx = setup();
+		const markdown = plan();
+		putSource(ctx, "source", markdown);
+		const binding = await bindExecution(
+			ctx,
+			"exec",
+			markdown,
+			async () => markdown,
+		);
+		const winnerCommit = "b".repeat(40);
+		const error = await caughtAsync(() =>
+			raceEquivalent(ctx, markdown, () => {
+				expect(ctx.store.listPlanSchemaMigrations("exec")).toHaveLength(0);
+				const winnerTarget = selectiveTarget(markdown);
+				const subject = subjectFor(markdown, { bindingId: binding.id });
+				const deps = {
+					recordStore: ctx.recordStore,
+					store: ctx.store,
+					origin: ORIGIN,
+				};
+				const expectedKeys = capturePlanSchemaMigrationExpectedKeys(
+					ctx.recordStore,
+					"exec",
+				);
+				const dry = executePlanSchemaMigration(
+					{
+						mode: "selective",
+						dryRun: true,
+						afterCommit: winnerCommit,
+						targetBytes: winnerTarget,
+						worktreeBytes: winnerTarget,
+						requireWorktreeMatch: true,
+						subject,
+						expectedKeys,
+					},
+					deps,
+				);
+				const saved = executePlanSchemaMigration(
+					{
+						mode: "selective",
+						confirmExclusions: dry.proposalDigest,
+						afterCommit: winnerCommit,
+						targetBytes: winnerTarget,
+						worktreeBytes: winnerTarget,
+						requireWorktreeMatch: true,
+						subject,
+						expectedKeys,
+					},
+					deps,
+				);
+				expect(saved.created).toBe(true);
+			}),
+		);
+		expect(error.code).toBe("RECORD_PRECONDITION_FAILED");
+		expect(error.message).toContain("repeat the dry-run");
+		const migrations = ctx.store.listPlanSchemaMigrations("exec");
+		expect(migrations).toHaveLength(1);
+		expect(migrations[0]?.afterCommit).toBe(winnerCommit);
+		const chain = lineageDrift(ctx, "exec", binding.id, markdown);
+		expect(chain.chainValid).toBe(true);
+		expect(
+			chain.amendments.filter(
+				(entry) => entry.kind === "plan-schema-migration",
+			),
+		).toHaveLength(1);
+		expect(
+			resolveRecordedPlanSchema({
+				approvedPlanBytes: markdown,
+				approvedPlanHash: hashPlanBytes(markdown),
+				amendments: chain.amendments,
+			}),
+		).toBe(1);
+		expect(
+			ctx.recordStore
+				.listLines("exec", "steps")
+				.filter(
+					(line) =>
+						(line.payload as { step_name?: string }).step_name ===
+						"schema-migration",
+				),
+		).toHaveLength(1);
+	});
+
+	test("a text amendment after the subject read rejects and keeps one valid amendment", async () => {
+		const ctx = setup();
+		const markdown = plan(false);
+		putSource(ctx, "source", markdown);
+		const binding = await bindExecution(
+			ctx,
+			"exec",
+			markdown,
+			async () => markdown,
+		);
+		const amended = `${markdown}outside\n`;
+		const payload: ImplementationTextAmendmentPayload = {
+			kind: "implementation-text-amendment",
+			version: IMPLEMENTATION_STATE_VERSION,
+			id: "amendment-race",
+			bindingId: binding.id,
+			executionRunId: "exec",
+			guardId: "guard-race",
+			sourceObservationId: "observation-race",
+			parentLineageId: null,
+			beforeCommit: APPROVED_COMMIT,
+			afterCommit: "d".repeat(40),
+			beforeBlobHash: hashPlanBytes(markdown),
+			afterBlobHash: hashPlanBytes(amended),
+			authorizedPlanBytes: amended,
+			createdAt: "2026-10-30T00:00:00.000Z",
+		};
+		const error = await caughtAsync(() =>
+			raceEquivalent(ctx, markdown, () => {
+				ctx.recordStore.append({
+					runId: "exec",
+					stream: "budget",
+					idempotencyKey: implementationTextAmendmentKey(
+						binding.id,
+						payload.id,
+					),
+					payload,
+					...recordedEnvelope(ORIGIN),
+				});
+			}),
+		);
+		expect(error.code).toBe("RECORD_PRECONDITION_FAILED");
+		expect(migrationCount(ctx)).toBe(0);
+		const chain = lineageDrift(ctx, "exec", binding.id, markdown);
+		expect(chain.chainValid).toBe(true);
+		expect(chain.amendments).toHaveLength(1);
+		expect(chain.amendments[0]?.kind).toBe("implementation-text-amendment");
+		expect(
+			ctx.recordStore
+				.listLines("exec", "steps")
+				.some(
+					(line) =>
+						(line.payload as { step_name?: string }).step_name ===
+						"schema-migration",
+				),
+		).toBe(false);
+	});
+
+	test("a decision after the subject read rejects and writes no migration", async () => {
+		const ctx = setup();
+		const markdown = plan(false);
+		putSource(ctx, "source", markdown);
+		const binding = await bindExecution(
+			ctx,
+			"exec",
+			markdown,
+			async () => markdown,
+		);
+		const error = await caughtAsync(() =>
+			raceEquivalent(ctx, markdown, () => {
+				ctx.recordStore.append({
+					runId: "exec",
+					stream: "decisions",
+					idempotencyKey: "decisions:race",
+					payload: { kind: "race" },
+					...recordedEnvelope(ORIGIN),
+				});
+			}),
+		);
+		expect(error.code).toBe("RECORD_PRECONDITION_FAILED");
+		expect(migrationCount(ctx)).toBe(0);
+		expect(lineageDrift(ctx, "exec", binding.id, markdown).chainValid).toBe(
+			true,
+		);
+		expect(
+			lineageDrift(ctx, "exec", binding.id, markdown).amendments,
+		).toHaveLength(0);
+		expect(
+			ctx.recordStore
+				.listLines("exec", "decisions")
+				.map((line) => line.idempotencyKey),
+		).toEqual(["decisions:race"]);
+		expect(
+			ctx.recordStore
+				.listLines("exec", "steps")
+				.some(
+					(line) =>
+						(line.payload as { step_name?: string }).step_name ===
+						"schema-migration",
+				),
+		).toBe(false);
 	});
 });
