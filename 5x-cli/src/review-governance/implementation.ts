@@ -19,7 +19,6 @@ import {
 import {
 	decodeImplementationBindingPayload,
 	decodeImplementationReviewObservationPayload,
-	type ImplementationPlanAmendmentPayload,
 } from "../review-budget/record-lines.js";
 import {
 	type CodeClosureDecision,
@@ -32,7 +31,10 @@ import {
 	type ReviewDecisionPayload,
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
-import { detectPlanDrift } from "./implementation-state.js";
+import {
+	detectPlanDrift,
+	type ReplayableLineageRecord,
+} from "./implementation-state.js";
 import {
 	planDefectBlocksShortcut,
 	planImpactDisposition,
@@ -68,7 +70,7 @@ export interface ImplementationValidationInput {
 	creditClaimIds?: readonly string[];
 	approvedPlanBytes?: string;
 	approvedPlanHash?: string;
-	amendments?: readonly ImplementationPlanAmendmentPayload[];
+	amendments?: readonly ReplayableLineageRecord[];
 	/** Recorded schema for the approved lineage. Omit for schema 0. */
 	recordedSchema?: 0 | 1;
 	governingHash?: string;

@@ -420,9 +420,9 @@ Extend the lineage list so replay order is journal order and includes text amend
 
 `bind` (`implementation-state.ts`, lines 1066–1120) looks for one valid source-run migration when the execution run has no binding yet. Two source-run migrations are `PLAN_MIGRATION_CONFLICT` at migration time, so bind does not have to choose between them. It reads the plan at `afterCommit`, checks `governingHash`, checks ledger equality against the source baseline, and stores `planSchema: 1`, `governingHash`, `schemaMigrationId`, and `predecessorPlanCommit` equal to the original approval commit. `approvedPlanCommit` on that new binding is `afterCommit`. The source snapshot and baseline ids stay the original approval ids. If an execution binding already exists, bind does not apply the source migration.
 
-- [ ] Add the codec and the lineage fold. Do not include `currentText`, `currentTextHash`, `snapshotId`, or `authority: "reviewer"`.
-- [ ] Reject a migration record whose target is not valid schema 1.
-- [ ] Add a store test that an unknown budget kind is still skipped and that this kind is folded once.
+- [x] Add the codec and the lineage fold. Do not include `currentText`, `currentTextHash`, `snapshotId`, or `authority: "reviewer"`.
+- [x] Reject a migration record whose target is not valid schema 1.
+- [x] Add a store test that an unknown budget kind is still skipped and that this kind is folded once.
 
 ### 3.2 `5x plan migrate`
 
@@ -434,9 +434,9 @@ Extend the lineage list so replay order is journal order and includes text amend
 
 The command refuses, without writing, when any run for that plan path has an implementation binding or a completed plan-review approval. The error tells the operator to use `5x review migrate-schema`. Otherwise it builds a schema 1 document with the skeleton layout from Design Decisions. Equivalent mode wraps the entire current file as the contract interior and preserves bytes except the one allowed trailing newline. Selective mode is an explicit file edit the operator already made; the command only checks that the file is valid schema 1, prints every original line that is no longer governing, and writes nothing unless `--write` is set and `--dry-run` is absent. It appends no record and it does not approve the plan. The success text says to submit the file through ordinary plan review.
 
-- [ ] Register the command on the existing `plan` parent in `plan-v1.ts`.
-- [ ] Refuse governed plans.
-- [ ] Equivalent `--write` is idempotent on an already wrapped schema 1 file whose interior matches.
+- [x] Register the command on the existing `plan` parent in `plan-v1.ts`.
+- [x] Refuse governed plans.
+- [x] Equivalent `--write` is idempotent on an already wrapped schema 1 file whose interior matches.
 
 ### 3.3 `5x review migrate-schema`
 
@@ -467,14 +467,14 @@ Recording requires `--mode equivalent`, or `--confirm-exclusions` equal to the d
 
 The successful write is one `atomicAppendIfAllNew` batch: the budget payload and a step named `schema-migration`. The step has `phase: null`, `iteration: 0`, and `step_name: "schema-migration"`. Its name does not start with `reviewer:` or `author:` and it is not `run:complete` or `phase:complete`. Its idempotency key also contains the digest. Pass `expectedKeys` as the full budget, steps, and decisions key lists captured for that attempt. On `created: false`, return the stored payload only when its digest and target hash match; otherwise `PLAN_MIGRATION_CONFLICT`. On `RECORD_PRECONDITION_FAILED`, tell the operator to repeat the dry-run. Do not invalidate phase evidence. The result always includes `completionAuthorized: false`.
 
-- [ ] Implement equivalent migration and selective operator confirmation. Do not implement a reviewer or snapshot path.
-- [ ] Implement the motivating status-sentence fixture end to end through admission.
-- [ ] Prove an identical completed retry returns the stored winner before the schema 1 refusal, a distinct second migration on a schema 1 binding or an already migrated lineage or source run is `PLAN_MIGRATION_CONFLICT` and writes nothing, and a stale confirmation writes nothing.
-- [ ] Prove repeated blank governing lines always produce the same exclusion ids, and that `nonGoverningText` is what dry-run shows as the current text.
-- [ ] Prove a retained governing edit is rejected and the existing recover-plan help is included in that error.
-- [ ] Prove `expectedKeys` includes the decisions stream.
-- [ ] Prove a schema 0 run that never migrates still drifts on a status edit, and a migrated run with the markers deleted fails `PLAN_SCHEMA_INVALID` rather than reading as schema 0.
-- [ ] Prove the `schema-migration` step appended after `run:complete` leaves `terminalRoute`, `resolveFinalizedPlanCommit`, and `foldGoverningReviewState` unchanged.
+- [x] Implement equivalent migration and selective operator confirmation. Do not implement a reviewer or snapshot path.
+- [x] Implement the motivating status-sentence fixture end to end through admission.
+- [x] Prove an identical completed retry returns the stored winner before the schema 1 refusal, a distinct second migration on a schema 1 binding or an already migrated lineage or source run is `PLAN_MIGRATION_CONFLICT` and writes nothing, and a stale confirmation writes nothing.
+- [x] Prove repeated blank governing lines always produce the same exclusion ids, and that `nonGoverningText` is what dry-run shows as the current text.
+- [x] Prove a retained governing edit is rejected and the existing recover-plan help is included in that error.
+- [x] Prove `expectedKeys` includes the decisions stream.
+- [x] Prove a schema 0 run that never migrates still drifts on a status edit, and a migrated run with the markers deleted fails `PLAN_SCHEMA_INVALID` rather than reading as schema 0.
+- [x] Prove the `schema-migration` step appended after `run:complete` leaves `terminalRoute`, `resolveFinalizedPlanCommit`, and `foldGoverningReviewState` unchanged.
 
 ---
 

@@ -623,7 +623,10 @@ export async function composeImplementationReviewerRecord(input: {
 	}
 	const planAmendments = planAmendmentCount({
 		observations: priorObservations,
-		amendments: textAmendments,
+		amendments: textAmendments.filter(
+			(entry): entry is ImplementationPlanAmendmentPayload =>
+				entry.kind !== "plan-schema-migration",
+		),
 		current: gateCauses,
 	});
 	const activity = deriveImplementationActivityTelemetry({

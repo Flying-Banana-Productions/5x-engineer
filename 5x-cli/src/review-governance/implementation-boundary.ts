@@ -16,7 +16,7 @@ import type {
 	ImplementationCompatibilityPayload,
 	ImplementationCorrectionAttemptPayload,
 	ImplementationCreditReconciliationPayload,
-	ImplementationPlanAmendmentPayload,
+	ImplementationLineagePayload,
 	ImplementationReviewContextPayload,
 	ImplementationReviewObservationPayload,
 } from "../review-budget/record-lines.js";
@@ -80,7 +80,7 @@ export interface ImplementationBoundaryInput {
 	binding: ImplementationBindingPayload | null;
 	compatibility: ImplementationCompatibilityPayload | null;
 	currentPlanBytes: string | null;
-	amendments: readonly ImplementationPlanAmendmentPayload[];
+	amendments: readonly ImplementationLineagePayload[];
 	observations: readonly ImplementationReviewObservationPayload[];
 	contexts: readonly ImplementationReviewContextPayload[];
 	reconciliations: readonly ImplementationCreditReconciliationPayload[];
@@ -530,7 +530,7 @@ export function evaluateStoredImplementationBoundary(input: {
 }): ImplementationBoundaryResult {
 	let binding: ImplementationBindingPayload | null = null;
 	let compatibility: ImplementationCompatibilityPayload | null = null;
-	let amendments: ImplementationPlanAmendmentPayload[] = [];
+	let amendments: ImplementationLineagePayload[] = [];
 	let observations: ImplementationReviewObservationPayload[] = [];
 	const contexts: ImplementationReviewContextPayload[] = [];
 	let reconciliations: ImplementationCreditReconciliationPayload[] = [];

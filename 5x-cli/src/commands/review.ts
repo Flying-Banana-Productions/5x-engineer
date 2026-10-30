@@ -1,5 +1,6 @@
 import type { Command } from "@commander-js/extra-typings";
 import { outputError, outputSuccess } from "../output.js";
+import { migratePlanSchema } from "../review-governance/schema-migration.js";
 import { resolveDbContext } from "./context.js";
 import { recoverImplementationPlanCommand } from "./implementation-recovery.handler.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
@@ -275,6 +276,41 @@ export function registerReview(parent: Command) {
 						scopeConfirmation: opts.confirmScope,
 						preservedPhaseConfirmation: opts.confirmPreservedPhases,
 						dryRun: opts.dryRun,
+					},
+					context,
+				),
+			);
+		});
+
+	review
+		.command("migrate-schema")
+		.description(
+			"Record a schema 0 to schema 1 migration. Equivalent mode is a mechanical proof. Selective mode confirms the operator exclusion digest. There is no snapshot flag.",
+		)
+		.requiredOption(
+			"--run <id>",
+			"Bound execution run or approved plan-review run",
+		)
+		.requiredOption("--commit <sha>", "Full sha of the schema 1 plan commit")
+		.requiredOption("--mode <mode>", "equivalent or selective")
+		.option(
+			"--dry-run",
+			"Print exclusions, non-governing text, and the digest without writing",
+		)
+		.option(
+			"--confirm-exclusions <digest>",
+			"Operator confirmation of the selective exclusion digest",
+		)
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await migratePlanSchema(
+					{
+						runId,
+						commit: opts.commit,
+						mode: opts.mode,
+						dryRun: opts.dryRun,
+						confirmExclusions: opts.confirmExclusions,
 					},
 					context,
 				),

@@ -44,11 +44,13 @@ import {
 	type ImplementationCorrectionAttemptPayload,
 	type ImplementationCreditReconciliationPayload,
 	type ImplementationDebtTarget,
+	type ImplementationLineagePayload,
 	type ImplementationPhaseMapping,
 	type ImplementationPlanAmendmentPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationTextAmendmentPayload,
+	type PlanSchemaMigrationPayload,
 } from "../review-budget/record-lines.js";
 import type {
 	DebtClaimEvidence,
@@ -199,9 +201,9 @@ export interface PlanDriftResult {
 }
 
 /**
- * A lineage record Phase 3 will write. Replay accepts it now so a later
- * migration can switch authorized bytes to schema 1. An invalid record does
- * not install the migration target.
+ * A lineage record written by schema migration. Replay switches authorized
+ * bytes to schema 1 only when the target is valid schema 1. An invalid
+ * record does not install the migration target.
  */
 export interface ReplayablePlanSchemaMigration {
 	kind: "plan-schema-migration";
@@ -610,9 +612,7 @@ function loadAmendments(
 	store: ReviewBudgetStore,
 	runId: string,
 	bindingId: string,
-):
-	| { ok: true; amendments: ImplementationPlanAmendmentPayload[] }
-	| { ok: false } {
+): { ok: true; amendments: ImplementationLineagePayload[] } | { ok: false } {
 	try {
 		return {
 			ok: true,
@@ -1263,6 +1263,273 @@ function stepPayload(payload: unknown): StepRecordPayload | null {
 	return value as StepRecordPayload;
 }
 
+export interface SchemaMigrationSubject {
+	kind: "execution" | "source";
+	runId: string;
+	bindingId: string | null;
+	bindingPlanSchema?: 0 | 1;
+	sourceBytes: string;
+	beforeBlobHash: string;
+	beforeCommit: string;
+	priorApprovalCommit: string;
+	parentLineageId: string | null;
+	ledger: ParsedDeliveryBudget;
+	migrations: PlanSchemaMigrationPayload[];
+	sourceMigrations: PlanSchemaMigrationPayload[];
+}
+
+/** Null when this plan file has no binding and no completed approval. */
+export function planFileGovernedReason(input: {
+	recordStore: RecordStore;
+	store: ReviewBudgetStore;
+	planPath: string;
+}): string | null {
+	const slug = planSlugFromPath(input.planPath);
+	const runs = input.recordStore
+		.listRuns({ planSlug: slug })
+		.filter((run) => planPathsIdentifySamePlan(run.plan_path, input.planPath));
+	for (const run of runs) {
+		let binding: ImplementationBindingPayload | null = null;
+		try {
+			binding = input.store.getImplementationBinding(run.id);
+		} catch (error) {
+			if (!isMissingRun(error)) {
+				return `Run ${run.id} has an unreadable implementation binding. Use 5x review migrate-schema for a recorded transition.`;
+			}
+		}
+		if (binding) {
+			return `Plan ${input.planPath} already has implementation binding ${binding.id} on run ${run.id}. Use 5x review migrate-schema.`;
+		}
+		const assessed = assessApprovedSource({
+			recordStore: input.recordStore,
+			store: input.store,
+			sourceRunId: run.id,
+			planPath: run.plan_path,
+		});
+		if (assessed.status === "error") {
+			return `${assessed.message} Use 5x review migrate-schema for a recorded transition.`;
+		}
+		if (assessed.approval) {
+			return `Plan ${input.planPath} has a completed plan-review approval on run ${run.id}. Use 5x review migrate-schema.`;
+		}
+	}
+	return null;
+}
+
+/**
+ * Bound execution, or an approved plan-review with no binding on this run.
+ * Source bytes are the pre-migration authorized lineage.
+ */
+export async function readSchemaMigrationSubject(input: {
+	store: ReviewBudgetStore;
+	recordStore: RecordStore;
+	runId: string;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| { ok: true; subject: SchemaMigrationSubject }
+	| { ok: false; code: string; message: string }
+> {
+	const summary = input.recordStore.getRun(input.runId);
+	if (!summary) {
+		return {
+			ok: false,
+			code: "RUN_NOT_FOUND",
+			message: `Run ${input.runId} was not found. Use 5x plan migrate for an unapproved plan file.`,
+		};
+	}
+	const binding = readBinding(input.store, input.runId);
+	if (binding.status === "error") {
+		return { ok: false, code: binding.code, message: binding.message };
+	}
+	if (binding.status === "ok") {
+		const lineage = input.store.listImplementationTextAmendments(
+			input.runId,
+			binding.binding.id,
+		);
+		const migrationIndex = lineage.findIndex(
+			(entry) => entry.kind === "plan-schema-migration",
+		);
+		const prefix =
+			migrationIndex === -1 ? lineage : lineage.slice(0, migrationIndex);
+		const chain = replayTextAmendments({
+			approvedPlanBytes: binding.binding.approvedPlanBytes,
+			approvedPlanHash: binding.binding.approvedPlanHash,
+			amendments: prefix,
+		});
+		if (!chain.chainValid) {
+			return {
+				ok: false,
+				code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
+				message: "Refusing to migrate an unverified plan lineage.",
+			};
+		}
+		const parent = prefix.at(-1);
+		return {
+			ok: true,
+			subject: {
+				kind: "execution",
+				runId: input.runId,
+				bindingId: binding.binding.id,
+				...(binding.binding.planSchema !== undefined
+					? { bindingPlanSchema: binding.binding.planSchema }
+					: {}),
+				sourceBytes: chain.authorizedBytes,
+				beforeBlobHash: chain.authorizedHash,
+				beforeCommit: parent?.afterCommit ?? binding.binding.approvedPlanCommit,
+				priorApprovalCommit: binding.binding.approvedPlanCommit,
+				parentLineageId: parent?.id ?? null,
+				ledger: binding.binding.ledger,
+				migrations: input.store.listPlanSchemaMigrations(input.runId),
+				sourceMigrations: input.store.listPlanSchemaMigrations(
+					binding.binding.sourceRunId,
+				),
+			},
+		};
+	}
+	const assessed = assessApprovedSource({
+		recordStore: input.recordStore,
+		store: input.store,
+		sourceRunId: input.runId,
+		planPath: summary.plan_path,
+	});
+	if (assessed.status === "error") {
+		return { ok: false, code: assessed.code, message: assessed.message };
+	}
+	if (!assessed.approval) {
+		return {
+			ok: false,
+			code: "PLAN_MIGRATION_UNAPPROVED",
+			message: `${assessed.refusal ?? "This run is not a bound execution or an approved plan review."} Use 5x plan migrate for an unapproved working-tree file.`,
+		};
+	}
+	const sourceBytes = await input.readPlanAtCommit(
+		assessed.approval.approvedCommit,
+	);
+	if (sourceBytes === null) {
+		return {
+			ok: false,
+			code: "IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
+			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
+		};
+	}
+	const migrations = input.store.listPlanSchemaMigrations(input.runId);
+	return {
+		ok: true,
+		subject: {
+			kind: "source",
+			runId: input.runId,
+			bindingId: null,
+			sourceBytes,
+			beforeBlobHash: hashPlanBytes(sourceBytes),
+			beforeCommit: assessed.approval.approvedCommit,
+			priorApprovalCommit: assessed.approval.approvedCommit,
+			parentLineageId: null,
+			ledger: assessed.approval.ledger,
+			migrations,
+			sourceMigrations: migrations,
+		},
+	};
+}
+
+async function resolveSourceSchemaMigration(input: {
+	store: ReviewBudgetStore;
+	sourceRunId: string;
+	approvedBytes: string;
+	approvedCommit: string;
+	ledger: ParsedDeliveryBudget;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| { status: "none" }
+	| {
+			status: "migrated";
+			bytes: string;
+			commit: string;
+			fields: {
+				planSchema: 1;
+				governingHash: string;
+				schemaMigrationId: string;
+				predecessorPlanCommit: string;
+			};
+	  }
+	| { status: "error"; code: string; message: string }
+> {
+	const migrations = input.store.listPlanSchemaMigrations(input.sourceRunId);
+	if (migrations.length === 0) return { status: "none" };
+	const chain = replayTextAmendments({
+		approvedPlanBytes: input.approvedBytes,
+		approvedPlanHash: hashPlanBytes(input.approvedBytes),
+		amendments: migrations,
+	});
+	const migration = migrations.length === 1 ? migrations[0] : undefined;
+	if (!chain.chainValid || chain.schema !== 1 || !migration) {
+		return {
+			status: "error",
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"Source run has a conflicting schema migration. Refusing to choose a binding baseline.",
+		};
+	}
+	const atCommit = await input.readPlanAtCommit(migration.afterCommit);
+	if (atCommit === null) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
+			message: `Migrated plan bytes at ${migration.afterCommit} are unavailable`,
+		};
+	}
+	if (
+		atCommit !== migration.authorizedPlanBytes ||
+		hashPlanBytes(atCommit) !== migration.afterBlobHash
+	) {
+		return {
+			status: "error",
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"Source schema migration does not match the plan blob at its after commit.",
+		};
+	}
+	const loaded = loadPlanDocument(atCommit, 1);
+	if (!loaded.ok) {
+		return {
+			status: "error",
+			code: loaded.code,
+			message: loaded.message.includes("not a legacy fallback")
+				? loaded.message
+				: `${loaded.message} This is not a legacy fallback.`,
+		};
+	}
+	if (
+		hashPlanBytes(loaded.document.comparisonBytes) !== migration.governingHash
+	) {
+		return {
+			status: "error",
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"Source schema migration governingHash does not match the migrated plan. This is not a legacy fallback.",
+		};
+	}
+	const parsed = parseDeliveryBudget(loaded.document.authorityMarkdown);
+	if (!parsed.ok || !ledgersMatch(parsed.value, input.ledger)) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_SOURCE_INVALID",
+			message:
+				"Migrated plan ledger does not match the source review ledger. Refusing to bind a drifted approval.",
+		};
+	}
+	return {
+		status: "migrated",
+		bytes: atCommit,
+		commit: migration.afterCommit,
+		fields: {
+			planSchema: 1,
+			governingHash: migration.governingHash,
+			schemaMigrationId: migration.id,
+			predecessorPlanCommit: input.approvedCommit,
+		},
+	};
+}
+
 export async function bindImplementationExecution(input: {
 	store: ReviewBudgetStore;
 	recordStore: RecordStore;
@@ -1312,7 +1579,25 @@ export async function bindImplementationExecution(input: {
 			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
 		};
 	}
-	const approvedDocument = authoritativePlan(approvedBytes, "file");
+	const migrated = await resolveSourceSchemaMigration({
+		store: input.store,
+		sourceRunId: input.sourceRunId,
+		approvedBytes,
+		approvedCommit: assessed.approval.approvedCommit,
+		ledger: assessed.approval.ledger,
+		readPlanAtCommit: input.readPlanAtCommit,
+	});
+	if (migrated.status === "error") return migrated;
+	const bindingBytes =
+		migrated.status === "migrated" ? migrated.bytes : approvedBytes;
+	const bindingCommit =
+		migrated.status === "migrated"
+			? migrated.commit
+			: assessed.approval.approvedCommit;
+	const approvedDocument = authoritativePlan(
+		bindingBytes,
+		migrated.status === "migrated" ? 1 : "file",
+	);
 	if (!approvedDocument.ok) {
 		return {
 			status: "error",
@@ -1346,12 +1631,14 @@ export async function bindImplementationExecution(input: {
 	);
 	if (mapped.status === "error") return mapped;
 	const governingHash =
-		approvedDocument.document.schema === 1
-			? hashPlanBytes(approvedDocument.document.comparisonBytes)
-			: undefined;
+		migrated.status === "migrated"
+			? migrated.fields.governingHash
+			: approvedDocument.document.schema === 1
+				? hashPlanBytes(approvedDocument.document.comparisonBytes)
+				: undefined;
 	const drift = detectPlanDrift({
-		approvedPlanBytes: approvedBytes,
-		approvedPlanHash: hashPlanBytes(approvedBytes),
+		approvedPlanBytes: bindingBytes,
+		approvedPlanHash: hashPlanBytes(bindingBytes),
 		amendments: [],
 		currentPlanBytes: input.planMarkdown,
 		recordedSchema: approvedDocument.document.schema,
@@ -1375,9 +1662,9 @@ export async function bindImplementationExecution(input: {
 		sourceRunId: assessed.approval.sourceRunId,
 		sourceSnapshotId: assessed.approval.snapshotId,
 		sourceBaselineId: assessed.approval.baselineId,
-		approvedPlanCommit: assessed.approval.approvedCommit,
-		approvedPlanHash: hashPlanBytes(approvedBytes),
-		approvedPlanBytes: approvedBytes,
+		approvedPlanCommit: bindingCommit,
+		approvedPlanHash: hashPlanBytes(bindingBytes),
+		approvedPlanBytes: bindingBytes,
 		b0: assessed.approval.b0,
 		governingB: assessed.approval.governingB,
 		mode: assessed.approval.mode,
@@ -1389,9 +1676,11 @@ export async function bindImplementationExecution(input: {
 		ledgerHash: hashJson(assessed.approval.ledger),
 		decisionsHash: hashJson(decisions),
 		createdAt: now(),
-		...(approvedDocument.document.schema === 1 && governingHash
-			? { planSchema: 1 as const, governingHash }
-			: {}),
+		...(migrated.status === "migrated"
+			? migrated.fields
+			: approvedDocument.document.schema === 1 && governingHash
+				? { planSchema: 1 as const, governingHash }
+				: {}),
 	};
 	const saved = input.store.saveImplementationBinding(payload, input.origin);
 	if (!saved.created) {
@@ -1470,6 +1759,14 @@ function mapApprovedPhases(
 		});
 	}
 	return { status: "ok", phaseMap, debtTargets };
+}
+
+/** Ledger identity ignores parse line numbers, titles, and rationale. */
+export function deliveryLedgersEqual(
+	parsed: ParsedDeliveryBudget,
+	approved: ParsedDeliveryBudget,
+): boolean {
+	return ledgersMatch(parsed, approved);
 }
 
 function ledgersMatch(
@@ -1661,7 +1958,13 @@ export function verifyAuthorTextAmendment(input: {
 	}
 	const parent = loaded.amendments.at(-1);
 	const guard = latest.textGuard;
-	if (loaded.amendments.some((amendment) => amendment.guardId === guard.id)) {
+	if (
+		loaded.amendments.some(
+			(amendment) =>
+				amendment.kind !== "plan-schema-migration" &&
+				amendment.guardId === guard.id,
+		)
+	) {
 		return { status: "not_applicable" };
 	}
 	if (
