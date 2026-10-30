@@ -21,6 +21,7 @@ import {
 	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 import { TEST_ORIGIN } from "./review-budget-test-helpers.js";
 
@@ -189,7 +190,7 @@ describe("review corrections finish handler", () => {
 						sourceSnapshotId: "snap",
 						sourceBaselineId: "base",
 						approvedPlanCommit: "c".repeat(40),
-						approvedPlanHash: "sha256:plan",
+						approvedPlanHash: hashPlanBytes("# Plan\n"),
 						approvedPlanBytes: "# Plan\n",
 						b0: 5,
 						governingB: 5,

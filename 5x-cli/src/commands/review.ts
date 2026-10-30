@@ -1,9 +1,9 @@
 import type { Command } from "@commander-js/extra-typings";
 import { outputError, outputSuccess } from "../output.js";
 import { resolveDbContext } from "./context.js";
-import { recoverImplementationPlanCommand } from "./implementation-recovery.handler.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
+	amendImplementationPlanCommand,
 	bindApprovedImplementation,
 	finishImplementationCorrections,
 	type SubmitPlanReviewDecisionPayload,
@@ -14,6 +14,64 @@ import { requireAmbientRunId } from "./run-identity.js";
 
 function collect(value: string, previous: string[]): string[] {
 	return [...previous, value];
+}
+
+function amendmentScopeFromFlags(opts: {
+	predecessorRevision: string[];
+	earliestAffectedPhase: string[];
+	reopenCompletedPhases: string[];
+	claimEdit: string[];
+	resolutionRef: string[];
+}) {
+	const predecessorRevisionId = scalar(
+		opts.predecessorRevision,
+		"--predecessor-revision",
+	);
+	const earliestAffectedPhase = scalar(
+		opts.earliestAffectedPhase,
+		"--earliest-affected-phase",
+	);
+	const reopen = scalar(
+		opts.reopenCompletedPhases,
+		"--reopen-completed-phases",
+	);
+	if (!predecessorRevisionId || !earliestAffectedPhase || reopen === undefined)
+		outputError(
+			"INVALID_ARGS",
+			"authorize_amendment requires --predecessor-revision, --earliest-affected-phase, and --reopen-completed-phases true|false",
+		);
+	if (reopen !== "true" && reopen !== "false")
+		outputError(
+			"INVALID_ARGS",
+			"--reopen-completed-phases requires the token true or false",
+		);
+	const effects = new Set(["withdraw", "reduce_magnitude", "edit_contract"]);
+	return {
+		predecessorRevisionId,
+		earliestAffectedPhase,
+		reopenCompletedPhases: reopen === "true",
+		claimEdits: opts.claimEdit.map((token) => {
+			const separator = token.lastIndexOf(":");
+			const creditClaimId = token.slice(0, separator);
+			const effect = token.slice(separator + 1);
+			if (separator <= 0 || !effects.has(effect))
+				outputError(
+					"INVALID_ARGS",
+					"--claim-edit must be <creditClaimId>:<withdraw|reduce_magnitude|edit_contract>",
+				);
+			return { creditClaimId, effect };
+		}),
+		resolutionRefs: opts.resolutionRef.map((token) => {
+			const parts = token.split("/");
+			if (parts.length !== 3 || parts.some((part) => part.length === 0))
+				outputError(
+					"INVALID_ARGS",
+					"--resolution-ref must be <phase>/<observation-id>/<finding-id>",
+				);
+			const [phase, observationId, findingId] = parts;
+			return { phase, observationId, findingId };
+		}),
+	};
 }
 
 function scalar(
@@ -58,6 +116,7 @@ const JSON_FIELDS = new Set([
 	"approvedWorkItemIds",
 	"snapshotId",
 	"claimAdjustments",
+	"amendmentScope",
 ]);
 
 export function registerReview(parent: Command) {
@@ -119,9 +178,39 @@ export function registerReview(parent: Command) {
 			collect,
 			[],
 		)
+		.option(
+			"--predecessor-revision <revision-id>",
+			"Current revision an authorize_amendment decision may advance",
+			collect,
+			[],
+		)
+		.option(
+			"--earliest-affected-phase <phase-id>",
+			"Earliest phase the authorization permits an amendment to affect",
+			collect,
+			[],
+		)
+		.option(
+			"--reopen-completed-phases <true|false>",
+			"Required token. True consents to reopening completed phases at or after the authorized floor",
+			collect,
+			[],
+		)
+		.option(
+			"--claim-edit <creditClaimId:effect>",
+			"Permitted claim effect: withdraw, reduce_magnitude, or edit_contract. Repeatable; zero repetitions record []",
+			collect,
+			[],
+		)
+		.option(
+			"--resolution-ref <phase/observation-id/finding-id>",
+			"Finding the authorization may resolve. Repeatable; zero repetitions record []",
+			collect,
+			[],
+		)
 		.addHelpText(
 			"after",
-			'\nInspect requiredFieldsByChoice first with "5x review gate show". Flag input accepts finding IDs only; the CLI resolves fingerprints. --input-json is mutually exclusive with all decision flags.\n',
+			'\nInspect requiredFieldsByChoice first with "5x review gate show". Flag input accepts finding IDs only; the CLI resolves fingerprints. --input-json is mutually exclusive with all decision flags.\nA new authorize_amendment decision requires amendmentScope from these flags or from --input-json. Rationale and gate prose are not scope. --reopen-completed-phases requires the true or false token; a bare flag is rejected. Historical decisions that omit amendmentScope stay valid and cannot authorize amend.\n',
 		)
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);
@@ -143,6 +232,11 @@ export function registerReview(parent: Command) {
 					opts.approvedP,
 					opts.approvedItem,
 					opts.approvedWorkItem,
+					opts.predecessorRevision,
+					opts.earliestAffectedPhase,
+					opts.reopenCompletedPhases,
+					opts.claimEdit,
+					opts.resolutionRef,
 				];
 				if (flagFields.some((values) => values.length > 0))
 					outputError(
@@ -181,6 +275,21 @@ export function registerReview(parent: Command) {
 						"INVALID_ARGS",
 						"--choice and --rationale are required without --input-json",
 					);
+				const scopeFlags = [
+					opts.predecessorRevision.length,
+					opts.earliestAffectedPhase.length,
+					opts.reopenCompletedPhases.length,
+					opts.claimEdit.length,
+					opts.resolutionRef.length,
+				];
+				if (
+					choice !== "authorize_amendment" &&
+					scopeFlags.some((count) => count > 0)
+				)
+					outputError(
+						"INVALID_ARGS",
+						"amendmentScope flags are only valid with --choice authorize_amendment",
+					);
 				const baselineRaw = scalar(opts.baseline, "--baseline");
 				const approvedPRaw = scalar(opts.approvedP, "--approved-p");
 				payload = {
@@ -197,6 +306,9 @@ export function registerReview(parent: Command) {
 						: {}),
 					approvedItemIds: opts.approvedItem,
 					approvedWorkItemIds: opts.approvedWorkItem,
+					...(choice === "authorize_amendment"
+						? { amendmentScope: amendmentScopeFromFlags(opts) }
+						: {}),
 				};
 				findingIds = opts.finding;
 			}
@@ -235,45 +347,44 @@ export function registerReview(parent: Command) {
 		});
 
 	implementation
-		.command("recover-plan")
+		.command("amend")
 		.description(
-			"Operator-confirmed amendment recovery at an unfinished frontier; repeatable with a new authorization and plan review; preserves binding/baseline and requires fresh implementation review",
+			"Register a reviewed semantic plan amendment without changing the original binding or pinned policy",
 		)
 		.requiredOption("--run <id>", "Existing execution run")
-		.requiredOption("--phase <p>", "Earliest affected, unfinished phase")
 		.requiredOption(
-			"--authorization <id>",
-			"Accepted authorize_amendment decision",
+			"--human-step <step>",
+			"Coupled human:review-governance step (journal key, run-qualified step key, or local numeric id)",
 		)
 		.requiredOption(
-			"--snapshot <id>",
-			"Latest completed same-run plan review snapshot",
+			"--approval-step <step>",
+			"Coupled plan reviewer step in this execution run",
 		)
 		.requiredOption(
-			"--commit <sha>",
-			"Full recorded plan-amendment author commit",
+			"--from-phase <phase>",
+			"Earliest affected phase; must equal the assessment",
 		)
-		.requiredOption(
-			"--confirm-scope <text>",
-			"Operator attestation: exact reviewed commit stays within authorization; include operating restrictions",
+		.option(
+			"--resolves <finding>",
+			"Finding id on the authorization source observation, or phase/observation-id/finding-id. Repeatable",
+			collect,
+			[],
 		)
-		.requiredOption(
-			"--confirm-preserved-phases <text>",
-			"Operator attestation: shared/design changes do not invalidate earlier phase approvals",
+		.option("--dry-run", "Validate and preview without appending the amendment")
+		.addHelpText(
+			"after",
+			"\n--human-step selects the coupled authorize_amendment decision. A generic human:gate, continue, or override does not qualify. Plain --resolves selects only the source observation. The requested set must equal the assessment and be covered by amendmentScope.resolutionRefs. Removing --dry-run records the paired receipt. Registration does not authorize implementation completion.\n",
 		)
-		.option("--dry-run", "Validate and preview without appending recovery")
 		.action(async (opts) => {
 			const { runId, context } = await contextFor(opts.run);
 			outputSuccess(
-				await recoverImplementationPlanCommand(
+				await amendImplementationPlanCommand(
 					{
 						runId,
-						phase: opts.phase,
-						authorizationId: opts.authorization,
-						snapshotId: opts.snapshot,
-						commit: opts.commit,
-						scopeConfirmation: opts.confirmScope,
-						preservedPhaseConfirmation: opts.confirmPreservedPhases,
+						humanStep: opts.humanStep,
+						approvalStep: opts.approvalStep,
+						fromPhase: opts.fromPhase,
+						resolves: opts.resolves,
 						dryRun: opts.dryRun,
 					},
 					context,

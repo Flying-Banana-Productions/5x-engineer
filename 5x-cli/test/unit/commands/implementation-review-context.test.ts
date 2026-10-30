@@ -104,7 +104,7 @@ function binding(input?: {
 		sourceSnapshotId: "snap",
 		sourceBaselineId: "base",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		approvedPlanBytes: "# Plan\n",
 		b0: governingB,
 		governingB,
@@ -1151,8 +1151,8 @@ describe("implementation review observations", () => {
 				parentLineageId: null,
 				beforeCommit: "a".repeat(40),
 				afterCommit: "b".repeat(40),
-				beforeBlobHash: "sha256:before",
-				afterBlobHash: "sha256:after",
+				beforeBlobHash: hashPlanBytes("# Plan\n"),
+				afterBlobHash: hashPlanBytes("# Plan\n"),
 				authorizedPlanBytes: "# Plan\n",
 				createdAt: "2026-01-01 00:00:00",
 			},
@@ -1167,11 +1167,11 @@ describe("implementation review observations", () => {
 				executionRunId: "run1",
 				guardId: "guard-2",
 				sourceObservationId: "other-phase-observation",
-				parentLineageId: null,
+				parentLineageId: "amend-phase",
 				beforeCommit: "a".repeat(40),
 				afterCommit: "c".repeat(40),
-				beforeBlobHash: "sha256:before",
-				afterBlobHash: "sha256:after2",
+				beforeBlobHash: hashPlanBytes("# Plan\n"),
+				afterBlobHash: hashPlanBytes("# Plan\n"),
 				authorizedPlanBytes: "# Plan\n",
 				createdAt: "2026-01-01 00:00:01",
 			},
@@ -1183,7 +1183,10 @@ describe("implementation review observations", () => {
 			stepName: STEP,
 			phase: PHASE,
 			iteration: 2,
-			verdict: planDefect,
+			verdict: {
+				...planDefect,
+				priorFindings: [{ id: "P1", status: "still_open" as const }],
+			},
 			contextId: "ctx-1",
 			codeContext: diff,
 		});
@@ -1264,7 +1267,7 @@ describe("implementation review observations", () => {
 		ctx.db.close();
 	});
 
-	test("snapshots a text guard and downgrades when the lineage cannot be verified", async () => {
+	test("snapshots a text guard and fails closed when the lineage cannot be verified", async () => {
 		const markdown = `# Plan
 
 ## Delivery Budget
@@ -1376,11 +1379,10 @@ The binding is unchanged.
 			contextId: "ctx-1",
 			codeContext: diff,
 		});
-		expect(downgraded.status).toBe("applied");
-		if (downgraded.status !== "applied") return;
-		expect(downgraded.pending.route).toBe("human_gate");
-		expect(downgraded.pending.nextAction).toBe("plan_amendment");
-		expect(downgraded.pending.textGuard).toBeUndefined();
+		expect(downgraded.status).toBe("error");
+		if (downgraded.status !== "error") return;
+		expect(downgraded.code).toBe("IMPLEMENTATION_REVIEW_RECORD_CORRUPT");
+		expect(downgraded.message).toContain("wrong parent or plan hash");
 		ctx.db.close();
 		broken.db.close();
 	});

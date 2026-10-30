@@ -42,7 +42,7 @@ This is a **code implementation** task. You are fixing issues in the source code
 - Update the implementation plan checklist items (`[x]`) only if your fixes complete previously incomplete items.
 - Do **not** make structural changes to the plan document (phase descriptions, design decisions, budget table bytes, or new scope). That requires an approved amendment workflow.
 - Guarded nonstructural text synchronization is allowed only inside the supplied text guard spans, plus checkbox toggles.
-- When runtime context supplies an accepted frontier plan recovery, apply its effective plan and operator-confirmed restrictions to the admitted findings. Authorized design findings may now require code corrections; the recovery does not approve the implementation or permit another plan amendment. Keep pending operator gates pending.
+- When runtime context supplies an effective revision, including a historical frontier recovery, apply that revision's plan and restrictions to the admitted findings. A historical recovery is not a new recovery command and does not approve the implementation or permit another plan amendment. Keep pending operator gates pending.
 - Do not implement deferred or accepted-risk findings, nonblocking Markdown follow-ups, or scope expansion.
 - Applicable bound architecture approvals and suppressed inherited alerts in runtime context are governing decisions, not an instruction to reduce approved scope. Unresolved inherited-budget causes require the orchestrator's plan-revision route; a raw alert alone is not admitted author work.
 - When the admitted section says this pass is a final correction, change only the eligible item. Do not clean up unrelated code, tests, docs, or plan structure.

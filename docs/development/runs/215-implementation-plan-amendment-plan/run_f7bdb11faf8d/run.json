@@ -1,0 +1,19 @@
+{
+  "id": "run_f7bdb11faf8d",
+  "plan_path": "5x-cli/docs/development/plans/215-implementation-plan-amendment-plan.md",
+  "config_json": {
+    "maxStepsPerRun": 250
+  },
+  "created_at": "2026-10-19 22:11:40",
+  "sealed_at": "2026-10-20T17:35:37.289Z",
+  "status": "completed",
+  "final_head_commit": "11e51eb054073c3069f6982a6eae5c89da972fd8",
+  "cli_version": "2.0.0",
+  "format_version": 1,
+  "creator": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  },
+  "sealer": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  }
+}

@@ -325,6 +325,135 @@ describe("approved credit reconciliation", () => {
 		});
 	});
 
+	test("a withdrawn claim stays reserved and contributes no credit", () => {
+		const source = binding();
+		const result = reconcile({
+			binding: source,
+			effectiveLedger: {
+				...source.ledger,
+				workItems: [],
+			},
+			claimEdits: [{ creditClaimId: "DC1", effect: "withdraw" }],
+			realizations: [realized("DC1", -3)],
+		});
+		expect(result).toMatchObject({
+			status: "rejected",
+			code: "CREDIT_CLAIM_UNKNOWN",
+		});
+		if (result.status === "rejected") {
+			expect(result.message).toContain("withdrawn");
+		}
+	});
+
+	test("an edited claim carries only an assessment from the edit revision or later", () => {
+		const source = binding({ items: [claim("DC1", "1", -5)] });
+		const reduced = {
+			...source.ledger,
+			workItems: source.ledger.workItems.map((item) => ({
+				...item,
+				architectureDelta: -3 as const,
+			})),
+		};
+		const edits = [
+			{ creditClaimId: "DC1", effect: "reduce_magnitude" as const },
+		];
+		const bounds = {
+			revisionOrder: ["binding-1", "rev-1"],
+			claimEditRevisionId: new Map([["DC1", "rev-1"]]),
+			observationRevisionId: new Map([
+				["obs-old", "binding-1"],
+				["obs-new", "rev-1"],
+			]),
+		};
+		const earlier = ok(
+			reconcile({
+				binding: source,
+				effectiveLedger: reduced,
+				claimEdits: edits,
+				realizations: [],
+				reviewedCommit: NEXT,
+				priorAssessments: [
+					{
+						observationId: "obs-old",
+						reviewedCommit: COMMIT,
+						claims: [realized("DC1", -3)],
+						laterCodeChanged: false,
+					},
+				],
+				...bounds,
+			}),
+		);
+		expect(earlier.record.claims[0]?.status).toBe("pending");
+		expect(earlier.record.claims[0]?.carried).toBe(false);
+
+		const later = ok(
+			reconcile({
+				binding: source,
+				effectiveLedger: reduced,
+				claimEdits: edits,
+				realizations: [],
+				reviewedCommit: NEXT,
+				priorAssessments: [
+					{
+						observationId: "obs-new",
+						reviewedCommit: COMMIT,
+						claims: [realized("DC1", -3)],
+						laterCodeChanged: false,
+					},
+				],
+				...bounds,
+			}),
+		);
+		expect(later.record.claims[0]).toMatchObject({
+			status: "realized",
+			carried: true,
+			effectiveApprovedMagnitude: 3,
+			sourceObservationId: "obs-new",
+		});
+		expect(later.record.budget.realizedCredit).toBe(3);
+	});
+
+	test("a waiver above the amended magnitude does not create credit", () => {
+		const source = binding({ items: [claim("DC0", "1", -5)] });
+		const reduced = {
+			...source.ledger,
+			workItems: source.ledger.workItems.map((item) => ({
+				...item,
+				architectureDelta: -3 as const,
+			})),
+		};
+		const waived = reconcile({
+			binding: source,
+			effectiveLedger: reduced,
+			realizations: [realized("DC0", -3)],
+			humanDebtDecisions: [
+				{
+					kind: "waiver",
+					decisionId: "waive",
+					creditClaimId: "DC0",
+					approvedMagnitude: 4,
+					active: true,
+				},
+			],
+		});
+		expect(waived.status).toBe("rejected");
+		if (waived.status === "rejected") {
+			expect(waived.message).toContain("cannot increase approved credit");
+		}
+		const filtered = ok(
+			reconcile({
+				binding: source,
+				effectiveLedger: reduced,
+				realizations: [realized("DC0", -3)],
+			}),
+		);
+		expect(filtered.record.claims[0]).toMatchObject({
+			effectiveApprovedMagnitude: 3,
+			status: "realized",
+		});
+		expect(filtered.record.budget.realizedCredit).toBe(3);
+	});
+
 	test("independently recorded binding evidence rejects a hash or id mismatch", () => {
 		const source = binding();
 		const recorded = {

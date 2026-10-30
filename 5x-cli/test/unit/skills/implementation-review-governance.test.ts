@@ -118,7 +118,7 @@ function binding(): ImplementationBindingPayload {
 		sourceSnapshotId: "snap-1",
 		sourceBaselineId: "base-1",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		approvedPlanBytes: "# Plan\n",
 		b0: 8,
 		governingB: 8,
@@ -262,12 +262,17 @@ describe("implementation review skill branches", () => {
 				);
 			}
 			expect(content).toContain("5x review corrections finish");
-			expect(content).toContain("5x review implementation recover-plan");
-			expect(content).toContain("--confirm-preserved-phases");
-			expect(content).toContain("Recovery never completes a phase");
 			expect(content).toContain(
-				"supports repeated\nrecoveries, each with a new authorization and plan review",
+				"authorize → amend → assess → register → resume",
 			);
+			expect(content).toContain("amendmentScope");
+			expect(content).toContain("Rationale prose is not scope");
+			expect(content).toContain("exact hash");
+			expect(content).toContain("5x review implementation amend");
+			expect(content).toContain("Registration does not complete a phase");
+			expect(content).toContain("recover-plan` is retired");
+			expect(content).not.toContain("--confirm-preserved-phases");
+			expect(content).not.toContain("5x review implementation recover-plan\n");
 			expect(content).toContain("5x review decide --gate");
 			expect(content).toContain("revise_plan");
 			expect(content).toContain("inheritedBudgetGovernance");
@@ -283,6 +288,24 @@ describe("implementation review skill branches", () => {
 			expect(content).toContain("--continue-native");
 			expect(content).not.toContain("baselineAssessment");
 			expect(content).not.toContain("projectedEffort");
+		}
+	});
+
+	test("plan skills require structured scope in every delegation mode", () => {
+		for (const { context } of roleCases) {
+			for (const name of ["5x-plan", "5x-plan-review"] as const) {
+				const content = renderSkillByName(name, context).content;
+				expect(content).toContain(
+					"authorize → amend → assess → register → resume",
+				);
+				expect(content).toContain("amendmentScope");
+				expect(content).toContain("Rationale prose is not scope");
+				expect(content).toContain("exact hash");
+				expect(content).not.toContain("--confirm-preserved-phases");
+				expect(content).not.toContain(
+					"5x review implementation recover-plan\n",
+				);
+			}
 		}
 	});
 
@@ -564,6 +587,70 @@ describe("implementation prompt context", () => {
 			`I-defer (Accepted latency, decision ${decision.decisionId})`,
 		);
 		expect(author).not.toContain("I-defer (implementation_defect");
+		ctx.db.close();
+	});
+
+	test("a design plan_defect on an ordinary bound run stays with the human", () => {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.saveImplementationBinding(
+			binding(),
+			ctx.originFor({ kind: "system", role: "cli" }),
+		);
+		const recorded = observation({
+			readiness: "not_ready",
+			items: [
+				{
+					id: "I1",
+					title: "Missing guard",
+					action: "auto_fix",
+					reason: "Restore the existing check.",
+					priority: "P1",
+					scopeClass: "implementation_defect",
+				},
+				{
+					id: "D1",
+					title: "Choose the policy",
+					action: "human_required",
+					reason: "The approved plan does not decide this.",
+					priority: "P1",
+					scopeClass: "plan_defect",
+					planImpact: { kind: "design", locations: [] },
+				},
+				{
+					id: "T1",
+					title: "Stale sentence",
+					action: "auto_fix",
+					reason: "Replace the stale sentence.",
+					priority: "P2",
+					scopeClass: "plan_defect",
+					planImpact: {
+						kind: "text_only",
+						locations: [{ heading: "Phase 1", staleText: "old sentence" }],
+					},
+				},
+			],
+		});
+		ctx.recordStore.append({
+			runId: "run1",
+			stream: "budget",
+			idempotencyKey: "budget:implementation-review:obs-design",
+			payload: encodeImplementationReviewObservationPayload(recorded),
+			...recordedEnvelope(TEST_ORIGIN),
+		});
+		const built = buildImplementationReviewPromptContext({
+			runId: "run1",
+			phase: "1",
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+		});
+		if (!built) throw new Error("expected author context");
+		expect(built.actionableFindings.map((finding) => finding.id)).toEqual([
+			"I1",
+			"T1",
+		]);
+		const actionable =
+			formatImplementationAuthorContext(built).split("### Text guard")[0];
+		expect(actionable).not.toContain("- D1 (");
 		ctx.db.close();
 	});
 });

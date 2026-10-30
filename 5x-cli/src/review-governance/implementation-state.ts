@@ -604,7 +604,7 @@ async function admitExistingBinding(
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_BINDING_CONFLICT",
-			message: `Run ${input.executionRunId} is already bound to ${binding.sourceRunId}; bind cannot replace that source. For an authorized same-run amendment at an unfinished frontier, inspect \`5x review implementation recover-plan --help\`. Other changes require the full amendment workflow.`,
+			message: `Run ${input.executionRunId} is already bound to source ${binding.sourceRunId}. \`5x review implementation bind\` attaches that initial source and cannot replace it. A semantic change requires structured amendmentScope on authorize_amendment, an amendmentAssessment of the exact plan hash, then \`5x review implementation amend\`. Rationale prose is not scope. Registration does not approve implementation completion. Older CLIs must not execute an amended run.`,
 			detail: {
 				bindingId: binding.id,
 				sourceRunId: binding.sourceRunId,
@@ -620,14 +620,32 @@ async function admitExistingBinding(
 				"The execution plan could not be read to check approved-plan drift",
 		};
 	}
-	const amendments = loadAmendments(
-		input.store,
+	const folded = input.store.readEffectiveImplementationRevision(
 		input.executionRunId,
-		binding.id,
 	);
+	if (folded && !folded.ok) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_DRIFT",
+			message: folded.diagnostic.message,
+			detail: {
+				bindingId: binding.id,
+				chainValid: false,
+				amendmentHelp:
+					"5x review implementation amend after a scoped authorize_amendment and an exact-hash amendmentAssessment. 5x review implementation bind is only the initial source attachment. Older CLIs must not execute an amended run.",
+			},
+		};
+	}
+	const amendments = folded?.ok
+		? { ok: true as const, amendments: [] }
+		: loadAmendments(input.store, input.executionRunId, binding.id);
 	const drift = detectPlanDrift({
-		approvedPlanBytes: binding.approvedPlanBytes,
-		approvedPlanHash: binding.approvedPlanHash,
+		approvedPlanBytes: folded?.ok
+			? folded.approvedPlanBytes
+			: binding.approvedPlanBytes,
+		approvedPlanHash: folded?.ok
+			? folded.approvedPlanHash
+			: binding.approvedPlanHash,
 		amendments: amendments.ok ? amendments.amendments : [],
 		currentPlanBytes: input.planMarkdown,
 	});
@@ -641,8 +659,8 @@ async function admitExistingBinding(
 			detail: {
 				bindingId: binding.id,
 				chainValid: amendments.ok && drift.chainValid,
-				recoveryHelp:
-					"5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only)",
+				amendmentHelp:
+					"5x review implementation amend after a scoped authorize_amendment and an exact-hash amendmentAssessment. Rationale prose is not scope. 5x review implementation bind does not repair drift. Older CLIs must not execute an amended run.",
 			},
 		};
 	}
@@ -1103,7 +1121,7 @@ export async function bindImplementationExecution(input: {
 			code: "IMPLEMENTATION_PLAN_DRIFT",
 			message:
 				drift.reason ??
-				"The execution plan differs from the approved plan bytes. Checkbox-only edits are ignored; other edits require amendment.",
+				"The execution plan differs from the approved plan bytes. Checkbox-only edits are ignored. `5x review implementation bind` only attaches the initial source; semantic edits require an amendmentAssessment after that binding exists.",
 		};
 	}
 	const decisions = assessed.approval.decisions;
@@ -1251,31 +1269,26 @@ export function recordVerifiedTextAmendment(input: {
 }):
 	| { status: "ok"; amendment: ImplementationTextAmendmentPayload }
 	| { status: "error"; code: string; message: string } {
-	const loaded = loadAmendments(
-		input.store,
+	const folded = input.store.readEffectiveImplementationRevision(
 		input.binding.executionRunId,
-		input.binding.id,
 	);
-	if (!loaded.ok) {
+	if (!folded?.ok) {
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
-			message: "Existing text-amendment lineage could not be read",
+			message: folded
+				? folded.diagnostic.message
+				: "Refusing to extend an unverified text-amendment chain",
 		};
 	}
-	const replay = replayTextAmendments({
-		approvedPlanBytes: input.binding.approvedPlanBytes,
-		approvedPlanHash: input.binding.approvedPlanHash,
-		amendments: loaded.amendments,
-	});
-	if (!replay.chainValid) {
+	if (folded.invalidatedObservationIds.includes(input.sourceObservationId)) {
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
-			message: "Refusing to extend an unverified text-amendment chain",
+			message:
+				"The text guard's observation does not certify the current revision.",
 		};
 	}
-	const parent = loaded.amendments.at(-1);
 	const payload: ImplementationTextAmendmentPayload = {
 		kind: "implementation-text-amendment",
 		version: IMPLEMENTATION_STATE_VERSION,
@@ -1284,12 +1297,15 @@ export function recordVerifiedTextAmendment(input: {
 		executionRunId: input.binding.executionRunId,
 		guardId: input.guardId,
 		sourceObservationId: input.sourceObservationId,
-		parentLineageId: parent?.id ?? null,
+		parentLineageId: folded.lineageParentId,
 		beforeCommit: input.beforeCommit,
 		afterCommit: input.afterCommit,
-		beforeBlobHash: replay.authorizedHash,
+		beforeBlobHash: folded.approvedPlanHash,
 		afterBlobHash: hashPlanBytes(input.authorizedPlanBytes),
 		authorizedPlanBytes: input.authorizedPlanBytes,
+		...(folded.currentRevisionId === folded.initialRevisionId
+			? {}
+			: { revisionId: folded.currentRevisionId }),
 		createdAt: now(),
 	};
 	const saved = input.store.saveImplementationTextAmendment(
@@ -1361,6 +1377,28 @@ export function verifyAuthorTextAmendment(input: {
 		}
 		return { status: "not_applicable" };
 	}
+	const folded = input.store.readEffectiveImplementationRevision(
+		input.binding.executionRunId,
+	);
+	if (!folded?.ok) {
+		return {
+			status: "failed",
+			code: "PLAN_AMENDMENT_LINEAGE",
+			message: folded
+				? folded.diagnostic.message
+				: "Refusing to consume a guard against an unverified text-amendment chain",
+			blocking,
+		};
+	}
+	if (folded.invalidatedObservationIds.includes(latest.id)) {
+		return {
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			message:
+				"The text guard does not certify the current revision. A new review is required.",
+			blocking,
+		};
+	}
 	const loaded = loadAmendments(
 		input.store,
 		input.binding.executionRunId,
@@ -1374,28 +1412,13 @@ export function verifyAuthorTextAmendment(input: {
 			blocking,
 		};
 	}
-	const replay = replayTextAmendments({
-		approvedPlanBytes: input.binding.approvedPlanBytes,
-		approvedPlanHash: input.binding.approvedPlanHash,
-		amendments: loaded.amendments,
-	});
-	if (!replay.chainValid) {
-		return {
-			status: "failed",
-			code: "PLAN_AMENDMENT_LINEAGE",
-			message:
-				"Refusing to consume a guard against an unverified text-amendment chain",
-			blocking,
-		};
-	}
-	const parent = loaded.amendments.at(-1);
 	const guard = latest.textGuard;
 	if (loaded.amendments.some((amendment) => amendment.guardId === guard.id)) {
 		return { status: "not_applicable" };
 	}
 	if (
-		guard.parentLineageId !== (parent?.id ?? null) ||
-		guard.anchorBlobHash !== replay.authorizedHash
+		guard.parentLineageId !== folded.lineageParentId ||
+		guard.anchorBlobHash !== folded.approvedPlanHash
 	) {
 		return {
 			status: "failed",
@@ -2005,21 +2028,24 @@ export async function prepareImplementationReviewContext(input: {
 	const prior = input.store
 		.listImplementationReviewContexts(input.executionRunId, input.bindingId)
 		.filter((context) => context.phase === phase);
-	const invalidated = new Set(
-		input.store
-			.listImplementationTextAmendments(input.executionRunId, input.bindingId)
-			.flatMap((entry) =>
-				entry.kind === "implementation-plan-recovery"
-					? entry.invalidatedContextIds
-					: [],
-			),
+	const folded = input.store.readEffectiveImplementationRevision(
+		input.executionRunId,
 	);
+	if (folded && !folded.ok) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_CONTEXT_STALE",
+			message: folded.diagnostic.message,
+		};
+	}
+	const invalidated = new Set(folded?.ok ? folded.invalidatedContextIds : []);
+	const currentRevisionId = folded?.ok ? folded.currentRevisionId : undefined;
 	const latest = prior.at(-1);
 	let baseCommit = initialBase;
 	let previousReviewId: string | undefined;
 	if (latest && latest.reviewedCommit === reviewedCommit) {
 		baseCommit = latest.baseCommit;
-		previousReviewId = latest.previousReviewId;
+		previousReviewId = latest.id;
 	} else if (latest) {
 		baseCommit = latest.reviewedCommit;
 		previousReviewId = latest.id;
@@ -2035,12 +2061,18 @@ export async function prepareImplementationReviewContext(input: {
 	} catch (error) {
 		return gitFailure(error);
 	}
-	const sameRange = prior.find(
-		(context) =>
-			!invalidated.has(context.id) &&
-			context.baseCommit === diff.baseCommit &&
-			context.reviewedCommit === diff.reviewedCommit,
-	);
+	const sameRange = prior.find((context) => {
+		if (invalidated.has(context.id)) return false;
+		if (
+			context.baseCommit !== diff.baseCommit ||
+			context.reviewedCommit !== diff.reviewedCommit
+		) {
+			return false;
+		}
+		if (!currentRevisionId || !folded?.ok) return true;
+		const recorded = context.revisionId ?? folded.initialRevisionId;
+		return recorded === currentRevisionId;
+	});
 	if (sameRange) {
 		if (sameRange.patchHash !== diff.patchHash) {
 			return {
@@ -2065,6 +2097,9 @@ export async function prepareImplementationReviewContext(input: {
 		excludedPaths: diff.excludedPaths,
 		hunks: diff.hunks,
 		binaryPaths: diff.binaryPaths,
+		...(folded?.ok && folded.currentRevisionId !== folded.initialRevisionId
+			? { revisionId: folded.currentRevisionId }
+			: {}),
 		createdAt: now(),
 	};
 	const saved = input.store.saveImplementationReviewContext(
@@ -2114,20 +2149,27 @@ export async function verifyImplementationReviewContext(input: {
 			message: `Review context ${input.reviewContextId} was not prepared for run ${input.executionRunId}. Render the reviewer template instead of manufacturing endpoints.`,
 		};
 	}
+	const folded = input.store.readEffectiveImplementationRevision(
+		input.executionRunId,
+	);
+	if (folded && !folded.ok) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_REVIEW_CONTEXT_STALE",
+			message: folded.diagnostic.message,
+		};
+	}
+	const recordedRevision =
+		context.revisionId ?? (folded?.ok ? folded.initialRevisionId : undefined);
 	if (
-		input.store
-			.listImplementationTextAmendments(input.executionRunId, input.bindingId)
-			.some(
-				(entry) =>
-					entry.kind === "implementation-plan-recovery" &&
-					entry.invalidatedContextIds.includes(context.id),
-			)
+		(folded?.ok && folded.invalidatedContextIds.includes(context.id)) ||
+		(folded?.ok && recordedRevision !== folded.currentRevisionId)
 	) {
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_REVIEW_CONTEXT_STALE",
 			message:
-				"This context predates the accepted plan recovery. Render a fresh reviewer context; retain the original review history and prior findings.",
+				"This context predates the current plan revision. Render a fresh reviewer context; retain the original review history and prior findings.",
 		};
 	}
 	if (

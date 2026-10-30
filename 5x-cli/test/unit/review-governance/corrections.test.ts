@@ -29,6 +29,7 @@ import {
 	finishImplementationCorrection,
 	qualityConfigDigest,
 } from "../../../src/review-governance/corrections.js";
+import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { validateFinalCorrections } from "../../../src/review-governance/routing.js";
 
 const ORIGIN: RecordOrigin = {
@@ -214,7 +215,7 @@ function binding(
 		sourceSnapshotId: "snap",
 		sourceBaselineId: "base",
 		approvedPlanCommit: "c".repeat(40),
-		approvedPlanHash: "sha256:plan",
+		approvedPlanHash: hashPlanBytes("# Plan\n"),
 		approvedPlanBytes: "# Plan\n",
 		b0: 5,
 		governingB: 5,

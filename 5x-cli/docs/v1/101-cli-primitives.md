@@ -545,11 +545,16 @@ Implementation review uses the same commands with a phase:
 
 ```bash
 5x review implementation bind --run <execution> --source-run <plan-review>
+5x review implementation amend --run <execution> --human-step <step> --approval-step <step> --from-phase <phase> --dry-run
 5x review gate show --run <run_id> --phase <p>
 5x review corrections finish --run <id> --phase <p> --review <observation-id> --commit <sha>
 ```
 
-A binding is required before the first implementation admission when the plan has a Delivery Budget and the resolved mode is not `off`. Admission auto-binds a unique approved source. Zero or multiple approved sources return `IMPLEMENTATION_APPROVAL_REQUIRED`; `5x review implementation bind --source-run` resolves that case. `corrections finish` runs the full layered quality configuration and does not accept a passed flag or a gate override. `review decide` for an implementation gate records the versioned implementation decision payload. Dashboard HTTP remains the follow-up in `docs/v2/plan-inputs/10-plan-review-governance-dashboard.plan-input.md`.
+A binding is required before the first implementation admission when the plan has a Delivery Budget and the resolved mode is not `off`. Admission auto-binds a unique approved source. Zero or multiple approved sources return `IMPLEMENTATION_APPROVAL_REQUIRED`; `5x review implementation bind --source-run` resolves that case. Bind attaches the initial source only. It cannot replace a binding or repair later plan drift.
+
+A same-run semantic change follows authorize → amend → assess → register → resume. `authorize_amendment` carries structured `amendmentScope`; rationale prose is not scope. The coupled plan review assesses that exact hash. If final corrections change the bytes, reassess the new hash before registration. `5x review implementation amend` previews with `--dry-run` and, without it, appends the revision. Registration does not approve implementation completion. `5x review implementation recover-plan` is retired. Historical recovery receipts stay readable. `5x upgrade` reports them and does not rewrite journals or resume runs.
+
+Execute an amended run only with a CLI that understands `implementation-plan-amendment` and `amendmentScope`. Older binaries may report drift or ignore unfamiliar records and must not execute those runs. `corrections finish` runs the full layered quality configuration and does not accept a passed flag or a gate override. `review decide` for an implementation gate records the versioned implementation decision payload. Dashboard HTTP remains the follow-up in `docs/v2/plan-inputs/10-plan-review-governance-dashboard.plan-input.md`.
 
 For a non-plan phase, `protocol emit reviewer` items use `scopeClass` `implementation_defect`, `plan_defect`, `scope_expansion`, or `pre_existing`. A plan defect carries `planImpact` as `{ "kind": "text_only", "locations": [{ "heading": "...", "staleText": "..." }] }`, not a string. Repeated `--credit-realization '<json>'` supplies per-claim realization evidence. Standalone validation checks the structural union and does not certify work-item linkage or code evidence.
 

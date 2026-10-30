@@ -43,6 +43,31 @@ export interface DerivePlanReviewGovernanceInput {
 	governingState: GoverningReviewState;
 	/** Full plan-208 inputs; routing reruns canonical arithmetic after filtering. */
 	budgetContext: ReviewBudgetRoutingContext;
+	/**
+	 * The plan under review differs from the effective approved revision.
+	 * Initial plan reviews leave this unset and keep the final-correction shortcut.
+	 */
+	amendmentReassessment?: boolean;
+}
+
+function recordedAmendmentReassessment(verdict: ReviewerVerdict): boolean {
+	const governance = (
+		verdict as { governance?: { amendmentReassessment?: unknown } }
+	).governance;
+	return governance?.amendmentReassessment === true;
+}
+
+function amendmentReviewChangedBytes(
+	input: Pick<
+		DerivePlanReviewGovernanceInput,
+		"verdict" | "amendmentReassessment"
+	>,
+): boolean {
+	return (
+		input.amendmentReassessment === true ||
+		input.verdict.amendmentAssessment !== undefined ||
+		recordedAmendmentReassessment(input.verdict)
+	);
 }
 
 function findingIdentity(
@@ -201,6 +226,7 @@ function v1Route(verdict: ReviewerVerdict): PlanReviewRoute {
 function deriveEnforced(
 	input: Omit<DerivePlanReviewGovernanceInput, "mode">,
 ): PlanReviewGovernanceResult {
+	const amendmentReassessment = amendmentReviewChangedBytes(input);
 	const items = activeItems(
 		input.verdict.items,
 		input.governingState,
@@ -251,6 +277,7 @@ function deriveEnforced(
 		architectureContext,
 		findingOutcomes: input.closure.findingOutcomes,
 	});
+	const flag = amendmentReassessment ? { amendmentReassessment: true } : {};
 	if (gateCauses.some((cause) => cause.resolvedBy === undefined)) {
 		return {
 			reviewKind: input.reviewKind,
@@ -259,6 +286,7 @@ function deriveEnforced(
 			gateCauses,
 			findingOutcomes: input.closure.findingOutcomes,
 			diagnostics: input.closure.diagnostics,
+			...flag,
 		};
 	}
 	if (items.length === 0) {
@@ -269,6 +297,7 @@ function deriveEnforced(
 			gateCauses,
 			findingOutcomes: input.closure.findingOutcomes,
 			diagnostics: input.closure.diagnostics,
+			...flag,
 		};
 	}
 	if (
@@ -279,6 +308,17 @@ function deriveEnforced(
 			effectiveCeiling: effectiveBudget.E,
 		}).valid
 	) {
+		if (amendmentReassessment) {
+			return {
+				reviewKind: input.reviewKind,
+				normalizedReadiness: "not_ready",
+				route: "author_revision",
+				gateCauses,
+				findingOutcomes: input.closure.findingOutcomes,
+				diagnostics: input.closure.diagnostics,
+				amendmentReassessment: true,
+			};
+		}
 		return {
 			reviewKind: input.reviewKind,
 			normalizedReadiness: "ready_with_corrections",
@@ -295,6 +335,7 @@ function deriveEnforced(
 		gateCauses,
 		findingOutcomes: input.closure.findingOutcomes,
 		diagnostics: input.closure.diagnostics,
+		...flag,
 	};
 }
 
@@ -311,6 +352,7 @@ export function derivePlanReviewGovernance(
 		findingOutcomes: input.closure.findingOutcomes,
 		diagnostics: input.closure.diagnostics,
 		hypotheticalEnforcedRoute: enforced.route,
+		...(enforced.amendmentReassessment ? { amendmentReassessment: true } : {}),
 	};
 }
 
