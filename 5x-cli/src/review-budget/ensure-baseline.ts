@@ -1,9 +1,7 @@
 import type { RecordOrigin } from "../control-plane/record-types.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
-import {
-	parseDeliveryBudget,
-	rawDeliveryBudgetSection,
-} from "../parsers/delivery-budget.js";
+import { rawDeliveryBudgetSection } from "../parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import type { ReviewBudgetConfig } from "./types.js";
 
 export type EnsurePlanReviewBaselineResult =
@@ -50,7 +48,17 @@ export function ensurePlanReviewBaseline(input: {
 	if (input.hasPriorPlanReviewerStep && !input.optIn) {
 		return { status: "skipped", reason: "v1_compat" };
 	}
-	const parsed = parseDeliveryBudget(input.planMarkdown);
+	const loaded = readAuthoritativeBudget(input.planMarkdown, "file");
+	if (!loaded.ok) {
+		return {
+			status: "error",
+			code: loaded.code,
+			message: loaded.message.includes("not a legacy fallback")
+				? loaded.message
+				: `${loaded.message} This is not a legacy fallback.`,
+		};
+	}
+	const parsed = loaded.parsed;
 	if (!parsed.ok) {
 		return {
 			status: "error",
@@ -66,7 +74,8 @@ export function ensurePlanReviewBaseline(input: {
 		runId: input.runId,
 		captureKind: input.optIn ? "opt_in" : "initial",
 		parsed: parsed.value,
-		originalSection: rawDeliveryBudgetSection(input.planMarkdown) ?? undefined,
+		originalSection:
+			rawDeliveryBudgetSection(loaded.document.authorityMarkdown) ?? undefined,
 		configSnapshot,
 		mode: input.config.mode,
 		origin: input.origin,

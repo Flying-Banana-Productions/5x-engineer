@@ -9,6 +9,7 @@
 
 import type { RecordStore } from "../control-plane/record-store.js";
 import { stepIdempotencyKey } from "../control-plane/record-types.js";
+import { loadPlanDocument } from "../plan-schema/document.js";
 import {
 	isImplementationScopeClass,
 	isPlanScopeClass,
@@ -68,6 +69,9 @@ export interface ImplementationValidationInput {
 	approvedPlanBytes?: string;
 	approvedPlanHash?: string;
 	amendments?: readonly ImplementationPlanAmendmentPayload[];
+	/** Recorded schema for the approved lineage. Omit for schema 0. */
+	recordedSchema?: 0 | 1;
+	governingHash?: string;
 	/**
 	 * True when validation is bound to a run. False is standalone protocol
 	 * validate: a missing phase is structural acceptance, not `UNKNOWN_PHASE`.
@@ -191,6 +195,11 @@ export type PlanImpactSpanResolution =
 
 export function resolvePlanImpactSpans(input: {
 	anchorText: string;
+	/**
+	 * UTF-8 byte source for stored offsets. Schema 1 passes the raw anchor
+	 * while `anchorText` is the space-filled mask. Character indexes match.
+	 */
+	byteSource?: string;
 	locations: ReadonlyArray<{
 		itemId: string;
 		heading: string;
@@ -256,12 +265,13 @@ export function resolvePlanImpactSpans(input: {
 				itemId: location.itemId,
 			};
 		}
+		const byteText = input.byteSource ?? input.anchorText;
 		spans.push({
 			itemId: location.itemId,
 			heading: location.heading,
 			staleText: location.staleText,
-			start: byteOffset(input.anchorText, charStart),
-			end: byteOffset(input.anchorText, charEnd),
+			start: byteOffset(byteText, charStart),
+			end: byteOffset(byteText, charEnd),
 			charStart,
 			charEnd,
 		});
@@ -908,11 +918,14 @@ export function validateImplementationReview(
 			);
 		} else {
 			const amendments = input.amendments ?? [];
+			const recordedSchema = input.recordedSchema ?? 0;
 			const drift = detectPlanDrift({
 				approvedPlanBytes: input.approvedPlanBytes,
 				approvedPlanHash: input.approvedPlanHash,
 				amendments,
 				currentPlanBytes: input.approvedPlanBytes,
+				recordedSchema,
+				...(input.governingHash ? { governingHash: input.governingHash } : {}),
 			});
 			if (amendments.length > 0 && !drift.chainValid) {
 				diagnostics.push(
@@ -923,33 +936,56 @@ export function validateImplementationReview(
 					),
 				);
 			} else {
-				const resolved = resolvePlanImpactSpans({
-					anchorText: drift.authorizedBytes,
-					locations,
-				});
-				if (resolved.status === "rejected") {
-					return fatal("implementation", resolved.code, resolved.message, [
-						...diagnostics,
-						diagnostic(
-							resolved.code,
-							resolved.message,
-							"error",
-							resolved.itemId,
-						),
-					]);
+				let anchorText = drift.authorizedBytes;
+				let byteSource: string | undefined;
+				if (recordedSchema === 1) {
+					const loaded = loadPlanDocument(drift.authorizedBytes, 1);
+					if (!loaded.ok) {
+						diagnostics.push(
+							diagnostic(
+								"PLAN_IMPACT_NOT_AUTHORIZED",
+								`${loaded.code}: ${loaded.message} This is not a legacy fallback.`,
+								"error",
+							),
+						);
+						anchorText = "";
+					} else {
+						anchorText = loaded.document.authorityMarkdown;
+						byteSource = drift.authorizedBytes;
+					}
 				}
-				if (resolved.status === "ambiguous") {
-					diagnostics.push(
-						diagnostic(
-							"PLAN_IMPACT_AMBIGUOUS",
-							resolved.message,
-							"error",
-							resolved.itemId,
-						),
-					);
+				if (anchorText === "" && recordedSchema === 1) {
+					// Schema 1 anchor did not load. Spans stay unauthorized.
 				} else {
-					spans = resolved.spans;
-					spansAuthorized = true;
+					const resolved = resolvePlanImpactSpans({
+						anchorText,
+						...(byteSource ? { byteSource } : {}),
+						locations,
+					});
+					if (resolved.status === "rejected") {
+						return fatal("implementation", resolved.code, resolved.message, [
+							...diagnostics,
+							diagnostic(
+								resolved.code,
+								resolved.message,
+								"error",
+								resolved.itemId,
+							),
+						]);
+					}
+					if (resolved.status === "ambiguous") {
+						diagnostics.push(
+							diagnostic(
+								"PLAN_IMPACT_AMBIGUOUS",
+								resolved.message,
+								"error",
+								resolved.itemId,
+							),
+						);
+					} else {
+						spans = resolved.spans;
+						spansAuthorized = true;
+					}
 				}
 			}
 		}

@@ -16,7 +16,7 @@ import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	CodeDiffError,
 	readHeadCommit,
@@ -401,7 +401,13 @@ export async function templateRender(
 			)({ runId: params.run, startDir: projectRoot }, warn);
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
-			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
+			const parsed =
+				markdown === null
+					? null
+					: (() => {
+							const loaded = readAuthoritativeBudget(markdown, "file");
+							return loaded.ok ? loaded.parsed : null;
+						})();
 			if (parsed?.ok && config.reviewBudget.mode !== "off") {
 				outputError(
 					"IMPLEMENTATION_APPROVAL_REQUIRED",

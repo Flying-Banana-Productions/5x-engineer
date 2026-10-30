@@ -300,6 +300,14 @@ export interface ImplementationBindingPayload {
 	ledgerHash: string;
 	decisionsHash: string;
 	createdAt: string;
+	/**
+	 * Omitted on schema 0. Schema 1 requires `governingHash` of the approved
+	 * document's comparison bytes. The binding version stays 1.
+	 */
+	planSchema?: 0 | 1;
+	governingHash?: string;
+	schemaMigrationId?: string;
+	predecessorPlanCommit?: string;
 }
 
 export interface ImplementationCompatibilityPayload {
@@ -436,7 +444,14 @@ function versionField(value: unknown): typeof IMPLEMENTATION_STATE_VERSION {
 export function encodeImplementationBindingPayload(
 	payload: ImplementationBindingPayload,
 ): unknown {
-	return structuredClone(payload);
+	const encoded = structuredClone(payload);
+	if (encoded.planSchema === undefined) delete encoded.planSchema;
+	if (encoded.governingHash === undefined) delete encoded.governingHash;
+	if (encoded.schemaMigrationId === undefined) delete encoded.schemaMigrationId;
+	if (encoded.predecessorPlanCommit === undefined) {
+		delete encoded.predecessorPlanCommit;
+	}
+	return encoded;
 }
 
 export function decodeImplementationBindingPayload(
@@ -509,7 +524,48 @@ export function decodeImplementationBindingPayload(
 		ledgerHash: stringField(value.ledgerHash, "ledgerHash"),
 		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
 		createdAt: stringField(value.createdAt, "createdAt"),
+		...optionalBindingSchemaFields(value),
 	};
+}
+
+function optionalBindingSchemaFields(
+	value: Record<string, unknown>,
+): Pick<
+	ImplementationBindingPayload,
+	"planSchema" | "governingHash" | "schemaMigrationId" | "predecessorPlanCommit"
+> {
+	const fields: Pick<
+		ImplementationBindingPayload,
+		| "planSchema"
+		| "governingHash"
+		| "schemaMigrationId"
+		| "predecessorPlanCommit"
+	> = {};
+	if (value.planSchema !== undefined) {
+		if (value.planSchema !== 0 && value.planSchema !== 1) {
+			throw new TypeError("planSchema must be 0 or 1");
+		}
+		fields.planSchema = value.planSchema;
+	}
+	if (value.governingHash !== undefined) {
+		fields.governingHash = stringField(value.governingHash, "governingHash");
+	}
+	if (fields.planSchema === 1 && !fields.governingHash) {
+		throw new TypeError("schema 1 binding requires governingHash");
+	}
+	if (value.schemaMigrationId !== undefined) {
+		fields.schemaMigrationId = stringField(
+			value.schemaMigrationId,
+			"schemaMigrationId",
+		);
+	}
+	if (value.predecessorPlanCommit !== undefined) {
+		fields.predecessorPlanCommit = stringField(
+			value.predecessorPlanCommit,
+			"predecessorPlanCommit",
+		);
+	}
+	return fields;
 }
 
 export function encodeImplementationCompatibilityPayload(

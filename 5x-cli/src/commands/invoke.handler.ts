@@ -34,7 +34,7 @@ import {
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	extractPipeContext,
 	isStdinPiped,
@@ -85,6 +85,7 @@ import {
 	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
 	isImplementationAuthorTemplate,
+	recordedPlanSchemaFromBinding,
 	PRE_AUTHOR_STEP_NAME,
 	prepareImplementationReviewContext,
 	readImplementationBinding,
@@ -576,7 +577,13 @@ export async function invokeAgent(
 			)({ runId: params.run, startDir: projectRoot }, warn);
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
-			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
+			const parsed =
+				markdown === null
+					? null
+					: (() => {
+							const loaded = readAuthoritativeBudget(markdown, "file");
+							return loaded.ok ? loaded.parsed : null;
+						})();
 			if (parsed?.ok && config.reviewBudget.mode !== "off") {
 				outputError(
 					"IMPLEMENTATION_APPROVAL_REQUIRED",
@@ -1138,6 +1145,13 @@ export async function invokeAgent(
 										runId,
 										binding.id,
 									),
+								...recordedPlanSchemaFromBinding(
+									binding,
+									budgetContext.store.listImplementationTextAmendments(
+										runId,
+										binding.id,
+									),
+								),
 								hasRun: true,
 								priorReviewCount: closure.priorReviewCount,
 								codeContext: verified.diff,

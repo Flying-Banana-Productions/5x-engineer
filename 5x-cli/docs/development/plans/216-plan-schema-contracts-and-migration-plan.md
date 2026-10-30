@@ -319,9 +319,9 @@ For recorded schema 0, ignore `governingHash` and compare checkbox-normalized ra
 
 Extend replay so a later Phase 3 migration record can appear in `amendments`. Until Phase 3 writes those records, replay behavior for existing kinds stays unchanged. Teach the replay function to accept the kind once the payload type exists; Phase 3 fills the writer.
 
-- [ ] Thread `recordedSchema` through `detectPlanDrift` callers in `implementation-state.ts`, `implementation.ts` (about line 911), `implementation-boundary.ts` (about line 343), `implementation-recovery.ts` (about line 256), and `src/commands/implementation-review-context.ts` (about line 531).
-- [ ] Schema 0 callers that have no field pass `recordedSchema: 0`.
-- [ ] On bind (lines 1066–1120), parse the approved blob with file mode. A schema 1 blob stores `planSchema: 1` and `governingHash`. A schema 0 blob omits both. Ledger parsing uses `authorityMarkdown`.
+- [x] Thread `recordedSchema` through `detectPlanDrift` callers in `implementation-state.ts`, `implementation.ts` (about line 911), `implementation-boundary.ts` (about line 343), `implementation-recovery.ts` (about line 256), and `src/commands/implementation-review-context.ts` (about line 531).
+- [x] Schema 0 callers that have no field pass `recordedSchema: 0`.
+- [x] On bind (lines 1066–1120), parse the approved blob with file mode. A schema 1 blob stores `planSchema: 1` and `governingHash`. A schema 0 blob omits both. Ledger parsing uses `authorityMarkdown`.
 
 ### 2.2 Parsers and spans
 
@@ -347,13 +347,13 @@ On schema 1, the earlier-phase loop in `implementation-recovery.ts` lines 299–
 
 `5x plan phases` (`plan-v1.handler.ts`, line 398) uses file mode when the progress envelope has no `active_run`, or that run has no implementation binding. When `active_run` has a binding, it parses with that binding's expected schema. Expected schema 1 with missing or malformed markers exits `PLAN_SCHEMA_INVALID` or `PLAN_SCHEMA_UNSUPPORTED`, names the skill `5x-plan-migration`, and does not return a partial phase list. This command does not admit or migrate. A schema 0 binding still parses the raw file.
 
-- [ ] Add one internal helper, `authoritativePlan(raw, expected)`, that returns the loaded document or a typed error, and use it at the call sites above.
-- [ ] Keep schema 0 parse results identical for the existing parser fixtures.
-- [ ] Add schema 1 fixtures where a phase heading, a checklist, and a delivery-budget table outside the contract or inside a note do not affect phases, completion, or the ledger.
-- [ ] Add a span fixture whose `staleText` occurs only inside a note and is rejected, and a fixture whose governing `staleText` still resolves to the raw offset.
-- [ ] Add a non-ASCII status line above a governing span. The span's raw byte offset must ignore the mask's spaces and use the raw string. Verification of that span still succeeds when only the status line differs.
-- [ ] Add `plan-amendment.test.ts` and `implementation-state.test.ts` fixtures: a status edit followed by a span amendment verifies; a note followed by a span amendment verifies; a governing edit outside the span returns `PLAN_AMENDMENT_OUT_OF_SPAN`; a status-only committed blob on a live guard returns `unchanged` and writes no record; a budget-table or structural governing edit still fails; schema 0 guards stay on raw bytes.
-- [ ] Add a recover-plan fixture in `test/unit/commands/implementation-recovery.test.ts` with a note in an earlier completed phase. Schema 1 recovery proceeds. Schema 0 still rejects a raw earlier-phase edit.
+- [x] Add one internal helper, `authoritativePlan(raw, expected)`, that returns the loaded document or a typed error, and use it at the call sites above.
+- [x] Keep schema 0 parse results identical for the existing parser fixtures.
+- [x] Add schema 1 fixtures where a phase heading, a checklist, and a delivery-budget table outside the contract or inside a note do not affect phases, completion, or the ledger.
+- [x] Add a span fixture whose `staleText` occurs only inside a note and is rejected, and a fixture whose governing `staleText` still resolves to the raw offset.
+- [x] Add a non-ASCII status line above a governing span. The span's raw byte offset must ignore the mask's spaces and use the raw string. Verification of that span still succeeds when only the status line differs.
+- [x] Add `plan-amendment.test.ts` and `implementation-state.test.ts` fixtures: a status edit followed by a span amendment verifies; a note followed by a span amendment verifies; a governing edit outside the span returns `PLAN_AMENDMENT_OUT_OF_SPAN`; a status-only committed blob on a live guard returns `unchanged` and writes no record; a budget-table or structural governing edit still fails; schema 0 guards stay on raw bytes.
+- [x] Add a recover-plan fixture in `test/unit/commands/implementation-recovery.test.ts` with a note in an earlier completed phase. Schema 1 recovery proceeds. Schema 0 still rejects a raw earlier-phase edit.
 
 ### 2.3 Binding codec
 
@@ -361,9 +361,9 @@ On schema 1, the earlier-phase loop in `implementation-recovery.ts` lines 299–
 
 Add the optional fields from Design Decisions. Encode them only when present. Decode accepts absence. Schema 1 without `governingHash` throws. `src/review-governance/sqlite-index.ts` must keep skipping unknown kinds and must still decode a schema 1 binding. If the index rejects extra JSON fields, stop and fix the decoder. Do not add a SQLite column.
 
-- [ ] Round-trip a schema 0 binding and a schema 1 binding.
-- [ ] Decode a historical fixture that has no schema fields.
-- [ ] Reject `planSchema: 2` and schema 1 with an empty governing hash.
+- [x] Round-trip a schema 0 binding and a schema 1 binding.
+- [x] Decode a historical fixture that has no schema fields.
+- [x] Reject `planSchema: 2` and schema 1 with an empty governing hash.
 
 ---
 

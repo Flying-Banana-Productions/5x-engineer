@@ -35,7 +35,10 @@ import { runMigrations } from "../db/schema.js";
 import { gitLsTreePaths, gitShowFile, revParseCommit } from "../git.js";
 import { type LockDirOpts, releaseLock } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
-import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
 import {
 	canonicalizePlanPath,
 	isPathUnder,
@@ -55,6 +58,13 @@ import {
 	prepareProgressSession,
 	resolvePlanProgress,
 } from "../records/resolve.js";
+import { createWorkingTreeRecordStore } from "../control-plane/record-fs.js";
+import { createReviewBudgetStore } from "../control-plane/review-budget-store.js";
+import {
+	expectedSchemaForStore,
+	planPathsIdentifySamePlan,
+} from "../review-governance/implementation-state.js";
+import { parsedPlanHasPhases } from "../parsers/plan.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
 
@@ -341,9 +351,41 @@ async function loadPlanRecordAttribution(opts: {
 	return null;
 }
 
+function expectedSchemaForPlanFile(input: {
+	db: DbContext["db"];
+	projectRoot: string;
+	config: FiveXConfig;
+	planPath: string;
+}) {
+	try {
+		const active = listRuns(input.db, { limit: 10000 }).find(
+			(run) =>
+				run.status === "active" &&
+				planPathsIdentifySamePlan(run.plan_path, input.planPath),
+		);
+		if (!active) return "file" as const;
+		const records = resolveRecordsRoot({
+			recordsConfigAbs: input.config.paths.records,
+			controlPlaneRoot: input.projectRoot,
+			effectiveWorkdir: input.projectRoot,
+		});
+		const store = createReviewBudgetStore(
+			createWorkingTreeRecordStore({
+				recordsRoot: records.recordsAbsPath,
+				controlPlaneRoot: input.projectRoot,
+			}),
+		);
+		return expectedSchemaForStore(store, active.id);
+	} catch {
+		return "file" as const;
+	}
+}
+
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	validateProgressSelection(params);
-	const { config, projectRoot } = await resolveDbContext({ migrate: false });
+	const { config, projectRoot, db } = await resolveDbContext({
+		migrate: false,
+	});
 	if (params.ref && !(await revParseCommit(projectRoot, params.ref)))
 		outputError("INVALID_ARGUMENT", `Unknown git ref: ${params.ref}`);
 	const planPath = resolvePlanArg(params.path, config.paths.plans);
@@ -395,7 +437,22 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	}
 
 	const markdown = resolved.markdown ?? "";
-	const plan = parsePlan(markdown);
+	const read = readAuthoritativePlan(
+		markdown,
+		expectedSchemaForPlanFile({
+			db,
+			projectRoot,
+			config,
+			planPath,
+		}),
+	);
+	if (!read.ok) {
+		outputError(read.code, planSchemaCommandMessage(read), {
+			plan_path: planPath,
+			...envelopeFromProgress(resolved),
+		});
+	}
+	const plan = read.plan;
 	const progress = envelopeFromProgress(resolved);
 
 	const result: Record<string, unknown> = {
@@ -612,7 +669,17 @@ export async function planList(
 			progress = envelopeFromProgress(resolved);
 			diverged = resolved.source.kind === "diverged";
 			if (resolved.markdown !== null) {
-				const parsed = parsePlan(resolved.markdown);
+				const read = readAuthoritativePlan(
+					resolved.markdown,
+					expectedSchemaForPlanFile({
+						db,
+						projectRoot,
+						config,
+						planPath: canonical,
+					}),
+				);
+				if (!read.ok) throw new Error(planSchemaCommandMessage(read));
+				const parsed = read.plan;
 				title = parsed.title;
 				phases_total = parsed.phases.length;
 				phases_done = parsed.phases.filter((p) => p.isComplete).length;

@@ -5,7 +5,8 @@ import {
 	recordedEnvelope,
 } from "../../../src/control-plane/index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
-import { parseDeliveryBudget } from "../../../src/parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../../../src/plan-schema/authority.js";
+import { loadPlanDocument } from "../../../src/plan-schema/document.js";
 import {
 	deriveBudget,
 	sumEffort,
@@ -75,9 +76,23 @@ const AMENDED = ORIGINAL.replace(
 const COMMIT = "a".repeat(40);
 
 function ledger(text: string) {
-	const parsed = parseDeliveryBudget(text);
-	if (!parsed.ok) throw new Error(parsed.message);
-	return parsed.value;
+	const loaded = readAuthoritativeBudget(text, "file");
+	if (!loaded.ok) throw new Error(loaded.message);
+	if (!loaded.parsed.ok) throw new Error(loaded.parsed.message);
+	return loaded.parsed.value;
+}
+
+function wrapSchema1(body: string, status = "Approved"): string {
+	return [
+		"<!-- 5x:plan-schema:1 -->",
+		"**Version:** 1",
+		`**Status:** ${status}`,
+		"",
+		"<!-- 5x:contract:start -->",
+		body.trimEnd(),
+		"<!-- 5x:contract:end -->",
+		"",
+	].join("\n");
 }
 
 function fixtureHash(value: unknown): string {
@@ -118,6 +133,14 @@ async function fixture(
 			result_json: result,
 			head_commit: (result as { commit?: string })?.commit ?? COMMIT,
 		});
+	const declared = loadPlanDocument(original, "file");
+	const schemaFields =
+		declared.ok && declared.document.schema === 1
+			? {
+					planSchema: 1 as const,
+					governingHash: hashPlanBytes(declared.document.comparisonBytes),
+				}
+			: {};
 	const binding = ctx.store.saveImplementationBinding(
 		{
 			kind: "implementation-binding",
@@ -145,6 +168,7 @@ async function fixture(
 			ledgerHash: fixtureHash(ledger(original)),
 			decisionsHash: fixtureHash([]),
 			createdAt: "2026-01-01",
+			...schemaFields,
 		},
 		TEST_ORIGIN,
 	).payload;
@@ -701,6 +725,7 @@ describe("unfinished-frontier amendment recovery", () => {
 			expect(amendments).toHaveLength(4);
 			expect(
 				detectPlanDrift({
+					recordedSchema: 0,
 					approvedPlanBytes: ORIGINAL,
 					approvedPlanHash: f.binding.approvedPlanHash,
 					amendments,
@@ -799,6 +824,7 @@ describe("unfinished-frontier amendment recovery", () => {
 			expect(boundary.readiness.planDrifted).toBe(false);
 			expect(
 				detectPlanDrift({
+					recordedSchema: 0,
 					approvedPlanBytes: ORIGINAL,
 					approvedPlanHash: f.binding.approvedPlanHash,
 					amendments: rebuilt.listImplementationTextAmendments(
@@ -868,4 +894,45 @@ describe("unfinished-frontier amendment recovery", () => {
 			}
 		});
 	}
+
+	test("schema 0 rejects a raw edit in an earlier phase", async () => {
+		const f = await fixture();
+		try {
+			const edited = AMENDED.replace(
+				"- [ ] Stable types",
+				"- [ ] Changed types",
+			);
+			f.deps.committedPlanBytes = edited;
+			f.deps.worktreePlanBytes = edited;
+			expect(() => recoverImplementationPlan(f.input, f.deps)).toThrow(
+				"Earlier phase 1 changed",
+			);
+		} finally {
+			f.ctx.db.close();
+		}
+	});
+
+	test("schema 1 recovery proceeds when a completed earlier phase gains a note", async () => {
+		const original = wrapSchema1(ORIGINAL);
+		const amended = wrapSchema1(
+			ORIGINAL.replace(
+				"**Completion gate:** Stable types.\n\n- [ ] Stable types",
+				'**Completion gate:** Stable types.\n\n<!-- 5x:note:start id="phase1-context" -->\nOperator note only.\n<!-- 5x:note:end id="phase1-context" -->\n\n- [ ] Stable types',
+			).replace(
+				"Read digits as Eastern",
+				"Honor explicit offsets; only offsetless digits are Eastern",
+			),
+			"Approved but living",
+		);
+		const f = await fixture({ original, amended });
+		try {
+			f.step("phase:complete", "1", {});
+			const result = recoverImplementationPlan(f.input, f.deps);
+			expect(result.created).toBe(true);
+			expect(result.completionAuthorized).toBe(false);
+			expect(result.recovery.authorizedPlanBytes).toBe(amended);
+		} finally {
+			f.ctx.db.close();
+		}
+	});
 });

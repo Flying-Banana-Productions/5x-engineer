@@ -59,6 +59,7 @@ import {
 	detectPlanDrift,
 	listCreditReconciliations,
 	listRecordedImplementationReviews,
+	recordedPlanSchemaFromBinding,
 } from "../review-governance/implementation-state.js";
 import { prepareTextAmendmentGuard } from "../review-governance/plan-amendment.js";
 import type {
@@ -472,6 +473,10 @@ export async function composeImplementationReviewerRecord(input: {
 			input.runId,
 			binding.id,
 		),
+		...recordedPlanSchemaFromBinding(
+			binding,
+			input.ctx.store.listImplementationTextAmendments(input.runId, binding.id),
+		),
 		hasRun: true,
 		priorReviewCount: closure.priorReviewCount,
 		sessionId: input.sessionId,
@@ -528,11 +533,16 @@ export async function composeImplementationReviewerRecord(input: {
 		input.runId,
 		binding.id,
 	);
+	const recorded = recordedPlanSchemaFromBinding(binding, textAmendments);
 	const anchor = detectPlanDrift({
 		approvedPlanBytes: binding.approvedPlanBytes,
 		approvedPlanHash: binding.approvedPlanHash,
 		amendments: textAmendments,
 		currentPlanBytes: binding.approvedPlanBytes,
+		recordedSchema: recorded.recordedSchema,
+		...(recorded.governingHash
+			? { governingHash: recorded.governingHash }
+			: {}),
 	});
 	let exemptionAuthorized = reviewed.governance.exemptionAuthorized;
 	let textGuard: PendingImplementationObservation["textGuard"];
@@ -553,6 +563,7 @@ export async function composeImplementationReviewerRecord(input: {
 				anchorCommit: parent?.afterCommit ?? binding.approvedPlanCommit,
 				parentLineageId: parent?.id ?? null,
 				allowedSpans: reviewed.spans,
+				recordedSchema: recorded.recordedSchema,
 			});
 			if (!preparedGuard.ok) {
 				exemptionAuthorized = false;

@@ -3,9 +3,15 @@ import {
 	type BudgetSnapshotPayload,
 	decodeBudgetBaselinePayload,
 	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
 	encodeBudgetSnapshotPayload,
+	encodeImplementationBindingPayload,
+	type ImplementationBindingPayload,
 } from "../../../src/review-budget/record-lines.js";
-import type { BaselineAssessment } from "../../../src/review-budget/types.js";
+import {
+	type BaselineAssessment,
+	DEFAULT_REVIEW_BUDGET_CONFIG,
+} from "../../../src/review-budget/types.js";
 
 const baselineAssessment: BaselineAssessment = {
 	independentEffortEstimate: 5,
@@ -102,5 +108,115 @@ describe("budget snapshot payload codec", () => {
 		expect(
 			decodeBudgetSnapshotPayload(encoded).baselineAssessment,
 		).toBeUndefined();
+	});
+});
+
+function binding(
+	extra?: Partial<
+		Pick<
+			ImplementationBindingPayload,
+			| "planSchema"
+			| "governingHash"
+			| "schemaMigrationId"
+			| "predecessorPlanCommit"
+		>
+	>,
+): ImplementationBindingPayload {
+	return {
+		kind: "implementation-binding",
+		version: 1,
+		id: "binding",
+		executionRunId: "exec",
+		sourceRunId: "source",
+		sourceSnapshotId: "snap",
+		sourceBaselineId: "base",
+		approvedPlanCommit: "a".repeat(40),
+		approvedPlanHash: "sha256:approved",
+		approvedPlanBytes: "# Plan\n",
+		b0: 2,
+		governingB: 2,
+		mode: "advisory",
+		thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+		ledger: {
+			estimateConfidence: "medium",
+			workItems: [],
+			surface: {
+				subsystems: 1,
+				productionFiles: 1,
+				persistentOrExternalBoundaries: 0,
+			},
+		},
+		effectiveDecisions: [],
+		phaseMap: [],
+		debtTargets: [],
+		ledgerHash: "sha256:ledger",
+		decisionsHash: "sha256:decisions",
+		createdAt: "2026-10-29 00:00:00",
+		...extra,
+	};
+}
+
+describe("implementation binding schema fields", () => {
+	test("round-trips a schema 0 binding without schema fields", () => {
+		const payload = binding();
+		const encoded = encodeImplementationBindingPayload(payload) as Record<
+			string,
+			unknown
+		>;
+		expect(encoded.planSchema).toBeUndefined();
+		expect(encoded.governingHash).toBeUndefined();
+		expect(encoded.schemaMigrationId).toBeUndefined();
+		expect(encoded.predecessorPlanCommit).toBeUndefined();
+		expect(decodeImplementationBindingPayload(encoded)).toEqual(payload);
+	});
+
+	test("round-trips a schema 1 binding", () => {
+		const payload = binding({
+			planSchema: 1,
+			governingHash: "sha256:governing",
+			schemaMigrationId: "mig-1",
+			predecessorPlanCommit: "b".repeat(40),
+		});
+		expect(
+			decodeImplementationBindingPayload(
+				encodeImplementationBindingPayload(payload),
+			),
+		).toEqual(payload);
+	});
+
+	test("decodes a historical fixture that has no schema fields", () => {
+		const payload = binding();
+		const historical = encodeImplementationBindingPayload(payload) as Record<
+			string,
+			unknown
+		>;
+		delete historical.planSchema;
+		delete historical.governingHash;
+		delete historical.schemaMigrationId;
+		delete historical.predecessorPlanCommit;
+		const decoded = decodeImplementationBindingPayload(historical);
+		expect(decoded.planSchema).toBeUndefined();
+		expect(decoded.governingHash).toBeUndefined();
+		expect(decoded.approvedPlanBytes).toBe("# Plan\n");
+	});
+
+	test("rejects planSchema 2 and schema 1 without a governing hash", () => {
+		const historical = encodeImplementationBindingPayload(binding()) as Record<
+			string,
+			unknown
+		>;
+		expect(() =>
+			decodeImplementationBindingPayload({ ...historical, planSchema: 2 }),
+		).toThrow(/planSchema/);
+		expect(() =>
+			decodeImplementationBindingPayload({ ...historical, planSchema: 1 }),
+		).toThrow(/governingHash/);
+		expect(() =>
+			decodeImplementationBindingPayload({
+				...historical,
+				planSchema: 1,
+				governingHash: "",
+			}),
+		).toThrow(/governingHash/);
 	});
 });

@@ -11,7 +11,8 @@ import { recordedEnvelope } from "../control-plane/record-types.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
-import { parsePlan } from "../parsers/plan.js";
+import { readAuthoritativePlan } from "../plan-schema/authority.js";
+import { governingLinesInLineRange } from "../plan-schema/document.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { ImplementationPlanRecoveryPayload } from "../review-budget/record-lines.js";
 import { decodeImplementationPlanRecoveryPayload } from "../review-budget/record-lines.js";
@@ -24,6 +25,7 @@ import {
 	detectPlanDrift,
 	hashPlanBytes,
 	normalizeCheckboxState,
+	recordedPlanSchemaFromBinding,
 } from "./implementation-state.js";
 import { routeAfterDecision } from "./routing.js";
 import { createReviewGovernanceStore } from "./store.js";
@@ -253,18 +255,33 @@ export function recoverImplementationPlan(
 			"Authorization must cover exact amendment finding fingerprints on the latest same-phase observation.",
 		);
 	}
+	const recorded = recordedPlanSchemaFromBinding(binding, existing);
 	const drift = detectPlanDrift({
 		approvedPlanBytes: binding.approvedPlanBytes,
 		approvedPlanHash: binding.approvedPlanHash,
 		amendments: existing,
 		currentPlanBytes: deps.committedPlanBytes,
+		recordedSchema: recorded.recordedSchema,
+		...(recorded.governingHash
+			? { governingHash: recorded.governingHash }
+			: {}),
 	});
 	if (!drift.chainValid || !drift.drifted)
 		reject(
 			"Recovery requires valid existing lineage and a substantive amendment not already admitted.",
 		);
-	const oldPlan = parsePlan(drift.authorizedBytes);
-	const newPlan = parsePlan(deps.committedPlanBytes);
+	const oldRead = readAuthoritativePlan(
+		drift.authorizedBytes,
+		recorded.recordedSchema,
+	);
+	if (!oldRead.ok) reject(`${oldRead.code}: ${oldRead.message}`);
+	const newRead = readAuthoritativePlan(
+		deps.committedPlanBytes,
+		recorded.recordedSchema,
+	);
+	if (!newRead.ok) reject(`${newRead.code}: ${newRead.message}`);
+	const oldPlan = oldRead.plan;
+	const newPlan = newRead.plan;
 	const frontier = oldPlan.phases.findIndex(
 		(phase) => phase.number === input.phase,
 	);
@@ -307,26 +324,41 @@ export function recoverImplementationPlan(
 					.slice(start - 1, end === undefined ? undefined : end - 1)
 					.join("\n"),
 			).trim();
-		if (
-			section(
-				drift.authorizedBytes,
-				oldPhase.line,
-				oldPlan.phases[index + 1]?.line,
-			) !==
-			section(
-				deps.committedPlanBytes,
-				newPhase.line,
-				newPlan.phases[index + 1]?.line,
-			)
-		) {
+		const oldSection =
+			recorded.recordedSchema === 1
+				? governingLinesInLineRange(
+						oldRead.document,
+						oldPhase.line,
+						oldPlan.phases[index + 1]?.line,
+					).join("\n")
+				: section(
+						drift.authorizedBytes,
+						oldPhase.line,
+						oldPlan.phases[index + 1]?.line,
+					);
+		const newSection =
+			recorded.recordedSchema === 1
+				? governingLinesInLineRange(
+						newRead.document,
+						newPhase.line,
+						newPlan.phases[index + 1]?.line,
+					).join("\n")
+				: section(
+						deps.committedPlanBytes,
+						newPhase.line,
+						newPlan.phases[index + 1]?.line,
+					);
+		if (oldSection !== newSection) {
 			reject(
 				`Earlier phase ${oldPhase.number} changed; frontier recovery cannot preserve its approval.`,
 			);
 		}
 	}
-	const parsed = parseDeliveryBudget(deps.committedPlanBytes);
+	const parsed = parseDeliveryBudget(newRead.document.authorityMarkdown);
 	if (!parsed.ok) reject(parsed.message);
-	const previousLedger = parseDeliveryBudget(drift.authorizedBytes);
+	const previousLedger = parseDeliveryBudget(
+		oldRead.document.authorityMarkdown,
+	);
 	if (!previousLedger.ok) reject(previousLedger.message);
 	const { snapshot, governing, finalCorrections } =
 		implementationRecoveryReview(input, recordStore, store);

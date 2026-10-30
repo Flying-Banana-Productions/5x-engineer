@@ -13,7 +13,10 @@ import { resolve } from "node:path";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
-import { parsePlan } from "../parsers/plan.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import {
 	type InvocationLogSummary,
@@ -34,6 +37,8 @@ import {
 } from "../review-governance/implementation.js";
 import {
 	admitAuthorTextAmendmentFromGit,
+	expectedSchemaForStore,
+	recordedPlanSchemaFromBinding,
 	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
@@ -218,9 +223,9 @@ export function isNumericPhaseRef(phase: string): boolean {
  * - If --phase is a non-numeric semantic identifier (e.g., "plan", "review") → skip
  *   the gate entirely. Such values can never match a plan parser phase heading.
  */
-export function evaluatePhaseChecklist(
+export async function evaluatePhaseChecklist(
 	params: ProtocolValidateParams,
-): { ok: true } | { ok: false; code: string; message: string } {
+): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
 	// Skip for non-numeric phase identifiers — they are semantic context
 	// labels (e.g., "plan", "review") that don't map to plan file phases.
 	if (params.phase && !isNumericPhaseRef(params.phase)) {
@@ -295,7 +300,29 @@ export function evaluatePhaseChecklist(
 		return { ok: true };
 	}
 
-	const plan = parsePlan(planContent);
+	let expected: "file" | 0 | 1 = "file";
+	if (params.run) {
+		try {
+			const contextFactory =
+				params.createReviewBudgetContext ?? createReviewBudgetContext;
+			const budgetContext = await contextFactory(
+				{ runId: params.run, startDir: params.startDir },
+				() => {},
+			);
+			expected = expectedSchemaForStore(budgetContext.store, params.run);
+		} catch {
+			expected = "file";
+		}
+	}
+	const read = readAuthoritativePlan(planContent, expected);
+	if (!read.ok) {
+		return {
+			ok: false,
+			code: read.code,
+			message: planSchemaCommandMessage(read),
+		};
+	}
+	const plan = read.plan;
 
 	// If no --phase provided, skip checklist gate (can't determine which phase)
 	if (!params.phase) return { ok: true };
@@ -726,6 +753,12 @@ export async function protocolValidate(
 					approvedPlanBytes,
 					approvedPlanHash,
 					amendments,
+					...(implementationBinding
+						? recordedPlanSchemaFromBinding(
+								implementationBinding,
+								amendments ?? [],
+							)
+						: {}),
 					hasRun: Boolean(params.run),
 					priorReviewCount,
 					sessionId: invocation?.sessionId,
@@ -860,7 +893,7 @@ export async function protocolValidate(
 		(validated as Record<string, unknown>).result === "complete" &&
 		params.phaseChecklistValidate !== false
 	) {
-		const checklist = evaluatePhaseChecklist(params);
+		const checklist = await evaluatePhaseChecklist(params);
 		if (!checklist.ok) {
 			outputError(checklist.code, checklist.message);
 		}

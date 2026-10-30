@@ -101,8 +101,7 @@ import {
 	outputError,
 	outputSuccess,
 } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
-import { parsePlan } from "../parsers/plan.js";
+import type { DeliveryBudgetParseResult } from "../parsers/delivery-budget.js";
 import {
 	canonicalizePlanPath,
 	isPathUnder,
@@ -117,6 +116,11 @@ import {
 	isStdinPiped,
 	readUpstreamEnvelope,
 } from "../pipe.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativeBudget,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
@@ -164,6 +168,7 @@ import {
 } from "../review-governance/implementation-boundary.js";
 import {
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	isImplementationAuthorAdmission,
 } from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
@@ -1573,6 +1578,18 @@ function tryDeriveGoverningReviewState(
  * Build the delivery-budget header from authoritative record lines. The
  * facade deliberately reads through (and repairs) an empty SQLite index.
  */
+function authoritativeBudgetOk(
+	markdown: string,
+	store: Parameters<typeof expectedSchemaForStore>[0],
+	runId: string,
+): boolean {
+	const loaded = readAuthoritativeBudget(
+		markdown,
+		expectedSchemaForStore(store, runId),
+	);
+	return loaded.ok && loaded.parsed.ok;
+}
+
 export function buildReviewBudgetState(input: {
 	runId: string;
 	mode: ReviewBudgetMode;
@@ -1600,9 +1617,13 @@ export function buildReviewBudgetState(input: {
 	const initialAssessment = snapshots.find(
 		(snapshot) => snapshot.baselineAssessment !== undefined,
 	)?.baselineAssessment;
-	let currentParse: ReturnType<typeof parseDeliveryBudget> | undefined;
+	let currentParse: DeliveryBudgetParseResult | undefined;
 	if (input.currentPlanMarkdown !== undefined) {
-		currentParse = parseDeliveryBudget(input.currentPlanMarkdown);
+		const loaded = readAuthoritativeBudget(
+			input.currentPlanMarkdown,
+			expectedSchemaForStore(input.store, input.runId),
+		);
+		if (loaded.ok) currentParse = loaded.parsed;
 	}
 
 	let derived = latest?.derived ?? null;
@@ -2786,7 +2807,11 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 								codeEquivalentCommits,
 								hasImplementationHistory,
 								hasDeliveryBudget: archivedPlan
-									? parseDeliveryBudget(archivedPlan).ok
+									? authoritativeBudgetOk(
+											archivedPlan,
+											archivedBudgetStore,
+											gitRecord.summary.id,
+										)
 									: false,
 							}).readiness;
 							if (readiness.executionObligations) {
@@ -3057,7 +3082,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						codeEquivalentCommits,
 						hasImplementationHistory,
 						hasDeliveryBudget: currentPlanMarkdown
-							? parseDeliveryBudget(currentPlanMarkdown).ok
+							? authoritativeBudgetOk(currentPlanMarkdown, reviewStore, run.id)
 							: false,
 					}).readiness;
 					if (readiness.executionObligations) {
@@ -3719,8 +3744,16 @@ async function enforceImplementationBoundary(input: {
 			planMarkdown = null;
 		}
 	}
-	const parsed = planMarkdown ? parseDeliveryBudget(planMarkdown) : null;
 	const store = createReviewBudgetStore(input.recordStore);
+	const parsed = planMarkdown
+		? (() => {
+				const loaded = readAuthoritativeBudget(
+					planMarkdown,
+					expectedSchemaForStore(store, input.runId),
+				);
+				return loaded.ok ? loaded.parsed : null;
+			})()
+		: null;
 	const codeEquivalentCommits =
 		headCommit && workdir
 			? await equivalentReviewedCommits({
@@ -4614,11 +4647,27 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 			});
 		}
 
-		// Validate plan parses correctly
+		// Validate plan parses correctly. A bound run uses its recorded schema.
 		try {
 			const markdown = readFileSync(newPlanPath, "utf-8");
-			parsePlan(markdown);
+			let expected: "file" | 0 | 1 = "file";
+			try {
+				const budgetContext = await createReviewBudgetContext(
+					{ runId, startDir: params.startDir },
+					() => {},
+				);
+				expected = expectedSchemaForStore(budgetContext.store, runId);
+			} catch {
+				expected = "file";
+			}
+			const read = readAuthoritativePlan(markdown, expected);
+			if (!read.ok) {
+				outputError(read.code, planSchemaCommandMessage(read), {
+					plan_path: newPlanPath,
+				});
+			}
 		} catch (err) {
+			if (err instanceof CliError) throw err;
 			outputError(
 				"INVALID_PLAN",
 				`File does not parse as a valid plan: ${newPlanPath}`,

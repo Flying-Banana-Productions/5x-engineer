@@ -24,7 +24,10 @@ import {
 	isCompleteDebtClaimEvidence,
 	type ReviewBudgetMode,
 } from "../review-budget/types.js";
-import { detectPlanDrift } from "./implementation-state.js";
+import {
+	detectPlanDrift,
+	recordedPlanSchemaFromBinding,
+} from "./implementation-state.js";
 import { deriveOpenImplementationGate } from "./store.js";
 
 export type ImplementationBoundaryIntent =
@@ -340,13 +343,17 @@ export function evaluateImplementationBoundary(
 	}
 
 	const pinned = input.binding.mode;
+	const lineage = input.amendments.filter(
+		(amendment) => amendment.bindingId === input.binding?.id,
+	);
+	const recorded = recordedPlanSchemaFromBinding(input.binding, lineage);
 	const drift = detectPlanDrift({
 		approvedPlanBytes: input.binding.approvedPlanBytes,
 		approvedPlanHash: input.binding.approvedPlanHash,
-		amendments: input.amendments.filter(
-			(amendment) => amendment.bindingId === input.binding?.id,
-		),
+		amendments: lineage,
 		currentPlanBytes: input.currentPlanBytes ?? "",
+		recordedSchema: recorded.recordedSchema,
+		...(recorded.governingHash ? { governingHash: recorded.governingHash } : {}),
 	});
 	const planMissing = input.currentPlanBytes === null;
 	const phasesToCheck = phasesForIntent(
