@@ -2334,6 +2334,10 @@ describe("boundary-changing implementation findings", () => {
 					"Apply the venue-delete and plan 543 migrations before deploying 0108";
 				const decided = ok(await decide("--restriction", restriction));
 				expect(decided.decision.choice).toBe("accept_with_restriction");
+				// The gated review authorized nothing and left no author work,
+				// so the phase still needs a review before it can complete.
+				expect(decided.route).toBe("closure_review");
+				expect(decided.nextAction).toBe("closure_review");
 				expect(decided.decision.restriction).toBe(restriction);
 				const replay = ok(await decide("--restriction", restriction));
 				expect(replay.decision.decisionId).toBe(decided.decision.decisionId);

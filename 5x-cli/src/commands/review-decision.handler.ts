@@ -30,8 +30,10 @@ import {
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
+import { unsettledAuthorFindingIds } from "../review-governance/implementation.js";
 import {
 	ensureImplementationAdmission,
+	listRecordedImplementationReviews,
 	planRepoPath,
 } from "../review-governance/implementation-state.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
@@ -1462,11 +1464,21 @@ async function finishImplementationDecision(input: {
 		input.runId,
 		stored.phase,
 	);
+	const gatedReview = listRecordedImplementationReviews(
+		ctx.store,
+		input.runId,
+	).find((observation) => observation.id === stored.observationId);
 	const nextAction = implementationDecisionNextAction(
 		stored.choice,
 		successor && successor.gateId !== stored.gateId
 			? successor.causes.length
 			: 0,
+		{
+			completionAuthorized: gatedReview?.completionAuthorized === true,
+			unsettledAuthorFindings: gatedReview
+				? unsettledAuthorFindingIds(ctx.recordStore, gatedReview).length
+				: 0,
+		},
 	);
 	if (successor && successor.gateId !== stored.gateId)
 		ensureImplementationGatePrompt({
@@ -1482,7 +1494,9 @@ async function finishImplementationDecision(input: {
 				? "human_gate"
 				: nextAction === "complete"
 					? "complete"
-					: "author_revision";
+					: nextAction === "closure_review"
+						? "closure_review"
+						: "author_revision";
 	if (route === "aborted" && getRunV1(ctx.db, input.runId)?.status === "active")
 		await (deps.abortRun ?? defaultAbort)({
 			runId: input.runId,

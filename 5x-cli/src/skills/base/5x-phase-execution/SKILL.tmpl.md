@@ -612,7 +612,12 @@ observation. A clean new durable review supersedes the old gate; show the gate
 again to repair its superseded notification, then verify `5x run state` readiness
 before normal phase completion. Preserve the original binding and history.
 Branch on the decision's `.data.route` (`complete`, `author_revision`,
-`final_corrections`, `human_gate`, `aborted`). A `plan_amendment` next action
+`final_corrections`, `human_gate`, `closure_review`, `aborted`). A decision
+never marks the phase reviewed. `complete` means the gated review had already
+authorized completion. `closure_review` means the decision settled the gate
+and left no author work, so prepare a fresh reviewer context (Step 3) at the
+next unused iteration without new author changes, and record that review
+before phase completion. A `plan_amendment` next action
 pauses for author amendment and plan re-review; it is not permission to
 implement new scope. Do not record a generic `human:gate` or approve-override
 for this gate. On restart, show the gate again and resume from its route.

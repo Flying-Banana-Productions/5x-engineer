@@ -292,6 +292,10 @@ describe("implementation review skill branches", () => {
 			expect(content).toContain("`accept_with_restriction`");
 			expect(content).toContain("It is not risk acceptance.");
 			expect(content).toContain("`operating_restrictions`");
+			// A decision never marks the phase reviewed.
+			expect(content).toContain(
+				"`closure_review` means the decision settled the gate",
+			);
 			expect(content).toContain("5x review implementation recover-plan");
 			expect(content).toContain("--confirm-preserved-phases");
 			expect(content).toContain("Recovery never completes a phase");

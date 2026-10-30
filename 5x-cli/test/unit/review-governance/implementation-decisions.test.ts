@@ -22,6 +22,7 @@ import {
 	deriveGateId,
 	foldGoverningReviewState,
 	type ImplementationDecisionPayload,
+	implementationDecisionNextAction,
 	validateImplementationDecision,
 } from "../../../src/review-governance/decisions.js";
 import { operatingRestrictionsFrom } from "../../../src/review-governance/restrictions.js";
@@ -658,6 +659,29 @@ describe("implementation review decisions", () => {
 			validateImplementationDecision({ ...deferral, restriction: undefined })
 				.decisionIntentHash,
 		).toBe(deferral.decisionIntentHash);
+	});
+
+	test("a settled gate completes only when the gated review authorized completion", () => {
+		const next = (
+			choice: Parameters<typeof implementationDecisionNextAction>[0],
+			remainingCauses: number,
+			completionAuthorized: boolean,
+			unsettledAuthorFindings: number,
+		) =>
+			implementationDecisionNextAction(choice, remainingCauses, {
+				completionAuthorized,
+				unsettledAuthorFindings,
+			});
+		expect(next("accept_with_restriction", 1, false, 0)).toBe("human_gate");
+		expect(next("accept_with_restriction", 0, true, 0)).toBe("complete");
+		// The gate review left other findings for the author.
+		expect(next("defer_accept_risk", 0, false, 2)).toBe("author_revision");
+		expect(next("approve_higher_burden", 0, false, 1)).toBe("author_revision");
+		// Nothing left to fix, but no review has authorized completion yet.
+		expect(next("accept_with_restriction", 0, false, 0)).toBe("closure_review");
+		expect(next("defer_accept_risk", 0, false, 0)).toBe("closure_review");
+		expect(next("authorize_amendment", 0, false, 0)).toBe("plan_amendment");
+		expect(next("abort", 0, true, 0)).toBe("aborted");
 	});
 
 	test("restrictions are binding-wide and drop superseded decisions", () => {

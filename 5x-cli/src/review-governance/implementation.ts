@@ -19,6 +19,7 @@ import {
 import {
 	decodeImplementationBindingPayload,
 	decodeImplementationReviewObservationPayload,
+	type ImplementationReviewObservationPayload,
 } from "../review-budget/record-lines.js";
 import {
 	type CodeClosureDecision,
@@ -811,6 +812,41 @@ function settledImplementationDecisions(
 			canonicalPhaseId(decision.phase) === phaseId &&
 			!superseded.has(decision.decisionId),
 	);
+}
+
+/**
+ * Findings on a gated review that still go to the author once its gate is
+ * settled. Mirrors the author context's admission: pre-existing, scope
+ * expansion, critical safety, design plan defects, and settled findings stay out.
+ */
+export function unsettledAuthorFindingIds(
+	recordStore: RecordStore,
+	observation: ImplementationReviewObservationPayload,
+): string[] {
+	const phaseId = canonicalPhaseId(observation.phase);
+	const settled = new Set(
+		phaseId
+			? settledImplementationDecisions(
+					recordStore,
+					observation.runId,
+					observation.bindingId,
+					phaseId,
+				).flatMap((decision) =>
+					decision.findingRefs.map((ref) => ref.findingId),
+				)
+			: [],
+	);
+	return observation.originalVerdict.items.flatMap((item) => {
+		if (item.scopeClass === "pre_existing") return [];
+		if (item.scopeClass === "scope_expansion") return [];
+		if (item.lateDiscovery === "critical_safety") return [];
+		if (
+			item.scopeClass === "plan_defect" &&
+			item.planImpact?.kind !== "text_only"
+		)
+			return [];
+		return settled.has(item.id) ? [] : [item.id];
+	});
 }
 
 export function validateImplementationReview(

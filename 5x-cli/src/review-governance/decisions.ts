@@ -950,10 +950,23 @@ function classifyImplementationDecisionAcceptance(input: {
 	};
 }
 
+/**
+ * `closure_review`: no gate or author work remains, but the gated review did
+ * not authorize completion. A decision never does; a fresh review must.
+ */
+export type ImplementationDecisionNextAction =
+	| ImplementationNextAction
+	| "closure_review"
+	| "aborted";
+
 export function implementationDecisionNextAction(
 	choice: ImplementationDecisionChoice,
 	remainingCauses: number,
-): ImplementationNextAction | "aborted" {
+	gatedReview: {
+		completionAuthorized: boolean;
+		unsettledAuthorFindings: number;
+	},
+): ImplementationDecisionNextAction {
 	if (choice === "abort") return "aborted";
 	if (
 		choice === "authorize_amendment" ||
@@ -962,7 +975,11 @@ export function implementationDecisionNextAction(
 	)
 		return "plan_amendment";
 	if (choice === "restore_simplification") return "author_revision";
-	return remainingCauses > 0 ? "human_gate" : "complete";
+	if (remainingCauses > 0) return "human_gate";
+	if (gatedReview.completionAuthorized) return "complete";
+	return gatedReview.unsettledAuthorFindings > 0
+		? "author_revision"
+		: "closure_review";
 }
 
 /** Coverage for one implementation decision. At most the uncovered remainder remains. */
