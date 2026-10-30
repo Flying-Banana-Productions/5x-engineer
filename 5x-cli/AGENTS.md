@@ -84,13 +84,13 @@ test/
 ## Running Tests
 
 ```bash
-bun test                      # all tests (quality gate)
+bun run test                  # quality gate: concurrent, 15000ms per test
 bun test test/unit/           # unit tests only (<5s)
 bun test test/integration/    # integration tests only
 bun test --concurrent         # parallel execution (CI default)
 ```
 
-Config in `bunfig.toml`: `timeout = 15000`, `preload = ["./test/setup.ts"]`.
+`bunfig.toml` preloads `./test/setup.ts`. Bun ignores `[test].timeout` there, so `bun run test` passes `--timeout 15000`.
 
 ## Required Patterns for Integration Tests
 

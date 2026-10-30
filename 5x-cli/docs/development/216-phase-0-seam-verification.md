@@ -68,3 +68,9 @@ A memory-store run was sealed with `status: "completed"`, a `final_head_commit`,
 ## File count
 
 The Files Touched table has 42 rows. Every existing path in that table is still at the cited location. The new modules (`src/plan-schema/document.ts`, `src/review-governance/plan-markdown.ts`, `src/review-governance/schema-migration.ts`, `src/commands/plan-migrate.handler.ts`, and `src/skills/base/5x-plan-migration/SKILL.tmpl.md`) are not present yet. No lock, stream, or `IMPLEMENTATION_STATE_VERSION` bump is required by these seams. The surface snapshot stays at 42 production files.
+
+## Quality baseline
+
+Phase 0 quality gates failed on tooling, not on a seam. `bun run lint` is `bunx --bun @biomejs/biome check src/ test/` with no dependency pin. That resolved Biome 2.6.4, which checks Markdown that 2.5.15 does not: 26 format errors in unchanged harness, skill, and template assets, plus `useMathMinMax` warnings. Biome 2.5.15 checks the same `src/` and `test/` trees with no diagnostics (453 files). It is now an exact devDependency, and `bunx` resolves that installed copy.
+
+`bun test` still killed one test at 5000ms under the full concurrent suite (`protocol-validate.test.ts`, "both entry points persist the same observation and durable authorization"). A 6000ms probe in this tree also died at 5000ms while `bunfig.toml` said `timeout = 15000`. Bun 1.4 does not read that key. The isolated file had already passed. The `test` script now passes `--timeout 15000`, which is the budget the config already recorded. The rerun was `bun run lint` clean, `bun run typecheck` clean, and `bun run test` 3931 pass / 0 fail. No product source or plan prose changed for this repair.

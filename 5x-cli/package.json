@@ -38,7 +38,7 @@
   },
   "scripts": {
     "dev": "bun run src/bin.ts",
-    "test": "bun test --concurrent --dots",
+    "test": "bun test --concurrent --dots --timeout 15000",
     "build": "bun build --compile src/bin.ts --outfile dist/5x",
     "lint": "bunx --bun @biomejs/biome check src/ test/",
     "typecheck": "bunx --bun tsc --noEmit",
@@ -52,6 +52,7 @@
     "@5x-ai/provider-cursor-agent": "workspace:*",
     "@5x-ai/provider-invalid": "workspace:*",
     "@5x-ai/provider-sample": "workspace:*",
+    "@biomejs/biome": "2.5.15",
     "@types/bun": "latest",
     "typescript": "^5.7.0"
   },

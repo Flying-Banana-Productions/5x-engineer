@@ -1,4 +1,6 @@
 [test]
+# Recorded budget only. Bun 1.4 does not read this key (oven-sh/bun#7789)
+# and otherwise uses a 5000ms default. The test script passes --timeout 15000.
 timeout = 15000
 preload = ["./test/setup.ts"]
 
