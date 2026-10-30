@@ -225,11 +225,11 @@ governing line added or edited -- refuse --> existing amend / recover-plan
 
 **Completion gate:** A short note in the implementation run records cites the current commit and confirms the line references in this plan, or lists the moved symbols. No product behavior changes in this phase.
 
-- [ ] Confirm `detectPlanDrift`, `normalizeCheckboxMarkers`, `listImplementationTextAmendments`, `decodeImplementationBindingPayload`, and `atomicAppendIfAllNew` still match the citations in Overview. If plan 215 landed a different lineage reader, name it and use it in Phase 3.
-- [ ] Confirm the binding decoder accepts unknown fields by ignoring them, and that omitting `planSchema` still decodes. Confirm the SQLite index skips unknown budget kinds.
-- [ ] Confirm `template.handler.ts` and `invoke.handler.ts` both call `appendPlanReviewPromptContext`, and that both set the template override directory from `{stateDir}/templates/prompts`.
-- [ ] Confirm a step named `schema-migration`, with `phase: null`, `iteration: 0`, and a `step_name` that does not start with `reviewer:`, `author:`, or equal `run:complete` or `phase:complete`, can be appended after `run:complete` on a completed source run without changing `terminalRoute`, `resolveFinalizedPlanCommit`, or `foldGoverningReviewState`. Phase 3 uses that shape.
-- [ ] If any confirmation fails, revise this plan before Phase 1. Do not code around a different record or lock model.
+- [x] Confirm `detectPlanDrift`, `normalizeCheckboxMarkers`, `listImplementationTextAmendments`, `decodeImplementationBindingPayload`, and `atomicAppendIfAllNew` still match the citations in Overview. If plan 215 landed a different lineage reader, name it and use it in Phase 3.
+- [x] Confirm the binding decoder accepts unknown fields by ignoring them, and that omitting `planSchema` still decodes. Confirm the SQLite index skips unknown budget kinds.
+- [x] Confirm `template.handler.ts` and `invoke.handler.ts` both call `appendPlanReviewPromptContext`, and that both set the template override directory from `{stateDir}/templates/prompts`.
+- [x] Confirm a step named `schema-migration`, with `phase: null`, `iteration: 0`, and a `step_name` that does not start with `reviewer:`, `author:`, or equal `run:complete` or `phase:complete`, can be appended after `run:complete` on a completed source run without changing `terminalRoute`, `resolveFinalizedPlanCommit`, or `foldGoverningReviewState`. Phase 3 uses that shape.
+- [x] If any confirmation fails, revise this plan before Phase 1. Do not code around a different record or lock model.
 
 ---
 
