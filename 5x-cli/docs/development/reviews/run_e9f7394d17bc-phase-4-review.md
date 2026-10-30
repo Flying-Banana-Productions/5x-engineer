@@ -116,3 +116,26 @@ In `src/templates/reviewer-commit.md:25` and `reviewer-commit-continued.md:35`, 
 
 - **Phase 4 completion:** ⚠️ The completion gate is met: the focused suite passes, the paragraph appears once on bundled and override renders for native and invoke, a fresh install contains `5x-plan-migration`, and schema 0 diagnostics still say legacy is supported. The P2 corrections above should land before closure.
 - **Overall production readiness:** Phase 4 is the last phase. After the P2 corrections, the feature is ready for its final review.
+
+---
+
+## Addendum (2026-10-30) — Closure of Phase 4 P2 findings
+
+**Reviewed:** `7482833a..4081ac64` (context `37a92849-ef9e-4d67-8bf5-f6b5aaeb2e69`, closure, advisory)
+**Local verification:** template, apply-context, implementation-state, helper, and skill unit suites: 218 pass, 0 fail. `bun run lint`: clean (464 files).
+
+### What's addressed (✅)
+
+- **P2.1 — addressed.** The four generator how-to comments are now wrapped in uniquely named `generator-*` note blocks, each between blank lines and outside tables. The header no longer says a comment in the contract is governing. Tests assert the note ids, that no governing line contains `<!--`, and that the example text is absent from `comparisonBytes`.
+- **P2.2 — addressed.** `appendPlanReviewPromptContext` takes `codeDiffAppend` separately and decides the authority paragraph from the template body only. Both handlers pass the diff separately. Two unit cases cover diff-only and body-present.
+- **P2.3 — addressed.** Every schema 1 binding gets `PLAN_SCHEMA1_DRIFT_RECOVERY_HELP`. It points at amendment or recover-plan and at the migration skill, states that malformed markers are not a legacy fallback, and includes the `planSchema` CLI requirement. The reason sniffing is gone, and the tests were updated.
+- **P2.4 — addressed.** The project seed key includes `getMaxKnownSchemaVersion()`. Locks now record an owner pid. A dead pid, or an ownerless lock older than 60s, is reclaimed. A live owner's lock is never removed. `test/unit/helpers/git-fixture.test.ts` covers this.
+- **P2.5 — addressed.** In both reviewer-commit templates the paragraph now follows the numbered list, and both template versions are bumped.
+
+### Remaining concerns
+
+- None blocking. The unused `_reason` parameter on `planDriftRecoveryHelp` is harmless. Lint passes.
+
+### Updated readiness
+- **Phase 4 completion:** ✅ All five prior findings are resolved and the completion gate holds.
+- **Ready for next phase:** ✅ Phase 4 is the last phase of plan 216.
