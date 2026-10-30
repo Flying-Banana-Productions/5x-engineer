@@ -135,4 +135,38 @@ describe("plan review prompt projection", () => {
 			projected.indexOf(governance),
 		);
 	});
+
+	test("appends authority when only the code diff contains it", () => {
+		const codeDiff = `\n## Implementation Diff\n\n+${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}\n`;
+		const projected = appendPlanReviewPromptContext({
+			prompt: "reviewer template body\n",
+			codeDiffAppend: codeDiff,
+			diffAppend: "plan diff",
+			governanceAppend: "governance",
+		});
+		expect(projected).toBe(
+			`reviewer template body\n${codeDiff}\n${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}\nplan diff\n\ngovernance`,
+		);
+		expect(projected.indexOf(codeDiff)).toBeLessThan(
+			projected.lastIndexOf(PLAN_SCHEMA_AUTHORITY_INSTRUCTION),
+		);
+		expect(
+			projected.lastIndexOf(PLAN_SCHEMA_AUTHORITY_INSTRUCTION),
+		).toBeLessThan(projected.indexOf("plan diff"));
+	});
+
+	test("does not append authority again when the template body already has it", () => {
+		const codeDiff = `\n+${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}\n`;
+		const prompt = `body\n${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}\n`;
+		const projected = appendPlanReviewPromptContext({
+			prompt,
+			codeDiffAppend: codeDiff,
+			diffAppend: "plan diff",
+			governanceAppend: "governance",
+		});
+		expect(projected).toBe(`${prompt}${codeDiff}\nplan diff\n\ngovernance`);
+		expect(projected.split(PLAN_SCHEMA_AUTHORITY_INSTRUCTION).length - 1).toBe(
+			2,
+		);
+	});
 });

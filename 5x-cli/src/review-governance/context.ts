@@ -131,14 +131,24 @@ export function formatReviewerGovernanceContext(
 	return `## Plan-review governance context\n\n- Review kind: ${context.reviewKind}\n- Pinned mode: ${context.mode}\n- Required prior-finding outcome IDs: ${list(context.requiredOutcomeIds)}\n- Governing baseline (B): ${context.governingBaseline}\n- Retained scope: ${list(context.approvedScope.retained)}\n- Removed scope: ${list(context.approvedScope.removed)}\n- Author re-estimate requested: ${context.requestAuthorReestimate ? "yes" : "no"}\n\n### Prior findings\n\n${findings}\n\n### Deferred or accepted-risk findings\n\n${risks}`;
 }
 
-/** Keep render and invoke prompt projection byte-for-byte aligned. */
+/**
+ * Keep render and invoke prompt projection byte-for-byte aligned.
+ * Decide the authority paragraph from the template body only. Embedded diff
+ * text is not the template. Append order is template, code diff, authority
+ * paragraph when the body lacks it, plan diff, then governance context.
+ */
 export function appendPlanReviewPromptContext(input: {
 	prompt: string;
+	codeDiffAppend?: string | null;
 	diffAppend?: string | null;
 	governanceAppend?: string | null;
 }): string {
+	const templateHasAuthority = input.prompt.includes(
+		PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
+	);
 	let prompt = input.prompt;
-	if (!prompt.includes(PLAN_SCHEMA_AUTHORITY_INSTRUCTION)) {
+	if (input.codeDiffAppend) prompt += input.codeDiffAppend;
+	if (!templateHasAuthority) {
 		const separator = prompt.endsWith("\n") ? "\n" : "\n\n";
 		prompt += `${separator}${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}`;
 	}

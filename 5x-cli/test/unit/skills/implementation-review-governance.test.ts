@@ -338,6 +338,24 @@ describe("implementation review skill branches", () => {
 		}
 	});
 
+	test("reviewer-commit authority text follows the numbered instructions", () => {
+		for (const [name, lastStep] of [
+			["reviewer-commit", "\n4. "],
+			["reviewer-commit-continued", "\n5. "],
+		] as const) {
+			const raw = getDefaultTemplateRaw(name);
+			const listStart = raw.indexOf("\n1. ");
+			const last = raw.indexOf(lastStep);
+			expect(listStart).toBeGreaterThan(-1);
+			expect(last).toBeGreaterThan(listStart);
+			const numbered = raw.slice(listStart, last);
+			expect(numbered).not.toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
+			expect(raw.indexOf(PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBeGreaterThan(
+				last,
+			);
+		}
+	});
+
 	test("migration skill records operator confirmation and foundation only points at it", () => {
 		const migration = renderSkillByName(
 			"5x-plan-migration",

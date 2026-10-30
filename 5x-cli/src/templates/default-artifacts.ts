@@ -7,10 +7,10 @@ HOW TO USE (also applies without the 5x workflow skills)
 Replace placeholders with project-specific content; delete unused optional sections.
 Keep the visible headings, budget columns, and checklist syntax intact: 5x parses them.
 This skeleton is schema 1. The human **Version:** line is the document revision, not the schema.
-Outside the contract: this declaration, generator comments, **Version:**, **Created:**, **Status:**,
+Outside the contract: this declaration, **Version:**, **Created:**, **Status:**,
 and ## Revision History. Inside the contract: the title, obligations, budget, phases, gates,
-checklists, exclusions, files touched, and tests. Delete generator comments before approval.
-A comment left inside the contract is governing text. A Draft plan is not execution approval.
+checklists, exclusions, files touched, and tests. Generator how-to comments are
+uniquely named note blocks and are not governing. A Draft plan is not execution approval.
 ${PLAN_SCHEMA_AUTHORITY_INSTRUCTION}
 Examples below are illustrative, not approved work or evidence. Replace example IDs
 with real stable IDs and use actual source paths, phase targets, and before/after states.
@@ -38,12 +38,14 @@ Informational context. It does not govern the work and does not satisfy a comple
 
 ## Design Decisions
 
+<!-- 5x:note:start id="generator-design" -->
 <!--
 Explain the chosen approach and why it is adequate; record material trade-offs.
 Example decision: Use the existing transaction helper so both settings writes commit
 atomically. A new persistence abstraction would add maintenance cost without improving
 the required failure behavior. Optional batching remains outside this change.
 -->
+<!-- 5x:note:end id="generator-design" -->
 
 **{Decision statement}.** {Rationale and trade-offs.}
 
@@ -51,6 +53,7 @@ the required failure behavior. Optional batching remains outside this change.
 
 - Estimate confidence: {low | medium | high}
 
+<!-- 5x:note:start id="generator-budget" -->
 <!--
 Use one scored row per deliverable, including its tests. Pick one number per score cell;
 do not leave alternatives or write totals. A non-negative architecture row needs no claim.
@@ -58,6 +61,7 @@ Example row (copy only the text after the label when adapting it):
 Example row: | W1 | Make settings writes atomic, with rollback tests | 2 | 0 | - | - | Reuses the existing transaction helper in one subsystem |
 For an incorporated review correction, Addresses might be P1.1 instead of '-'.
 -->
+<!-- 5x:note:end id="generator-budget" -->
 
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
@@ -69,6 +73,7 @@ Work-item IDs (W1, W2, …) are stable across revisions. Add rows or rescore wit
 
 ### Debt Claims
 
+<!-- 5x:note:start id="generator-debt" -->
 <!--
 Include a claim only for a concrete simplification promised by a negative architecture
 row; do not claim credit for unrelated cleanup or a speculative future improvement.
@@ -83,6 +88,7 @@ Example before bullet: - Before: settings.ts and preferences.ts each own the sam
 Example after bullet: - After: both callers use the existing serializer in settings.ts; preferences.ts no longer owns one
 An implementation reviewer later checks whether this promised post-state was realized.
 -->
+<!-- 5x:note:end id="generator-debt" -->
 
 #### DC0
 
@@ -104,6 +110,7 @@ Omit this subsection when every work-item architecture delta is non-negative.
 
 **Completion gate:** {How you know this phase is done.}
 
+<!-- 5x:note:start id="generator-checklist" -->
 <!--
 Write observable requirements, not just activities. Keep each checklist item stable
 across revisions; normal execution changes its checkbox state, not its meaning.
@@ -112,6 +119,7 @@ Example checklist item: - [ ] Use the transaction helper for both writes and tes
 Only check an item after its requirement is met. Checked boxes alone do not authorize
 phase advancement when the supplied 5x workflow requires review or reconciliation.
 -->
+<!-- 5x:note:end id="generator-checklist" -->
 
 - [ ] {Checklist item}
 - [ ] {Checklist item}

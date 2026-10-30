@@ -671,7 +671,8 @@ export async function templateRender(
 		}
 	}
 	prompt = appendPlanReviewPromptContext({
-		prompt: prompt + codeDiffAppend,
+		prompt,
+		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});

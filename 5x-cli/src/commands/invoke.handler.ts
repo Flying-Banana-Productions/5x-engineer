@@ -860,7 +860,8 @@ export async function invokeAgent(
 		}
 	}
 	const renderedPrompt = appendPlanReviewPromptContext({
-		prompt: resolved.prompt + codeDiffAppend,
+		prompt: resolved.prompt,
+		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});

@@ -230,22 +230,15 @@ const SCHEMA0_CHAIN_REASON =
 export const PLAN_DRIFT_RECOVERY_HELP =
 	"Legacy schema 0 behavior remains supported. 5x review migrate-schema --help and the 5x-plan-migration skill can record a schema transition. Semantic amendments still use 5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only).";
 
-export const PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP =
-	"Missing schema 1 markers are malformed input, not a legacy fallback. See 5x review migrate-schema --help and the 5x-plan-migration skill. Semantic amendments still use 5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only).";
+export const PLAN_SCHEMA1_DRIFT_RECOVERY_HELP =
+	"Governing schema 1 edits need an approved amendment or 5x review implementation recover-plan --help (operator-confirmed, unfinished-frontier recovery only). Missing schema 1 markers are malformed input, not a legacy fallback. See 5x review migrate-schema --help and the 5x-plan-migration skill. Schema 1 runs and migrated runs need a CLI that records `planSchema`.";
 
 export function planDriftRecoveryHelp(
 	recordedSchema: 0 | 1,
-	reason?: string,
+	_reason?: string,
 ): string {
 	if (recordedSchema === 0) return PLAN_DRIFT_RECOVERY_HELP;
-	if (
-		reason?.includes("PLAN_SCHEMA_INVALID") ||
-		reason?.includes("PLAN_SCHEMA_UNSUPPORTED") ||
-		reason?.includes("Missing markers are malformed input")
-	) {
-		return PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP;
-	}
-	return PLAN_DRIFT_RECOVERY_HELP;
+	return PLAN_SCHEMA1_DRIFT_RECOVERY_HELP;
 }
 
 export function detectPlanDrift(input: {

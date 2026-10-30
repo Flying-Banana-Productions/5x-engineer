@@ -100,6 +100,9 @@ describe("schema 1 plan skeletons", () => {
 		expect(governing).not.toContain("**Status:**");
 		expect(governing).not.toContain("## Revision History");
 		expect(
+			loaded.document.governingLines.some((line) => line.includes("<!--")),
+		).toBe(false);
+		expect(
 			parsePlan(loaded.document.authorityMarkdown).phases.map(
 				(phase) => phase.number,
 			),
@@ -111,6 +114,23 @@ describe("schema 1 plan skeletons", () => {
 		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain(
 			"<!-- 5x:plan-schema:1 -->",
 		);
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).not.toContain(
+			"A comment left inside the contract is governing text",
+		);
+		const loaded = loadPlanDocument(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE, 1);
+		expect(loaded.ok).toBe(true);
+		if (!loaded.ok) return;
+		expect(loaded.document.notes.map((note) => note.id)).toEqual([
+			"generator-design",
+			"generator-budget",
+			"generator-debt",
+			"generator-checklist",
+		]);
+		const governing = loaded.document.governingLines.join("\n");
+		expect(governing).not.toContain("Example row:");
+		expect(governing).not.toContain("Explain the chosen approach");
+		expect(governing).not.toContain("Write observable requirements");
+		expect(loaded.document.comparisonBytes).not.toContain("Example row:");
 	});
 
 	test("configured paths.templates.plan resolves the schema 1 skeleton", async () => {

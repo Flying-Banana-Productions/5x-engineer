@@ -21,14 +21,25 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { runMigrations } from "../../src/db/schema.js";
+import {
+	getMaxKnownSchemaVersion,
+	runMigrations,
+} from "../../src/db/schema.js";
 import { cleanGitEnv } from "./clean-env.js";
 
 const SEED_VERSION = "v1";
+const FIXTURE_LOCK_POLL_MS = 25;
+const FIXTURE_LOCK_POLL_ATTEMPTS = 400;
+/**
+ * Ownerless locks younger than this can still belong to a build that has not
+ * published its pid. A recorded live pid is never stale, however old the lock is.
+ */
+export const GIT_FIXTURE_LOCK_STALE_AGE_MS = 60_000;
 
 export type ImportedFile = {
 	path: string;
@@ -93,6 +104,98 @@ async function runGit(dir: string, args: string[]): Promise<void> {
 	}
 }
 
+type FixtureLockOwner = { pid: number; startedAt: string };
+
+function isPidAlive(pid: number): boolean {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		if (
+			error &&
+			typeof error === "object" &&
+			"code" in error &&
+			(error as { code?: string }).code === "EPERM"
+		) {
+			return true;
+		}
+		return false;
+	}
+}
+
+function readFixtureLockOwner(lock: string): FixtureLockOwner | null {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(join(lock, "owner.json"), "utf8"),
+		) as {
+			pid?: unknown;
+			startedAt?: unknown;
+		};
+		if (
+			typeof parsed.pid !== "number" ||
+			!Number.isInteger(parsed.pid) ||
+			parsed.pid <= 0 ||
+			typeof parsed.startedAt !== "string"
+		) {
+			return null;
+		}
+		return { pid: parsed.pid, startedAt: parsed.startedAt };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * A live owner's lock is never stale, including when its pid has been reused.
+ * A recorded dead pid is stale immediately. An ownerless lock is stale only
+ * after the known build window, so a live build's mkdir-to-owner-file gap
+ * is not deleted.
+ */
+export function gitFixtureLockIsStale(lock: string): boolean {
+	if (!existsSync(lock)) return false;
+	const owner = readFixtureLockOwner(lock);
+	if (owner) return !isPidAlive(owner.pid);
+	try {
+		return Date.now() - statSync(lock).mtimeMs > GIT_FIXTURE_LOCK_STALE_AGE_MS;
+	} catch {
+		return false;
+	}
+}
+
+function tryAcquireFixtureLock(lock: string): boolean {
+	try {
+		mkdirSync(lock);
+	} catch {
+		return false;
+	}
+	try {
+		writeFileSync(
+			join(lock, "owner.json"),
+			JSON.stringify({
+				pid: process.pid,
+				startedAt: new Date().toISOString(),
+			}),
+		);
+		return true;
+	} catch (error) {
+		rmSync(lock, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+function releaseFixtureLock(lock: string): void {
+	const owner = readFixtureLockOwner(lock);
+	if (owner && owner.pid !== process.pid) return;
+	rmSync(lock, { recursive: true, force: true });
+}
+
+function reclaimStaleFixtureLock(lock: string): boolean {
+	if (!gitFixtureLockIsStale(lock)) return false;
+	rmSync(lock, { recursive: true, force: true });
+	return tryAcquireFixtureLock(lock);
+}
+
 function exclusiveBuild(
 	target: string,
 	markerRelative: string,
@@ -101,15 +204,23 @@ function exclusiveBuild(
 	const marker = join(target, markerRelative);
 	if (existsSync(marker)) return target;
 	const lock = `${target}.lock`;
-	let owner = false;
-	try {
-		mkdirSync(lock);
-		owner = true;
-	} catch {
-		for (let attempt = 0; attempt < 400; attempt++) {
+	let owner = tryAcquireFixtureLock(lock);
+	if (!owner && reclaimStaleFixtureLock(lock)) owner = true;
+	if (!owner) {
+		for (let attempt = 0; attempt < FIXTURE_LOCK_POLL_ATTEMPTS; attempt++) {
 			if (existsSync(marker)) return target;
-			Bun.sleepSync(25);
+			if (reclaimStaleFixtureLock(lock)) {
+				owner = true;
+				break;
+			}
+			Bun.sleepSync(FIXTURE_LOCK_POLL_MS);
 		}
+	}
+	if (!owner) {
+		if (existsSync(marker)) return target;
+		if (reclaimStaleFixtureLock(lock)) owner = true;
+	}
+	if (!owner) {
 		throw new Error(`timed out waiting for git fixture ${target}`);
 	}
 	try {
@@ -127,7 +238,7 @@ function exclusiveBuild(
 			}
 		}
 	} finally {
-		if (owner) rmSync(lock, { recursive: true, force: true });
+		if (owner) releaseFixtureLock(lock);
 	}
 	return target;
 }
@@ -323,15 +434,21 @@ export async function importCommitSequence(
 	return ordered;
 }
 
-function projectSeed(spec: ProjectSeedSpec): string {
+/** Cache path for a committed project seed. Includes the CLI's DB schema. */
+export function projectSeedCachePath(spec: ProjectSeedSpec): string {
 	const payload = JSON.stringify({
 		version: SEED_VERSION,
+		schemaVersion: getMaxKnownSchemaVersion(),
 		files: spec.files,
 		message: spec.message ?? "init",
 		migrateDb: spec.migrateDb ?? false,
 	});
 	const hash = createHash("sha256").update(payload).digest("hex").slice(0, 16);
-	const target = join(canonicalTmp(), `5x-cli-git-project-seed-${hash}`);
+	return join(canonicalTmp(), `5x-cli-git-project-seed-${hash}`);
+}
+
+function projectSeed(spec: ProjectSeedSpec): string {
+	const target = projectSeedCachePath(spec);
 	return exclusiveBuild(target, ".git/refs/heads/main", (dir) => {
 		copyInitializedRepo(dir);
 		for (const [path, content] of Object.entries(spec.files)) {

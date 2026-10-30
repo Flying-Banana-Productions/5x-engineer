@@ -44,7 +44,7 @@ import {
 	isImplementationAuthorTemplate,
 	mapDebtTargetToPhaseId,
 	PLAN_DRIFT_RECOVERY_HELP,
-	PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP,
+	PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
 	planDriftRecoveryHelp,
 	planRepoPath,
 	recordVerifiedTextAmendment,
@@ -1176,6 +1176,25 @@ describe("implementation execution binding", () => {
 		});
 		expect(governing.drifted).toBe(true);
 		expect(governing.reason).toContain("not a legacy fallback");
+		expect(governing.reason).not.toContain("PLAN_SCHEMA_INVALID");
+		expect(planDriftRecoveryHelp(1, governing.reason)).toBe(
+			PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).not.toContain("Legacy schema 0");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).not.toContain(
+			"can record a schema transition",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"need an approved amendment",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"Missing schema 1 markers are malformed input",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain("5x-plan-migration");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain("recover-plan");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"Schema 1 runs and migrated runs need a CLI that records `planSchema`.",
+		);
 		const missing = detectPlanDrift({
 			...base,
 			currentPlanBytes: markdown.replace("<!-- 5x:plan-schema:1 -->\n", ""),
@@ -1187,7 +1206,7 @@ describe("implementation execution binding", () => {
 		expect(missing.reason).toContain("5x review migrate-schema --help");
 		expect(missing.reason).toContain("5x-plan-migration");
 		expect(planDriftRecoveryHelp(1, missing.reason)).toBe(
-			PLAN_SCHEMA1_MALFORMED_RECOVERY_HELP,
+			PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
 		);
 		expect(planDriftRecoveryHelp(0, missing.reason)).toBe(
 			PLAN_DRIFT_RECOVERY_HELP,
@@ -1265,6 +1284,7 @@ ${plan().trimEnd()}
 		expect(governing).toMatchObject({
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_DRIFT",
+			detail: { recoveryHelp: PLAN_SCHEMA1_DRIFT_RECOVERY_HELP },
 		});
 	});
 
