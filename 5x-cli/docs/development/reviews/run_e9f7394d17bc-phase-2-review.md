@@ -100,3 +100,21 @@ Take an unbound, budgeted run whose plan has a malformed reserved `5x:` marker, 
 
 - **Phase 2 completion:** ⚠️ The core authority wiring, guards, recovery, and codec meet the gate. P1.1 leaves the `plan phases` active-binding rule unimplemented for worktree runs.
 - **Ready for Phase 3:** ✅ after P1.1 and P2.1. Both are mechanical. Replay already accepts the migration kind that Phase 3 will write.
+
+---
+
+## Addendum (2026-10-30) — Closure review of `a519e581`
+
+**Reviewed:** `1c0c3d9c..a519e581` (review context `b131a273`)  
+**Local verification:** `bun run typecheck` and `bun run lint` clean. Focused run of `test/integration/commands/plan-v1.test.ts`, `test/unit/commands`, and `test/unit/review-governance`: 1015 pass, 0 fail.
+
+### What's addressed (✅)
+- **P1.1 — addressed.** `expectedSchemaForPlanFile` now calls `createReviewBudgetContext({ runId, startDir, dbContext })`, which resolves the run's mapped-worktree records. `expectedSchemaForStore` no longer maps binding read errors to `"file"`. `planPhases` fails closed through `failPlanSchemaIdentity`, which outputs the `RecordContextError` code or a typed `IMPLEMENTATION_BINDING_UNREADABLE`. A new integration test in `plan-v1.test.ts` covers the bound-worktree case.
+- **P2.1 — addressed.** The boundary read (`readBoundaryBudget`), the readiness read (`authoritativeBudgetOk`), the template and invoke fallbacks, `runV1Relink`, and `evaluatePhaseChecklist` now surface `PLAN_SCHEMA_*` or `IMPLEMENTATION_BINDING_UNREADABLE` instead of treating a failure as "no budget". The two `runV1State` catch blocks rethrow `CliError` so the failure is not downgraded to a warning. Tests were added in `run-v1.handler.test.ts`, `invoke.test.ts`, `template-handler.test.ts`, and `implementation-state.test.ts`.
+
+### Remaining concerns
+- None blocking. The O(plans × runs) lookup in `planList` from the earlier follow-ups remains, and is not blocking.
+
+### Updated readiness
+- **Phase 2 completion:** ✅
+- **Ready for next phase:** ✅
