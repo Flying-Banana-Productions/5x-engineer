@@ -27,7 +27,10 @@ import {
 import { FiveXConfigSchema } from "../../../src/config.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { canonicalizePlanPath } from "../../../src/paths.js";
-import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 interface ProjectCtx {
 	root: string;
@@ -37,43 +40,10 @@ interface ProjectCtx {
 }
 
 function setupGitProject(dir: string): void {
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 }
 
 function resolvedConfig(root: string) {

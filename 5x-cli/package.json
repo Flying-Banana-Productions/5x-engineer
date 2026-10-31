@@ -52,6 +52,7 @@
     "@5x-ai/provider-cursor-agent": "workspace:*",
     "@5x-ai/provider-invalid": "workspace:*",
     "@5x-ai/provider-sample": "workspace:*",
+    "@biomejs/biome": "2.5.15",
     "@types/bun": "latest",
     "typescript": "^5.7.0"
   },

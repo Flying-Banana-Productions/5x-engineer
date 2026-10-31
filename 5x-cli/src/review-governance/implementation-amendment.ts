@@ -23,7 +23,14 @@ import {
 } from "../control-plane/record-types.js";
 import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
-import { type Phase, parsePlan } from "../parsers/plan.js";
+import type { ParsedPlan, Phase } from "../parsers/plan.js";
+import { readAuthoritativePlan } from "../plan-schema/authority.js";
+import {
+	governingLinesInLineRange,
+	type LoadedPlanDocument,
+	loadPlanDocument,
+	type PlanSchema,
+} from "../plan-schema/document.js";
 import {
 	type AmendmentAssessment,
 	type AmendmentClaimEdit,
@@ -44,6 +51,7 @@ import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
+	decodePlanSchemaMigrationPayload,
 	type ImplementationBindingPayload,
 	type ImplementationCorrectionAttemptPayload,
 	type ImplementationCreditReconciliationPayload,
@@ -158,6 +166,12 @@ export interface EffectiveExecution {
 	approvedPlanHash: string;
 	/** Lineage parent at the end of the selected prefix. */
 	lineageParentId: string | null;
+	/** Plan schema at the end of the selected prefix. A migration selects 1. */
+	planSchema: PlanSchema;
+	/** Recorded schema 1 governing hash, from the binding or the migration. */
+	governingHash?: string;
+	/** Bytes `governingHash` authenticates. Later lineage moves the anchor, not these. */
+	governingAnchorBytes?: string;
 	invalidatedContextIds: string[];
 	invalidatedObservationIds: string[];
 }
@@ -247,6 +261,7 @@ interface OpenBoundary {
 
 const LINEAGE_KINDS = new Set([
 	"implementation-text-amendment",
+	"plan-schema-migration",
 	"implementation-plan-recovery",
 	"implementation-plan-amendment",
 ]);
@@ -293,6 +308,69 @@ function observationStepKey(
 		phase: stepKey.phase,
 		iteration: stepKey.iteration,
 	});
+}
+
+function selectedSchema(
+	authorized:
+		| {
+				planSchema: PlanSchema;
+				governingHash?: string;
+				governingAnchorBytes?: string;
+		  }
+		| undefined,
+	binding: ImplementationBindingPayload,
+): Pick<
+	EffectiveExecution,
+	"planSchema" | "governingHash" | "governingAnchorBytes"
+> {
+	if (!authorized) {
+		return binding.planSchema === 1 && binding.governingHash !== undefined
+			? {
+					planSchema: 1,
+					governingHash: binding.governingHash,
+					governingAnchorBytes: binding.approvedPlanBytes,
+				}
+			: { planSchema: binding.planSchema === 1 ? 1 : 0 };
+	}
+	return {
+		planSchema: authorized.planSchema,
+		...(authorized.governingHash === undefined
+			? {}
+			: { governingHash: authorized.governingHash }),
+		...(authorized.governingAnchorBytes === undefined
+			? {}
+			: { governingAnchorBytes: authorized.governingAnchorBytes }),
+	};
+}
+
+/** Schema 1 reads the governing projection. Schema 0 keeps the raw dialect. */
+type LineagePlanRead =
+	| { ok: true; plan: ParsedPlan; document: LoadedPlanDocument }
+	| { ok: false; message: string };
+
+function readLineagePlan(bytes: string, schema: PlanSchema): LineagePlanRead {
+	const read = readAuthoritativePlan(bytes, schema);
+	if (!read.ok) return { ok: false, message: `${read.code}: ${read.message}` };
+	return { ok: true, plan: read.plan, document: read.document };
+}
+
+/** Schema 1 compares governing lines only, so note edits do not count. */
+function governedPhaseSection(
+	read: { plan: ParsedPlan; document: LoadedPlanDocument },
+	index: number,
+): string {
+	if (read.document.schema === 0) {
+		return phaseSection(read.document.raw, read.plan.phases, index);
+	}
+	const phase = read.plan.phases[index];
+	if (!phase) return "";
+	return governingLinesInLineRange(
+		read.document,
+		phase.line,
+		read.plan.phases[index + 1]?.line,
+	)
+		.join("\n")
+		.trim();
 }
 
 function phaseSection(
@@ -613,15 +691,30 @@ export function foldEffectiveExecution(input: {
 	let authorizedBytes = binding.approvedPlanBytes;
 	let authorizedHash = binding.approvedPlanHash;
 	let parent: string | null = null;
+	let planSchema: PlanSchema = binding.planSchema === 1 ? 1 : 0;
+	let governingHash = binding.governingHash;
+	let governingAnchorBytes =
+		binding.governingHash === undefined ? undefined : binding.approvedPlanBytes;
+	let sawMigration = false;
 	const authorizedAt = new Map<
 		string,
-		{ bytes: string; hash: string; parentId: string | null }
+		{
+			bytes: string;
+			hash: string;
+			parentId: string | null;
+			planSchema: PlanSchema;
+			governingHash?: string;
+			governingAnchorBytes?: string;
+		}
 	>();
 	const rememberAuthorized = () => {
 		authorizedAt.set(currentRevisionId, {
 			bytes: authorizedBytes,
 			hash: authorizedHash,
 			parentId: parent,
+			planSchema,
+			...(governingHash === undefined ? {} : { governingHash }),
+			...(governingAnchorBytes === undefined ? {} : { governingAnchorBytes }),
 		});
 	};
 	rememberAuthorized();
@@ -837,6 +930,60 @@ export function foldEffectiveExecution(input: {
 			continue;
 		}
 
+		if (kind === "plan-schema-migration") {
+			let migration: ReturnType<typeof decodePlanSchemaMigrationPayload>;
+			try {
+				migration = decodePlanSchemaMigrationPayload(line.payload);
+			} catch (error) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			// A source-run migration with no binding is not execution lineage.
+			if (migration.bindingId === null) continue;
+			if (migration.bindingId !== binding.id) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`${migration.id} names a different binding.`,
+				);
+			}
+			const afterHash = hashPlanBytes(migration.authorizedPlanBytes);
+			const target = loadPlanDocument(migration.authorizedPlanBytes, 1);
+			if (
+				sawMigration ||
+				migration.version !== 1 ||
+				migration.fromSchema !== 0 ||
+				migration.toSchema !== 1 ||
+				migration.parentLineageId !== parent ||
+				migration.beforeBlobHash !== authorizedHash ||
+				migration.afterBlobHash !== afterHash ||
+				!target.ok ||
+				hashPlanBytes(target.document.comparisonBytes) !==
+					migration.governingHash
+			) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Schema migration ${migration.id} has a wrong parent, plan hash, or governing hash.`,
+					migration.id,
+				);
+			}
+			sawMigration = true;
+			authorizedBytes = migration.authorizedPlanBytes;
+			authorizedHash = afterHash;
+			parent = migration.id;
+			planSchema = 1;
+			if (governingHash === undefined) {
+				governingHash = migration.governingHash;
+				governingAnchorBytes = migration.authorizedPlanBytes;
+			}
+			rememberAuthorized();
+			continue;
+		}
+
 		let lineage:
 			| ImplementationTextAmendmentPayload
 			| ImplementationPlanRecoveryPayload
@@ -953,7 +1100,16 @@ export function foldEffectiveExecution(input: {
 			);
 		}
 
-		const predecessorPlan = parsePlan(authorizedBytes);
+		const predecessorRead = readLineagePlan(authorizedBytes, planSchema);
+		if (!predecessorRead.ok) {
+			return fail(
+				"budget",
+				line.idempotencyKey,
+				`The predecessor plan could not be read. ${predecessorRead.message}`,
+				lineage.id,
+			);
+		}
+		const predecessorPlan = predecessorRead.plan;
 		const phaseIds = predecessorPlan.phases.map((phase) => phase.number);
 		if (new Set(phaseIds).size !== phaseIds.length) {
 			return fail(
@@ -1043,7 +1199,16 @@ export function foldEffectiveExecution(input: {
 					lineage.id,
 				);
 			}
-			const nextPlan = parsePlan(lineage.approvedPlanBytes);
+			const nextRead = readLineagePlan(lineage.approvedPlanBytes, planSchema);
+			if (!nextRead.ok) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`The amended plan could not be read. ${nextRead.message}`,
+					lineage.id,
+				);
+			}
+			const nextPlan = nextRead.plan;
 			const nextIds = nextPlan.phases.map((phase) => phase.number);
 			if (nextIds.join("\0") !== phaseIds.join("\0")) {
 				return fail(
@@ -1069,8 +1234,12 @@ export function foldEffectiveExecution(input: {
 					lineage.id,
 				);
 			}
-			const beforeLedger = parseDeliveryBudget(authorizedBytes);
-			const afterLedger = parseDeliveryBudget(lineage.approvedPlanBytes);
+			const beforeLedger = parseDeliveryBudget(
+				predecessorRead.document.authorityMarkdown,
+			);
+			const afterLedger = parseDeliveryBudget(
+				nextRead.document.authorityMarkdown,
+			);
 			if (!beforeLedger.ok || !afterLedger.ok) {
 				return fail(
 					"budget",
@@ -1082,8 +1251,8 @@ export function foldEffectiveExecution(input: {
 			for (const phaseId of required) {
 				const index = phaseIds.indexOf(phaseId);
 				if (
-					phaseSection(authorizedBytes, predecessorPlan.phases, index) !==
-					phaseSection(lineage.approvedPlanBytes, nextPlan.phases, index)
+					governedPhaseSection(predecessorRead, index) !==
+					governedPhaseSection(nextRead, index)
 				) {
 					return fail(
 						"budget",
@@ -1103,11 +1272,7 @@ export function foldEffectiveExecution(input: {
 						lineage.id,
 					);
 				}
-				const section = phaseSection(
-					authorizedBytes,
-					predecessorPlan.phases,
-					index,
-				);
+				const section = governedPhaseSection(predecessorRead, index);
 				for (const workItemId of namedWorkItemIds(section)) {
 					if (
 						workItemContract(beforeLedger.value, workItemId) !==
@@ -1575,6 +1740,7 @@ export function foldEffectiveExecution(input: {
 		approvedPlanHash:
 			authorizedAt.get(selected.id)?.hash ?? selected.approvedPlanHash,
 		lineageParentId: authorizedAt.get(selected.id)?.parentId ?? null,
+		...selectedSchema(authorizedAt.get(selected.id), binding),
 		invalidatedContextIds: [...invalidatedContexts],
 		invalidatedObservationIds: [...invalidatedObservations],
 	};
@@ -2173,6 +2339,12 @@ function lineageTail(
 				parentId = recovery.id;
 				beforeCommit = recovery.afterCommit;
 				beforeHash = recovery.afterBlobHash;
+			} else if (kind === "plan-schema-migration") {
+				const migration = decodePlanSchemaMigrationPayload(line.payload);
+				if (migration.bindingId !== binding.id) continue;
+				parentId = migration.id;
+				beforeCommit = migration.afterCommit;
+				beforeHash = migration.afterBlobHash;
 			} else if (kind === "implementation-plan-amendment") {
 				const amendment = decodeImplementationSemanticAmendmentPayload(
 					line.payload,
@@ -2705,9 +2877,35 @@ export async function registerImplementationAmendment(
 			"--from-phase must equal the assessment's earliest affected phase.",
 		);
 	}
-	const predecessorPlan = parsePlan(baseline.approvedPlanBytes);
+	const prefix =
+		baseline.id === folded.selectedRevisionId
+			? folded
+			: foldEffectiveExecution({
+					recordStore,
+					runId: input.runId,
+					revisionId: baseline.id,
+				});
+	if (!prefix.ok) rejectAmendment(prefix.diagnostic.message);
+	// A migration inside the predecessor revision leaves schema 0 revision
+	// bytes. Compare against the migrated prefix bytes instead.
+	const predecessorBytes =
+		prefix.planSchema === 1 &&
+		!loadPlanDocument(baseline.approvedPlanBytes, 1).ok
+			? prefix.approvedPlanBytes
+			: baseline.approvedPlanBytes;
+	const predecessorRead = readLineagePlan(predecessorBytes, prefix.planSchema);
+	if (!predecessorRead.ok) {
+		rejectAmendment(
+			`The predecessor plan could not be read. ${predecessorRead.message}`,
+		);
+	}
+	const nextRead = readLineagePlan(input.committedPlanBytes, prefix.planSchema);
+	if (!nextRead.ok) {
+		rejectAmendment(`The amended plan could not be read. ${nextRead.message}`);
+	}
+	const predecessorPlan = predecessorRead.plan;
 	const phaseIds = predecessorPlan.phases.map((phase) => phase.number);
-	const nextPlan = parsePlan(input.committedPlanBytes);
+	const nextPlan = nextRead.plan;
 	const nextIds = nextPlan.phases.map((phase) => phase.number);
 	if (
 		new Set(phaseIds).size !== phaseIds.length ||
@@ -2739,19 +2937,18 @@ export async function registerImplementationAmendment(
 			"Preserved phases must be exactly the phases before the assessed boundary.",
 		);
 	}
-	const beforeLedger = parseDeliveryBudget(baseline.approvedPlanBytes);
-	const afterLedger = parseDeliveryBudget(input.committedPlanBytes);
+	const beforeLedger = parseDeliveryBudget(
+		predecessorRead.document.authorityMarkdown,
+	);
+	const afterLedger = parseDeliveryBudget(nextRead.document.authorityMarkdown);
 	if (!beforeLedger.ok || !afterLedger.ok) {
 		rejectAmendment("The amended plan ledger could not be parsed.");
 	}
 	for (const phaseId of preservedIds) {
 		const index = phaseIds.indexOf(phaseId);
 		if (
-			phaseSection(
-				baseline.approvedPlanBytes,
-				predecessorPlan.phases,
-				index,
-			) !== phaseSection(input.committedPlanBytes, nextPlan.phases, index)
+			governedPhaseSection(predecessorRead, index) !==
+			governedPhaseSection(nextRead, index)
 		) {
 			rejectAmendment(
 				`Preserved phase ${phaseId} changed beyond checkbox state.`,
@@ -2765,11 +2962,7 @@ export async function registerImplementationAmendment(
 				`Preserved phase ${phaseId} changed a linked claim contract.`,
 			);
 		}
-		const section = phaseSection(
-			baseline.approvedPlanBytes,
-			predecessorPlan.phases,
-			index,
-		);
+		const section = governedPhaseSection(predecessorRead, index);
 		for (const workItemId of namedWorkItemIds(section)) {
 			if (
 				workItemContract(beforeLedger.value, workItemId) !==

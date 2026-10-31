@@ -388,7 +388,7 @@ export const ReviewerVerdictSchema = {
 						type: "array",
 						items: { type: "string", enum: [...BOUNDARY_CHANGE_LABELS] },
 						description:
-							"Explicit boundary labels. Omit the field when impact is unknown; do not guess an empty array.",
+							"Boundaries the correction would change beyond the approved plan. Approved work and conditions outside the code (such as release ordering) are not boundary changes. Omit the field when impact is unknown; do not guess an empty array.",
 					},
 					mechanicalExplanation: { type: "string" },
 					coupling: {

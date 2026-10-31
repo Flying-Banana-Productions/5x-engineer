@@ -528,6 +528,7 @@ describe("evaluateImplementationBoundary", () => {
 			approvedPlanBytes: bytes,
 			approvedPlanHash: hashPlanBytes(bytes),
 			lineageParentId: null,
+			planSchema: 0,
 			invalidatedContextIds: [],
 			invalidatedObservationIds: [],
 		};
@@ -574,6 +575,7 @@ describe("evaluateImplementationBoundary", () => {
 				approvedPlanBytes: "not a budget",
 				approvedPlanHash: hashPlanBytes("not a budget"),
 				lineageParentId: null,
+				planSchema: 0,
 				invalidatedContextIds: [],
 				invalidatedObservationIds: [],
 			},

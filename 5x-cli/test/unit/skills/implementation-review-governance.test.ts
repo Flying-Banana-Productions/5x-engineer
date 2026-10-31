@@ -14,6 +14,7 @@ import {
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { getDefaultSkillRaw } from "../../../src/harnesses/opencode/skills/loader.js";
+import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../../../src/plan-schema/document.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
 import {
 	encodeImplementationReviewObservationPayload,
@@ -36,6 +37,7 @@ import { hashPlanBytes } from "../../../src/review-governance/implementation-sta
 import { renderSkillByName } from "../../../src/skills/loader.js";
 import { createRenderContext } from "../../../src/skills/renderer.js";
 import {
+	getDefaultTemplateRaw,
 	renderTemplate,
 	setTemplateOverrideDir,
 } from "../../../src/templates/loader.js";
@@ -44,6 +46,18 @@ import {
 	makeBudgetContext,
 	TEST_ORIGIN,
 } from "../commands/review-budget-test-helpers.js";
+
+function countOccurrences(haystack: string, needle: string): number {
+	if (needle.length === 0) return 0;
+	let count = 0;
+	let from = 0;
+	while (true) {
+		const index = haystack.indexOf(needle, from);
+		if (index === -1) return count;
+		count += 1;
+		from = index + needle.length;
+	}
+}
 
 const promptContext: ImplementationReviewPromptContext = {
 	reviewKind: "closure",
@@ -77,6 +91,17 @@ const promptContext: ImplementationReviewPromptContext = {
 			rationale: "Accepted for this phase.",
 			approvedScope: ["W1"],
 			source: "imported",
+		},
+	],
+	operatingRestrictions: [
+		{
+			decisionId: "decision-restrict",
+			gateId: "gate-restrict",
+			phase: "1",
+			findingIds: ["I9"],
+			restriction: "Apply predecessor migrations before deploying",
+			rationale: "Release ordering, not a code change",
+			createdAt: "2026-10-30T00:00:00.000Z",
 		},
 	],
 	debtWaivers: [
@@ -262,6 +287,15 @@ describe("implementation review skill branches", () => {
 				);
 			}
 			expect(content).toContain("5x review corrections finish");
+			// Release conditions are restrictions, not accepted risk, and they
+			// survive into run completion.
+			expect(content).toContain("`accept_with_restriction`");
+			expect(content).toContain("It is not risk acceptance.");
+			expect(content).toContain("`operating_restrictions`");
+			// A decision never marks the phase reviewed.
+			expect(content).toContain(
+				"`closure_review` means the decision settled the gate",
+			);
 			expect(content).toContain(
 				"authorize → amend → assess → register → resume",
 			);
@@ -282,6 +316,9 @@ describe("implementation review skill branches", () => {
 			expect(content).toContain("IMPLEMENTATION_APPROVAL_REQUIRED");
 			expect(content).toContain("Never continue that failure as v1");
 			expect(content).toContain("harness_freshness");
+			expect(countOccurrences(content, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(
+				1,
+			);
 			expect(content).toContain("Delegation mode precedence");
 			expect(content).toContain("maxReviewIterations");
 			expect(content).toContain("--new-session");
@@ -289,6 +326,112 @@ describe("implementation review skill branches", () => {
 			expect(content).not.toContain("baselineAssessment");
 			expect(content).not.toContain("projectedEffort");
 		}
+	});
+
+	test("rendered author-next-phase prompt contains the authority paragraph once", () => {
+		const rendered = renderTemplate("author-next-phase", {
+			plan_path: "docs/development/plans/001-thing.md",
+			phase_number: "1",
+			user_notes: "",
+		});
+		const prompt = appendPlanReviewPromptContext({ prompt: rendered.prompt });
+		expect(countOccurrences(prompt, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(1);
+		expect(prompt).toContain("schema 0 plan");
+		expect(prompt).toContain(
+			"do not invalidate an authorized text-amendment span",
+		);
+	});
+
+	test("bundled workflow templates contain the authority paragraph once", () => {
+		for (const name of [
+			"author-generate-plan",
+			"author-next-phase",
+			"author-process-plan-review",
+			"author-process-impl-review",
+			"author-fix-quality",
+			"reviewer-plan",
+			"reviewer-plan-continued",
+			"reviewer-commit",
+			"reviewer-commit-continued",
+		]) {
+			expect(
+				countOccurrences(
+					getDefaultTemplateRaw(name),
+					PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
+				),
+			).toBe(1);
+		}
+	});
+
+	test("both reviewer-commit templates define boundary changes the same way", () => {
+		for (const name of ["reviewer-commit", "reviewer-commit-continued"]) {
+			const raw = getDefaultTemplateRaw(name);
+			expect(raw).toContain(
+				"that the correction would change beyond the approved plan",
+			);
+			expect(raw).toContain(
+				"A condition outside the code, such as release or deployment ordering, is not a boundary change",
+			);
+			expect(raw).toContain("operating restrictions");
+		}
+	});
+
+	test("reviewer-commit authority text follows the numbered instructions", () => {
+		for (const [name, lastStep] of [
+			["reviewer-commit", "\n4. "],
+			["reviewer-commit-continued", "\n5. "],
+		] as const) {
+			const raw = getDefaultTemplateRaw(name);
+			const listStart = raw.indexOf("\n1. ");
+			const last = raw.indexOf(lastStep);
+			expect(listStart).toBeGreaterThan(-1);
+			expect(last).toBeGreaterThan(listStart);
+			const numbered = raw.slice(listStart, last);
+			expect(numbered).not.toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
+			expect(raw.indexOf(PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBeGreaterThan(
+				last,
+			);
+		}
+	});
+
+	test("migration skill records operator confirmation and foundation only points at it", () => {
+		const migration = renderSkillByName(
+			"5x-plan-migration",
+			createRenderContext(true),
+		).content;
+		expect(migration).toContain("--confirm-exclusions");
+		expect(migration).toContain("verified_equivalent");
+		expect(migration).toContain(
+			"not treat a missing marker as migration eligibility",
+		);
+		expect(migration).toContain(
+			"Older CLIs fail closed by treating informational edits as raw drift.",
+		);
+		expect(migration).toContain(
+			"does not describe a reviewer snapshot, a `--snapshot` flag,",
+		);
+		expect(migration).toContain("or reviewer authority for migration.");
+		// Approved plans have a CLI path: prepare, record, checkpoint.
+		expect(migration).toContain("--prepare");
+		expect(migration).toContain(
+			"use raw `git commit`, or reopen a completed run",
+		);
+		expect(migration).toContain("A run lineage records one schema migration.");
+		// Amendment registration needs an execution run; an unbound approval re-reviews.
+		expect(migration).toContain(
+			"`5x review\n  implementation amend` needs an execution run and does not apply.",
+		);
+		expect(migration).not.toContain("recover-plan");
+		expect(countOccurrences(migration, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(
+			1,
+		);
+		const foundation = renderSkillByName(
+			"5x",
+			createRenderContext(true),
+		).content;
+		expect(foundation).toContain("5x-plan-migration");
+		expect(foundation).not.toContain("--confirm-exclusions");
+		expect(foundation).not.toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
 	});
 
 	test("plan skills require structured scope in every delegation mode", () => {
@@ -343,6 +486,15 @@ describe("implementation prompt context", () => {
 		expect(rendered).toContain("approved scope: W1");
 		expect(rendered).toContain("decision decision-waive");
 		expect(author).toContain("Implement only the admitted findings");
+		expect(rendered).toContain("### Operating restrictions");
+		expect(rendered).toContain(
+			"Apply predecessor migrations before deploying (phase 1, findings I9",
+		);
+		expect(rendered).toContain(
+			"Do not report the restriction itself as a defect.",
+		);
+		expect(author).toContain("I9 (restriction decision-restrict)");
+		expect(author).toContain("Operating restrictions stay in force.");
 		expect(author).toContain(
 			"P1.1 (Imported latency risk, decision decision-risk)",
 		);

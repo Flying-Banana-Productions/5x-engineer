@@ -21,6 +21,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -52,45 +56,12 @@ function ensureManagedStateDb(dir: string): void {
 }
 
 function setupProject(dir: string): void {
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 }
 
 interface CmdResult {
@@ -627,20 +598,7 @@ reviews = "docs/development/reviews"
 					"# Real\n\n## Phase 1: One\n\n- [ ] Task\n",
 				);
 
-				Bun.spawnSync(["git", "add", "-A"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "commit", "-m", "plans"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				commitAllSync(dir, "plans");
 
 				const result = await run5x(dir, ["plan", "list"]);
 				expect(result.exitCode).toBe(0);
@@ -708,20 +666,7 @@ describe("5x plan phases (integration)", () => {
 					"# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n- [ ] Task B\n",
 				);
 
-				Bun.spawnSync(["git", "add", "-A"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				commitAllSync(dir, "add plan");
 
 				// Create a fake worktree directory with the plan fully checked
 				const wtDir = join(dir, ".5x", "worktrees", "wt1");
@@ -835,20 +780,7 @@ describe("5x plan phases (integration)", () => {
 					"# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n",
 				);
 
-				Bun.spawnSync(["git", "add", "-A"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				commitAllSync(dir, "add plan");
 
 				// Create worktree dir but WITHOUT the plan file
 				const wtDir = join(dir, ".5x", "worktrees", "wt1");
@@ -902,20 +834,7 @@ describe("5x plan phases (integration)", () => {
 					"# Plan\n\n## Phase 1: Setup\n\n- [ ] Task A\n",
 				);
 
-				Bun.spawnSync(["git", "add", "-A"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "commit", "-m", "add plan"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				commitAllSync(dir, "add plan");
 
 				const { getDb } = await import("../../../src/db/connection.js");
 				const { runMigrations } = await import("../../../src/db/schema.js");
@@ -947,6 +866,127 @@ describe("5x plan phases (integration)", () => {
 			}
 		},
 		{ timeout: 15000 },
+	);
+
+	test(
+		"bound worktree run with a missing schema declaration exits PLAN_SCHEMA_INVALID",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const planDir = join(dir, "docs");
+				mkdirSync(planDir, { recursive: true });
+				const planPath = join(planDir, "plan.md");
+				const markdown = "# Plan\n\n## Phase 1: Setup\n\n- [ ] Task\n";
+				writeFileSync(planPath, markdown);
+				commitAll(dir, "add plan");
+
+				const wtDir = join(dir, ".5x", "worktrees", "wt-schema");
+				mkdirSync(join(wtDir, "docs"), { recursive: true });
+				writeFileSync(join(wtDir, "docs", "plan.md"), markdown);
+
+				const { getDb, _resetForTest } = await import(
+					"../../../src/db/connection.js"
+				);
+				const { runMigrations } = await import("../../../src/db/schema.js");
+				const { upsertPlan } = await import("../../../src/db/operations.js");
+				const { createRunV1 } = await import(
+					"../../../src/db/operations-v1.js"
+				);
+				const db = getDb(dir, ".5x/5x.db");
+				runMigrations(db);
+				upsertPlan(db, { planPath, worktreePath: wtDir });
+				createRunV1(db, { id: "run_schemawt01", planPath });
+				db.close();
+				_resetForTest();
+
+				const { createWorkingTreeRecordStore } = await import(
+					"../../../src/control-plane/record-fs.js"
+				);
+				const { RUN_RECORD_FORMAT_VERSION } = await import(
+					"../../../src/control-plane/record-types.js"
+				);
+				const { createReviewBudgetStore } = await import(
+					"../../../src/control-plane/review-budget-store.js"
+				);
+				const { DEFAULT_REVIEW_BUDGET_CONFIG } = await import(
+					"../../../src/review-budget/types.js"
+				);
+				const { hashPlanBytes } = await import(
+					"../../../src/review-governance/implementation-state.js"
+				);
+				const records = createWorkingTreeRecordStore({
+					recordsRoot: join(wtDir, "docs", "development", "runs"),
+					controlPlaneRoot: dir,
+				});
+				const origin = {
+					recorder: {
+						installation_id: "00000000-0000-4000-8000-000000000001",
+					},
+					performer: { kind: "system" as const, role: "cli" },
+				};
+				records.putRun({
+					id: "run_schemawt01",
+					plan_path: planPath,
+					config_json: null,
+					created_at: "2026-10-30 00:00:00",
+					sealed_at: null,
+					status: "active",
+					final_head_commit: null,
+					cli_version: "0.0.0",
+					format_version: RUN_RECORD_FORMAT_VERSION,
+					creator: origin.recorder,
+				});
+				createReviewBudgetStore(records).saveImplementationBinding(
+					{
+						kind: "implementation-binding",
+						version: 1,
+						id: "bind-1",
+						executionRunId: "run_schemawt01",
+						sourceRunId: "source",
+						sourceSnapshotId: "snap",
+						sourceBaselineId: "base",
+						approvedPlanCommit: "a".repeat(40),
+						approvedPlanHash: hashPlanBytes(markdown),
+						approvedPlanBytes: markdown,
+						b0: 2,
+						governingB: 2,
+						mode: "advisory",
+						thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+						ledger: {
+							estimateConfidence: "high",
+							workItems: [],
+							surface: {
+								subsystems: 1,
+								productionFiles: 1,
+								persistentOrExternalBoundaries: 0,
+							},
+						},
+						effectiveDecisions: [],
+						phaseMap: [{ id: "1", heading: "Phase 1: Setup" }],
+						debtTargets: [],
+						ledgerHash: "sha256:ledger",
+						decisionsHash: "sha256:decisions",
+						createdAt: "2026-10-30 00:00:00",
+						planSchema: 1,
+						governingHash: "sha256:governing",
+					},
+					origin,
+				);
+
+				const result = await run5x(dir, ["plan", "phases", planPath]);
+				const data = parseJson(result.stdout);
+				expect(data.ok).toBe(false);
+				const error = data.error as { code: string; message: string };
+				expect(error.code).toBe("PLAN_SCHEMA_INVALID");
+				expect(error.message).toContain("5x-plan-migration");
+				expect(error.message).toContain("not a legacy fallback");
+				expect(result.exitCode).not.toBe(0);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 30000 },
 	);
 });
 

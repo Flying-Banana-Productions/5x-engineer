@@ -32,6 +32,7 @@ describe("shared skill template loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
+			"5x-plan-migration",
 			"5x-config",
 		]);
 
@@ -45,7 +46,7 @@ describe("shared skill template loader", () => {
 
 	test("renderAllSkillTemplates(native=true) returns valid SkillMetadata[]", () => {
 		const skills = renderAllSkillTemplates(createRenderContext(true));
-		expect(skills.length).toBe(6);
+		expect(skills.length).toBe(7);
 		for (const skill of skills) {
 			expect(skill.name.length).toBeGreaterThan(0);
 			expect(skill.description.length).toBeGreaterThan(0);
@@ -55,7 +56,7 @@ describe("shared skill template loader", () => {
 
 	test("renderAllSkillTemplates(native=false) returns valid SkillMetadata[]", () => {
 		const skills = renderAllSkillTemplates(createRenderContext(false));
-		expect(skills.length).toBe(6);
+		expect(skills.length).toBe(7);
 		for (const skill of skills) {
 			expect(skill.name.length).toBeGreaterThan(0);
 			expect(skill.description.length).toBeGreaterThan(0);

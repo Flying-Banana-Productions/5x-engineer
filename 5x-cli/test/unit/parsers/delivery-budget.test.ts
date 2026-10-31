@@ -5,7 +5,9 @@ import {
 	parseDeliveryBudget,
 	rawDeliveryBudgetSection,
 } from "../../../src/parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../../../src/plan-schema/authority.js";
 import { DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE } from "../../../src/templates/default-artifacts.js";
+import { SCHEMA1_AUTHORITY_PLAN } from "../../helpers/schema1-authority-fixture.js";
 
 const CANONICAL = `# Plan
 
@@ -432,5 +434,26 @@ ${CANONICAL.replace(
 		);
 		expect(result.ok).toBe(true);
 		if (result.ok) expect(result.value.surface.subsystems).toBe(4);
+	});
+
+	test("schema 1 ignores a budget table outside the contract or inside a note", () => {
+		const raw = parseDeliveryBudget(SCHEMA1_AUTHORITY_PLAN);
+		expect(raw.ok).toBe(true);
+		if (raw.ok)
+			expect(raw.value.workItems.map((item) => item.id)).toEqual(["W9"]);
+		const loaded = readAuthoritativeBudget(SCHEMA1_AUTHORITY_PLAN, "file");
+		expect(loaded.ok).toBe(true);
+		if (!loaded.ok || !loaded.parsed.ok) return;
+		expect(loaded.parsed.value.estimateConfidence).toBe("medium");
+		expect(loaded.parsed.value.workItems.map((item) => item.id)).toEqual([
+			"W1",
+		]);
+		expect(loaded.parsed.value.workItems[0]?.debtClaim).toMatchObject({
+			debtClaimId: "DC0",
+			coupling: "intrinsic",
+			targetPhase: "phase-1",
+			before: "two readers",
+			after: "one projection",
+		});
 	});
 });

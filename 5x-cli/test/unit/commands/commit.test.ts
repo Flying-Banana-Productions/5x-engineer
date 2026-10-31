@@ -37,6 +37,10 @@ import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
 import { subprocess } from "../../../src/utils/subprocess.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Setup helpers
@@ -57,27 +61,7 @@ function setup(): TestContext {
 	const tmp = mkdtempSync(join(tmpdir(), "5x-commit-test-"));
 
 	// Init git repo
-	Bun.spawnSync(["git", "init"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
+	copyInitializedRepo(tmp);
 
 	// Write control-plane files and plan
 	writeFileSync(join(tmp, ".gitignore"), ".5x/\n5x.toml.local\n");
@@ -88,20 +72,7 @@ function setup(): TestContext {
 	writeFileSync(planPath, "# Plan\n");
 
 	// Initial commit (includes plan)
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "initial"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
+	commitAllSync(tmp, "initial");
 
 	// Open non-singleton DB
 	const stateDir = join(tmp, ".5x");

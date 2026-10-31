@@ -14,7 +14,7 @@ import {
 	getRunV1,
 	recordStep,
 } from "../db/operations-v1.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	isImplementationScopeClass,
 	type ReviewerVerdict,
@@ -63,6 +63,7 @@ import {
 import type { EffectiveExecution } from "../review-governance/implementation-amendment.js";
 import {
 	detectPlanDrift,
+	effectivePlanSchema,
 	listCreditReconciliations,
 	listRecordedImplementationReviews,
 } from "../review-governance/implementation-state.js";
@@ -318,6 +319,16 @@ function gateCausesFor(input: {
 			causes.push({ kind: "plan_amendment", ...identity });
 			continue;
 		}
+		// A boundary-changing correction is a plan or scope decision (see
+		// SOURCE_OF_CORRECTION_PRECEDENCE), so the gate offers the amendment path.
+		if (
+			item.scopeClass === "implementation_defect" &&
+			item.boundaryChanges !== undefined &&
+			item.boundaryChanges.length > 0
+		) {
+			causes.push({ kind: "plan_amendment", ...identity });
+			continue;
+		}
 		if (
 			item.scopeClass === "scope_expansion" ||
 			item.action === "human_required" ||
@@ -373,7 +384,12 @@ export function readEffectiveImplementationReviewAnchor(input: {
 				: "The effective approved revision could not be read.",
 		};
 	}
-	const parsed = parseDeliveryBudget(folded.approvedPlanBytes);
+	// Schema 1 reads the ledger from the governing projection.
+	const read = readAuthoritativeBudget(
+		folded.approvedPlanBytes,
+		folded.planSchema,
+	);
+	const parsed = read.ok ? read.parsed : { ok: false as const };
 	if (
 		!parsed.ok &&
 		folded.approvedPlanBytes !== input.binding.approvedPlanBytes
@@ -596,6 +612,7 @@ export async function composeImplementationReviewerRecord(input: {
 		approvedPlanBytes: anchor.approvedPlanBytes,
 		approvedPlanHash: anchor.approvedPlanHash,
 		amendments: [],
+		...effectivePlanSchema(folded),
 		hasRun: true,
 		priorReviewCount: closure.priorReviewCount,
 		sessionId: input.sessionId,
@@ -665,6 +682,7 @@ export async function composeImplementationReviewerRecord(input: {
 		approvedPlanHash: anchor.approvedPlanHash,
 		amendments: [],
 		currentPlanBytes: anchor.approvedPlanBytes,
+		...effectivePlanSchema(folded),
 	});
 	let exemptionAuthorized = reviewed.governance.exemptionAuthorized;
 	let textGuard: PendingImplementationObservation["textGuard"];
@@ -676,6 +694,7 @@ export async function composeImplementationReviewerRecord(input: {
 			anchorCommit: parent?.afterCommit ?? binding.approvedPlanCommit,
 			parentLineageId: parent?.id ?? null,
 			allowedSpans: reviewed.spans,
+			recordedSchema: folded.planSchema,
 		});
 		if (!preparedGuard.ok) {
 			exemptionAuthorized = false;
@@ -734,7 +753,10 @@ export async function composeImplementationReviewerRecord(input: {
 	}
 	const planAmendments = planAmendmentCount({
 		observations: priorObservations,
-		amendments: textAmendments,
+		amendments: textAmendments.filter(
+			(entry): entry is ImplementationPlanAmendmentPayload =>
+				entry.kind !== "plan-schema-migration",
+		),
 		current: gateCauses,
 	});
 	const activity = deriveImplementationActivityTelemetry({

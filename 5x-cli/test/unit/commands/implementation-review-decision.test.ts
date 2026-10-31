@@ -6,11 +6,13 @@ import {
 import {
 	createMemoryPromptStore,
 	recordedEnvelope,
+	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
 import { CliError } from "../../../src/output.js";
 import type { ImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { encodeImplementationReviewObservationPayload } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import { readImplementationCodeClosure } from "../../../src/review-governance/implementation.js";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import {
@@ -88,8 +90,13 @@ function observation(
 
 function seed(
 	mode: "advisory" | "enforced" = "enforced",
-	planBytes = "# Plan\n",
+	options: {
+		reviewerKey?: string;
+		observation?: Partial<ImplementationReviewObservationPayload>;
+		planBytes?: string;
+	} = {},
 ) {
+	const planBytes = options.planBytes ?? "# Plan\n";
 	const ctx = makeBudgetContext({ mode });
 	ctx.store.saveImplementationBinding(
 		{
@@ -144,11 +151,11 @@ function seed(
 		},
 		TEST_ORIGIN,
 	);
-	const payload = observation();
+	const payload = observation(options.observation);
 	ctx.recordStore.append({
 		runId: RUN,
 		stream: "steps",
-		idempotencyKey: "reviewer",
+		idempotencyKey: options.reviewerKey ?? "reviewer",
 		payload: {
 			step_name: "reviewer:impl",
 			phase: "1",
@@ -177,6 +184,153 @@ function seed(
 }
 
 describe("implementation review decide", () => {
+	test("a restriction settles closure for its finding until a re-raise", async () => {
+		const finding = {
+			id: "F1",
+			title: "Migration ordering",
+			action: "human_required" as const,
+			reason: "Deploy order matters",
+			priority: "P1" as const,
+			scopeClass: "implementation_defect" as const,
+			planWorkItemIds: ["W1"],
+		};
+		const keyFor = (iteration: number) =>
+			stepIdempotencyKey({
+				runId: RUN,
+				stepName: "reviewer:impl",
+				phase: "1",
+				iteration,
+			});
+		const { ctx, promptStore } = seed("enforced", {
+			reviewerKey: keyFor(1),
+			observation: {
+				originalVerdict: { readiness: "not_ready", items: [finding] },
+				gateCauses: [
+					{
+						kind: "plan_amendment",
+						findingId: "F1",
+						fingerprint: "sha256:finding-1",
+					},
+				],
+			},
+		});
+		try {
+			expect(
+				readImplementationCodeClosure(ctx.recordStore, RUN, "1")
+					.priorCodeFindings,
+			).toEqual([{ id: "F1" }]);
+			const shown = await showReviewGate(
+				RUN,
+				{ context: ctx, promptStore },
+				{ phase: "1" },
+			);
+			if (!shown.open) throw new Error("expected gate");
+			const restriction = "Apply predecessor migrations before deploying";
+			const decided = await submitReviewDecision(
+				{
+					runId: RUN,
+					gateId: shown.gate.gateId,
+					phase: "1",
+					payload: {
+						choice: "accept_with_restriction",
+						rationale: "Release ordering",
+						restriction,
+					},
+					findingIds: ["F1"],
+				},
+				{ context: ctx, promptStore },
+			);
+			expect(decided.decision).toMatchObject({ restriction });
+			const settled = readImplementationCodeClosure(ctx.recordStore, RUN, "1");
+			expect(settled.priorCodeFindings).toEqual([]);
+			expect(settled.priorCodeDecisions).toContainEqual({
+				decisionId: decided.decision.decisionId,
+				findingIds: ["F1"],
+				evidence: [restriction],
+			});
+			// A later review re-raises F1 against the restriction: closure
+			// requires its outcome again until a new decision settles it.
+			const reRaise = observation({
+				id: "obs-2",
+				stepKey: { stepName: "reviewer:impl", phase: "1", iteration: 2 },
+				originalVerdict: {
+					readiness: "not_ready",
+					items: [
+						{
+							...finding,
+							priorDecisionId: decided.decision.decisionId,
+							newEvidence: "Production already applied a later migration",
+						},
+					],
+				},
+			});
+			ctx.recordStore.append({
+				runId: RUN,
+				stream: "steps",
+				idempotencyKey: keyFor(2),
+				payload: {
+					step_name: "reviewer:impl",
+					phase: "1",
+					iteration: 2,
+					result_json: {},
+					head_commit: null,
+					patch_id: null,
+					diff_summary: null,
+					duration_ms: null,
+					tokens_in: null,
+					tokens_out: null,
+					cost_usd: null,
+					model: null,
+				},
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			ctx.recordStore.append({
+				runId: RUN,
+				stream: "budget",
+				idempotencyKey: `budget:implementation-review:${reRaise.id}`,
+				payload: encodeImplementationReviewObservationPayload(reRaise),
+				...recordedEnvelope(TEST_ORIGIN),
+			});
+			expect(
+				readImplementationCodeClosure(ctx.recordStore, RUN, "1")
+					.priorCodeFindings,
+			).toEqual([{ id: "F1" }]);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("a restriction is rejected on any other implementation choice", async () => {
+		const { ctx, promptStore } = seed();
+		try {
+			const shown = await showReviewGate(
+				RUN,
+				{ context: ctx, promptStore },
+				{ phase: "1" },
+			);
+			if (!shown.open) throw new Error("expected gate");
+			await expect(
+				submitReviewDecision(
+					{
+						runId: RUN,
+						gateId: shown.gate.gateId,
+						phase: "1",
+						payload: {
+							choice: "defer_accept_risk",
+							rationale: "Accept the named risk",
+							evidence: ["operator evidence"],
+							restriction: "not allowed here",
+						},
+						findingIds: ["F1"],
+					},
+					{ context: ctx, promptStore },
+				),
+			).rejects.toMatchObject({ code: "REVIEW_DECISION_INVALID" });
+		} finally {
+			ctx.db.close();
+		}
+	});
+
 	test("uncovered inherited burden offers an auditable plan revision without authorizing completion", async () => {
 		const { ctx, promptStore } = seed();
 		try {
@@ -640,7 +794,7 @@ describe("implementation review decide", () => {
 				/### Debt Claims[\s\S]*?### Surface Snapshot/,
 				"### Surface Snapshot",
 			);
-		const dropped = seed("enforced", withdrawn);
+		const dropped = seed("enforced", { planBytes: withdrawn });
 		try {
 			const shown = await showReviewGate(
 				RUN,
@@ -673,7 +827,7 @@ describe("implementation review decide", () => {
 			dropped.ctx.db.close();
 		}
 
-		const { ctx, promptStore } = seed("enforced", reduced);
+		const { ctx, promptStore } = seed("enforced", { planBytes: reduced });
 		try {
 			const shown = await showReviewGate(
 				RUN,

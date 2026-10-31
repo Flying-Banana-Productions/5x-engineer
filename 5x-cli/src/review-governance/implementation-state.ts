@@ -23,8 +23,17 @@ import type {
 } from "../control-plane/review-budget-store.js";
 import { gitShowFile, gitShowFileBytes } from "../git.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
-import { parsePlan } from "../parsers/plan.js";
 import { planSlugFromPath, relativePathUnder } from "../paths.js";
+import {
+	authoritativePlan,
+	readAuthoritativeBudget,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
+import {
+	type ExpectedPlanSchema,
+	loadPlanDocument,
+	type PlanSchema,
+} from "../plan-schema/document.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import {
@@ -35,11 +44,13 @@ import {
 	type ImplementationCorrectionAttemptPayload,
 	type ImplementationCreditReconciliationPayload,
 	type ImplementationDebtTarget,
+	type ImplementationLineagePayload,
 	type ImplementationPhaseMapping,
 	type ImplementationPlanAmendmentPayload,
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationTextAmendmentPayload,
+	type PlanSchemaMigrationPayload,
 } from "../review-budget/record-lines.js";
 import type {
 	DebtClaimEvidence,
@@ -68,6 +79,7 @@ import {
 	type ReviewDecisionPayload,
 	validateReviewDecision,
 } from "./decisions.js";
+import type { EffectiveExecution } from "./implementation-amendment.js";
 import {
 	evaluateSupersedingLedger,
 	normalizeCheckboxMarkers,
@@ -189,19 +201,136 @@ export interface PlanDriftResult {
 	reason?: string;
 }
 
+/**
+ * A lineage record written by schema migration. Replay switches authorized
+ * bytes to schema 1 only when the target is valid schema 1. An invalid
+ * record does not install the migration target.
+ */
+export interface ReplayablePlanSchemaMigration {
+	kind: "plan-schema-migration";
+	version: 1;
+	id: string;
+	fromSchema: 0;
+	toSchema: 1;
+	parentLineageId: string | null;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	authorizedPlanBytes: string;
+	governingHash: string;
+}
+
+export type ReplayableLineageRecord =
+	| ImplementationPlanAmendmentPayload
+	| ReplayablePlanSchemaMigration;
+
+const SCHEMA0_DRIFT_REASON =
+	"Plan bytes differ from the approved text and its verified amendment lineage, ignoring checkbox state.";
+const SCHEMA0_CHAIN_REASON =
+	"Plan bytes differ from the approved text. The amendment chain is unverified or malformed and does not authorize drift.";
+
+const PLAN_AMENDMENT_HELP =
+	"5x review implementation amend after a scoped authorize_amendment and an exact-hash amendmentAssessment. Rationale prose is not scope. 5x review implementation bind does not repair drift. Older CLIs must not execute an amended run.";
+
+export const PLAN_DRIFT_RECOVERY_HELP = `${PLAN_AMENDMENT_HELP} Legacy schema 0 behavior remains supported. 5x review migrate-schema --help and the 5x-plan-migration skill can record a schema transition.`;
+
+export const PLAN_SCHEMA1_DRIFT_RECOVERY_HELP = `Governing schema 1 edits need an approved amendment: ${PLAN_AMENDMENT_HELP} Missing schema 1 markers are malformed input, not a legacy fallback. See 5x review migrate-schema --help and the 5x-plan-migration skill. Schema 1 runs and migrated runs need a CLI that records \`planSchema\`.`;
+
+export function planDriftRecoveryHelp(
+	recordedSchema: 0 | 1,
+	_reason?: string,
+): string {
+	if (recordedSchema === 0) return PLAN_DRIFT_RECOVERY_HELP;
+	return PLAN_SCHEMA1_DRIFT_RECOVERY_HELP;
+}
+
 export function detectPlanDrift(input: {
 	approvedPlanBytes: string;
 	approvedPlanHash: string;
-	amendments: readonly ImplementationPlanAmendmentPayload[];
+	amendments: readonly ReplayableLineageRecord[];
 	currentPlanBytes: string;
+	recordedSchema: 0 | 1;
+	governingHash?: string;
+	/** Bytes `governingHash` was recorded for, when lineage has since moved on. */
+	governingAnchorBytes?: string;
 }): PlanDriftResult {
 	const chain = replayTextAmendments(input);
 	const authorizedBytes = chain.chainValid
 		? chain.authorizedBytes
 		: input.approvedPlanBytes;
+	if (input.recordedSchema === 0) {
+		const drifted =
+			normalizeCheckboxState(input.currentPlanBytes) !==
+			normalizeCheckboxState(authorizedBytes);
+		if (!drifted) {
+			return { drifted: false, chainValid: chain.chainValid, authorizedBytes };
+		}
+		return {
+			drifted: true,
+			chainValid: chain.chainValid,
+			authorizedBytes,
+			reason: chain.chainValid ? SCHEMA0_DRIFT_REASON : SCHEMA0_CHAIN_REASON,
+		};
+	}
+	const governingHash =
+		input.governingHash ??
+		(chain.chainValid ? chain.migrationGoverningHash : undefined);
+	const approved = loadPlanDocument(
+		input.governingAnchorBytes ?? input.approvedPlanBytes,
+		1,
+	);
+	if (approved.ok) {
+		if (
+			!governingHash ||
+			governingHash !== hashPlanBytes(approved.document.comparisonBytes)
+		) {
+			return {
+				drifted: true,
+				chainValid: chain.chainValid,
+				authorizedBytes,
+				reason:
+					"Recorded governingHash does not match the approved document comparison hash. This is not a legacy fallback.",
+			};
+		}
+	} else if (!(chain.chainValid && chain.schema === 1)) {
+		return {
+			drifted: true,
+			chainValid: chain.chainValid,
+			authorizedBytes,
+			reason: schemaDriftReason(approved),
+		};
+	} else if (
+		!governingHash ||
+		!chain.migrationGoverningHash ||
+		governingHash !== chain.migrationGoverningHash
+	) {
+		return {
+			drifted: true,
+			chainValid: chain.chainValid,
+			authorizedBytes,
+			reason:
+				"Recorded governingHash does not match the migrated document comparison hash. This is not a legacy fallback.",
+		};
+	}
+	const current = loadPlanDocument(input.currentPlanBytes, 1);
+	if (!current.ok) {
+		return {
+			drifted: true,
+			chainValid: chain.chainValid,
+			authorizedBytes,
+			reason: schemaDriftReason(current),
+		};
+	}
+	const authorized = loadPlanDocument(authorizedBytes, 1);
+	if (!authorized.ok) {
+		return {
+			drifted: true,
+			chainValid: chain.chainValid,
+			authorizedBytes,
+			reason: schemaDriftReason(authorized),
+		};
+	}
 	const drifted =
-		normalizeCheckboxState(input.currentPlanBytes) !==
-		normalizeCheckboxState(authorizedBytes);
+		current.document.comparisonBytes !== authorized.document.comparisonBytes;
 	if (!drifted) {
 		return { drifted: false, chainValid: chain.chainValid, authorizedBytes };
 	}
@@ -210,27 +339,78 @@ export function detectPlanDrift(input: {
 		chainValid: chain.chainValid,
 		authorizedBytes,
 		reason: chain.chainValid
-			? "Plan bytes differ from the approved text and its verified amendment lineage, ignoring checkbox state."
-			: "Plan bytes differ from the approved text. The amendment chain is unverified or malformed and does not authorize drift.",
+			? "Governing plan bytes differ from the approved projection and its verified amendment lineage. This is not a legacy fallback."
+			: "Governing plan bytes differ from the approved projection. The amendment chain is unverified or malformed and does not authorize drift. This is not a legacy fallback.",
 	};
+}
+
+function schemaDriftReason(
+	loaded: Extract<ReturnType<typeof loadPlanDocument>, { ok: false }>,
+): string {
+	const base = loaded.message.includes("not a legacy fallback")
+		? `${loaded.code}: ${loaded.message}`
+		: `${loaded.code}: ${loaded.message} This is not a legacy fallback.`;
+	if (
+		base.includes("5x review migrate-schema --help") &&
+		base.includes("5x-plan-migration")
+	) {
+		return base;
+	}
+	return `${base} See 5x review migrate-schema --help and the 5x-plan-migration skill.`;
+}
+
+interface ReplayResult {
+	chainValid: boolean;
+	authorizedBytes: string;
+	authorizedHash: string;
+	schema: PlanSchema;
+	migrationGoverningHash?: string;
 }
 
 function replayTextAmendments(input: {
 	approvedPlanBytes: string;
 	approvedPlanHash: string;
-	amendments: readonly ImplementationPlanAmendmentPayload[];
-}): { chainValid: boolean; authorizedBytes: string; authorizedHash: string } {
+	amendments: readonly ReplayableLineageRecord[];
+}): ReplayResult {
+	const invalid = (): ReplayResult => ({
+		chainValid: false,
+		authorizedBytes: input.approvedPlanBytes,
+		authorizedHash: input.approvedPlanHash,
+		schema: 0,
+	});
 	if (hashPlanBytes(input.approvedPlanBytes) !== input.approvedPlanHash) {
-		return {
-			chainValid: false,
-			authorizedBytes: input.approvedPlanBytes,
-			authorizedHash: input.approvedPlanHash,
-		};
+		return invalid();
 	}
 	let authorizedBytes = input.approvedPlanBytes;
 	let authorizedHash = input.approvedPlanHash;
 	let parent: string | null = null;
+	let schema: PlanSchema = 0;
+	let migrationGoverningHash: string | undefined;
+	let sawMigration = false;
 	for (const amendment of input.amendments) {
+		if (amendment.kind === "plan-schema-migration") {
+			if (sawMigration) return invalid();
+			const afterHash = hashPlanBytes(amendment.authorizedPlanBytes);
+			const target = loadPlanDocument(amendment.authorizedPlanBytes, 1);
+			const valid =
+				amendment.version === 1 &&
+				amendment.fromSchema === 0 &&
+				amendment.toSchema === 1 &&
+				amendment.parentLineageId === parent &&
+				amendment.beforeBlobHash === authorizedHash &&
+				amendment.afterBlobHash === afterHash &&
+				target.ok &&
+				hashPlanBytes(target.document.comparisonBytes) ===
+					amendment.governingHash;
+			if (!valid) return invalid();
+			authorizedBytes = amendment.authorizedPlanBytes;
+			authorizedHash = afterHash;
+			parent = amendment.id;
+			schema = 1;
+			migrationGoverningHash = amendment.governingHash;
+			sawMigration = true;
+			continue;
+		}
 		const afterHash = hashPlanBytes(amendment.authorizedPlanBytes);
 		const valid =
 			amendment.version === IMPLEMENTATION_STATE_VERSION &&
@@ -239,18 +419,109 @@ function replayTextAmendments(input: {
 			amendment.afterBlobHash === afterHash &&
 			amendment.beforeCommit.length > 0 &&
 			amendment.afterCommit.length > 0;
-		if (!valid) {
-			return {
-				chainValid: false,
-				authorizedBytes: input.approvedPlanBytes,
-				authorizedHash: input.approvedPlanHash,
-			};
-		}
+		if (!valid) return invalid();
 		authorizedBytes = amendment.authorizedPlanBytes;
 		authorizedHash = afterHash;
 		parent = amendment.id;
 	}
-	return { chainValid: true, authorizedBytes, authorizedHash };
+	return {
+		chainValid: true,
+		authorizedBytes,
+		authorizedHash,
+		schema,
+		...(migrationGoverningHash ? { migrationGoverningHash } : {}),
+	};
+}
+
+/** Binding schema wins. Otherwise a valid replayed migration selects schema 1. */
+export function resolveRecordedPlanSchema(input: {
+	planSchema?: 0 | 1;
+	approvedPlanBytes: string;
+	approvedPlanHash: string;
+	amendments: readonly ReplayableLineageRecord[];
+}): 0 | 1 {
+	if (input.planSchema === 0 || input.planSchema === 1) return input.planSchema;
+	const chain = replayTextAmendments(input);
+	return chain.chainValid && chain.schema === 1 ? 1 : 0;
+}
+
+export function recordedPlanSchemaFromBinding(
+	binding: ImplementationBindingPayload,
+	amendments: readonly ReplayableLineageRecord[],
+): { recordedSchema: 0 | 1; governingHash?: string } {
+	const recordedSchema = resolveRecordedPlanSchema({
+		planSchema: binding.planSchema,
+		approvedPlanBytes: binding.approvedPlanBytes,
+		approvedPlanHash: binding.approvedPlanHash,
+		amendments,
+	});
+	const chain = replayTextAmendments({
+		approvedPlanBytes: binding.approvedPlanBytes,
+		approvedPlanHash: binding.approvedPlanHash,
+		amendments,
+	});
+	const governingHash =
+		binding.governingHash ??
+		(chain.chainValid ? chain.migrationGoverningHash : undefined);
+	return {
+		recordedSchema,
+		...(governingHash ? { governingHash } : {}),
+	};
+}
+
+/**
+ * Drift inputs from the fold. The governing hash stays checked against the
+ * bytes it was recorded for; later lineage only moves the authorized anchor.
+ */
+export function effectivePlanSchema(folded: EffectiveExecution): {
+	recordedSchema: 0 | 1;
+	governingHash?: string;
+	governingAnchorBytes?: string;
+} {
+	return {
+		recordedSchema: folded.planSchema,
+		...(folded.governingHash === undefined
+			? {}
+			: { governingHash: folded.governingHash }),
+		...(folded.governingAnchorBytes === undefined
+			? {}
+			: { governingAnchorBytes: folded.governingAnchorBytes }),
+	};
+}
+
+/** No binding means file mode. A binding uses its recorded schema. */
+export function expectedSchemaForStore(
+	store: ReviewBudgetStore,
+	runId: string,
+): ExpectedPlanSchema {
+	const binding = readImplementationBinding(store, runId);
+	if (!binding) return "file";
+	const folded = store.readEffectiveImplementationRevision(runId);
+	if (folded?.ok) return folded.planSchema;
+	const amendments = store.listImplementationTextAmendments(runId, binding.id);
+	return resolveRecordedPlanSchema({
+		planSchema: binding.planSchema,
+		approvedPlanBytes: binding.approvedPlanBytes,
+		approvedPlanHash: binding.approvedPlanHash,
+		amendments,
+	});
+}
+
+/** Binding decode and store failures stay typed. Absence is not an error. */
+export function describeBindingReadError(error: unknown): {
+	code: string;
+	message: string;
+} {
+	if (error instanceof RecordStoreError) {
+		return { code: error.code, message: error.message };
+	}
+	return {
+		code: "IMPLEMENTATION_BINDING_UNREADABLE",
+		message:
+			error instanceof Error
+				? error.message
+				: "Implementation binding could not be read",
+	};
 }
 
 export type ImplementationAdmissionResult =
@@ -388,9 +659,7 @@ function loadAmendments(
 	store: ReviewBudgetStore,
 	runId: string,
 	bindingId: string,
-):
-	| { ok: true; amendments: ImplementationPlanAmendmentPayload[] }
-	| { ok: false } {
+): { ok: true; amendments: ImplementationLineagePayload[] } | { ok: false } {
 	try {
 		return {
 			ok: true,
@@ -466,7 +735,17 @@ export async function ensureImplementationAdmission(input: {
 			: { status: "not_applicable" };
 	}
 
-	const parsed = parseDeliveryBudget(input.planMarkdown);
+	const budgetRead = readAuthoritativeBudget(input.planMarkdown, "file");
+	if (!budgetRead.ok) {
+		return {
+			status: "error",
+			code: budgetRead.code,
+			message: budgetRead.message.includes("not a legacy fallback")
+				? budgetRead.message
+				: `${budgetRead.message} This is not a legacy fallback.`,
+		};
+	}
+	const parsed = budgetRead.parsed;
 	if (!parsed.ok && parsed.code !== "BUDGET_SECTION_MISSING") {
 		return {
 			status: "error",
@@ -639,6 +918,12 @@ async function admitExistingBinding(
 	const amendments = folded?.ok
 		? { ok: true as const, amendments: [] }
 		: loadAmendments(input.store, input.executionRunId, binding.id);
+	const recorded = folded?.ok
+		? effectivePlanSchema(folded)
+		: recordedPlanSchemaFromBinding(
+				binding,
+				amendments.ok ? amendments.amendments : [],
+			);
 	const drift = detectPlanDrift({
 		approvedPlanBytes: folded?.ok
 			? folded.approvedPlanBytes
@@ -648,6 +933,7 @@ async function admitExistingBinding(
 			: binding.approvedPlanHash,
 		amendments: amendments.ok ? amendments.amendments : [],
 		currentPlanBytes: input.planMarkdown,
+		...recorded,
 	});
 	if (!amendments.ok || drift.drifted) {
 		return {
@@ -659,8 +945,7 @@ async function admitExistingBinding(
 			detail: {
 				bindingId: binding.id,
 				chainValid: amendments.ok && drift.chainValid,
-				amendmentHelp:
-					"5x review implementation amend after a scoped authorize_amendment and an exact-hash amendmentAssessment. Rationale prose is not scope. 5x review implementation bind does not repair drift. Older CLIs must not execute an amended run.",
+				amendmentHelp: planDriftRecoveryHelp(recorded.recordedSchema),
 			},
 		};
 	}
@@ -1042,6 +1327,308 @@ function stepPayload(payload: unknown): StepRecordPayload | null {
 	return value as StepRecordPayload;
 }
 
+export interface SchemaMigrationSubject {
+	kind: "execution" | "source";
+	runId: string;
+	bindingId: string | null;
+	bindingPlanSchema?: 0 | 1;
+	sourceBytes: string;
+	beforeBlobHash: string;
+	beforeCommit: string;
+	priorApprovalCommit: string;
+	parentLineageId: string | null;
+	ledger: ParsedDeliveryBudget;
+	migrations: PlanSchemaMigrationPayload[];
+}
+
+function preparedMigrationHint(runId: string): string {
+	return `Prepare the schema 1 target with 5x review migrate-schema --run ${runId} --mode equivalent|selective --prepare --dry-run, then follow the 5x-plan-migration skill.`;
+}
+
+/** Null when this plan file has no binding and no completed approval. */
+export function planFileGovernedReason(input: {
+	recordStore: RecordStore;
+	store: ReviewBudgetStore;
+	planPath: string;
+}): string | null {
+	const slug = planSlugFromPath(input.planPath);
+	const runs = input.recordStore
+		.listRuns({ planSlug: slug })
+		.filter((run) => planPathsIdentifySamePlan(run.plan_path, input.planPath));
+	for (const run of runs) {
+		let binding: ImplementationBindingPayload | null = null;
+		try {
+			binding = input.store.getImplementationBinding(run.id);
+		} catch (error) {
+			if (!isMissingRun(error)) {
+				return `Run ${run.id} has an unreadable implementation binding. Use 5x review migrate-schema --help and the 5x-plan-migration skill for a recorded transition.`;
+			}
+		}
+		if (binding) {
+			return `Plan ${input.planPath} already has implementation binding ${binding.id} on run ${run.id}. ${preparedMigrationHint(run.id)}`;
+		}
+		const assessed = assessApprovedSource({
+			recordStore: input.recordStore,
+			store: input.store,
+			sourceRunId: run.id,
+			planPath: run.plan_path,
+		});
+		if (assessed.status === "error") {
+			return `${assessed.message} Use 5x review migrate-schema --help and the 5x-plan-migration skill for a recorded transition.`;
+		}
+		if (assessed.approval) {
+			return `Plan ${input.planPath} has a completed plan-review approval on run ${run.id}. ${preparedMigrationHint(run.id)}`;
+		}
+	}
+	return null;
+}
+
+/**
+ * Bound execution, or an approved plan-review with no binding on this run.
+ * Source bytes are the pre-migration authorized lineage.
+ */
+export async function readSchemaMigrationSubject(input: {
+	store: ReviewBudgetStore;
+	recordStore: RecordStore;
+	runId: string;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| { ok: true; subject: SchemaMigrationSubject }
+	| { ok: false; code: string; message: string }
+> {
+	const summary = input.recordStore.getRun(input.runId);
+	if (!summary) {
+		return {
+			ok: false,
+			code: "RUN_NOT_FOUND",
+			message: `Run ${input.runId} was not found. Use 5x plan migrate for an unapproved plan file.`,
+		};
+	}
+	const binding = readBinding(input.store, input.runId);
+	if (binding.status === "error") {
+		return { ok: false, code: binding.code, message: binding.message };
+	}
+	if (binding.status === "ok") {
+		const lineage = input.store.listImplementationTextAmendments(
+			input.runId,
+			binding.binding.id,
+		);
+		const semantic = input.store.listImplementationSemanticAmendments(
+			input.runId,
+			binding.binding.id,
+		);
+		const recorded = lineage.find(
+			(entry) => entry.kind === "plan-schema-migration",
+		);
+		// The fold replays every lineage kind, including semantic amendments.
+		// A recorded migration keeps the subject it was proposed against.
+		const folded = recorded
+			? null
+			: input.store.readEffectiveImplementationRevision(input.runId);
+		if (folded && !folded.ok) {
+			return {
+				ok: false,
+				code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
+				message: `Refusing to migrate an unverified plan lineage. ${folded.diagnostic.message}`,
+			};
+		}
+		const parentLineageId = recorded
+			? recorded.parentLineageId
+			: (folded?.lineageParentId ?? null);
+		const beforeBlobHash = recorded
+			? recorded.beforeBlobHash
+			: (folded?.approvedPlanHash ?? binding.binding.approvedPlanHash);
+		const parent = [...lineage, ...semantic].find(
+			(entry) => entry.id === parentLineageId,
+		);
+		const sourceBytes = [
+			binding.binding.approvedPlanBytes,
+			...lineage.map((entry) => entry.authorizedPlanBytes),
+			...semantic.map((entry) => entry.approvedPlanBytes),
+		].find((bytes) => hashPlanBytes(bytes) === beforeBlobHash);
+		if (sourceBytes === undefined || (parentLineageId !== null && !parent)) {
+			return {
+				ok: false,
+				code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
+				message: "Refusing to migrate an unverified plan lineage.",
+			};
+		}
+		let ledger = binding.binding.ledger;
+		if (sourceBytes !== binding.binding.approvedPlanBytes) {
+			const parsed = parseDeliveryBudget(sourceBytes);
+			if (!parsed.ok) {
+				return {
+					ok: false,
+					code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
+					message: `The effective approved ledger could not be parsed. ${parsed.message}`,
+				};
+			}
+			ledger = parsed.value;
+		}
+		return {
+			ok: true,
+			subject: {
+				kind: "execution",
+				runId: input.runId,
+				bindingId: binding.binding.id,
+				...(binding.binding.planSchema !== undefined
+					? { bindingPlanSchema: binding.binding.planSchema }
+					: {}),
+				sourceBytes,
+				beforeBlobHash,
+				beforeCommit: recorded
+					? recorded.beforeCommit
+					: (parent?.afterCommit ?? binding.binding.approvedPlanCommit),
+				priorApprovalCommit: binding.binding.approvedPlanCommit,
+				parentLineageId,
+				ledger,
+				migrations: input.store.listPlanSchemaMigrations(input.runId),
+			},
+		};
+	}
+	const assessed = assessApprovedSource({
+		recordStore: input.recordStore,
+		store: input.store,
+		sourceRunId: input.runId,
+		planPath: summary.plan_path,
+	});
+	if (assessed.status === "error") {
+		return { ok: false, code: assessed.code, message: assessed.message };
+	}
+	if (!assessed.approval) {
+		return {
+			ok: false,
+			code: "PLAN_MIGRATION_UNAPPROVED",
+			message: `${assessed.refusal ?? "This run is not a bound execution or an approved plan review."} Use 5x plan migrate for an unapproved working-tree file.`,
+		};
+	}
+	const sourceBytes = await input.readPlanAtCommit(
+		assessed.approval.approvedCommit,
+	);
+	if (sourceBytes === null) {
+		return {
+			ok: false,
+			code: "IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
+			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
+		};
+	}
+	const migrations = input.store.listPlanSchemaMigrations(input.runId);
+	return {
+		ok: true,
+		subject: {
+			kind: "source",
+			runId: input.runId,
+			bindingId: null,
+			sourceBytes,
+			beforeBlobHash: hashPlanBytes(sourceBytes),
+			beforeCommit: assessed.approval.approvedCommit,
+			priorApprovalCommit: assessed.approval.approvedCommit,
+			parentLineageId: null,
+			ledger: assessed.approval.ledger,
+			migrations,
+		},
+	};
+}
+
+async function resolveSourceSchemaMigration(input: {
+	store: ReviewBudgetStore;
+	sourceRunId: string;
+	approvedBytes: string;
+	approvedCommit: string;
+	ledger: ParsedDeliveryBudget;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| { status: "none" }
+	| {
+			status: "migrated";
+			bytes: string;
+			commit: string;
+			fields: {
+				planSchema: 1;
+				governingHash: string;
+				schemaMigrationId: string;
+				predecessorPlanCommit: string;
+			};
+	  }
+	| { status: "error"; code: string; message: string }
+> {
+	const migrations = input.store.listPlanSchemaMigrations(input.sourceRunId);
+	if (migrations.length === 0) return { status: "none" };
+	const chain = replayTextAmendments({
+		approvedPlanBytes: input.approvedBytes,
+		approvedPlanHash: hashPlanBytes(input.approvedBytes),
+		amendments: migrations,
+	});
+	const migration = migrations.length === 1 ? migrations[0] : undefined;
+	if (!chain.chainValid || chain.schema !== 1 || !migration) {
+		return {
+			status: "error",
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"Source run has a conflicting schema migration. Refusing to choose a binding baseline.",
+		};
+	}
+	const atCommit = await input.readPlanAtCommit(migration.afterCommit);
+	if (atCommit === null) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
+			message: `Migrated plan bytes at ${migration.afterCommit} are unavailable`,
+		};
+	}
+	if (
+		atCommit !== migration.authorizedPlanBytes ||
+		hashPlanBytes(atCommit) !== migration.afterBlobHash
+	) {
+		return {
+			status: "error",
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"Source schema migration does not match the plan blob at its after commit.",
+		};
+	}
+	const loaded = loadPlanDocument(atCommit, 1);
+	if (!loaded.ok) {
+		return {
+			status: "error",
+			code: loaded.code,
+			message: loaded.message.includes("not a legacy fallback")
+				? loaded.message
+				: `${loaded.message} This is not a legacy fallback.`,
+		};
+	}
+	if (
+		hashPlanBytes(loaded.document.comparisonBytes) !== migration.governingHash
+	) {
+		return {
+			status: "error",
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"Source schema migration governingHash does not match the migrated plan. This is not a legacy fallback.",
+		};
+	}
+	const parsed = parseDeliveryBudget(loaded.document.authorityMarkdown);
+	if (!parsed.ok || !ledgersMatch(parsed.value, input.ledger)) {
+		return {
+			status: "error",
+			code: "IMPLEMENTATION_SOURCE_INVALID",
+			message:
+				"Migrated plan ledger does not match the source review ledger. Refusing to bind a drifted approval.",
+		};
+	}
+	return {
+		status: "migrated",
+		bytes: atCommit,
+		commit: migration.afterCommit,
+		fields: {
+			planSchema: 1,
+			governingHash: migration.governingHash,
+			schemaMigrationId: migration.id,
+			predecessorPlanCommit: input.approvedCommit,
+		},
+	};
+}
+
 export async function bindImplementationExecution(input: {
 	store: ReviewBudgetStore;
 	recordStore: RecordStore;
@@ -1091,7 +1678,37 @@ export async function bindImplementationExecution(input: {
 			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
 		};
 	}
-	const parsed = parseDeliveryBudget(approvedBytes);
+	const migrated = await resolveSourceSchemaMigration({
+		store: input.store,
+		sourceRunId: input.sourceRunId,
+		approvedBytes,
+		approvedCommit: assessed.approval.approvedCommit,
+		ledger: assessed.approval.ledger,
+		readPlanAtCommit: input.readPlanAtCommit,
+	});
+	if (migrated.status === "error") return migrated;
+	const bindingBytes =
+		migrated.status === "migrated" ? migrated.bytes : approvedBytes;
+	const bindingCommit =
+		migrated.status === "migrated"
+			? migrated.commit
+			: assessed.approval.approvedCommit;
+	const approvedDocument = authoritativePlan(
+		bindingBytes,
+		migrated.status === "migrated" ? 1 : "file",
+	);
+	if (!approvedDocument.ok) {
+		return {
+			status: "error",
+			code: approvedDocument.code,
+			message: approvedDocument.message.includes("not a legacy fallback")
+				? approvedDocument.message
+				: `${approvedDocument.message} This is not a legacy fallback.`,
+		};
+	}
+	const parsed = parseDeliveryBudget(
+		approvedDocument.document.authorityMarkdown,
+	);
 	if (!parsed.ok) {
 		return {
 			status: "error",
@@ -1107,13 +1724,24 @@ export async function bindImplementationExecution(input: {
 				"Approved plan bytes do not match the source review ledger. Refusing to bind a drifted approval.",
 		};
 	}
-	const mapped = mapApprovedPhases(approvedBytes, assessed.approval.ledger);
+	const mapped = mapApprovedPhases(
+		approvedDocument.document,
+		assessed.approval.ledger,
+	);
 	if (mapped.status === "error") return mapped;
+	const governingHash =
+		migrated.status === "migrated"
+			? migrated.fields.governingHash
+			: approvedDocument.document.schema === 1
+				? hashPlanBytes(approvedDocument.document.comparisonBytes)
+				: undefined;
 	const drift = detectPlanDrift({
-		approvedPlanBytes: approvedBytes,
-		approvedPlanHash: hashPlanBytes(approvedBytes),
+		approvedPlanBytes: bindingBytes,
+		approvedPlanHash: hashPlanBytes(bindingBytes),
 		amendments: [],
 		currentPlanBytes: input.planMarkdown,
+		recordedSchema: approvedDocument.document.schema,
+		...(governingHash ? { governingHash } : {}),
 	});
 	if (drift.drifted) {
 		return {
@@ -1133,9 +1761,9 @@ export async function bindImplementationExecution(input: {
 		sourceRunId: assessed.approval.sourceRunId,
 		sourceSnapshotId: assessed.approval.snapshotId,
 		sourceBaselineId: assessed.approval.baselineId,
-		approvedPlanCommit: assessed.approval.approvedCommit,
-		approvedPlanHash: hashPlanBytes(approvedBytes),
-		approvedPlanBytes: approvedBytes,
+		approvedPlanCommit: bindingCommit,
+		approvedPlanHash: hashPlanBytes(bindingBytes),
+		approvedPlanBytes: bindingBytes,
 		b0: assessed.approval.b0,
 		governingB: assessed.approval.governingB,
 		mode: assessed.approval.mode,
@@ -1147,6 +1775,11 @@ export async function bindImplementationExecution(input: {
 		ledgerHash: hashJson(assessed.approval.ledger),
 		decisionsHash: hashJson(decisions),
 		createdAt: now(),
+		...(migrated.status === "migrated"
+			? migrated.fields
+			: approvedDocument.document.schema === 1 && governingHash
+				? { planSchema: 1 as const, governingHash }
+				: {}),
 	};
 	const saved = input.store.saveImplementationBinding(payload, input.origin);
 	if (!saved.created) {
@@ -1175,7 +1808,11 @@ export async function bindImplementationExecution(input: {
 }
 
 function mapApprovedPhases(
-	approvedBytes: string,
+	document: {
+		raw: string;
+		schema: 0 | 1;
+		authorityMarkdown: string;
+	},
 	ledger: ParsedDeliveryBudget,
 ):
 	| {
@@ -1184,7 +1821,11 @@ function mapApprovedPhases(
 			debtTargets: ImplementationDebtTarget[];
 	  }
 	| { status: "error"; code: string; message: string } {
-	const parsed = parsePlan(approvedBytes);
+	const read = readAuthoritativePlan(document.raw, document.schema);
+	if (!read.ok) {
+		return { status: "error", code: read.code, message: read.message };
+	}
+	const parsed = read.plan;
 	const ids = parsed.phases.map((phase) => phase.number);
 	const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
 	if (duplicate) {
@@ -1217,6 +1858,14 @@ function mapApprovedPhases(
 		});
 	}
 	return { status: "ok", phaseMap, debtTargets };
+}
+
+/** Ledger identity ignores parse line numbers, titles, and rationale. */
+export function deliveryLedgersEqual(
+	parsed: ParsedDeliveryBudget,
+	approved: ParsedDeliveryBudget,
+): boolean {
+	return ledgersMatch(parsed, approved);
 }
 
 function ledgersMatch(
@@ -1413,7 +2062,13 @@ export function verifyAuthorTextAmendment(input: {
 		};
 	}
 	const guard = latest.textGuard;
-	if (loaded.amendments.some((amendment) => amendment.guardId === guard.id)) {
+	if (
+		loaded.amendments.some(
+			(amendment) =>
+				amendment.kind !== "plan-schema-migration" &&
+				amendment.guardId === guard.id,
+		)
+	) {
 		return { status: "not_applicable" };
 	}
 	if (
@@ -1443,16 +2098,28 @@ export function verifyAuthorTextAmendment(input: {
 			blocking,
 		};
 	}
+	const recordedSchema = { recordedSchema: folded.planSchema };
 	const verified = verifyGuardedPlanBytes({
 		guard,
 		committed: input.committedPlanBytes,
+		recordedSchema: recordedSchema.recordedSchema,
 	});
 	if (!verified.ok) {
 		return { status: "failed", ...verified, blocking };
 	}
+	const committedComparison = loadPlanDocument(
+		verified.authorizedPlanBytes,
+		recordedSchema.recordedSchema,
+	);
+	const anchorComparison = loadPlanDocument(
+		guard.anchorBytes,
+		recordedSchema.recordedSchema,
+	);
 	if (
-		normalizeCheckboxState(verified.authorizedPlanBytes) ===
-		normalizeCheckboxState(guard.anchorBytes)
+		committedComparison.ok &&
+		anchorComparison.ok &&
+		committedComparison.document.comparisonBytes ===
+			anchorComparison.document.comparisonBytes
 	) {
 		return { status: "unchanged" };
 	}

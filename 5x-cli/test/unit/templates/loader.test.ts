@@ -17,7 +17,7 @@ describe("loadTemplate", () => {
 	test("loads a known template with valid metadata", () => {
 		const { metadata, body } = loadTemplate("author-generate-plan");
 		expect(metadata.name).toBe("author-generate-plan");
-		expect(metadata.version).toBe(4);
+		expect(metadata.version).toBe(5);
 		expect(metadata.variables).toContain("prd_path");
 		expect(metadata.variables).toContain("plan_path");
 		expect(metadata.variables).toContain("plan_template_path");

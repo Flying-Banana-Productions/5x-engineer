@@ -6,6 +6,10 @@ import {
 	recordedEnvelope,
 } from "../../../src/control-plane/record-types.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
+import {
+	loadPlanDocument,
+	planDocumentByteOffset,
+} from "../../../src/plan-schema/document.js";
 import type { VerdictItem } from "../../../src/protocol.js";
 import {
 	encodeImplementationReviewObservationPayload,
@@ -15,7 +19,10 @@ import {
 } from "../../../src/review-budget/record-lines.js";
 import type { ParsedDeliveryBudget } from "../../../src/review-budget/types.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
-import { validateImplementationReview } from "../../../src/review-governance/implementation.js";
+import {
+	resolvePlanImpactSpans,
+	validateImplementationReview,
+} from "../../../src/review-governance/implementation.js";
 import {
 	assessSupersedingApproval,
 	detectPlanDrift,
@@ -32,6 +39,13 @@ import {
 	type TextAmendmentGuard,
 	verifyGuardedPlanBytes,
 } from "../../../src/review-governance/plan-amendment.js";
+import {
+	SCHEMA1_AUTHORITY_PLAN,
+	SCHEMA1_NOTE_ONLY_TEXT,
+	SCHEMA1_OVERVIEW,
+	SCHEMA1_STALE_TEXT,
+	withSchema1Status,
+} from "../../helpers/schema1-authority-fixture.js";
 
 const ORIGIN: RecordOrigin = {
 	recorder: { installation_id: "00000000-0000-4000-8000-000000000001" },
@@ -114,7 +128,10 @@ function ledger(): ParsedDeliveryBudget {
 	};
 }
 
-function bindingFor(markdown: string): ImplementationBindingPayload {
+function bindingFor(
+	markdown: string,
+	schema?: { planSchema: 1; governingHash: string },
+): ImplementationBindingPayload {
 	return {
 		kind: "implementation-binding",
 		version: 1,
@@ -137,6 +154,7 @@ function bindingFor(markdown: string): ImplementationBindingPayload {
 		ledgerHash: "sha256:ledger",
 		decisionsHash: "sha256:decisions",
 		createdAt: "2026-09-23 00:00:00",
+		...(schema ?? {}),
 	};
 }
 
@@ -236,7 +254,11 @@ function observation(
 	};
 }
 
-function setup(markdown: string, guard: TextAmendmentGuard) {
+function setup(
+	markdown: string,
+	guard: TextAmendmentGuard,
+	schema?: { planSchema: 1; governingHash: string },
+) {
 	const recordStore = createMemoryRecordStore();
 	recordStore.putRun({
 		id: "exec",
@@ -251,7 +273,7 @@ function setup(markdown: string, guard: TextAmendmentGuard) {
 		creator: ORIGIN.recorder,
 	});
 	const store = createReviewBudgetStore(recordStore);
-	const binding = bindingFor(markdown);
+	const binding = bindingFor(markdown, schema);
 	store.saveImplementationBinding(binding, ORIGIN);
 	const saved = observation(binding, guard);
 	recordStore.append({
@@ -441,12 +463,25 @@ describe("plan amendment guards", () => {
 		expect(orderedOk.ok).toBe(true);
 		expect(
 			detectPlanDrift({
+				recordedSchema: 0,
 				approvedPlanBytes: ordered,
 				approvedPlanHash: hashPlanBytes(ordered),
 				amendments: [],
 				currentPlanBytes: toggledOrdered,
 			}).drifted,
 		).toBe(false);
+	});
+
+	test("keeps the pre-move structural signature when a checkbox line contains a lone CR", () => {
+		// 4adb443b hashed this line with one non-multiline replace. The second
+		// checkbox sits after a lone CR inside the same newline-split line.
+		const markdown = "# T\n- [x] a\r- [x] b\n";
+		expect(structuralSignature(markdown)).toBe(
+			"sha256:5780f9b4dc996c6fafd536481dbcf14c392ac00141db5e158effb8c222b92182",
+		);
+		expect(structuralSignature("# T\n- [x] a\r- [ ] b\n")).not.toBe(
+			structuralSignature(markdown),
+		);
 	});
 
 	test("matches CRLF and non-ASCII anchors inside the authorized span", () => {
@@ -501,6 +536,7 @@ describe("plan amendment guards", () => {
 		expect(active?.id).toBe(binding.id);
 		expect(active?.approvedPlanHash).toBe(binding.approvedPlanHash);
 		const drift = detectPlanDrift({
+			recordedSchema: 0,
 			approvedPlanBytes: binding.approvedPlanBytes,
 			approvedPlanHash: binding.approvedPlanHash,
 			amendments: store.listImplementationTextAmendments("exec", binding.id),
@@ -771,5 +807,239 @@ describe("plan amendment guards", () => {
 			}),
 		).toMatchObject({ ok: false, code: "PLAN_AMENDMENT_NOT_APPROVED" });
 		expect(binding.approvedPlanHash).toBe(hashPlanBytes(markdown));
+	});
+
+	test("schema 0 guards stay on raw bytes", () => {
+		const markdown = `**Status:** Draft\n\n${plan()}`;
+		const guard = guardFor(markdown, "Bind execution to the approved plan.");
+		const revised = markdown.replace(
+			"**Status:** Draft",
+			"**Status:** Revised",
+		);
+		const rejected = verifyGuardedPlanBytes({
+			guard,
+			committed: Buffer.from(revised, "utf8"),
+			recordedSchema: 0,
+		});
+		expect(rejected.ok).toBe(false);
+		if (!rejected.ok) expect(rejected.code).toBe("PLAN_AMENDMENT_OUT_OF_SPAN");
+	});
+});
+
+function schema1Projection(markdown: string) {
+	const loaded = loadPlanDocument(markdown, 1);
+	if (!loaded.ok) throw new Error(loaded.message);
+	return loaded.document;
+}
+
+function schema1Guard(markdown: string, staleText = SCHEMA1_STALE_TEXT) {
+	const document = schema1Projection(markdown);
+	const resolved = resolvePlanImpactSpans({
+		anchorText: document.authorityMarkdown,
+		byteSource: markdown,
+		locations: [{ itemId: "R1", heading: "Phase 1: Bind", staleText }],
+	});
+	if (resolved.status !== "resolved") throw new Error(resolved.message);
+	const prepared = prepareTextAmendmentGuard({
+		id: "guard-1",
+		anchorBytes: markdown,
+		anchorCommit: "a".repeat(40),
+		parentLineageId: null,
+		allowedSpans: resolved.spans,
+		recordedSchema: 1,
+	});
+	if (!prepared.ok) throw new Error(prepared.message);
+	return { document, spans: resolved.spans, guard: prepared.guard };
+}
+
+describe("schema 1 projected guards", () => {
+	test("note-only staleText does not match and a governing span keeps the raw offset", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const document = schema1Projection(markdown);
+		const charIndex = document.authorityMarkdown.indexOf(SCHEMA1_STALE_TEXT);
+		expect(charIndex).toBeGreaterThan(0);
+		const noted = resolvePlanImpactSpans({
+			anchorText: document.authorityMarkdown,
+			byteSource: markdown,
+			locations: [
+				{
+					itemId: "R9",
+					heading: "Phase 1: Bind",
+					staleText: SCHEMA1_NOTE_ONLY_TEXT,
+				},
+			],
+		});
+		expect(noted.status).toBe("ambiguous");
+		const { spans } = schema1Guard(markdown);
+		const span = spans[0];
+		if (!span) throw new Error("missing span");
+		expect(span.start).toBe(planDocumentByteOffset(markdown, charIndex));
+		expect(span.end).toBe(
+			planDocumentByteOffset(markdown, charIndex + SCHEMA1_STALE_TEXT.length),
+		);
+		expect(span.start).not.toBe(
+			Buffer.byteLength(document.authorityMarkdown.slice(0, charIndex), "utf8"),
+		);
+	});
+
+	test("a status edit, including one already on the anchor, still verifies a span amendment", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const prepared = schema1Guard(markdown);
+		const during = withSchema1Status(markdown, "Revised — 状态 line").replace(
+			SCHEMA1_STALE_TEXT,
+			"Bind the execution run to the approved plan.",
+		);
+		const duringResult = verifyGuardedPlanBytes({
+			guard: prepared.guard,
+			committed: Buffer.from(during, "utf8"),
+			recordedSchema: 1,
+		});
+		expect(duringResult.ok).toBe(true);
+		if (duringResult.ok) expect(duringResult.authorizedPlanBytes).toBe(during);
+
+		const anchor = withSchema1Status(markdown, "Already revised — 状态 line");
+		const already = schema1Guard(anchor);
+		const amended = anchor.replace(
+			SCHEMA1_STALE_TEXT,
+			"Bind the execution run to the approved plan.",
+		);
+		const alreadyResult = verifyGuardedPlanBytes({
+			guard: already.guard,
+			committed: Buffer.from(amended, "utf8"),
+			recordedSchema: 1,
+		});
+		expect(alreadyResult.ok).toBe(true);
+		const statusOnly = verifyGuardedPlanBytes({
+			guard: already.guard,
+			committed: Buffer.from(
+				anchor.replace(
+					"**Status:** Already revised — 状态 line",
+					"**Status:** Moved again — 状态 line",
+				),
+				"utf8",
+			),
+			recordedSchema: 1,
+		});
+		expect(statusOnly.ok).toBe(true);
+		if (!statusOnly.ok)
+			expect(statusOnly.code).not.toBe("PLAN_AMENDMENT_STALE");
+	});
+
+	test("a note edit or insertion followed by a span amendment verifies", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const prepared = schema1Guard(markdown);
+		const noted = markdown
+			.replace(SCHEMA1_NOTE_ONLY_TEXT, "A different note.")
+			.replace(
+				SCHEMA1_STALE_TEXT,
+				"Bind the execution run to the approved plan.",
+			);
+		const edited = verifyGuardedPlanBytes({
+			guard: prepared.guard,
+			committed: Buffer.from(noted, "utf8"),
+			recordedSchema: 1,
+		});
+		expect(edited.ok).toBe(true);
+		const inserted = markdown
+			.replace(
+				`${SCHEMA1_OVERVIEW}\n\n## Design Decisions`,
+				`${SCHEMA1_OVERVIEW}\n\n<!-- 5x:note:start id="later" -->\nAdded context.\n<!-- 5x:note:end id="later" -->\n\n## Design Decisions`,
+			)
+			.replace(
+				SCHEMA1_STALE_TEXT,
+				"Bind the execution run to the approved plan.",
+			);
+		const added = verifyGuardedPlanBytes({
+			guard: prepared.guard,
+			committed: Buffer.from(inserted, "utf8"),
+			recordedSchema: 1,
+		});
+		expect(added.ok).toBe(true);
+	});
+
+	test("a governing edit outside the span is out of span, while budget and structure still fail", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const prepared = schema1Guard(markdown);
+		const outside = verifyGuardedPlanBytes({
+			guard: prepared.guard,
+			committed: Buffer.from(
+				markdown.replace(SCHEMA1_OVERVIEW, "Changed overview."),
+				"utf8",
+			),
+			recordedSchema: 1,
+		});
+		expect(outside.ok).toBe(false);
+		if (!outside.ok) expect(outside.code).toBe("PLAN_AMENDMENT_OUT_OF_SPAN");
+		const table = verifyGuardedPlanBytes({
+			guard: prepared.guard,
+			committed: Buffer.from(
+				markdown.replace("| W1 | Bind | 2 |", "| W1 | Bind | 3 |"),
+				"utf8",
+			),
+			recordedSchema: 1,
+		});
+		expect(table.ok).toBe(false);
+		if (!table.ok) expect(table.code).toBe("PLAN_AMENDMENT_TABLE");
+		const structure = verifyGuardedPlanBytes({
+			guard: prepared.guard,
+			committed: Buffer.from(
+				markdown.replace("## Phase 2: Finish", "## Phase 2: Finished"),
+				"utf8",
+			),
+			recordedSchema: 1,
+		});
+		expect(structure.ok).toBe(false);
+		if (!structure.ok) expect(structure.code).toBe("PLAN_AMENDMENT_STRUCTURE");
+	});
+
+	test("a status-only blob is unchanged and a span change records raw hashes", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const projected = schema1Projection(markdown);
+		const schema = {
+			planSchema: 1 as const,
+			governingHash: hashPlanBytes(projected.comparisonBytes),
+		};
+		const { guard } = schema1Guard(markdown);
+		const { store, binding } = setup(markdown, guard, schema);
+		const statusOnly = Buffer.from(
+			withSchema1Status(markdown, "Revised — 状态 line"),
+			"utf8",
+		);
+		const unchanged = verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: statusOnly,
+			worktreePlanBytes: statusOnly,
+			afterCommit: "b".repeat(40),
+		});
+		expect(unchanged.status).toBe("unchanged");
+		expect(
+			store.listImplementationTextAmendments(
+				binding.executionRunId,
+				binding.id,
+			),
+		).toEqual([]);
+		const amended = markdown.replace(
+			SCHEMA1_STALE_TEXT,
+			"Bind the execution run to the approved plan.",
+		);
+		const bytes = Buffer.from(amended, "utf8");
+		const verified = verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: bytes,
+			worktreePlanBytes: bytes,
+			afterCommit: "c".repeat(40),
+		});
+		expect(verified.status).toBe("verified");
+		if (verified.status !== "verified") return;
+		expect(verified.amendment.authorizedPlanBytes).toBe(amended);
+		expect(verified.amendment.beforeBlobHash).toBe(hashPlanBytes(markdown));
+		expect(verified.amendment.afterBlobHash).toBe(hashPlanBytes(amended));
+		expect(verified.amendment.afterBlobHash).not.toBe(schema.governingHash);
 	});
 });

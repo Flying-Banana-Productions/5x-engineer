@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parsePlan } from "../../../src/parsers/plan.js";
+import { readAuthoritativePlan } from "../../../src/plan-schema/authority.js";
+import {
+	SCHEMA1_AUTHORITY_PLAN,
+	SCHEMA1_STATUS,
+	withSchema1Status,
+} from "../../helpers/schema1-authority-fixture.js";
 
 function unwrapDefined<T>(value: T | undefined): T {
 	if (value === undefined) throw new Error("Expected value to be defined");
@@ -412,5 +418,37 @@ describe("parsePlan — real plan smoke test", () => {
 		// Most phases should have checklist items
 		const phasesWithItems = plan.phases.filter((p) => p.items.length > 0);
 		expect(phasesWithItems.length).toBeGreaterThan(plan.phases.length / 2);
+	});
+
+	test("schema 1 ignores outside and note phases, gates, and checklist items", () => {
+		const read = readAuthoritativePlan(SCHEMA1_AUTHORITY_PLAN, "file");
+		expect(read.ok).toBe(true);
+		if (!read.ok) return;
+		expect(read.plan.title).toBe("Shared schema 1 plan");
+		expect(read.plan.version).toBe("1.0");
+		expect(read.plan.status).toBe(SCHEMA1_STATUS);
+		expect(read.plan.phases.map((phase) => phase.number)).toEqual(["1", "2"]);
+		expect(read.plan.phases.map((phase) => phase.completionGate)).toEqual([
+			"Tests pass.",
+			"Done.",
+		]);
+		expect(
+			read.plan.phases.flatMap((phase) => phase.items.map((item) => item.text)),
+		).toEqual(["First item", "Second item", "Third item"]);
+		expect(read.plan.completionPercentage).toBe(33);
+		const revised = readAuthoritativePlan(
+			withSchema1Status(SCHEMA1_AUTHORITY_PLAN, "In progress — 状态 line"),
+			"file",
+		);
+		expect(revised.ok).toBe(true);
+		if (!revised.ok) return;
+		expect(revised.plan.status).toBe("In progress — 状态 line");
+		expect(revised.plan.completionPercentage).toBe(
+			read.plan.completionPercentage,
+		);
+		expect(revised.plan.phases.map((phase) => phase.number)).toEqual([
+			"1",
+			"2",
+		]);
 	});
 });

@@ -34,13 +34,16 @@ import {
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { CliError, outputError, outputSuccess } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import {
 	extractPipeContext,
 	isStdinPiped,
 	type PipeContext,
 	readUpstreamEnvelope,
 } from "../pipe.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativeBudget,
+} from "../plan-schema/authority.js";
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
@@ -84,6 +87,7 @@ import { evaluateStoredImplementationBoundary } from "../review-governance/imple
 import {
 	admitAuthorTextAmendmentFromGit,
 	capturePhaseAuthorAdmission,
+	effectivePlanSchema,
 	ensureImplementationAdmission,
 	isImplementationAuthorTemplate,
 	PRE_AUTHOR_STEP_NAME,
@@ -578,12 +582,16 @@ export async function invokeAgent(
 			)({ runId: params.run, startDir: projectRoot }, warn);
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
-			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
-			if (parsed?.ok && config.reviewBudget.mode !== "off") {
-				outputError(
-					"IMPLEMENTATION_APPROVAL_REQUIRED",
-					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
-				);
+			if (markdown !== null) {
+				const loaded = readAuthoritativeBudget(markdown, "file");
+				if (!loaded.ok) {
+					outputError(loaded.code, planSchemaCommandMessage(loaded));
+				} else if (loaded.parsed.ok && config.reviewBudget.mode !== "off") {
+					outputError(
+						"IMPLEMENTATION_APPROVAL_REQUIRED",
+						`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+					);
+				}
 			}
 		}
 		if (budgetContext) {
@@ -864,7 +872,8 @@ export async function invokeAgent(
 		}
 	}
 	const renderedPrompt = appendPlanReviewPromptContext({
-		prompt: resolved.prompt + codeDiffAppend,
+		prompt: resolved.prompt,
+		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});
@@ -1157,6 +1166,7 @@ export async function invokeAgent(
 								approvedPlanBytes: anchor.approvedPlanBytes,
 								approvedPlanHash: anchor.approvedPlanHash,
 								amendments: [],
+								...effectivePlanSchema(anchor.execution),
 								hasRun: true,
 								priorReviewCount: closure.priorReviewCount,
 								codeContext: verified.diff,

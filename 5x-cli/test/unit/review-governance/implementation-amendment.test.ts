@@ -1988,6 +1988,7 @@ describe("effective revision fold", () => {
 				approvedPlanBytes: PLAN,
 				approvedPlanHash: hashPlanBytes(PLAN),
 				lineageParentId: null,
+				planSchema: 0,
 				invalidatedContextIds: [],
 				invalidatedObservationIds: [],
 			};

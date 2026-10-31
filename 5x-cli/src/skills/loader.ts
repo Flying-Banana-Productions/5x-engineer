@@ -7,6 +7,9 @@ import skillPhaseExecutionTemplate from "./base/5x-phase-execution/SKILL.tmpl.md
 import skillPlanTemplate from "./base/5x-plan/SKILL.tmpl.md" with {
 	type: "text",
 };
+import skillPlanMigrationTemplate from "./base/5x-plan-migration/SKILL.tmpl.md" with {
+	type: "text",
+};
 import skillPlanReviewTemplate from "./base/5x-plan-review/SKILL.tmpl.md" with {
 	type: "text",
 };
@@ -23,6 +26,7 @@ const BASE_SKILL_TEMPLATES: Record<string, string> = {
 	"5x-plan": skillPlanTemplate,
 	"5x-plan-review": skillPlanReviewTemplate,
 	"5x-phase-execution": skillPhaseExecutionTemplate,
+	"5x-plan-migration": skillPlanMigrationTemplate,
 	"5x-config": skill5xConfig,
 };
 
