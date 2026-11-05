@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan
 description: Review an implementation plan
-version: 10
+version: 11
 variables: [plan_path, review_path, review_template_path, run_id]
 step_name: "reviewer:plan"
 variable_defaults:
@@ -43,6 +43,7 @@ Evaluate the plan across these dimensions:
 - **Risks**: What could go wrong? Are there unaddressed failure modes?
 - **Scope**: Is the scope appropriate? Should anything be added or removed?
 - **Delivery budget (active runs only)**: When the plan has `## Delivery Budget` and the workflow context indicates budgeting is active, independently estimate the initial accepted scope's effort; do not copy or sum a plan total. Check stable `Wn` / `DCn` IDs, `Addresses`, scores, and complete debt evidence. Every negative author row needs coupling, target phase, minimal-compliant effort/architecture deltas, and concrete non-empty before/after states. Assess whether each claimed simplification is intrinsically coupled and whether its `After` state is genuinely simpler than the minimal compliant alternative. Skip this dimension in mode off or `v1_compat`.
+- **Issue coverage (issue-brief plans only)**: When the plan contract has a `## Issue Coverage` section, read the brief and its `source/` snapshots at the pinned `Source brief` commit with `git show <commit>:<path>`, never the live path. Verify that every brief `ACn` appears verbatim in the contract and maps to a `Wn`, a phase, and concrete evidence; that brief assumptions and unknowns are addressed; that scope matches the brief; and that compact mode was not used for uncertain scope, persistence, or authorization work. Report a gap as an ordinary plan-review item. Item budget fields such as `scopeClass` apply only when the budget contract is active; mode off and `v1_compat` keep the v1 output. Plans without `## Issue Coverage` skip this dimension.
 
 ### Delivery Budget Verdict Fields
 

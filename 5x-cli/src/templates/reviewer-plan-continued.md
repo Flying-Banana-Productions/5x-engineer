@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 11
+version: 12
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:plan"
 variable_defaults:
@@ -62,6 +62,10 @@ Only contract content outside notes governs the work. Read other plan content as
    hunks.
 5. Write your updated assessment as a new **Addendum** section appended to `{{review_path}}`. Do not modify existing review content.
 6. Re-check every plan-row `Addresses` value against still-open findings. Reuse each prior finding's stable ID when it remains partially addressed or open; assign a new ID only to a revision-causal finding, and never recycle or renumber IDs.
+
+While classifying prior findings and revision-causal issues, apply this dimension; it does not relax the closure rules:
+
+- **Issue coverage (issue-brief plans only)**: When the plan contract has a `## Issue Coverage` section, read the brief and its `source/` snapshots at the pinned `Source brief` commit with `git show <commit>:<path>`, never the live path. Verify that every brief `ACn` appears verbatim in the contract and maps to a `Wn`, a phase, and concrete evidence; that brief assumptions and unknowns are addressed; that scope matches the brief; and that compact mode was not used for uncertain scope, persistence, or authorization work. Report a gap as an ordinary plan-review item. Item budget fields such as `scopeClass` apply only when the budget contract is active; mode off and `v1_compat` keep the v1 output. Plans without `## Issue Coverage` skip this dimension.
 
 This prompt is self-contained: a fresh reviewer session is still a closure review
 when the durable governance context says closure. Classify mechanically derivable

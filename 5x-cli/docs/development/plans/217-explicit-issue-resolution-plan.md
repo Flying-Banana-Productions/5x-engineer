@@ -275,15 +275,15 @@ After the `generator-design` note (lines 40-47) add a uniquely named note `gener
 - Classification-contract assertions in `implementation-review-governance.test.ts`: the plan-review clause is scoped to plan-review items and the implementation clause to bound runs with v1 deferral for off/unbound runs, tested semantically by the clause's conditions rather than by forbidding literal strings; initial and continued variants carry identical wording; the clause sits where it cannot override the existing domain rules.
 - Parity test in `implementation-review-governance.test.ts` (pattern at `:978-1062`): `templateRender` and `invokeAgent` with the echo provider produce the same `author-generate-plan` and `author-issue-intake` prompt bodies.
 
-- [ ] Edit `author-generate-plan.md` (compact + issue-brief subsection; timeline wording) and bump version
-- [ ] Add issue-coverage bullets (plan-review domain, pinned source read) to `reviewer-plan.md` and `reviewer-plan-continued.md`; bump versions
-- [ ] Add issue-acceptance bullets (bound `implementation_defect`/`plan_defect`, v1 deferral) to `reviewer-commit.md` and `reviewer-commit-continued.md`; bump versions
-- [ ] Add classification-contract assertions for plan, bound implementation, and off/unbound contexts
-- [ ] Update `author-process-plan-review.md` and bump version
-- [ ] Add `generator-compact` note to the bundled skeleton and its test
-- [ ] Add compact-plan fixture and parser compatibility test
-- [ ] Add prompt wording/parity assertions; confirm existing authority-paragraph tests still pass
-- [ ] Update `test/integration/commands/upgrade.test.ts` expectations for new template versions only where they assert version-specific strings
+- [x] Edit `author-generate-plan.md` (compact + issue-brief subsection; timeline wording) and bump version
+- [x] Add issue-coverage bullets (plan-review domain, pinned source read) to `reviewer-plan.md` and `reviewer-plan-continued.md`; bump versions
+- [x] Add issue-acceptance bullets (bound `implementation_defect`/`plan_defect`, v1 deferral) to `reviewer-commit.md` and `reviewer-commit-continued.md`; bump versions
+- [x] Add classification-contract assertions for plan, bound implementation, and off/unbound contexts
+- [x] Update `author-process-plan-review.md` and bump version
+- [x] Add `generator-compact` note to the bundled skeleton and its test
+- [x] Add compact-plan fixture and parser compatibility test
+- [x] Add prompt wording/parity assertions; confirm existing authority-paragraph tests still pass
+- [x] Update `test/integration/commands/upgrade.test.ts` expectations for new template versions only where they assert version-specific strings
 
 ---
 

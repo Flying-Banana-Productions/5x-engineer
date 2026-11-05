@@ -1182,3 +1182,261 @@ describe("implementation handler prompt parity", () => {
 		{ timeout: 30000 },
 	);
 });
+
+describe("issue-resolution prompt guidance (plan 217 phase 2)", () => {
+	const PLAN_CLAUSE_LEAD = "- **Issue coverage (issue-brief plans only)**:";
+	const IMPL_CLAUSE_LEAD =
+		"- **Issue acceptance (plans with `## Issue Coverage` only)**:";
+
+	function clauseLine(raw: string, lead: string): string {
+		const lines = raw.split("\n").filter((line) => line.startsWith(lead));
+		expect(lines).toHaveLength(1);
+		return lines[0] as string;
+	}
+
+	test("initial and continued reviewer variants carry identical issue wording", () => {
+		const planInitial = clauseLine(
+			getDefaultTemplateRaw("reviewer-plan"),
+			PLAN_CLAUSE_LEAD,
+		);
+		const planContinued = clauseLine(
+			getDefaultTemplateRaw("reviewer-plan-continued"),
+			PLAN_CLAUSE_LEAD,
+		);
+		expect(planContinued).toBe(planInitial);
+		const implInitial = clauseLine(
+			getDefaultTemplateRaw("reviewer-commit"),
+			IMPL_CLAUSE_LEAD,
+		);
+		const implContinued = clauseLine(
+			getDefaultTemplateRaw("reviewer-commit-continued"),
+			IMPL_CLAUSE_LEAD,
+		);
+		expect(implContinued).toBe(implInitial);
+		for (const clause of [planInitial, implInitial]) {
+			expect(clause).toContain("## Issue Coverage");
+			expect(clause).not.toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
+		}
+		for (const name of [
+			"reviewer-plan",
+			"reviewer-plan-continued",
+			"reviewer-commit",
+			"reviewer-commit-continued",
+		]) {
+			expect(
+				countOccurrences(
+					getDefaultTemplateRaw(name),
+					PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
+				),
+			).toBe(1);
+		}
+	});
+
+	test("plan-review clause stays in the plan-review domain with v1 deferral", () => {
+		const clause = clauseLine(
+			getDefaultTemplateRaw("reviewer-plan"),
+			PLAN_CLAUSE_LEAD,
+		);
+		// Pinned provenance: the brief is read at its commit, not the live path.
+		expect(clause).toContain("pinned `Source brief` commit");
+		expect(clause).toContain("git show <commit>:<path>");
+		expect(clause).toContain("verbatim");
+		expect(clause).toContain("assumptions and unknowns");
+		// A gap is an ordinary plan-review item; budget fields only when active.
+		expect(clause).toContain("ordinary plan-review item");
+		expect(clause).toMatch(/only when the budget contract is active/);
+		expect(clause).toContain("mode off and `v1_compat` keep the v1 output");
+		// Implementation-domain classes never govern plan review.
+		expect(clause).not.toMatch(/implementation_defect|plan_defect/);
+		expect(clause).toContain("skip this dimension");
+	});
+
+	test("implementation clause is bound-run scoped and defers to v1 for off/unbound runs", () => {
+		const clause = clauseLine(
+			getDefaultTemplateRaw("reviewer-commit"),
+			IMPL_CLAUSE_LEAD,
+		);
+		const bound = clause.indexOf("In a bound run");
+		const compat = clause.indexOf("In mode off and unbound compatibility runs");
+		expect(bound).toBeGreaterThan(-1);
+		expect(compat).toBeGreaterThan(bound);
+		const boundSentence = clause.slice(bound, compat);
+		expect(boundSentence).toContain("`implementation_defect`");
+		expect(boundSentence).toContain("approved `Wn` IDs");
+		expect(boundSentence).toContain("`plan_defect`");
+		expect(boundSentence).toContain("apply unchanged");
+		const compatSentence = clause.slice(compat);
+		expect(compatSentence).toContain("existing v1 output");
+		expect(compatSentence).toContain("add no implementation-only fields");
+		expect(compatSentence).not.toMatch(/implementation_defect|plan_defect/);
+		// acceptance_required appears only as a prohibition for implementation items.
+		expect(clause).toContain(
+			"Never use `acceptance_required` for implementation items",
+		);
+	});
+
+	test("issue clauses sit in the review perspective, before the domain rules they defer to", () => {
+		for (const [name, before, after] of [
+			[
+				"reviewer-plan",
+				"### Review Perspective",
+				"### Delivery Budget Verdict Fields",
+			],
+			[
+				"reviewer-plan-continued",
+				"\n6. ",
+				"### Late findings and governing decisions",
+			],
+			[
+				"reviewer-commit",
+				"### Review Perspective",
+				"### Implementation finding classes",
+			],
+			[
+				"reviewer-commit-continued",
+				"### Review Perspective",
+				"### Closure rules",
+			],
+		] as const) {
+			const raw = getDefaultTemplateRaw(name);
+			const lead = name.startsWith("reviewer-plan")
+				? PLAN_CLAUSE_LEAD
+				: IMPL_CLAUSE_LEAD;
+			const at = raw.indexOf(lead);
+			expect(at).toBeGreaterThan(raw.indexOf(before));
+			expect(at).toBeLessThan(raw.indexOf(after));
+		}
+		// The continued plan clause cannot relax closure-only rules.
+		expect(getDefaultTemplateRaw("reviewer-plan-continued")).toContain(
+			"it does not relax the closure rules",
+		);
+	});
+
+	test("author-generate-plan keeps the timeline for non-issue work and gates issue mode on the brief marker", () => {
+		const rendered = renderTemplate("author-generate-plan", {
+			prd_path: "docs/prd.md",
+			plan_path: "docs/development/plans/001-thing.md",
+			plan_template_path: "docs/_implementation_plan_template.md",
+		});
+		const prompt = rendered.prompt;
+		expect(prompt).toContain(
+			"- Include an Estimated Timeline unless compact mode applies.",
+		);
+		expect(prompt).toContain("Break the work into phases");
+		expect(prompt).toContain(
+			"Apply this subsection only when the first line of `docs/prd.md` is an issue-source marker",
+		);
+		expect(prompt).toContain(
+			"<!-- 5x:issue-source v1 github.com/OWNER/REPO#N -->",
+		);
+		expect(prompt).toContain("Otherwise ignore it");
+		expect(prompt).toContain("`Disposition: ready`");
+		expect(prompt).toContain("`Intake status: complete`");
+		expect(prompt).toContain("## Issue Coverage");
+		expect(prompt).toContain("git log -1 --format=%H -- <brief dir>");
+		expect(prompt).toContain(
+			"Do not put acceptance criteria in the Delivery Budget `Addresses` column",
+		);
+		expect(prompt).toContain("Never force compact mode");
+		expect(countOccurrences(prompt, PLAN_SCHEMA_AUTHORITY_INSTRUCTION)).toBe(1);
+	});
+
+	test("author-process-plan-review preserves Issue Coverage rows and brief artifacts", () => {
+		const raw = getDefaultTemplateRaw("author-process-plan-review");
+		expect(raw).toContain("preserve its `Source brief` line");
+		expect(raw).toContain("verbatim `ACn` criterion text");
+		expect(raw).toContain("only to incorporate a review finding");
+		expect(raw).toContain(
+			"Do not edit the issue brief or its `source/` snapshots",
+		);
+	});
+
+	test(
+		"template render and invoke produce the same plan-phase issue prompts",
+		async () => {
+			const dir = join(
+				tmpdir(),
+				`5x-issue-parity-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+			);
+			mkdirSync(dir, { recursive: true });
+			let db: Database | undefined;
+			const originalLog = console.log;
+			console.log = () => {};
+			try {
+				git(dir, ["init"]);
+				git(dir, ["config", "user.email", "test@test.com"]);
+				git(dir, ["config", "user.name", "Test"]);
+				const stateDir = join(dir, ".5x");
+				mkdirSync(stateDir, { recursive: true });
+				db = new Database(join(stateDir, "5x.db"));
+				runMigrations(db);
+				await initScaffold({ startDir: dir });
+				const planPath = join(dir, "docs", "plans", "218-issue-42.md");
+				const briefDir = join(dir, "docs", "issues", "218-issue-42");
+				mkdirSync(briefDir, { recursive: true });
+				writeFileSync(
+					join(briefDir, "brief.md"),
+					"<!-- 5x:issue-source v1 github.com/acme/widgets#42 -->\n",
+				);
+				createRunV1(db, { id: "run1", planPath });
+				git(dir, ["add", "-A"]);
+				git(dir, ["commit", "-m", "init"]);
+				for (const [template, vars] of [
+					["author-generate-plan", [`prd_path=${join(briefDir, "brief.md")}`]],
+					[
+						"author-issue-intake",
+						["issue_ref=acme/widgets#42", `brief_dir=${briefDir}`],
+					],
+				] as const) {
+					let nativePrompt = "";
+					let invokePrompt = "";
+					await templateRender(
+						{ template, run: "run1", workdir: dir, vars: [...vars] },
+						{
+							db,
+							onRenderedPrompt: (prompt) => {
+								nativePrompt = prompt;
+							},
+						},
+					);
+					await invokeAgent(
+						"author",
+						{
+							template,
+							run: "run1",
+							workdir: dir,
+							vars: [...vars],
+							phase: "plan",
+							quiet: true,
+						},
+						{
+							db,
+							createProvider: async () =>
+								structuredProvider({
+									result: "needs_human",
+									reason: "Prompt capture fixture.",
+								}),
+							onRenderedPrompt: (prompt) => {
+								invokePrompt = prompt;
+							},
+						},
+					);
+					expect(nativePrompt.length).toBeGreaterThan(0);
+					expect(invokePrompt).toBe(nativePrompt);
+					expect(nativePrompt).not.toContain("## Admitted implementation work");
+					if (template === "author-generate-plan") {
+						expect(nativePrompt).toContain("### Issue-brief input");
+					} else {
+						expect(nativePrompt).toContain("5x:issue-source v1");
+					}
+				}
+			} finally {
+				console.log = originalLog;
+				setTemplateOverrideDir(null);
+				db?.close();
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
