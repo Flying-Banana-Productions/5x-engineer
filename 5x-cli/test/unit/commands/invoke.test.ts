@@ -47,6 +47,11 @@ import {
 	readHead,
 } from "../../helpers/git-fixture.js";
 import {
+	AMENDED_PLAN,
+	AMENDMENT_PLAN,
+	seedPendingImplementationAmendment,
+} from "./amendment-test-helpers.js";
+import {
 	makeBudgetContext,
 	pendingSnapshot,
 	seedPromptGovernanceContext,
@@ -529,6 +534,92 @@ ${structured}
 			expect(authorInvokePrompt).not.toContain(
 				"## Plan-review governance context",
 			);
+		} finally {
+			ctx.db.close();
+			db?.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("invoke and template handlers append byte-identical trusted amendment context", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		let db: Database | undefined;
+		try {
+			const setup = await setupBudgetInvoke(dir);
+			db = setup.db;
+			const planPath = setup.planPath;
+			writeFileSync(planPath, AMENDMENT_PLAN);
+			const prior = commitAllSync(dir, "approved plan");
+			writeFileSync(planPath, AMENDED_PLAN);
+			const author = commitAllSync(dir, "amended plan");
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.controlPlaneRoot = dir;
+			ctx.executionContext.effectivePlanPath = planPath;
+			ctx.executionContext.run.plan_path = planPath;
+			seedPendingImplementationAmendment(ctx, {
+				runId: "run1",
+				priorCommit: prior,
+				authorCommit: author,
+			});
+			let nativePrompt = "";
+			let invokePrompt = "";
+			await templateRender(
+				{
+					template: "reviewer-plan",
+					run: "run1",
+					workdir: dir,
+					newSession: true,
+				},
+				{
+					db,
+					createReviewBudgetContext: async () => ctx,
+					onRenderedPrompt: (prompt) => {
+						nativePrompt = prompt;
+					},
+				},
+			);
+			try {
+				await invokeAgent(
+					"reviewer",
+					{
+						template: "reviewer-plan",
+						run: "run1",
+						workdir: dir,
+						newSession: true,
+						quiet: true,
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () =>
+							structuredProvider({
+								readiness: "ready",
+								items: [],
+								creditAssessments: [],
+							}),
+						onRenderedPrompt: (prompt) => {
+							invokePrompt = prompt;
+						},
+					},
+				);
+			} catch {
+				// Only the rendered prompt is under test; recording may reject
+				// this minimal verdict after the prompt is composed.
+			}
+			const amendmentBlock = (prompt: string) => {
+				const start = prompt.indexOf("## Trusted Amendment Review Context");
+				expect(start).toBeGreaterThanOrEqual(0);
+				const end = prompt.indexOf("\n\n## Context\n", start);
+				return prompt.slice(start, end < 0 ? undefined : end);
+			};
+			expect(amendmentBlock(invokePrompt)).toBe(amendmentBlock(nativePrompt));
+			const block = amendmentBlock(nativePrompt);
+			expect(block).toContain("Predecessor revision: `binding-1`");
+			expect(block).toContain(
+				`Reviewed plan hash: \`${hashPlanBytes(AMENDED_PLAN)}\``,
+			);
+			expect(block).toContain("+- [ ] Honor offsets");
 		} finally {
 			ctx.db.close();
 			db?.close();

@@ -52,6 +52,7 @@ import {
 	loadTemplate,
 	setTemplateOverrideDir,
 } from "../templates/loader.js";
+import { resolveAmendmentReviewContext } from "./amendment-review-context.js";
 import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
@@ -570,6 +571,25 @@ export async function templateRender(
 			if (!(err instanceof RecordContextError)) throw err;
 		}
 	}
+	// Implementation-run amendment reviews get the trusted predecessor, exact
+	// committed hash, and plan diff. Fail closed: a pending authorization
+	// without trusted context must not render an ordinary plan review.
+	let amendmentAppend: string | null = null;
+	if (
+		params.run &&
+		renderBudgetContext &&
+		resolved.selectedTemplateName.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		const amendment = await resolveAmendmentReviewContext({
+			ctx: renderBudgetContext,
+			runId: params.run,
+			warn,
+		});
+		if (amendment.status === "error") {
+			outputError(amendment.code, amendment.message);
+		}
+		if (amendment.status === "ready") amendmentAppend = amendment.append;
+	}
 
 	// -----------------------------------------------------------------------
 	// Post-render: append the review diff block (continued plan reviews only),
@@ -686,6 +706,7 @@ export async function templateRender(
 		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
+		amendmentAppend,
 	});
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;

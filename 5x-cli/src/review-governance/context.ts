@@ -140,13 +140,15 @@ export function formatReviewerGovernanceContext(
  * Keep render and invoke prompt projection byte-for-byte aligned.
  * Decide the authority paragraph from the template body only. Embedded diff
  * text is not the template. Append order is template, code diff, authority
- * paragraph when the body lacks it, plan diff, then governance context.
+ * paragraph when the body lacks it, plan diff, governance context, then the
+ * trusted amendment review context.
  */
 export function appendPlanReviewPromptContext(input: {
 	prompt: string;
 	codeDiffAppend?: string | null;
 	diffAppend?: string | null;
 	governanceAppend?: string | null;
+	amendmentAppend?: string | null;
 }): string {
 	const templateHasAuthority = input.prompt.includes(
 		PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
@@ -159,6 +161,7 @@ export function appendPlanReviewPromptContext(input: {
 	}
 	if (input.diffAppend) prompt += `\n${input.diffAppend}`;
 	if (input.governanceAppend) prompt += `\n\n${input.governanceAppend}`;
+	if (input.amendmentAppend) prompt += `\n\n${input.amendmentAppend}`;
 	return prompt;
 }
 
