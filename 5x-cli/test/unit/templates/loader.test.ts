@@ -471,11 +471,12 @@ describe("reviewer-commit template", () => {
 });
 
 describe("listTemplates", () => {
-	test("returns all 8 templates", () => {
+	test("returns all 10 templates", () => {
 		const templates = listTemplates();
 		const names = templates.map((t) => t.name);
 		expect(names).toContain("author-fix-quality");
 		expect(names).toContain("author-generate-plan");
+		expect(names).toContain("author-issue-intake");
 		expect(names).toContain("author-next-phase");
 		expect(names).toContain("author-process-plan-review");
 		expect(names).toContain("author-process-impl-review");
@@ -483,7 +484,7 @@ describe("listTemplates", () => {
 		expect(names).toContain("reviewer-plan-continued");
 		expect(names).toContain("reviewer-commit");
 		expect(names).toContain("reviewer-commit-continued");
-		expect(templates.length).toBe(9);
+		expect(templates.length).toBe(10);
 	});
 
 	test("all templates have version >= 1", () => {
@@ -498,6 +499,7 @@ describe("template stepName", () => {
 	const expectedStepNames: Record<string, string> = {
 		"author-fix-quality": "author:fix-quality",
 		"author-generate-plan": "author:generate-plan",
+		"author-issue-intake": "author:issue-intake",
 		"author-next-phase": "author:implement",
 		"author-process-plan-review": "author:fix-review",
 		"author-process-impl-review": "author:fix-review",

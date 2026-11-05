@@ -234,13 +234,13 @@ Lines 8-26 add the import; line 58-68 add `"author-issue-intake": authorIssueInt
 - New `test/unit/templates/issue-intake.test.ts`: render with scalar vars; missing `brief_dir` errors; a multi-line `issue_ref` is rejected by `renderBody`; body contains the marker format, all four artifact paths, each disposition value, the incomplete-resume clause, and every forbidden-write command; `isImplementationAuthorTemplate("author-issue-intake")` is false and `isImplementationAuthorAdmission("author:issue-intake", "plan")` is true-negative (false).
 - Integration (extend `test/integration/commands/template-list.test.ts` or add `issue-intake-render.test.ts`): in a temp project with an active run mapped to phase `plan`, `5x template render author-issue-intake` and `5x invoke author author-issue-intake --record --record-step author:issue-intake --phase plan` (echo provider) succeed and the run journal has no implementation binding or admission step. Use `cleanGitEnv()`, `stdin: "ignore"`, `timeout`.
 
-- [ ] Create `author-issue-intake.md` with frontmatter and body above
-- [ ] Register it in `src/templates/loader.ts` (import, `TEMPLATES`, `STEP_NAME_FALLBACKS`)
-- [ ] Update `loader.test.ts` counts and step-name map
-- [ ] Add `issue-intake.test.ts` unit coverage (render, safe scalars, forbidden writes, not an implementation template)
-- [ ] Add integration test proving render/invoke under phase `plan` creates no implementation admission
-- [ ] Include linked-PR queries, write-once `source/` handling, and `Source:`/`Plan:` lines in the intake prompt and its tests
-- [ ] Add a stale-override test: an on-disk `author-issue-intake.md` with a lower version warns (reuse `test/unit/templates/stale-override.test.ts` pattern)
+- [x] Create `author-issue-intake.md` with frontmatter and body above
+- [x] Register it in `src/templates/loader.ts` (import, `TEMPLATES`, `STEP_NAME_FALLBACKS`)
+- [x] Update `loader.test.ts` counts and step-name map
+- [x] Add `issue-intake.test.ts` unit coverage (render, safe scalars, forbidden writes, not an implementation template)
+- [x] Add integration test proving render/invoke under phase `plan` creates no implementation admission
+- [x] Include linked-PR queries, write-once `source/` handling, and `Source:`/`Plan:` lines in the intake prompt and its tests
+- [x] Add a stale-override test: an on-disk `author-issue-intake.md` with a lower version warns (reuse `test/unit/templates/stale-override.test.ts` pattern)
 
 ---
 
