@@ -88,3 +88,43 @@ None admitted.
 - [ ] I1: Restore resume identity reuse, validated PR ownership, fail-closed refresh, and unsettled/error propagation; add regression fixtures for each.
 - [ ] I2: Obtain approved closure-rule correction and prove repeated external-closure resume does not become success.
 - [ ] Phase 3 completion / ready for Phase 4: blocked on the findings above.
+
+## Addendum (November 5, 2026) — Identity fixes and amended closure provenance
+
+**Reviewed:** `b9bbc7ca2936280a68f719ab69726ed4e6b257e2`
+
+**Authoritative closure range:** `58a8ca1c751ccfefcc6554d998ecadfb5b7ac35f..b9bbc7ca2936280a68f719ab69726ed4e6b257e2` with the supplied plan/review/run-record exclusions.
+
+**Review context:** `783452c8-0172-4c52-88b3-ea42a55ade48`; enforced, same binding and Phase 3 scope.
+
+**Effective contract:** v1.6, plan commit `4bfa8181f23e5f88f0b475ca045b9eb5920ebfcb`, hash `sha256:7596cce236b34246ed6e60988befa91ddea061d91ab9d24b89c93d125cd64855`, registered amendment `amendment:e9a8adc0257e81a07fb2565251c73a03bc910ab7e57f46bfdd503bc07c265310`. Completed Phases 1–2 remain preserved.
+
+### What's addressed
+
+**I1 — addressed, all four subcases.**
+
+1. **Resume association:** The new `intake-association` recipe reuses the validated plan/brief pair, reads the original planning run from the committed brief, initializes against that existing plan, and checks returned run identity. It allocates a new plan number only with no discovered association. Extracted-recipe fixtures verify duplicate local/remote hits collapse to one association, no `plan list` allocation occurs during resume, and ambiguous associations, mismatched runs, and failed initialization stop.
+2. **PR ownership:** `prepare-pr` validates the outgoing marker and classifies branch candidates by exact source/plan first-line marker and head branch. Unowned and multiple-owned candidates stop without PR creation/editing; post-create read-back uses the same validation. Fixtures cover unmarked, different-plan, different-source, quoted-marker, mixed human/owned, multiple-owned, and create-race candidates. The old fixture that accepted an unmarked body has been replaced by a marked-owned update case.
+3. **Fail-closed refresh and discovery:** Snapshot reads and shape validation now stop explicitly; successful comparison requires `refresh: compared`. The separate extracted `refresh-fetch` recipe checks live issue, comment pagination, timeline pagination, and authenticated-user reads before producing `fetch: complete`. Missing snapshots, unresolvable commits, empty/malformed live inputs, failed comment/timeline reads, and paginated success are exercised. Discovery emits an `error` for failed/unusable run-list evidence, and the skill requires stopping rather than treating that result as an absent association.
+4. **Delivery classification:** Unsettled, error, malformed, and empty interval results now produce failing `records` output. Git endpoints and read statuses are checked. Fixtures include no-code histories (`BASE=FINAL=PR_HEAD`), an unsettled phase alongside another accepted phase, invalid endpoints, and unreadable run records. The existing accepted-interval, exact correction-proof, divergence, and uncovered-code cases continue to pass.
+
+**Original I2 — governing defect resolved by the registered amendment; revised implementation verified.** This is not a new approval or a reopening of the original design finding. The supplied governance context authorizes v1.6; the implementation now uses its explicit `closure=workflow`/`closure=external` receipt distinction and GitHub timeline actor/time evidence. An external receipt remains externally closed on repeated resumes without writes; ordinary successful workflow closure remains `resolved` on a second resume without writes. A workflow receipt followed by an earlier or another actor's close is not promoted to workflow success.
+
+The amended **mandatory receipt preflight** is implemented before receipt-bearing and no-receipt branches, before comment/close writes, and before closure outcomes. It names invalid authenticated marker IDs and duplicate receipt IDs, stops on an external receipt with an open issue, and is rerun on confirming comment lists and post-close reads. Executable fixtures verify invalid/legacy authenticated markers, an invalid marker beside a valid receipt, duplicate workflow/external receipts on open and closed issues, an external receipt on an open issue, and duplicate receipts appearing during create read-back; the stop cases make no close call. Timeline failures before settlement or after a write do not produce a success outcome. Comment-create/update and close timeout/failure recovery tests remain green.
+
+### Verification and revision impact
+
+- Read the complete mandatory implementation diff and re-anchored the original findings against the revised skill; reviewed the effective contract's closure provenance, branches a–g, and receipt-preflight obligations outside informational notes.
+- Ran `bun test test/unit/skills test/unit/harnesses test/integration/issue-resolution-recipes.test.ts test/integration/commands/upgrade.test.ts`: **656 pass, 0 fail**, 3,705 assertions across 23 files. This includes the focused upgrade/implementation-governance asset suite, all four role-mode renders, the extracted bash recipes, and the added closure regressions.
+- Changes remain in the approved skill and fixture/test surfaces. Skeletons, agent prompts, runtime-appended context, installer code, and harness permissions are unchanged by this revision. Existing registration/delegation wiring remains covered by the passing suites. No new API, schema, dependency, subsystem, or architecture boundary is required.
+- Author-reported full-suite/lint/typecheck results are not represented as independently rerun here; local verification is the focused command above. No real GitHub writes or implementation edits were performed during review.
+
+### Remaining concerns / Nonblocking follow-ups
+
+- No remaining I1 subcase or new revision-caused blocker identified.
+- Dedicated installation/sync/override expansion, user documentation, and operator smoke rehearsal remain Phase 4 work; this closure does not claim those future gates have passed.
+
+### Updated readiness
+
+- **Phase 3 completion:** Ready under the effective v1.6 contract.
+- **Ready for next phase:** Yes. The only required structured prior outcome is `I1: addressed`; I2 is resolved through the registered amendment and is not emitted as a required prior outcome.
