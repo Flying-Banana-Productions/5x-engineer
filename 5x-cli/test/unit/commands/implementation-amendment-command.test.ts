@@ -2,77 +2,30 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveAmendmentReviewContext } from "../../../src/commands/amendment-review-context.js";
 import {
 	amendImplementationPlanCommand,
 	submitReviewDecision,
 } from "../../../src/commands/review-decision.handler.js";
 import {
 	createMemoryPromptStore,
-	recordedEnvelope,
 	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
-import { recordStep } from "../../../src/db/operations-v1.js";
-import { parseDeliveryBudget } from "../../../src/parsers/delivery-budget.js";
-import type { VerdictItem } from "../../../src/protocol.js";
-import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
-import {
-	createImplementationDecision,
-	governanceDecisionKey,
-} from "../../../src/review-governance/decisions.js";
-import { fingerprintImplementationVerdictItem } from "../../../src/review-governance/fingerprint.js";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import type { ReviewGateCause } from "../../../src/review-governance/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	AMENDED_PLAN,
+	amendmentLedger as ledger,
+	AMENDMENT_PLAN as PLAN,
+	seedPendingImplementationAmendment,
+} from "./amendment-test-helpers.js";
 import {
 	makeBudgetContext,
 	TEST_ORIGIN,
 } from "./review-budget-test-helpers.js";
 
 const RUN = "run1";
-const PLAN = `# Plan
-
-## Design Decisions
-
-Keep the binding.
-
-## Delivery Budget
-
-- Estimate confidence: high
-
-| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
-|---|---|---:|---:|---|---|---|
-| W1 | Foundation | 2 | 0 | - | - | Required |
-
-### Surface Snapshot
-
-- Subsystems: 1
-- Production files: 1
-- Persistent/external boundaries: 0
-
-## Phase 1: Foundation
-
-**Completion gate:** Stable.
-
-- [ ] Stable types
-
-## Phase 2: Providers
-
-**Completion gate:** Normalize.
-
-- [ ] Read digits
-
-## Phase 3: Verification
-
-**Completion gate:** Verify.
-
-- [ ] Verify timestamps
-`;
-
-function ledger(text: string) {
-	const parsed = parseDeliveryBudget(text);
-	if (!parsed.ok) throw new Error(parsed.message);
-	return parsed.value;
-}
 
 function git(dir: string, args: string[]): string {
 	const result = Bun.spawnSync(["git", ...args], {
@@ -90,23 +43,6 @@ function git(dir: string, args: string[]): string {
 	return result.stdout.toString().trim();
 }
 
-function item(id: string): VerdictItem {
-	return {
-		id,
-		title: id,
-		action: "human_required",
-		reason: "Providers",
-		priority: "P1",
-		scopeClass: "implementation_defect",
-		planWorkItemIds: ["W1"],
-		effortDelta: 1,
-		architectureDelta: 0,
-		estimateConfidence: "high",
-		failure: "Providers",
-		lowestCostCorrection: "Amend the plan",
-	};
-}
-
 function fixture(options?: {
 	maxSteps?: number;
 	mode?: "advisory" | "enforced";
@@ -114,7 +50,7 @@ function fixture(options?: {
 	boundaryHash?: "review" | "side";
 }) {
 	const dir = mkdtempSync(join(tmpdir(), "amend-cmd-"));
-	const amended = PLAN.replace("Read digits", "Honor offsets");
+	const amended = AMENDED_PLAN;
 	git(dir, ["init"]);
 	git(dir, ["config", "user.email", "test@test.com"]);
 	git(dir, ["config", "user.name", "Test"]);
@@ -148,186 +84,13 @@ function fixture(options?: {
 	ctx.executionContext.controlPlaneRoot = dir;
 	ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
 	ctx.executionContext.run.plan_path = "plan.md";
-	const finding = item("R1");
-	const fingerprint = fingerprintImplementationVerdictItem(finding, "2");
-	const append = (
-		stream: "budget" | "steps" | "decisions",
-		key: string,
-		payload: unknown,
-	) =>
-		ctx.recordStore.append({
+	const { decision, scope, fingerprint, human, putStep } =
+		seedPendingImplementationAmendment(ctx, {
 			runId: RUN,
-			stream,
-			idempotencyKey: key,
-			payload,
-			...recordedEnvelope(TEST_ORIGIN),
+			priorCommit: prior,
+			authorCommit: author,
+			mode: options?.mode,
 		});
-	const putStep = (
-		name: string,
-		phase: string,
-		iteration: number,
-		result: unknown,
-		head: string,
-	) => {
-		const key = stepIdempotencyKey({
-			runId: RUN,
-			stepName: name,
-			phase,
-			iteration,
-		});
-		append("steps", key, {
-			step_name: name,
-			phase,
-			iteration,
-			result_json: result,
-			head_commit: head,
-			patch_id: null,
-			diff_summary: null,
-			duration_ms: null,
-			tokens_in: null,
-			tokens_out: null,
-			cost_usd: null,
-			model: null,
-		});
-		const row = recordStep(ctx.db, {
-			run_id: RUN,
-			step_name: name,
-			phase,
-			iteration,
-			result_json: JSON.stringify(result),
-			head_commit: head,
-		});
-		return { key, id: String(row.step_id) };
-	};
-	const mode = options?.mode ?? "advisory";
-	append("budget", `budget:implementation-binding:${RUN}`, {
-		kind: "implementation-binding",
-		version: 1,
-		id: "binding-1",
-		executionRunId: RUN,
-		sourceRunId: "source-run",
-		sourceSnapshotId: "snapshot-1",
-		sourceBaselineId: "baseline-1",
-		approvedPlanCommit: prior,
-		approvedPlanHash: hashPlanBytes(PLAN),
-		approvedPlanBytes: PLAN,
-		b0: 2,
-		governingB: 4,
-		mode,
-		thresholds: DEFAULT_REVIEW_BUDGET_CONFIG,
-		ledger: ledger(PLAN),
-		effectiveDecisions: [],
-		phaseMap: [
-			{ id: "1", heading: "Foundation" },
-			{ id: "2", heading: "Providers" },
-			{ id: "3", heading: "Verification" },
-		],
-		debtTargets: [],
-		ledgerHash: "ledger",
-		decisionsHash: "decisions",
-		createdAt: "2026-10-19T00:00:00.000Z",
-	});
-	append("budget", "ctx-obs-2", {
-		kind: "implementation-review-context",
-		version: 1,
-		id: "ctx-obs-2",
-		executionRunId: RUN,
-		bindingId: "binding-1",
-		phase: "2",
-		baseCommit: prior,
-		reviewedCommit: author,
-		patchHash: hashPlanBytes("patch"),
-		excludedPaths: ["docs/development/reviews"],
-		hunks: [],
-		binaryPaths: [],
-		createdAt: "2026-10-19T00:00:00.000Z",
-	});
-	append("budget", "obs-2", {
-		kind: "implementation-review",
-		version: 1,
-		id: "obs-2",
-		runId: RUN,
-		stepKey: { stepName: "reviewer:impl", phase: "2", iteration: 0 },
-		bindingId: "binding-1",
-		contextId: "ctx-obs-2",
-		domain: "implementation",
-		phase: "2",
-		originalVerdict: { readiness: "not_ready", items: [finding] },
-		outcomes: [],
-		route: "human_gate",
-		nextAction: "human_gate",
-		diagnostics: [],
-		claimObservations: [],
-		gateCauses: [
-			{
-				kind: "plan_amendment",
-				findingId: "R1",
-				fingerprint,
-			},
-		],
-		telemetry: {
-			reviewCycles: 1,
-			fixCycles: 0,
-			reviewOriginatedCommits: 0,
-			qualityReruns: 0,
-			classCounts: {
-				implementation_defect: 1,
-				plan_defect: 0,
-				scope_expansion: 0,
-				pre_existing: 0,
-			},
-			planAmendments: 1,
-			addedPaths: [],
-			boundaryInventory: [],
-			effortVariance: 0,
-			architectureVariance: 0,
-		},
-		budgetInvariant: { W: 2, R: 0, B: 4, D: 0 },
-		completionAuthorized: false,
-		createdAt: "2026-10-19T00:00:00.000Z",
-	});
-	const scope = {
-		predecessorRevisionId: "binding-1",
-		earliestAffectedPhase: "2",
-		reopenCompletedPhases: false,
-		claimEdits: [],
-		resolutionRefs: [],
-	};
-	const decision = createImplementationDecision({
-		decisionId: "11111111-1111-4111-8111-111111111111",
-		gateId: "gate-1",
-		observationId: "obs-2",
-		bindingId: "binding-1",
-		phase: "2",
-		choice: "authorize_amendment",
-		findingRefs: [{ findingId: "R1", fingerprint }],
-		rationale: "Authorize only the structured scope",
-		evidence: [],
-		claimAdjustments: [],
-		ledgerHash: "ledger",
-		decisionsHash: "decisions",
-		createdAt: "2026-10-19T00:00:00.000Z",
-		amendmentScope: scope,
-	});
-	append("decisions", governanceDecisionKey(decision.gateId), decision);
-	putStep(
-		"reviewer:impl",
-		"2",
-		0,
-		{ readiness: "not_ready", items: [finding] },
-		prior,
-	);
-	const human = putStep(
-		"human:review-governance",
-		"2",
-		1,
-		{
-			decisionId: decision.decisionId,
-			gateId: decision.gateId,
-			choice: "authorize_amendment",
-		},
-		author,
-	);
 	putStep(
 		"author:process-plan-review",
 		"plan",
@@ -661,4 +424,113 @@ describe("review implementation amend", () => {
 		},
 		20000,
 	);
+});
+
+describe("trusted amendment review context", () => {
+	test.serial(
+		"supplies the predecessor, exact committed hash, and diff that registration accepts",
+		async () => {
+			const built = fixture();
+			const warnings: string[] = [];
+			try {
+				const resolved = await resolveAmendmentReviewContext({
+					ctx: built.ctx,
+					runId: RUN,
+					warn: (message) => warnings.push(message),
+				});
+				expect(resolved.status).toBe("ready");
+				if (resolved.status !== "ready") return;
+				expect(warnings).toEqual([]);
+				expect(resolved.authorizationId).toBe(built.decision.decisionId);
+				expect(resolved.predecessorRevisionId).toBe(
+					built.scope.predecessorRevisionId,
+				);
+				expect(resolved.reviewedPlanHash).toBe(hashPlanBytes(AMENDED_PLAN));
+				expect(resolved.append).toContain(
+					"## Trusted Amendment Review Context",
+				);
+				expect(resolved.append).toContain("Predecessor revision: `binding-1`");
+				expect(resolved.append).toContain(
+					`Reviewed plan hash: \`${hashPlanBytes(AMENDED_PLAN)}\``,
+				);
+				expect(resolved.append).toContain("--- a/plan.md");
+				expect(resolved.append).toContain("+++ b/plan.md");
+				expect(resolved.append).toContain("-- [ ] Read digits");
+				expect(resolved.append).toContain("+- [ ] Honor offsets");
+				// The fixture's approval copied exactly these values; registration
+				// accepts them, after which nothing is pending.
+				const recorded = await amendImplementationPlanCommand(
+					inputFor(built),
+					built.ctx,
+				);
+				expect(recorded.created).toBe(true);
+				expect(
+					await resolveAmendmentReviewContext({
+						ctx: built.ctx,
+						runId: RUN,
+						warn: (message) => warnings.push(message),
+					}),
+				).toEqual({ status: "none" });
+			} finally {
+				built.close();
+			}
+		},
+		20000,
+	);
+
+	test.serial(
+		"a final-corrections commit moves the hash, and a dirty plan warns",
+		async () => {
+			const built = fixture();
+			const warnings: string[] = [];
+			try {
+				const corrected = AMENDED_PLAN.replace(
+					"Honor offsets",
+					"Honor UTC offsets",
+				);
+				writeFileSync(join(built.dir, "plan.md"), corrected);
+				const dirty = await resolveAmendmentReviewContext({
+					ctx: built.ctx,
+					runId: RUN,
+					warn: (message) => warnings.push(message),
+				});
+				expect(dirty.status).toBe("ready");
+				if (dirty.status !== "ready") return;
+				expect(dirty.reviewedPlanHash).toBe(hashPlanBytes(AMENDED_PLAN));
+				expect(warnings).toHaveLength(1);
+				expect(warnings[0]).toContain("differs from HEAD");
+				git(built.dir, ["commit", "-am", "final corrections"]);
+				warnings.length = 0;
+				const reassessed = await resolveAmendmentReviewContext({
+					ctx: built.ctx,
+					runId: RUN,
+					warn: (message) => warnings.push(message),
+				});
+				expect(reassessed.status).toBe("ready");
+				if (reassessed.status !== "ready") return;
+				expect(warnings).toEqual([]);
+				expect(reassessed.reviewedPlanHash).toBe(hashPlanBytes(corrected));
+				expect(reassessed.predecessorRevisionId).toBe("binding-1");
+				expect(reassessed.append).toContain("+- [ ] Honor UTC offsets");
+			} finally {
+				built.close();
+			}
+		},
+		20000,
+	);
+
+	test("is absent when the run has no amendment authorization", async () => {
+		const ctx = makeBudgetContext({ mode: "advisory" });
+		try {
+			expect(
+				await resolveAmendmentReviewContext({
+					ctx,
+					runId: RUN,
+					warn: () => {},
+				}),
+			).toEqual({ status: "none" });
+		} finally {
+			ctx.db.close();
+		}
+	});
 });

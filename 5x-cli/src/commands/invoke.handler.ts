@@ -98,6 +98,7 @@ import {
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
+import { resolveAmendmentReviewContext } from "./amendment-review-context.js";
 import {
 	controlPlaneDbPath,
 	controlPlaneStatePath,
@@ -782,6 +783,25 @@ export async function invokeAgent(
 			if (!(err instanceof RecordContextError)) throw err;
 		}
 	}
+	// Implementation-run amendment reviews get the trusted predecessor, exact
+	// committed hash, and plan diff. Fail closed: a pending authorization
+	// without trusted context must not render an ordinary plan review.
+	let amendmentAppend: string | null = null;
+	if (
+		params.run &&
+		budgetContext &&
+		resolved.selectedTemplateName.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		const amendment = await resolveAmendmentReviewContext({
+			ctx: budgetContext,
+			runId: params.run,
+			warn,
+		});
+		if (amendment.status === "error") {
+			outputError(amendment.code, amendment.message);
+		}
+		if (amendment.status === "ready") amendmentAppend = amendment.append;
+	}
 	let codeDiffAppend = "";
 	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
 		try {
@@ -876,6 +896,7 @@ export async function invokeAgent(
 		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
+		amendmentAppend,
 	});
 	deps?.onRenderedPrompt?.(renderedPrompt);
 
