@@ -408,13 +408,13 @@ Extend `test/integration/commands/upgrade.test.ts` following `:1256-1320`: fresh
 
 Run the focused asset suite, `bun test test/unit/templates test/unit/skills test/unit/harnesses test/unit/parsers`, then `bun run lint`, `bun run typecheck`, `bun run test`. Perform a rendered-asset check from a fresh temp project install (OpenCode and Cursor) and diff the installed skill/orchestrator text against the contract in this plan, including that the installed skill states the Receipt preflight ahead of closure branches a-g.
 
-- [ ] Add install/sync/customized-skill/prompt-override/mixed-mode integration tests
-- [ ] Document the skill, prerequisites, and pending-merge semantics in user docs and lists
-- [ ] Publish the operator smoke-test matrix with run/pending status per row
-- [ ] Add the CHANGELOG entry
-- [ ] Run `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`
-- [ ] Run lint, typecheck, and the full test suite; fix regressions
-- [ ] Verify effective installed assets for OpenCode, Cursor, and universal contain the workflow
+- [x] Add install/sync/customized-skill/prompt-override/mixed-mode integration tests
+- [x] Document the skill, prerequisites, and pending-merge semantics in user docs and lists
+- [x] Publish the operator smoke-test matrix with run/pending status per row
+- [x] Add the CHANGELOG entry
+- [x] Run `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts`
+- [x] Run lint, typecheck, and the full test suite; fix regressions
+- [x] Verify effective installed assets for OpenCode, Cursor, and universal contain the workflow
 
 ---
 

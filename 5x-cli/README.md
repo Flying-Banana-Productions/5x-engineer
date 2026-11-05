@@ -120,9 +120,12 @@ installed skills explicitly.
 | Create and review a plan | “Use 5x to create an implementation plan from `docs/product/my-feature-prd.md`.” |
 | Review an existing plan | “Use 5x to review `docs/development/my-feature.md`.” |
 | Execute an approved plan | “Use 5x to implement `docs/development/my-feature.md`, one phase at a time.” |
+| Resolve a GitHub issue | “Resolve GitHub issue #42 in this repository using 5x.” Later: “Resume resolution of issue #42.” |
 
 The agent loads the `5x` foundation plus `5x-plan`, `5x-plan-review`, or
-`5x-phase-execution`. `5x-windows` adds PowerShell guidance when needed.
+`5x-phase-execution`; `5x-issue-resolution` composes all three for one GitHub
+issue and needs an authenticated `gh`. `5x-windows` adds PowerShell guidance
+when needed.
 
 Expect a Markdown plan and reviews, code commits during implementation, and
 tracked run records. The workflow asks you to resolve decisions it cannot make

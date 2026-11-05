@@ -19,7 +19,7 @@ These links document the implemented 2.0.0 development line, currently unrelease
 
 Read `5x config show --json` (use `--context` for the plan directory in a monorepo). It returns `data.entries`; a single `--key` lookup returns `data.value`. Use `5x <command> --help`, `5x template describe <name>`, `5x protocol schema author`, `5x protocol schema reviewer`, and `5x protocol emit reviewer --help` for installed-version contracts.
 
-Load the effective installed `5x` foundation alongside `5x-plan`, `5x-plan-review`, or `5x-phase-execution`. Use `5x-config` for configuration and `5x-windows` for Windows/PowerShell. Respect per-role delegationMode; universal always invokes. Native task IDs and provider session IDs are different.
+Load the effective installed `5x` foundation alongside `5x-plan`, `5x-plan-review`, or `5x-phase-execution`. Use `5x-issue-resolution` to resolve or resume one github.com issue (it composes the other workflow skills, needs authenticated `gh`, asks before push/PR creation, and reports `resolved` only after merge, a marked receipt, and a verified close). Use `5x-config` for configuration and `5x-windows` for Windows/PowerShell. Respect per-role delegationMode; universal always invokes. Native task IDs and provider session IDs are different.
 
 Runtime-appended context and durable state own review ranges, bindings, admitted findings, decisions, claims, and routes. Do not invent them from documentation or current HEAD. Advisory is the default, but budgeted implementation still requires approved-source binding and plan-drift validation. Governance gates use `review gate show` / `review decide`, not generic prompt answers.
 
