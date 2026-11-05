@@ -1,0 +1,257 @@
+{
+	"description": "Resume and failure scenarios for the 5x-issue-resolution skill. Each rule is text the skill must contain; expected_outcome must be in the skill's outcome table. Documentation consistency only: no agent is executed.",
+	"rows": [
+		{
+			"id": "intake-incomplete",
+			"scenario": "Intake checkpointed incomplete after budget runs out twice",
+			"expected_outcome": "intake_incomplete",
+			"rule": "If it stays incomplete, checkpoint and report `intake_incomplete`"
+		},
+		{
+			"id": "after-intake",
+			"scenario": "Brief ready; planning run active when the session stops",
+			"expected_outcome": "planning_in_progress",
+			"rule": "report `planning_in_progress` if you must stop"
+		},
+		{
+			"id": "after-sealed-planning",
+			"scenario": "Planning run sealed; implementation run active",
+			"expected_outcome": "implementation_in_progress",
+			"rule": "report `implementation_in_progress` if you must stop"
+		},
+		{
+			"id": "after-sealed-implementation",
+			"scenario": "Implementation sealed; pull request created and open",
+			"expected_outcome": "awaiting_merge",
+			"rule": "Otherwise stop with `awaiting_merge`"
+		},
+		{
+			"id": "pr-created-lost-response",
+			"scenario": "gh pr create times out but the PR exists",
+			"expected_outcome": "awaiting_merge",
+			"rule": "so a lost response never creates a duplicate"
+		},
+		{
+			"id": "merged-squash-head-matches",
+			"scenario": "Squash merge; PR head equals the sealed head",
+			"expected_outcome": "resolved",
+			"rule": "A squash merge is verified by `PR_HEAD` identity, not merge-commit parentage"
+		},
+		{
+			"id": "merged-changed-head",
+			"scenario": "Merged PR head carries an unreviewed code commit",
+			"expected_outcome": "needs_human",
+			"rule": "Any `uncovered`, `merge`, `ancestry`, or `records` line is `needs_human`"
+		},
+		{
+			"id": "closed-unmerged",
+			"scenario": "Marked PR closed without merge",
+			"expected_outcome": "pr_closed_unmerged",
+			"rule": "`CLOSED` without merge: report `pr_closed_unmerged`"
+		},
+		{
+			"id": "merged-close-failed",
+			"scenario": "Comment confirmed, close fails and re-read shows open",
+			"expected_outcome": "delivered_sync_pending",
+			"rule": "if the issue is still open the outcome is `delivered_sync_pending` with missing operation `close`"
+		},
+		{
+			"id": "existing-marker-comment-reused",
+			"scenario": "Validated marked comment exists, issue still open",
+			"expected_outcome": "resolved",
+			"rule": "c. Marked comment present and issue open with no later reopen: the close never completed; run the close and re-read."
+		},
+		{
+			"id": "already-closed-externally",
+			"scenario": "Issue closed by a human before reconciliation",
+			"expected_outcome": "resolved_externally_closed_unverified",
+			"rule": "report `resolved_externally_closed_unverified`"
+		},
+		{
+			"id": "reopened-material-change",
+			"scenario": "Issue reopened after the marked comment",
+			"expected_outcome": "needs_human",
+			"rule": "A timeline `reopened` event later than the marked comment's `created_at`: `needs_human` (material)."
+		},
+		{
+			"id": "missing-acceptance-evidence",
+			"scenario": "An ACn has no evidence in sealed records or reviews",
+			"expected_outcome": "needs_human",
+			"rule": "A missing criterion returns `needs_human`."
+		},
+		{
+			"id": "pending-release-requirement",
+			"scenario": "Recorded release restriction not yet satisfied",
+			"expected_outcome": "delivered_sync_pending",
+			"rule": "A pending release requirement returns `delivered_sync_pending` naming the condition."
+		},
+		{
+			"id": "non-ready-intake",
+			"scenario": "Intake disposition needs_clarification",
+			"expected_outcome": "needs_clarification",
+			"rule": "report that disposition as the outcome"
+		},
+		{
+			"id": "edited-existing-comment",
+			"scenario": "A snapshot comment's body changed after intake",
+			"expected_outcome": "needs_human",
+			"rule": "whose `body` or `updated_at` changed (an edited existing comment)"
+		},
+		{
+			"id": "quoted-marker-scope-change",
+			"scenario": "New comment quotes a resolution marker and asks for more scope",
+			"expected_outcome": "needs_human",
+			"rule": "A comment that merely contains or quotes a 5x marker is ordinary data."
+		},
+		{
+			"id": "nonmaterial-chatter",
+			"scenario": "New comment says thanks",
+			"expected_outcome": "resolved",
+			"rule": "Clearly nonmaterial chatter (thanks, status pings, bot notices) is reported and may proceed"
+		},
+		{
+			"id": "comment-create-unconfirmed-readback",
+			"scenario": "Create returns, but the re-list fails",
+			"expected_outcome": "delivered_sync_pending",
+			"rule": "or a re-list that fails returns `delivered_sync_pending` with missing operation `comment-create`"
+		},
+		{
+			"id": "uncovered-pre-admission-code",
+			"scenario": "Code commit between BASE and the phase preAuthorCommit",
+			"expected_outcome": "needs_human",
+			"rule": "code between `BASE` and a phase's `preAuthorCommit`"
+		},
+		{
+			"id": "uncovered-inter-phase-code",
+			"scenario": "Code between phase 1's accepted endpoint and phase 2's preAuthorCommit",
+			"expected_outcome": "needs_human",
+			"rule": "code between one phase's last accepted endpoint and the next phase's `preAuthorCommit`"
+		},
+		{
+			"id": "prepared-unaccepted-context",
+			"scenario": "Review context recorded with no settled observation",
+			"expected_outcome": "needs_human",
+			"rule": "A prepared review context is not approval."
+		},
+		{
+			"id": "compatibility-without-endpoints",
+			"scenario": "Unbound run whose reviewer steps record only head_commit",
+			"expected_outcome": "needs_human",
+			"rule": "If the base or any reviewed input endpoint cannot be established, the result is `needs_human`"
+		},
+		{
+			"id": "unmarked-linked-pr",
+			"scenario": "A human PR without a marker already references the issue",
+			"expected_outcome": "needs_human",
+			"rule": "do not start a duplicate plan until the operator chooses"
+		},
+		{
+			"id": "second-resume-after-close",
+			"scenario": "Resume again after a successful close",
+			"expected_outcome": "resolved",
+			"rule": "b. Marked comment present and issue closed: `resolved` (idempotent second resume; no writes)."
+		},
+		{
+			"id": "externally-closed-before-reconciliation",
+			"scenario": "No marked comment and the issue is already closed",
+			"expected_outcome": "resolved_externally_closed_unverified",
+			"rule": "d. No marked comment and issue closed (closed externally)"
+		},
+		{
+			"id": "reopened-after-marked-close",
+			"scenario": "Issue reopened after the workflow closed it",
+			"expected_outcome": "needs_human",
+			"rule": "A timeline `reopened` event later than the marked comment's `created_at`"
+		},
+		{
+			"id": "material-new-comment",
+			"scenario": "New comment adds a requirement after sealing",
+			"expected_outcome": "needs_human",
+			"rule": "anything uncertain or requirement-changing returns `needs_human` listing the differences"
+		},
+		{
+			"id": "read-only-post-seal-refresh",
+			"scenario": "Source changed after the planning run sealed",
+			"expected_outcome": "needs_human",
+			"rule": "Never edit the brief, reopen a sealed run, or append to its journal from this step."
+		},
+		{
+			"id": "comment-create-timeout",
+			"scenario": "Comment create times out and the re-list shows no comment",
+			"expected_outcome": "delivered_sync_pending",
+			"rule": "A timed-out create is always re-listed before any retry, so a duplicate is never posted."
+		},
+		{
+			"id": "comment-update-failure",
+			"scenario": "Stale marked comment PATCH fails",
+			"expected_outcome": "delivered_sync_pending",
+			"rule": "returns `delivered_sync_pending` with missing operation `comment-update`"
+		},
+		{
+			"id": "close-timeout-after-comment",
+			"scenario": "Close times out after a confirmed comment and the re-read shows open",
+			"expected_outcome": "delivered_sync_pending",
+			"rule": "A failed or timed-out close is re-read first"
+		},
+		{
+			"id": "denied-publication-authorization",
+			"scenario": "Operator declines push and PR creation",
+			"expected_outcome": "publication_pending",
+			"rule": "Without authorization, or after a failed push or create, stop with `publication_pending`"
+		},
+		{
+			"id": "failed-push",
+			"scenario": "git push fails and the remote head does not match",
+			"expected_outcome": "publication_pending",
+			"rule": "[ \"$(remote_head)\" = \"$LOCAL_HEAD\" ] || pending push"
+		},
+		{
+			"id": "evidence-only-commits",
+			"scenario": "Review-document, checkbox, and seal commits after the reviewed head",
+			"expected_outcome": "resolved",
+			"rule": "they cover review documents, checkbox updates, and the seal commit"
+		},
+		{
+			"id": "approved-final-correction",
+			"scenario": "Phase settled by a proof-bound final correction",
+			"expected_outcome": "resolved",
+			"rule": "settled by an exact proof-bound correction"
+		},
+		{
+			"id": "unauthorized-code-change",
+			"scenario": "Code commit outside every accepted interval",
+			"expected_outcome": "needs_human",
+			"rule": "else echo \"uncovered $SHA\"; FAIL=1"
+		},
+		{
+			"id": "divergent-heads",
+			"scenario": "PR head has the same tree but does not descend from FINAL",
+			"expected_outcome": "needs_human",
+			"rule": "git merge-base --is-ancestor \"$FINAL\" \"$PR_HEAD\""
+		},
+		{
+			"id": "multiple-phases",
+			"scenario": "Two phases, each settled with its own intervals",
+			"expected_outcome": "resolved",
+			"rule": "A settled phase contributes every observation's interval in its chain"
+		},
+		{
+			"id": "unbound-compatibility",
+			"scenario": "Unbound run with durable reviewed inputs",
+			"expected_outcome": "resolved",
+			"rule": "Unbound compatibility runs (an `implementation-compatibility` record, no binding, no contexts) are the explicitly legacy path."
+		},
+		{
+			"id": "squash-merge",
+			"scenario": "Squash merge commit differs from the PR head",
+			"expected_outcome": "resolved",
+			"rule": "`MERGE_COMMIT=<mergeCommit.oid>`"
+		},
+		{
+			"id": "missing-local-and-remote-work",
+			"scenario": "Worktree, branch, and remote branch all missing",
+			"expected_outcome": "needs_human",
+			"rule": "Neither local nor remote work available: `needs_human`."
+		}
+	]
+}

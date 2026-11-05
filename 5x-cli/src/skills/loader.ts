@@ -1,6 +1,9 @@
 import type { SkillMetadata } from "../harnesses/installer.js";
 import skill5xTemplate from "./base/5x/SKILL.tmpl.md" with { type: "text" };
 import skill5xConfig from "./base/5x-config/SKILL.md" with { type: "text" };
+import skillIssueResolutionTemplate from "./base/5x-issue-resolution/SKILL.tmpl.md" with {
+	type: "text",
+};
 import skillPhaseExecutionTemplate from "./base/5x-phase-execution/SKILL.tmpl.md" with {
 	type: "text",
 };
@@ -27,6 +30,7 @@ const BASE_SKILL_TEMPLATES: Record<string, string> = {
 	"5x-plan-review": skillPlanReviewTemplate,
 	"5x-phase-execution": skillPhaseExecutionTemplate,
 	"5x-plan-migration": skillPlanMigrationTemplate,
+	"5x-issue-resolution": skillIssueResolutionTemplate,
 	"5x-config": skill5xConfig,
 };
 

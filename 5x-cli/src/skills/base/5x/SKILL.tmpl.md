@@ -2,9 +2,10 @@
 name: 5x
 description: >-
   Shared foundation for all 5x workflows. ALWAYS load this skill alongside
-  any 5x-plan, 5x-plan-review, or 5x-phase-execution skill. Covers
-  delegation patterns, human interaction, timeouts, and cross-cutting
-  gotchas.
+  any 5x-plan, 5x-plan-review, 5x-phase-execution, or 5x-issue-resolution
+  skill. Covers delegation patterns, human interaction, timeouts, and
+  cross-cutting gotchas. Points GitHub issue resolution requests to
+  5x-issue-resolution.
 metadata:
   author: 5x-engineer
 ---
@@ -21,6 +22,10 @@ platforms unless you specifically need those examples.
 
 Schema 0 to schema 1 transitions use the separate `5x-plan-migration` skill.
 Load that skill for the procedure. This foundation skill only points at it.
+
+Requests to resolve or resume resolution of a GitHub issue use the separate
+`5x-issue-resolution` skill. Load it for the procedure; this foundation skill
+only points at it.
 
 ## Tools
 
