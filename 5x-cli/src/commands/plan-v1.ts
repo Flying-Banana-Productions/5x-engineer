@@ -7,6 +7,8 @@
  */
 
 import type { Command } from "@commander-js/extra-typings";
+import { outputSuccess } from "../output.js";
+import { planMigrate } from "./plan-migrate.handler.js";
 import { planArchive, planList, planPhases } from "./plan-v1.handler.js";
 
 export function registerPlan(parent: Command) {
@@ -97,6 +99,36 @@ export function registerPlan(parent: Command) {
 				allRefs: opts.allRefs,
 				startDir: process.cwd(),
 			});
+		});
+
+	plan
+		.command("migrate")
+		.summary("Convert an unapproved plan to schema 1")
+		.description(
+			"Wrap an unapproved working-tree plan as schema 1, or check a selective schema 1 edit.\n" +
+				"Refuses when the plan already has an implementation binding or a completed approval.\n" +
+				"Writes no governance record and does not approve the plan.",
+		)
+		.requiredOption("--plan <path>", "Path to the unapproved plan")
+		.requiredOption("--mode <mode>", "equivalent or selective")
+		.option("--write", "Write the equivalent wrap when --dry-run is absent")
+		.option("--dry-run", "Report the conversion without writing the file")
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x plan migrate --plan docs/plan.md --mode equivalent --dry-run\n" +
+				"  $ 5x plan migrate --plan docs/plan.md --mode equivalent --write\n" +
+				"  $ 5x plan migrate --plan docs/plan.md --mode selective\n",
+		)
+		.action(async (opts) => {
+			outputSuccess(
+				await planMigrate({
+					planPath: opts.plan,
+					mode: opts.mode,
+					write: opts.write,
+					dryRun: opts.dryRun,
+				}),
+			);
 		});
 
 	plan

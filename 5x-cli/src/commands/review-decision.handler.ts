@@ -12,8 +12,11 @@ import { createSqlitePromptStore } from "../control-plane/sqlite-store.js";
 import type { PromptStore } from "../control-plane/store.js";
 import { completeRun, getRunV1, recordStep } from "../db/operations-v1.js";
 import { CliError } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import { parsePlan } from "../parsers/plan.js";
+import {
+	readAuthoritativeBudget,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
 import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
 import {
@@ -43,6 +46,7 @@ import {
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
+import { unsettledAuthorFindingIds } from "../review-governance/implementation.js";
 import {
 	type EffectiveExecution,
 	foldEffectiveExecution,
@@ -51,6 +55,7 @@ import {
 } from "../review-governance/implementation-amendment.js";
 import {
 	ensureImplementationAdmission,
+	listRecordedImplementationReviews,
 	planRepoPath,
 	showPlanAtCommit,
 } from "../review-governance/implementation-state.js";
@@ -95,6 +100,8 @@ export interface SubmitPlanReviewDecisionPayload {
 	approvedItemIds?: string[];
 	approvedWorkItemIds?: string[];
 	snapshotId?: string;
+	/** Implementation accept_with_restriction only. */
+	restriction?: string;
 	/**
 	 * Structured scope for a new authorize_amendment decision.
 	 * Omitted keys are not defaulted. Rationale is not scope.
@@ -403,6 +410,11 @@ function validateAndCreate(input: {
 		fail(
 			"REVIEW_DECISION_FIELD_NOT_ALLOWED",
 			"baseline is not applicable to this choice",
+		);
+	if (payload.restriction !== undefined)
+		fail(
+			"REVIEW_DECISION_FIELD_NOT_ALLOWED",
+			"restriction applies only to implementation gates",
 		);
 	if (
 		payload.choice !== "defer_accept_risk" &&
@@ -1178,6 +1190,9 @@ async function acceptStoredImplementationDecision(
 			rationale: input.payload.rationale,
 			evidence: input.payload.evidence ?? [],
 			claimAdjustments: input.claimAdjustments ?? [],
+			...(input.payload.restriction !== undefined
+				? { restriction: input.payload.restriction }
+				: {}),
 			ledgerHash: stored.ledgerHash,
 			decisionsHash: stored.decisionsHash,
 			createdAt: stored.createdAt,
@@ -1273,13 +1288,31 @@ function implementationFindingRefs(input: {
 	return findingRefs;
 }
 
+/** Schema 1 phase ids come from the governing projection of the authorized bytes. */
+function effectivePhaseIds(
+	folded: EffectiveExecution,
+	revisionBytes: string,
+): string[] {
+	const read = readAuthoritativePlan(
+		folded.approvedPlanBytes,
+		folded.planSchema,
+	);
+	const plan = read.ok ? read.plan : parsePlan(revisionBytes);
+	return plan.phases.map((phase) => phase.number);
+}
+
 function effectiveApprovedClaims(
 	binding: NonNullable<
 		ReturnType<ReviewBudgetCommandContext["store"]["getImplementationBinding"]>
 	>,
 	folded: EffectiveExecution,
 ): { claimIds: Set<string>; deltas: Map<string, number> } {
-	const parsed = parseDeliveryBudget(folded.approvedPlanBytes);
+	// Schema 1 reads the ledger from the governing projection.
+	const read = readAuthoritativeBudget(
+		folded.approvedPlanBytes,
+		folded.planSchema,
+	);
+	const parsed = read.ok ? read.parsed : { ok: false as const };
 	if (!parsed.ok && folded.approvedPlanBytes !== binding.approvedPlanBytes) {
 		throw new TypeError("The effective approved ledger could not be parsed.");
 	}
@@ -1339,9 +1372,7 @@ function recordedAmendmentScope(
 		observations: ctx.store
 			.listImplementationReviews(runId)
 			.filter((observation) => observation.bindingId === binding.id),
-		phaseIds: parsePlan(current.approvedPlanBytes).phases.map(
-			(phase) => phase.number,
-		),
+		phaseIds: effectivePhaseIds(folded, current.approvedPlanBytes),
 		currentRevisionId: folded.currentRevisionId,
 		ledgerClaimIds,
 		requireCurrentPredecessor: options?.requireCurrentPredecessor,
@@ -1853,6 +1884,9 @@ async function submitImplementationReviewDecision(
 			rationale: input.payload.rationale,
 			evidence: input.payload.evidence ?? [],
 			claimAdjustments: input.claimAdjustments ?? [],
+			...(input.payload.restriction !== undefined
+				? { restriction: input.payload.restriction }
+				: {}),
 			ledgerHash: binding.ledgerHash,
 			decisionsHash: binding.decisionsHash,
 			createdAt: deps.now?.() ?? new Date().toISOString(),
@@ -1978,11 +2012,21 @@ async function finishImplementationDecision(input: {
 		input.runId,
 		stored.phase,
 	);
+	const gatedReview = listRecordedImplementationReviews(
+		ctx.store,
+		input.runId,
+	).find((observation) => observation.id === stored.observationId);
 	const nextAction = implementationDecisionNextAction(
 		stored.choice,
 		successor && successor.gateId !== stored.gateId
 			? successor.causes.length
 			: 0,
+		{
+			completionAuthorized: gatedReview?.completionAuthorized === true,
+			unsettledAuthorFindings: gatedReview
+				? unsettledAuthorFindingIds(ctx.recordStore, gatedReview).length
+				: 0,
+		},
 	);
 	if (successor && successor.gateId !== stored.gateId)
 		ensureImplementationGatePrompt({
@@ -1998,7 +2042,9 @@ async function finishImplementationDecision(input: {
 				? "human_gate"
 				: nextAction === "complete"
 					? "complete"
-					: "author_revision";
+					: nextAction === "closure_review"
+						? "closure_review"
+						: "author_revision";
 	if (route === "aborted" && getRunV1(ctx.db, input.runId)?.status === "active")
 		await (deps.abortRun ?? defaultAbort)({
 			runId: input.runId,

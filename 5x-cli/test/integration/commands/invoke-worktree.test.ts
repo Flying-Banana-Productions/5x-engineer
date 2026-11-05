@@ -21,6 +21,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { initScaffold } from "../../../src/commands/init.handler.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -46,27 +50,7 @@ function cleanupDir(dir: string): void {
 /** Create a minimal project with git repo, 5x init (DB + templates), and sample provider config. */
 async function setupProject(dir: string): Promise<string> {
 	// Init git repo
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	// Create plan (must exist before 5x init so .5x/ directory is populated)
 	const planDir = join(dir, "docs", "development");
@@ -86,20 +70,7 @@ async function setupProject(dir: string): Promise<string> {
 	);
 
 	// Initial commit
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 
 	return dir;
 }

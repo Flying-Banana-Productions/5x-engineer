@@ -35,7 +35,7 @@ import { runMigrations } from "../db/schema.js";
 import { gitLsTreePaths, gitShowFile, revParseCommit } from "../git.js";
 import { type LockDirOpts, releaseLock } from "../lock.js";
 import { outputError, outputSuccess } from "../output.js";
-import { parsedPlanHasPhases, parsePlan } from "../parsers/plan.js";
+import { parsedPlanHasPhases } from "../parsers/plan.js";
 import {
 	canonicalizePlanPath,
 	isPathUnder,
@@ -43,6 +43,11 @@ import {
 	relativePathUnder,
 	resolvePlanArg,
 } from "../paths.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
+import type { ExpectedPlanSchema } from "../plan-schema/document.js";
 import {
 	envelopeAttribution,
 	formatAttributionLines,
@@ -55,8 +60,15 @@ import {
 	prepareProgressSession,
 	resolvePlanProgress,
 } from "../records/resolve.js";
+import {
+	describeBindingReadError,
+	expectedSchemaForStore,
+	planPathsIdentifySamePlan,
+} from "../review-governance/implementation-state.js";
 import { type DbContext, resolveDbContext } from "./context.js";
 import { resolveControlPlaneRoot } from "./control-plane.js";
+import { RecordContextError } from "./record-context.js";
+import { createReviewBudgetContext } from "./review-budget-context.js";
 
 // ---------------------------------------------------------------------------
 // Param interface
@@ -341,9 +353,46 @@ async function loadPlanRecordAttribution(opts: {
 	return null;
 }
 
+function failPlanSchemaIdentity(error: unknown): never {
+	if (error instanceof RecordContextError) {
+		outputError(error.code, error.message, error.detail);
+	}
+	const described = describeBindingReadError(error);
+	outputError(described.code, described.message);
+}
+
+/**
+ * Active-run schema comes from that run's execution records, including a
+ * mapped worktree. No active run, and a run with no binding, stay file mode.
+ * A binding that cannot be read fails closed.
+ */
+async function expectedSchemaForPlanFile(input: {
+	dbContext: DbContext;
+	planPath: string;
+}): Promise<ExpectedPlanSchema> {
+	const active = listRuns(input.dbContext.db, { limit: 10000 }).find(
+		(run) =>
+			run.status === "active" &&
+			planPathsIdentifySamePlan(run.plan_path, input.planPath),
+	);
+	if (!active) return "file";
+	const budgetContext = await createReviewBudgetContext(
+		{
+			runId: active.id,
+			startDir: input.dbContext.projectRoot,
+			dbContext: input.dbContext,
+		},
+		() => {},
+	);
+	return expectedSchemaForStore(budgetContext.store, active.id);
+}
+
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	validateProgressSelection(params);
-	const { config, projectRoot } = await resolveDbContext({ migrate: false });
+	const dbContext = await resolveDbContext({
+		migrate: false,
+	});
+	const { config, projectRoot } = dbContext;
 	if (params.ref && !(await revParseCommit(projectRoot, params.ref)))
 		outputError("INVALID_ARGUMENT", `Unknown git ref: ${params.ref}`);
 	const planPath = resolvePlanArg(params.path, config.paths.plans);
@@ -395,7 +444,20 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	}
 
 	const markdown = resolved.markdown ?? "";
-	const plan = parsePlan(markdown);
+	let expected: ExpectedPlanSchema;
+	try {
+		expected = await expectedSchemaForPlanFile({ dbContext, planPath });
+	} catch (error) {
+		failPlanSchemaIdentity(error);
+	}
+	const read = readAuthoritativePlan(markdown, expected);
+	if (!read.ok) {
+		outputError(read.code, planSchemaCommandMessage(read), {
+			plan_path: planPath,
+			...envelopeFromProgress(resolved),
+		});
+	}
+	const plan = read.plan;
 	const progress = envelopeFromProgress(resolved);
 
 	const result: Record<string, unknown> = {
@@ -483,11 +545,12 @@ export async function planList(
 	params: PlanListParams,
 ): Promise<PlanListResult> {
 	validateProgressSelection(params);
-	const { projectRoot, config, db } =
+	const dbContext =
 		params.dbContext ??
 		(await resolveDbContext({
 			startDir: resolve(params.startDir ?? "."),
 		}));
+	const { projectRoot, config, db } = dbContext;
 	const warn =
 		params.warn ??
 		((message: string) => {
@@ -612,7 +675,15 @@ export async function planList(
 			progress = envelopeFromProgress(resolved);
 			diverged = resolved.source.kind === "diverged";
 			if (resolved.markdown !== null) {
-				const parsed = parsePlan(resolved.markdown);
+				const read = readAuthoritativePlan(
+					resolved.markdown,
+					await expectedSchemaForPlanFile({
+						dbContext,
+						planPath: canonical,
+					}),
+				);
+				if (!read.ok) throw new Error(planSchemaCommandMessage(read));
+				const parsed = read.plan;
 				title = parsed.title;
 				phases_total = parsed.phases.length;
 				phases_done = parsed.phases.filter((p) => p.isComplete).length;

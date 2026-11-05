@@ -9,6 +9,7 @@
 
 import type { RecordStore } from "../control-plane/record-store.js";
 import { stepIdempotencyKey } from "../control-plane/record-types.js";
+import { loadPlanDocument } from "../plan-schema/document.js";
 import {
 	isImplementationScopeClass,
 	isPlanScopeClass,
@@ -18,7 +19,7 @@ import {
 import {
 	decodeImplementationBindingPayload,
 	decodeImplementationReviewObservationPayload,
-	type ImplementationPlanAmendmentPayload,
+	type ImplementationReviewObservationPayload,
 } from "../review-budget/record-lines.js";
 import {
 	type CodeClosureDecision,
@@ -27,12 +28,18 @@ import {
 	validateCodeReviewClosure,
 } from "./code-diff.js";
 import {
+	classifyDecisionAcceptance,
+	type ImplementationDecisionPayload,
 	listGovernanceDecisions,
+	listImplementationDecisions,
 	type ReviewDecisionPayload,
 } from "./decisions.js";
 import { fingerprintImplementationVerdictItem } from "./fingerprint.js";
 import { foldEffectiveExecution } from "./implementation-amendment.js";
-import { detectPlanDrift } from "./implementation-state.js";
+import {
+	detectPlanDrift,
+	type ReplayableLineageRecord,
+} from "./implementation-state.js";
 import {
 	planDefectBlocksShortcut,
 	planImpactDisposition,
@@ -68,7 +75,11 @@ export interface ImplementationValidationInput {
 	creditClaimIds?: readonly string[];
 	approvedPlanBytes?: string;
 	approvedPlanHash?: string;
-	amendments?: readonly ImplementationPlanAmendmentPayload[];
+	amendments?: readonly ReplayableLineageRecord[];
+	/** Recorded schema for the approved lineage. Omit for schema 0. */
+	recordedSchema?: 0 | 1;
+	governingHash?: string;
+	governingAnchorBytes?: string;
 	/**
 	 * True when validation is bound to a run. False is standalone protocol
 	 * validate: a missing phase is structural acceptance, not `UNKNOWN_PHASE`.
@@ -193,6 +204,11 @@ export type PlanImpactSpanResolution =
 
 export function resolvePlanImpactSpans(input: {
 	anchorText: string;
+	/**
+	 * UTF-8 byte source for stored offsets. Schema 1 passes the raw anchor
+	 * while `anchorText` is the space-filled mask. Character indexes match.
+	 */
+	byteSource?: string;
 	locations: ReadonlyArray<{
 		itemId: string;
 		heading: string;
@@ -258,12 +274,13 @@ export function resolvePlanImpactSpans(input: {
 				itemId: location.itemId,
 			};
 		}
+		const byteText = input.byteSource ?? input.anchorText;
 		spans.push({
 			itemId: location.itemId,
 			heading: location.heading,
 			staleText: location.staleText,
-			start: byteOffset(input.anchorText, charStart),
-			end: byteOffset(input.anchorText, charEnd),
+			start: byteOffset(byteText, charStart),
+			end: byteOffset(byteText, charEnd),
 			charStart,
 			charEnd,
 		});
@@ -465,8 +482,8 @@ function classify(input: {
 				input.diagnostics.push(
 					diagnostic(
 						"SOURCE_OF_CORRECTION_PRECEDENCE",
-						`Finding '${item.id}' changes ${boundaries.join(", ")} and is a plan or scope decision, even if it is also a bug.`,
-						"error",
+						`Finding '${item.id}' changes ${boundaries.join(", ")} and is a plan or scope decision, even if it is also a bug. It routes to a human gate that offers the amendment path.`,
+						"info",
 						item.id,
 					),
 				);
@@ -639,6 +656,7 @@ export function readImplementationCodeClosure(
 } {
 	const phaseId = canonicalPhaseId(phase);
 	const verdicts: ReviewerVerdict[] = [];
+	const verdictObservationIds: (string | null)[] = [];
 	let priorReviewCount = 0;
 	const budget = recordStore.listLines(runId, "budget");
 	const bindingLine = budget.find(
@@ -649,7 +667,10 @@ export function readImplementationCodeClosure(
 	const binding = bindingLine
 		? decodeImplementationBindingPayload(bindingLine.payload)
 		: null;
-	const observations = new Map<string, ReviewerVerdict>();
+	const observations = new Map<
+		string,
+		{ id: string; verdict: ReviewerVerdict }
+	>();
 	if (binding) {
 		for (const line of budget) {
 			if (
@@ -673,7 +694,7 @@ export function readImplementationCodeClosure(
 					...observation.stepKey,
 					iteration: observation.stepKey.iteration,
 				}),
-				observation.originalVerdict,
+				{ id: observation.id, verdict: observation.originalVerdict },
 			);
 		}
 	}
@@ -700,15 +721,44 @@ export function readImplementationCodeClosure(
 			) {
 				continue;
 			}
-			const verdict = binding
+			const observed = binding
 				? observations.get(line.idempotencyKey)
+				: undefined;
+			const verdict = binding
+				? observed?.verdict
 				: reviewerVerdictFrom(step.result_json);
 			if (binding && !verdict) continue;
 			priorReviewCount += 1;
-			if (verdict) verdicts.push(verdict);
+			if (verdict) {
+				verdicts.push(verdict);
+				verdictObservationIds.push(observed?.id ?? null);
+			}
 		}
 	}
 	const latest = verdicts.at(-1);
+	const settled =
+		binding && phaseId
+			? settledImplementationDecisions(recordStore, runId, binding.id, phaseId)
+			: [];
+	const latestObservationId = verdictObservationIds.at(-1) ?? null;
+	// A re-raise (priorDecisionId) reopens the finding until a decision on
+	// that newer observation settles it again.
+	const reRaised = new Set(
+		(latest?.items ?? []).flatMap((item) =>
+			item.priorDecisionId ? [item.id] : [],
+		),
+	);
+	const settledIds = new Set(
+		settled.flatMap((decision) =>
+			decision.findingRefs
+				.filter(
+					(ref) =>
+						!reRaised.has(ref.findingId) ||
+						decision.observationId === latestObservationId,
+				)
+				.map((ref) => ref.findingId),
+		),
+	);
 	const folded = binding
 		? foldEffectiveExecution({ recordStore, runId })
 		: null;
@@ -723,12 +773,93 @@ export function readImplementationCodeClosure(
 			: null;
 	return {
 		priorReviewCount,
-		priorCodeFindings:
-			pendingFindings ?? (latest ? openCodeFindings(latest) : []),
-		priorCodeDecisions: codeClosureDecisions(
-			listGovernanceDecisions(recordStore, runId).decisions,
-		),
+		priorCodeFindings: (
+			pendingFindings ?? (latest ? openCodeFindings(latest) : [])
+		).filter((finding) => !settledIds.has(finding.id)),
+		priorCodeDecisions: [
+			...codeClosureDecisions(
+				listGovernanceDecisions(recordStore, runId).decisions,
+			),
+			...settled.map((decision) => ({
+				decisionId: decision.decisionId,
+				findingIds: decision.findingRefs.map((ref) => ref.findingId),
+				evidence: [
+					...decision.evidence,
+					...(decision.restriction ? [decision.restriction] : []),
+				],
+			})),
+		],
 	};
+}
+
+/**
+ * Accepted, unsuperseded defer and restriction decisions for one phase. They
+ * settle their findings: closure stops requiring an outcome, and re-raising
+ * needs the decision id plus new evidence.
+ */
+function settledImplementationDecisions(
+	recordStore: RecordStore,
+	runId: string,
+	bindingId: string,
+	phaseId: string,
+): ImplementationDecisionPayload[] {
+	const steps = recordStore.listLines(runId, "steps");
+	const budget = recordStore.listLines(runId, "budget");
+	const accepted = listImplementationDecisions(
+		recordStore,
+		runId,
+	).decisions.filter(
+		(decision) =>
+			decision.bindingId === bindingId &&
+			classifyDecisionAcceptance({ decision, steps, budget }).accepted,
+	);
+	const superseded = new Set(
+		accepted.flatMap((decision) =>
+			decision.supersedesDecisionId ? [decision.supersedesDecisionId] : [],
+		),
+	);
+	return accepted.filter(
+		(decision) =>
+			(decision.choice === "defer_accept_risk" ||
+				decision.choice === "accept_with_restriction") &&
+			canonicalPhaseId(decision.phase) === phaseId &&
+			!superseded.has(decision.decisionId),
+	);
+}
+
+/**
+ * Findings on a gated review that still go to the author once its gate is
+ * settled. Mirrors the author context's admission: pre-existing, scope
+ * expansion, critical safety, design plan defects, and settled findings stay out.
+ */
+export function unsettledAuthorFindingIds(
+	recordStore: RecordStore,
+	observation: ImplementationReviewObservationPayload,
+): string[] {
+	const phaseId = canonicalPhaseId(observation.phase);
+	const settled = new Set(
+		phaseId
+			? settledImplementationDecisions(
+					recordStore,
+					observation.runId,
+					observation.bindingId,
+					phaseId,
+				).flatMap((decision) =>
+					decision.findingRefs.map((ref) => ref.findingId),
+				)
+			: [],
+	);
+	return observation.originalVerdict.items.flatMap((item) => {
+		if (item.scopeClass === "pre_existing") return [];
+		if (item.scopeClass === "scope_expansion") return [];
+		if (item.lateDiscovery === "critical_safety") return [];
+		if (
+			item.scopeClass === "plan_defect" &&
+			item.planImpact?.kind !== "text_only"
+		)
+			return [];
+		return settled.has(item.id) ? [] : [item.id];
+	});
 }
 
 export function validateImplementationReview(
@@ -923,11 +1054,17 @@ export function validateImplementationReview(
 			);
 		} else {
 			const amendments = input.amendments ?? [];
+			const recordedSchema = input.recordedSchema ?? 0;
 			const drift = detectPlanDrift({
 				approvedPlanBytes: input.approvedPlanBytes,
 				approvedPlanHash: input.approvedPlanHash,
 				amendments,
 				currentPlanBytes: input.approvedPlanBytes,
+				recordedSchema,
+				...(input.governingHash ? { governingHash: input.governingHash } : {}),
+				...(input.governingAnchorBytes
+					? { governingAnchorBytes: input.governingAnchorBytes }
+					: {}),
 			});
 			if (amendments.length > 0 && !drift.chainValid) {
 				diagnostics.push(
@@ -938,33 +1075,56 @@ export function validateImplementationReview(
 					),
 				);
 			} else {
-				const resolved = resolvePlanImpactSpans({
-					anchorText: drift.authorizedBytes,
-					locations,
-				});
-				if (resolved.status === "rejected") {
-					return fatal("implementation", resolved.code, resolved.message, [
-						...diagnostics,
-						diagnostic(
-							resolved.code,
-							resolved.message,
-							"error",
-							resolved.itemId,
-						),
-					]);
+				let anchorText = drift.authorizedBytes;
+				let byteSource: string | undefined;
+				if (recordedSchema === 1) {
+					const loaded = loadPlanDocument(drift.authorizedBytes, 1);
+					if (!loaded.ok) {
+						diagnostics.push(
+							diagnostic(
+								"PLAN_IMPACT_NOT_AUTHORIZED",
+								`${loaded.code}: ${loaded.message} This is not a legacy fallback.`,
+								"error",
+							),
+						);
+						anchorText = "";
+					} else {
+						anchorText = loaded.document.authorityMarkdown;
+						byteSource = drift.authorizedBytes;
+					}
 				}
-				if (resolved.status === "ambiguous") {
-					diagnostics.push(
-						diagnostic(
-							"PLAN_IMPACT_AMBIGUOUS",
-							resolved.message,
-							"error",
-							resolved.itemId,
-						),
-					);
+				if (anchorText === "" && recordedSchema === 1) {
+					// Schema 1 anchor did not load. Spans stay unauthorized.
 				} else {
-					spans = resolved.spans;
-					spansAuthorized = true;
+					const resolved = resolvePlanImpactSpans({
+						anchorText,
+						...(byteSource ? { byteSource } : {}),
+						locations,
+					});
+					if (resolved.status === "rejected") {
+						return fatal("implementation", resolved.code, resolved.message, [
+							...diagnostics,
+							diagnostic(
+								resolved.code,
+								resolved.message,
+								"error",
+								resolved.itemId,
+							),
+						]);
+					}
+					if (resolved.status === "ambiguous") {
+						diagnostics.push(
+							diagnostic(
+								"PLAN_IMPACT_AMBIGUOUS",
+								resolved.message,
+								"error",
+								resolved.itemId,
+							),
+						);
+					} else {
+						spans = resolved.spans;
+						spansAuthorized = true;
+					}
 				}
 			}
 		}

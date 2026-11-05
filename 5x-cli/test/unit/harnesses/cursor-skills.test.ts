@@ -16,11 +16,12 @@ describe("cursor skills loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
+			"5x-plan-migration",
 			"5x-config",
 		]);
 
 		const skills = listSkills();
-		expect(skills).toHaveLength(6);
+		expect(skills).toHaveLength(7);
 	});
 
 	test("applies cursor-native subagent terminology", () => {

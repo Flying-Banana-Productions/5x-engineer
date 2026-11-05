@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,7 +7,10 @@ import {
 	formatPlanReviewDiffContext,
 	validateIntroducedBy,
 } from "../../src/review-governance/plan-diff.js";
-import { cleanGitEnv } from "../helpers/clean-env.js";
+import {
+	type ImportedCommit,
+	importCommitSequence,
+} from "../helpers/git-fixture.js";
 
 const dirs: string[] = [];
 
@@ -16,49 +19,39 @@ afterAll(() => {
 		rmSync(dir, { recursive: true, force: true });
 });
 
-function git(cwd: string, ...args: string[]): string {
-	const result = Bun.spawnSync(["git", ...args], {
-		cwd,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-	});
-	if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-	return result.stdout.toString().trim();
-}
-
-function commit(cwd: string, message: string): string {
-	git(cwd, "add", "-A");
-	git(
-		cwd,
-		"-c",
-		"user.name=Test",
-		"-c",
-		"user.email=test@example.com",
-		"commit",
-		"-m",
-		message,
-	);
-	return git(cwd, "rev-parse", "HEAD");
+async function history(commits: readonly ImportedCommit[]): Promise<{
+	dir: string;
+	hashes: string[];
+}> {
+	const dir = mkdtempSync(join(tmpdir(), "5x-plan-diff-"));
+	dirs.push(dir);
+	const hashes = await importCommitSequence(dir, commits);
+	return { dir, hashes };
 }
 
 describe("plan-only review diff evidence", () => {
-	test(
+	// --concurrent runs this file on one thread, so a started test's 15s budget
+	// includes sibling git. test.serial starts that budget when the test runs.
+	test.serial(
 		"builds a top-level-relative plan diff from a subdirectory workdir",
 		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "5x-plan-subdir-"));
-			dirs.push(dir);
-			git(dir, "init");
+			const { dir, hashes } = await history([
+				{
+					message: "initial",
+					files: [{ path: "packages/app/plan.md", content: "old\n" }],
+				},
+				{
+					message: "revise nested plan",
+					files: [{ path: "packages/app/plan.md", content: "new\n" }],
+				},
+			]);
+			const previous = hashes[0] ?? "";
+			const current = hashes[1] ?? "";
 			const workdir = join(dir, "packages", "app");
-			mkdirSync(workdir, { recursive: true });
-			const planPath = join(workdir, "plan.md");
-			writeFileSync(planPath, "old\n");
-			const previous = commit(dir, "initial");
-			writeFileSync(planPath, "new\n");
-			const current = commit(dir, "revise nested plan");
 
 			const context = await buildPlanReviewDiffContext({
 				workdir,
-				planPath,
+				planPath: join(workdir, "plan.md"),
 				previousReviewCommit: previous,
 				currentCommit: current,
 			});
@@ -72,18 +65,30 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"accepts a pre-artifact end commit with an equivalent plan patch and exact hunk",
 		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "5x-plan-diff-"));
-			dirs.push(dir);
-			git(dir, "init");
-			writeFileSync(join(dir, "plan.md"), "# Plan\n\nold\n");
-			const previous = commit(dir, "initial");
-			writeFileSync(join(dir, "plan.md"), "# Plan\n\nnew\n");
-			const planCommit = commit(dir, "revise plan");
-			writeFileSync(join(dir, "review.md"), "review artifact\n");
-			const artifactCommit = commit(dir, "add review");
+			const plan = "# Plan\n\nnew\n";
+			const { dir, hashes } = await history([
+				{
+					message: "initial",
+					files: [{ path: "plan.md", content: "# Plan\n\nold\n" }],
+				},
+				{
+					message: "revise plan",
+					files: [{ path: "plan.md", content: plan }],
+				},
+				{
+					message: "add review",
+					files: [
+						{ path: "plan.md", content: plan },
+						{ path: "review.md", content: "review artifact\n" },
+					],
+				},
+			]);
+			const previous = hashes[0] ?? "";
+			const planCommit = hashes[1] ?? "";
+			const artifactCommit = hashes[2] ?? "";
 
 			const context = await buildPlanReviewDiffContext({
 				workdir: dir,
@@ -119,23 +124,25 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"tracks renamed plans and documents omitted hunk retrieval",
 		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "5x-plan-rename-"));
-			dirs.push(dir);
-			git(dir, "init");
-			writeFileSync(
-				join(dir, "old-plan.md"),
-				`${Array.from({ length: 260 }, (_, index) => `line ${index}`).join("\n")}\n`,
-			);
-			const previous = commit(dir, "initial");
-			git(dir, "mv", "old-plan.md", "new plan.md");
+			const original = `${Array.from({ length: 260 }, (_, index) => `line ${index}`).join("\n")}\n`;
 			const lines = Array.from({ length: 260 }, (_, index) => `line ${index}`);
 			lines[5] = "changed early";
 			lines[240] = "changed late";
-			writeFileSync(join(dir, "new plan.md"), `${lines.join("\n")}\n`);
-			const current = commit(dir, "rename and revise");
+			const { dir, hashes } = await history([
+				{
+					message: "initial",
+					files: [{ path: "old-plan.md", content: original }],
+				},
+				{
+					message: "rename and revise",
+					files: [{ path: "new plan.md", content: `${lines.join("\n")}\n` }],
+				},
+			]);
+			const previous = hashes[0] ?? "";
+			const current = hashes[1] ?? "";
 			const context = await buildPlanReviewDiffContext({
 				workdir: dir,
 				planPath: join(dir, "new plan.md"),
@@ -152,24 +159,56 @@ describe("plan-only review diff evidence", () => {
 		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"limits equivalent endpoints to the last plan-touching commit and later artifacts",
 		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "5x-plan-equivalence-"));
-			dirs.push(dir);
-			git(dir, "init");
-			writeFileSync(join(dir, "plan.md"), "base\n");
-			const previous = commit(dir, "initial");
-			writeFileSync(join(dir, "plan.md"), "first revision\n");
-			const firstPlanCommit = commit(dir, "first plan revision");
-			writeFileSync(join(dir, "review-1.md"), "first artifact\n");
-			const firstArtifactCommit = commit(dir, "first artifact");
-			writeFileSync(join(dir, "plan.md"), "final revision\n");
-			const lastPlanCommit = commit(dir, "final plan revision");
-			writeFileSync(join(dir, "review-2.md"), "second artifact\n");
-			const secondArtifactCommit = commit(dir, "second artifact");
-			writeFileSync(join(dir, "review-3.md"), "third artifact\n");
-			const current = commit(dir, "third artifact");
+			const { dir, hashes } = await history([
+				{
+					message: "initial",
+					files: [{ path: "plan.md", content: "base\n" }],
+				},
+				{
+					message: "first plan revision",
+					files: [{ path: "plan.md", content: "first revision\n" }],
+				},
+				{
+					message: "first artifact",
+					files: [
+						{ path: "plan.md", content: "first revision\n" },
+						{ path: "review-1.md", content: "first artifact\n" },
+					],
+				},
+				{
+					message: "final plan revision",
+					files: [
+						{ path: "plan.md", content: "final revision\n" },
+						{ path: "review-1.md", content: "first artifact\n" },
+					],
+				},
+				{
+					message: "second artifact",
+					files: [
+						{ path: "plan.md", content: "final revision\n" },
+						{ path: "review-1.md", content: "first artifact\n" },
+						{ path: "review-2.md", content: "second artifact\n" },
+					],
+				},
+				{
+					message: "third artifact",
+					files: [
+						{ path: "plan.md", content: "final revision\n" },
+						{ path: "review-1.md", content: "first artifact\n" },
+						{ path: "review-2.md", content: "second artifact\n" },
+						{ path: "review-3.md", content: "third artifact\n" },
+					],
+				},
+			]);
+			const previous = hashes[0] ?? "";
+			const firstPlanCommit = hashes[1] ?? "";
+			const firstArtifactCommit = hashes[2] ?? "";
+			const lastPlanCommit = hashes[3] ?? "";
+			const secondArtifactCommit = hashes[4] ?? "";
+			const current = hashes[5] ?? "";
 
 			const context = await buildPlanReviewDiffContext({
 				workdir: dir,
@@ -185,21 +224,38 @@ describe("plan-only review diff evidence", () => {
 			expect(context.equivalentPlanCommits).not.toContain(firstPlanCommit);
 			expect(context.equivalentPlanCommits).not.toContain(firstArtifactCommit);
 		},
-		// Five commits plus endpoint enumeration spawn many git processes; the
-		// concurrent full suite can saturate process startup on CI.
-		{ timeout: 60000 },
+		{ timeout: 15000 },
 	);
 
-	test(
+	test.serial(
 		"returns an empty text context for no plan change and rejects binary plans",
 		async () => {
-			const dir = mkdtempSync(join(tmpdir(), "5x-plan-binary-"));
-			dirs.push(dir);
-			git(dir, "init");
-			writeFileSync(join(dir, "plan.md"), "unchanged\n");
-			const previous = commit(dir, "initial");
-			writeFileSync(join(dir, "notes.md"), "artifact only\n");
-			const artifact = commit(dir, "artifact");
+			const { dir, hashes } = await history([
+				{
+					message: "initial",
+					files: [{ path: "plan.md", content: "unchanged\n" }],
+				},
+				{
+					message: "artifact",
+					files: [
+						{ path: "plan.md", content: "unchanged\n" },
+						{ path: "notes.md", content: "artifact only\n" },
+					],
+				},
+				{
+					message: "binary plan",
+					files: [
+						{
+							path: "plan.md",
+							content: Buffer.from([0, 1, 2, 3, 0, 4]),
+						},
+						{ path: "notes.md", content: "artifact only\n" },
+					],
+				},
+			]);
+			const previous = hashes[0] ?? "";
+			const artifact = hashes[1] ?? "";
+			const binary = hashes[2] ?? "";
 			const unchanged = await buildPlanReviewDiffContext({
 				workdir: dir,
 				planPath: join(dir, "plan.md"),
@@ -209,8 +265,6 @@ describe("plan-only review diff evidence", () => {
 			expect(unchanged.patch).toBe("");
 			expect(unchanged.hunks).toEqual([]);
 
-			writeFileSync(join(dir, "plan.md"), Buffer.from([0, 1, 2, 3, 0, 4]));
-			const binary = commit(dir, "binary plan");
 			await expect(
 				buildPlanReviewDiffContext({
 					workdir: dir,

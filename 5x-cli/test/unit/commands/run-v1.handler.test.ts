@@ -492,4 +492,60 @@ describe("recordStepInternal dual-write", () => {
 		expect(afterReopen.recorded).toBe(true);
 		expect(afterReopen.step_id).not.toBe(afterWork.step_id);
 	});
+
+	test("a malformed schema marker cannot complete a phase as v1", async () => {
+		const ctx = writer();
+		writeFileSync(join(tmp, "plan.md"), MALFORMED_BUDGET_PLAN);
+		createReviewBudgetStore(ctx.recordStore).saveImplementationCompatibility(
+			{
+				kind: "implementation-compatibility",
+				version: 1,
+				id: "compat-1",
+				executionRunId: "run1",
+				reason: "no_budget",
+				observedMode: "advisory",
+				createdAt: "2026-09-24 00:00:00",
+			},
+			originFor({ kind: "system", role: "cli" }),
+		);
+		await expect(
+			recordStepInternal(
+				{
+					run: "run1",
+					stepName: "phase:complete",
+					phase: "1",
+					iteration: 1,
+					result: "{}",
+				},
+				ctx,
+			),
+		).rejects.toMatchObject({
+			code: "PLAN_SCHEMA_INVALID",
+			message: expect.stringContaining("5x-plan-migration"),
+		});
+		expect(ctx.recordStore.listLines("run1", "steps")).toHaveLength(0);
+	});
 });
+
+const MALFORMED_BUDGET_PLAN = `# Plan
+
+<!-- 5x:bogus -->
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+- [ ] Bind
+`;

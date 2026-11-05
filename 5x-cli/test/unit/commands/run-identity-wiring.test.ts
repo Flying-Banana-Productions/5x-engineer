@@ -22,6 +22,10 @@ import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { CliError } from "../../../src/output.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 interface TestContext {
 	tmp: string;
@@ -33,27 +37,7 @@ interface TestContext {
 function setup(): TestContext {
 	const tmp = mkdtempSync(join(tmpdir(), "5x-identity-wire-"));
 
-	Bun.spawnSync(["git", "init"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
+	copyInitializedRepo(tmp);
 
 	writeFileSync(join(tmp, ".gitignore"), ".5x/\n5x.toml.local\n");
 	writeFileSync(join(tmp, "5x.toml"), "");
@@ -62,20 +46,7 @@ function setup(): TestContext {
 	const planPath = join(tmp, "docs", "plan.md");
 	writeFileSync(planPath, "# Plan\n");
 
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "initial"], {
-		cwd: tmp,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: "ignore",
-	});
+	commitAllSync(tmp, "initial");
 
 	const stateDir = join(tmp, ".5x");
 	mkdirSync(stateDir, { recursive: true });

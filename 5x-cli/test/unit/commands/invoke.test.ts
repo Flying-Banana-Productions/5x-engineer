@@ -41,7 +41,11 @@ import {
 	prepareImplementationReviewContext,
 } from "../../../src/review-governance/implementation-state.js";
 import { prepareTextAmendmentGuard } from "../../../src/review-governance/plan-amendment.js";
-import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+	readHead,
+} from "../../helpers/git-fixture.js";
 import {
 	makeBudgetContext,
 	pendingSnapshot,
@@ -171,19 +175,7 @@ describe("invoke reviewer — plan read state", () => {
 - Persistent/external boundaries: 0`;
 
 	async function setupBudgetInvoke(dir: string, humanGate = false) {
-		for (const args of [
-			["init"],
-			["config", "user.email", "test@test.com"],
-			["config", "user.name", "Test"],
-		] as const) {
-			Bun.spawnSync(["git", ...args], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-		}
+		copyInitializedRepo(dir);
 		// Create the file first so initScaffold skips the process-wide singleton.
 		const db = openPrivateControlPlaneDb(dir);
 		try {
@@ -1247,27 +1239,7 @@ describe("invoke — worktree envelope fields (unit)", () => {
 		const dir = makeTmpDir();
 		try {
 			// Setup: git repo, 5x init, plan file
-			Bun.spawnSync(["git", "init"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "config", "user.name", "Test"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			copyInitializedRepo(dir);
 
 			const planDir = join(dir, "docs", "development");
 			mkdirSync(planDir, { recursive: true });
@@ -1298,20 +1270,7 @@ describe("invoke — worktree envelope fields (unit)", () => {
 			);
 
 			// Commit so worktree is clean
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "init"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			commitAllSync(dir, "init");
 
 			// Capture stdout from invokeAgent
 			const originalLog = console.log;
@@ -1360,13 +1319,7 @@ describe("invoke implementation admission", () => {
 		const dir = makeTmpDir();
 		let db: Database | undefined;
 		try {
-			Bun.spawnSync(["git", "init"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			copyInitializedRepo(dir);
 			const planPath = join(dir, "plan.md");
 			writeFileSync(
 				planPath,
@@ -1425,6 +1378,42 @@ describe("invoke implementation admission", () => {
 				),
 			).rejects.toMatchObject({ code: "IMPLEMENTATION_APPROVAL_REQUIRED" });
 			expect(providerCalls).toBe(0);
+
+			writeFileSync(
+				planPath,
+				readFileSync(planPath, "utf8").replace(
+					"# Plan\n",
+					"# Plan\n\n<!-- 5x:bogus -->\n",
+				),
+			);
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run_admission01",
+						workdir: dir,
+						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => {
+							throw new RecordContextError(
+								"RECORDS_UNAVAILABLE",
+								"sqlite-only run has no record home",
+							);
+						},
+						createProvider: async () => {
+							providerCalls += 1;
+							throw new Error("provider should not be created");
+						},
+					},
+				),
+			).rejects.toMatchObject({
+				code: "PLAN_SCHEMA_INVALID",
+				message: expect.stringContaining("5x-plan-migration"),
+			});
+			expect(providerCalls).toBe(0);
 		} finally {
 			db?.close();
 			cleanupDir(dir);
@@ -1434,15 +1423,7 @@ describe("invoke implementation admission", () => {
 
 describe("invoke implementation review recording", () => {
 	function gitHead(dir: string): string {
-		const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-		return result.stdout.toString().trim();
+		return readHead(dir);
 	}
 
 	function verdict() {
@@ -1541,19 +1522,7 @@ describe("invoke implementation review recording", () => {
 		const dir = makeTmpDir();
 		let db: Database | undefined;
 		try {
-			for (const args of [
-				["init"],
-				["config", "user.email", "test@test.com"],
-				["config", "user.name", "Test"],
-			] as const) {
-				Bun.spawnSync(["git", ...args], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-			}
+			copyInitializedRepo(dir);
 			// Create the file first so initScaffold skips the process-wide singleton.
 			db = openPrivateControlPlaneDb(dir);
 			await initScaffold({ startDir: dir });
@@ -1570,20 +1539,7 @@ provider = "sample"
 model = "sample/test"
 `,
 			);
-			Bun.spawnSync(["git", "add", "-A"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			Bun.spawnSync(["git", "commit", "-m", "init"], {
-				cwd: dir,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
+			commitAllSync(dir, "init");
 			const { ctx, head, prepared } = await preparedContext(dir);
 			const logs: string[] = [];
 			const originalLog = console.log;
@@ -1744,41 +1700,8 @@ The binding is unchanged.
 		return JSON.stringify(value);
 	}
 
-	function git(dir: string, args: string[]): void {
-		const result = Bun.spawnSync(["git", ...args], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		if (result.exitCode !== 0) {
-			throw new Error(
-				result.stderr.toString() || `git ${args.join(" ")} failed`,
-			);
-		}
-	}
-
-	function gitHead(dir: string): string {
-		const result = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-		return result.stdout.toString().trim();
-	}
-
 	async function setupAuthorInvoke(dir: string) {
-		for (const args of [
-			["init"],
-			["config", "user.email", "test@test.com"],
-			["config", "user.name", "Test"],
-		] as const) {
-			git(dir, [...args]);
-		}
+		copyInitializedRepo(dir);
 		const planPath = join(dir, "plan.md");
 		writeFileSync(planPath, approved);
 		writeFileSync(
@@ -1793,8 +1716,7 @@ model = "sample/test"
 		const db = openPrivateControlPlaneDb(dir);
 		try {
 			createRunV1(db, { id: "run1", planPath });
-			git(dir, ["add", "-A"]);
-			git(dir, ["commit", "-m", "approved plan"]);
+			commitAllSync(dir, "approved plan");
 
 			const ctx = makeBudgetContext({ mode: "enforced" });
 			const ledger = {
@@ -1969,12 +1891,9 @@ model = "sample/test"
 			id: result.sessionId,
 			run: async () => {
 				writeFileSync(planPath, outOfSpan);
-				git(dir, ["add", "plan.md"]);
-				git(dir, ["commit", "-m", "out of span"]);
-				authorCommit = gitHead(dir);
+				authorCommit = commitAllSync(dir, "out of span");
 				writeFileSync(planPath, approved);
-				git(dir, ["add", "plan.md"]);
-				git(dir, ["commit", "-m", "restore approved"]);
+				commitAllSync(dir, "restore approved");
 				writeFileSync(planPath, outOfSpan);
 				result.structured = {
 					result: "needs_human",

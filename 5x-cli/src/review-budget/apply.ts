@@ -4,7 +4,7 @@ import type {
 	ReviewBudgetSnapshotRecord,
 	ReviewBudgetStore,
 } from "../control-plane/review-budget-store.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import {
 	isImplementationScopeClass,
 	isPlanScopeClass,
@@ -179,7 +179,16 @@ export function applyPlanReviewBudget(
 			"Review budget baseline is missing",
 		);
 
-	const parsed = parseDeliveryBudget(input.planMarkdown);
+	const loaded = readAuthoritativeBudget(input.planMarkdown, "file");
+	if (!loaded.ok) {
+		return error(
+			loaded.code,
+			loaded.message.includes("not a legacy fallback")
+				? loaded.message
+				: `${loaded.message} This is not a legacy fallback.`,
+		);
+	}
+	const parsed = loaded.parsed;
 	if (!parsed.ok) return error(parsed.code, parsed.message);
 	const incompleteClaimItem = findIncompleteDebtClaimItem(parsed.value);
 	if (incompleteClaimItem) {

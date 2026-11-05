@@ -468,6 +468,7 @@ describe("implementation run state", () => {
 			activeGate: null,
 			qualityAttempt: null,
 			telemetry: null,
+			restrictions: [],
 			credit: {
 				grossEffort: 6,
 				inheritedBaseline: 8,

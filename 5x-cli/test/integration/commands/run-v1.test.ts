@@ -16,6 +16,10 @@ import { DB_FILENAME } from "../../../src/commands/control-plane.js";
 import { CURRENT_RUN_FILENAME } from "../../../src/commands/run-pointer.js";
 import { runMigrations } from "../../../src/db/schema.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -44,27 +48,7 @@ function setupProject(dir: string): {
 	projectRoot: string;
 } {
 	// Init git repo
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	// Create plan file
 	const planDir = join(dir, "docs", "development");
@@ -80,20 +64,7 @@ function setupProject(dir: string): {
 	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
 	// Initial commit so worktree is clean
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 
 	return { planPath, projectRoot: dir };
 }

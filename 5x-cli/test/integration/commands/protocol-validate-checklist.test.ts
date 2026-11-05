@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runMigrations } from "../../../src/db/schema.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -67,27 +71,7 @@ async function run5xWithStdin(
 }
 
 function setupProject(dir: string): void {
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	const db = new Database(join(dir, ".5x", "5x.db"));
@@ -100,20 +84,7 @@ function setupProject(dir: string): void {
 		'[author]\nprovider = "sample"\nmodel = "sample/test"\n\n[reviewer]\nprovider = "sample"\nmodel = "sample/test"\n',
 	);
 
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 }
 
 function insertRun(dir: string, runId: string, planPath: string): void {

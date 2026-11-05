@@ -13,6 +13,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -182,27 +186,7 @@ describe("--pretty/--no-pretty on parse errors", () => {
 
 describe("--worktree [path] consolidation", () => {
 	function setupProject(dir: string): { planPath: string } {
-		Bun.spawnSync(["git", "init"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		Bun.spawnSync(["git", "config", "user.name", "Test"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		copyInitializedRepo(dir);
 
 		const planDir = join(dir, "docs", "development");
 		mkdirSync(planDir, { recursive: true });
@@ -212,20 +196,7 @@ describe("--worktree [path] consolidation", () => {
 		mkdirSync(join(dir, ".5x"), { recursive: true });
 		writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
 
-		Bun.spawnSync(["git", "add", "-A"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
-		Bun.spawnSync(["git", "commit", "-m", "init"], {
-			cwd: dir,
-			env: cleanGitEnv(),
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		commitAllSync(dir, "init");
 
 		return { planPath };
 	}

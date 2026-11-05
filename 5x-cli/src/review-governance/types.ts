@@ -300,6 +300,7 @@ export type ImplementationDecisionChoice =
 	| "revise_plan"
 	| "authorize_amendment"
 	| "defer_accept_risk"
+	| "accept_with_restriction"
 	| "restore_simplification"
 	| "approve_higher_burden"
 	| "reduce_scope"

@@ -31,6 +31,7 @@ Angle-bracket arguments below are placeholders; replace them before running.
 | Review governance | `review gate show`, `review decide --gate <id> …` |
 | Select plan approval | `review implementation bind --run <id> --source-run <id>` |
 | Narrow amendment recovery | `review implementation recover-plan --help` |
+| Plan schema migration | `plan migrate --plan <path> --mode <m>` (unapproved), `review migrate-schema --run <id> --mode <m> --prepare`, `review migrate-schema --run <id> --mode <m> --commit <sha>` |
 | Verify eligible correction | `review corrections finish --run <id> --phase <p> --review <observation-id> --commit <sha>` |
 | Manage worktrees | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` |
 | Diagnose/recover | `doctor [--fix]`, `lock list`, `unlock <plan> [--force]` |

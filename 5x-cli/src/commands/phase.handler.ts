@@ -354,7 +354,7 @@ export async function phaseFinishCore(
 				planPath = ctxResult.context.effectivePlanPath;
 			}
 		}
-		const checklist = evaluatePhaseChecklist({
+		const checklist = await evaluatePhaseChecklist({
 			role: "author",
 			run: runId,
 			phase: params.phase,

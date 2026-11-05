@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,11 +11,23 @@ import {
 } from "../../../src/control-plane/record-types.js";
 import { reindexReviewBudget } from "../../../src/control-plane/review-budget-index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
+import { runMigrations } from "../../../src/db/schema.js";
 import { parseDeliveryBudget } from "../../../src/parsers/delivery-budget.js";
+import {
+	readAuthoritativeBudget,
+	readAuthoritativePlan,
+} from "../../../src/plan-schema/authority.js";
+import { loadPlanDocument } from "../../../src/plan-schema/document.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import {
 	decodeBudgetSnapshotPayload,
+	decodeImplementationBindingPayload,
+	encodeImplementationBindingPayload,
+	encodeImplementationReviewObservationPayload,
 	type ImplementationBindingPayload,
+	type ImplementationReviewObservationPayload,
+	implementationBindingKey,
+	implementationReviewObservationKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { deriveInheritedBudgetGovernance } from "../../../src/review-governance/architecture-approval.js";
@@ -22,15 +35,34 @@ import {
 	createReviewDecision,
 	governanceDecisionKey,
 } from "../../../src/review-governance/decisions.js";
+import { resolvePlanImpactSpans } from "../../../src/review-governance/implementation.js";
 import {
 	detectPlanDrift,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
+	hashPlanBytes,
 	isImplementationAuthorTemplate,
 	mapDebtTargetToPhaseId,
+	PLAN_DRIFT_RECOVERY_HELP,
+	PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
+	planDriftRecoveryHelp,
 	planRepoPath,
 	recordVerifiedTextAmendment,
+	verifyAuthorTextAmendment,
 } from "../../../src/review-governance/implementation-state.js";
+import {
+	prepareTextAmendmentGuard,
+	structuralSignature,
+} from "../../../src/review-governance/plan-amendment.js";
+import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import type { ReviewGateCause } from "../../../src/review-governance/types.js";
+import {
+	SCHEMA1_AUTHORITY_PLAN,
+	SCHEMA1_NOTE_ONLY_TEXT,
+	SCHEMA1_OVERVIEW,
+	SCHEMA1_STALE_TEXT,
+	withSchema1Status,
+} from "../../helpers/schema1-authority-fixture.js";
 
 const PLAN_PATH = "docs/development/plans/gov.md";
 const ORIGIN: RecordOrigin = {
@@ -308,6 +340,7 @@ describe("implementation execution binding", () => {
 		const checked = approved.replace("- [ ] Bind", "- [x] Bind");
 		expect(
 			detectPlanDrift({
+				recordedSchema: 0,
 				approvedPlanBytes: approved,
 				approvedPlanHash: "unused",
 				amendments: [],
@@ -316,6 +349,7 @@ describe("implementation execution binding", () => {
 		).toBe(false);
 		expect(
 			detectPlanDrift({
+				recordedSchema: 0,
 				approvedPlanBytes: "* [X] Bind\n",
 				approvedPlanHash: "unused",
 				amendments: [],
@@ -324,6 +358,7 @@ describe("implementation execution binding", () => {
 		).toBe(false);
 		expect(
 			detectPlanDrift({
+				recordedSchema: 0,
 				approvedPlanBytes: approved,
 				approvedPlanHash: "unused",
 				amendments: [],
@@ -1052,6 +1087,7 @@ describe("implementation execution binding", () => {
 			await admit(broken, { executionRunId: "exec", markdown: amended }),
 		).toMatchObject({ status: "error", code: "IMPLEMENTATION_PLAN_DRIFT" });
 		const drift = detectPlanDrift({
+			recordedSchema: 0,
 			approvedPlanBytes: first.binding.approvedPlanBytes,
 			approvedPlanHash: first.binding.approvedPlanHash,
 			amendments: [],
@@ -1097,4 +1133,548 @@ describe("implementation execution binding", () => {
 		const encoded = bound.binding satisfies ImplementationBindingPayload;
 		expect(encoded.version).toBe(1);
 	});
+
+	test("schema 1 drift allows status and note edits and rejects governing edits", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const loaded = loadPlanDocument(markdown, 1);
+		if (!loaded.ok) throw new Error(loaded.message);
+		const governingHash = hashPlanBytes(loaded.document.comparisonBytes);
+		const base = {
+			approvedPlanBytes: markdown,
+			approvedPlanHash: hashPlanBytes(markdown),
+			amendments: [],
+			recordedSchema: 1 as const,
+			governingHash,
+		};
+		expect(
+			detectPlanDrift({
+				...base,
+				currentPlanBytes: withSchema1Status(markdown, "Revised — 状态 line"),
+			}).drifted,
+		).toBe(false);
+		expect(
+			detectPlanDrift({
+				...base,
+				currentPlanBytes: markdown.replace(
+					SCHEMA1_NOTE_ONLY_TEXT,
+					"Different note prose.",
+				),
+			}).drifted,
+		).toBe(false);
+		expect(
+			detectPlanDrift({
+				...base,
+				currentPlanBytes: markdown.replace(
+					"- [ ] Second item",
+					"- [x] Second item",
+				),
+			}).drifted,
+		).toBe(false);
+		const governing = detectPlanDrift({
+			...base,
+			currentPlanBytes: markdown.replace(SCHEMA1_OVERVIEW, "Changed overview."),
+		});
+		expect(governing.drifted).toBe(true);
+		expect(governing.reason).toContain("not a legacy fallback");
+		expect(governing.reason).not.toContain("PLAN_SCHEMA_INVALID");
+		expect(planDriftRecoveryHelp(1, governing.reason)).toBe(
+			PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).not.toContain("Legacy schema 0");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).not.toContain(
+			"can record a schema transition",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"need an approved amendment",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"Missing schema 1 markers are malformed input",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain("5x-plan-migration");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"5x review implementation amend",
+		);
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).not.toContain("recover-plan");
+		expect(PLAN_SCHEMA1_DRIFT_RECOVERY_HELP).toContain(
+			"Schema 1 runs and migrated runs need a CLI that records `planSchema`.",
+		);
+		const missing = detectPlanDrift({
+			...base,
+			currentPlanBytes: markdown.replace("<!-- 5x:plan-schema:1 -->\n", ""),
+		});
+		expect(missing.drifted).toBe(true);
+		expect(missing.reason).toContain("PLAN_SCHEMA_INVALID");
+		expect(missing.reason).toContain("not a legacy fallback");
+		expect(missing.reason).toContain("Missing markers are malformed input");
+		expect(missing.reason).toContain("5x review migrate-schema --help");
+		expect(missing.reason).toContain("5x-plan-migration");
+		expect(planDriftRecoveryHelp(1, missing.reason)).toBe(
+			PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
+		);
+		expect(planDriftRecoveryHelp(0, missing.reason)).toBe(
+			PLAN_DRIFT_RECOVERY_HELP,
+		);
+		const wrongHash = detectPlanDrift({
+			...base,
+			currentPlanBytes: markdown,
+			governingHash: "sha256:not-the-comparison-hash",
+		});
+		expect(wrongHash.drifted).toBe(true);
+		expect(wrongHash.reason).toContain("governingHash");
+	});
+
+	test("schema 0 drift still rejects a status edit and names migration recovery", async () => {
+		expect(PLAN_DRIFT_RECOVERY_HELP).toContain(
+			"5x review migrate-schema --help",
+		);
+		expect(PLAN_DRIFT_RECOVERY_HELP).toContain("5x-plan-migration");
+		expect(PLAN_DRIFT_RECOVERY_HELP).toContain(
+			"5x review implementation amend",
+		);
+		expect(PLAN_DRIFT_RECOVERY_HELP).not.toContain("recover-plan");
+		expect(PLAN_DRIFT_RECOVERY_HELP).toContain("Legacy schema 0");
+		const markdown = plan();
+		const ctx = setup();
+		approveSource(ctx, "source", markdown);
+		putRun(ctx.recordStore, "exec");
+		const bound = await admit(ctx, { executionRunId: "exec", markdown });
+		expect(bound.status).toBe("bound");
+		if (bound.status !== "bound") return;
+		expect(bound.binding.planSchema).toBeUndefined();
+		expect(bound.binding.governingHash).toBeUndefined();
+		const drifted = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: `**Status:** Revised\n\n${markdown}`,
+		});
+		expect(drifted).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_DRIFT",
+			detail: { amendmentHelp: PLAN_DRIFT_RECOVERY_HELP },
+		});
+	});
+
+	test("bind stores schema 1 fields and a later status edit does not drift", async () => {
+		const markdown = `<!-- 5x:plan-schema:1 -->
+**Version:** 1
+**Status:** Approved
+
+<!-- 5x:contract:start -->
+${plan().trimEnd()}
+<!-- 5x:contract:end -->
+`;
+		const loaded = loadPlanDocument(markdown, "file");
+		if (!loaded.ok) throw new Error(loaded.message);
+		const ctx = setup();
+		approveSource(ctx, "source", markdown);
+		putRun(ctx.recordStore, "exec");
+		const bound = await admit(ctx, { executionRunId: "exec", markdown });
+		expect(bound.status).toBe("bound");
+		if (bound.status !== "bound") return;
+		expect(bound.binding.planSchema).toBe(1);
+		expect(bound.binding.governingHash).toBe(
+			hashPlanBytes(loaded.document.comparisonBytes),
+		);
+		expect(bound.binding.schemaMigrationId).toBeUndefined();
+		const again = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: markdown.replace("**Status:** Approved", "**Status:** Revised"),
+		});
+		expect(again).toMatchObject({ status: "bound", created: false });
+		const governing = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: markdown.replace(
+				"- [ ] Bind execution",
+				"- [ ] Rebind execution",
+			),
+		});
+		expect(governing).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_DRIFT",
+			detail: { amendmentHelp: PLAN_SCHEMA1_DRIFT_RECOVERY_HELP },
+		});
+	});
+
+	test("parser, budget, signature, and drift agree on one schema 1 fixture", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const planRead = readAuthoritativePlan(markdown, "file");
+		const budgetRead = readAuthoritativeBudget(markdown, "file");
+		const loaded = loadPlanDocument(markdown, 1);
+		expect(planRead.ok).toBe(true);
+		expect(budgetRead.ok).toBe(true);
+		expect(loaded.ok).toBe(true);
+		if (!planRead.ok || !budgetRead.ok || !loaded.ok || !budgetRead.parsed.ok) {
+			return;
+		}
+		const comparisonHash = hashPlanBytes(loaded.document.comparisonBytes);
+		expect(hashPlanBytes(planRead.document.comparisonBytes)).toBe(
+			comparisonHash,
+		);
+		expect(hashPlanBytes(budgetRead.document.comparisonBytes)).toBe(
+			comparisonHash,
+		);
+		expect(structuralSignature(planRead.document.comparisonBytes)).toBe(
+			structuralSignature(budgetRead.document.comparisonBytes),
+		);
+		expect(planRead.plan.phases.map((phase) => phase.number)).toEqual([
+			"1",
+			"2",
+		]);
+		expect(budgetRead.parsed.value.workItems.map((item) => item.id)).toEqual([
+			"W1",
+		]);
+		expect(
+			detectPlanDrift({
+				approvedPlanBytes: markdown,
+				approvedPlanHash: hashPlanBytes(markdown),
+				amendments: [],
+				currentPlanBytes: markdown,
+				recordedSchema: 1,
+				governingHash: comparisonHash,
+			}),
+		).toMatchObject({ drifted: false, chainValid: true });
+	});
+
+	test("a status-only schema 1 blob writes no amendment and a span change stores raw hashes", () => {
+		const markdown = SCHEMA1_AUTHORITY_PLAN;
+		const loaded = loadPlanDocument(markdown, 1);
+		if (!loaded.ok) throw new Error(loaded.message);
+		const resolved = resolvePlanImpactSpans({
+			anchorText: loaded.document.authorityMarkdown,
+			byteSource: markdown,
+			locations: [
+				{
+					itemId: "R1",
+					heading: "Phase 1: Bind",
+					staleText: SCHEMA1_STALE_TEXT,
+				},
+			],
+		});
+		if (resolved.status !== "resolved") throw new Error(resolved.message);
+		const prepared = prepareTextAmendmentGuard({
+			id: "guard-1",
+			anchorBytes: markdown,
+			anchorCommit: "a".repeat(40),
+			parentLineageId: null,
+			allowedSpans: resolved.spans,
+			recordedSchema: 1,
+		});
+		if (!prepared.ok) throw new Error(prepared.message);
+		const recordStore = createMemoryRecordStore();
+		putRun(recordStore, "exec");
+		const store = createReviewBudgetStore(recordStore);
+		const saved = store.saveImplementationBinding(
+			{
+				...bindingPayload(markdown),
+				planSchema: 1,
+				governingHash: hashPlanBytes(loaded.document.comparisonBytes),
+			},
+			ORIGIN,
+		);
+		const observation = schema1Observation(saved.payload, prepared.guard);
+		recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: implementationReviewObservationKey(
+				"exec",
+				observation.stepKey,
+			),
+			payload: encodeImplementationReviewObservationPayload(observation),
+			createdAt: observation.createdAt,
+			...recordedEnvelope(ORIGIN),
+		});
+		const statusOnly = Buffer.from(
+			withSchema1Status(markdown, "Revised — 状态 line"),
+			"utf8",
+		);
+		expect(
+			verifyAuthorTextAmendment({
+				store,
+				binding: saved.payload,
+				origin: ORIGIN,
+				phase: "1",
+				committedPlanBytes: statusOnly,
+				worktreePlanBytes: statusOnly,
+				afterCommit: "b".repeat(40),
+			}).status,
+		).toBe("unchanged");
+		expect(
+			store.listImplementationTextAmendments("exec", saved.payload.id),
+		).toEqual([]);
+		const amended = markdown.replace(
+			SCHEMA1_STALE_TEXT,
+			"Bind the execution run to the approved plan.",
+		);
+		const bytes = Buffer.from(amended, "utf8");
+		const verified = verifyAuthorTextAmendment({
+			store,
+			binding: saved.payload,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: bytes,
+			worktreePlanBytes: bytes,
+			afterCommit: "c".repeat(40),
+		});
+		expect(verified.status).toBe("verified");
+		if (verified.status !== "verified") return;
+		expect(verified.amendment.authorizedPlanBytes).toBe(amended);
+		expect(verified.amendment.beforeBlobHash).toBe(hashPlanBytes(markdown));
+		expect(verified.amendment.afterBlobHash).toBe(hashPlanBytes(amended));
+	});
+
+	test("replay accepts one schema migration and does not install an invalid target", () => {
+		const approved = "# Plan\n\n- [ ] Bind\n";
+		const target = `<!-- 5x:plan-schema:1 -->
+**Status:** Approved
+
+<!-- 5x:contract:start -->
+# Plan
+
+- [ ] Bind
+<!-- 5x:contract:end -->
+`;
+		const targetDocument = loadPlanDocument(target, 1);
+		if (!targetDocument.ok) throw new Error(targetDocument.message);
+		const governingHash = hashPlanBytes(
+			targetDocument.document.comparisonBytes,
+		);
+		const migration = {
+			kind: "plan-schema-migration" as const,
+			version: 1 as const,
+			id: "mig-1",
+			fromSchema: 0 as const,
+			toSchema: 1 as const,
+			parentLineageId: null,
+			beforeBlobHash: hashPlanBytes(approved),
+			afterBlobHash: hashPlanBytes(target),
+			authorizedPlanBytes: target,
+			governingHash,
+		};
+		const statusEdit = target.replace(
+			"**Status:** Approved",
+			"**Status:** Revised",
+		);
+		expect(
+			detectPlanDrift({
+				approvedPlanBytes: approved,
+				approvedPlanHash: hashPlanBytes(approved),
+				amendments: [migration],
+				currentPlanBytes: statusEdit,
+				recordedSchema: 1,
+				governingHash,
+			}),
+		).toMatchObject({
+			drifted: false,
+			chainValid: true,
+			authorizedBytes: target,
+		});
+		const invalid = detectPlanDrift({
+			approvedPlanBytes: approved,
+			approvedPlanHash: hashPlanBytes(approved),
+			amendments: [{ ...migration, governingHash: "sha256:nope" }],
+			currentPlanBytes: statusEdit,
+			recordedSchema: 1,
+			governingHash,
+		});
+		expect(invalid.chainValid).toBe(false);
+		expect(invalid.authorizedBytes).toBe(approved);
+		expect(invalid.drifted).toBe(true);
+		expect(invalid.reason).toContain("PLAN_SCHEMA_INVALID");
+		expect(invalid.reason).toContain("not a legacy fallback");
+	});
+
+	test("a binding read error does not downgrade to file mode", () => {
+		const recordStore = createMemoryRecordStore();
+		putRun(recordStore, "exec");
+		putRun(recordStore, "plain");
+		recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: implementationBindingKey("exec"),
+			payload: { kind: "implementation-binding", version: 1 },
+			createdAt: "2026-09-23 00:00:00",
+			...recordedEnvelope(ORIGIN),
+		});
+		const store = createReviewBudgetStore(recordStore);
+		expect(expectedSchemaForStore(store, "plain")).toBe("file");
+		expect(expectedSchemaForStore(store, "missing")).toBe("file");
+		expect(() => expectedSchemaForStore(store, "exec")).toThrow(TypeError);
+	});
+
+	test("historical bindings decode and the sqlite index keeps a schema 1 binding", () => {
+		const historical = bindingPayload("# Plan\n");
+		const encoded = encodeImplementationBindingPayload(historical) as Record<
+			string,
+			unknown
+		>;
+		expect(encoded.planSchema).toBeUndefined();
+		expect(encoded.governingHash).toBeUndefined();
+		expect(
+			decodeImplementationBindingPayload(encoded).planSchema,
+		).toBeUndefined();
+		const recordStore = createMemoryRecordStore();
+		putRun(recordStore, "exec");
+		recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: implementationBindingKey("exec"),
+			payload: encoded,
+			createdAt: historical.createdAt,
+			...recordedEnvelope(ORIGIN),
+		});
+		const store = createReviewBudgetStore(recordStore);
+		expect(store.getImplementationBinding("exec")?.planSchema).toBeUndefined();
+		expect(expectedSchemaForStore(store, "exec")).toBe(0);
+		putRun(recordStore, "schema1");
+		const schema1 = store.saveImplementationBinding(
+			{
+				...bindingPayload(SCHEMA1_AUTHORITY_PLAN),
+				id: "binding-schema-1",
+				executionRunId: "schema1",
+				planSchema: 1,
+				governingHash: "sha256:governing",
+				schemaMigrationId: "mig-1",
+				predecessorPlanCommit: "d".repeat(40),
+			},
+			ORIGIN,
+		);
+		expect(schema1.payload.planSchema).toBe(1);
+		expect(schema1.payload.governingHash).toBe("sha256:governing");
+		expect(expectedSchemaForStore(store, "schema1")).toBe(1);
+		recordStore.append({
+			runId: "schema1",
+			stream: "budget",
+			idempotencyKey: "budget:mystery-kind:schema1",
+			payload: { kind: "mystery-budget", version: 9 },
+			createdAt: historical.createdAt,
+			...recordedEnvelope(ORIGIN),
+		});
+		const db = new Database(":memory:");
+		try {
+			runMigrations(db);
+			db.exec(
+				"INSERT INTO runs(id, plan_path) VALUES ('schema1', 'docs/plan.md')",
+			);
+			const indexed = reindexReviewGovernance(recordStore, db, "schema1");
+			expect(indexed.diagnostics).toEqual([]);
+			const row = db
+				.query(
+					"SELECT payload_json FROM implementation_binding_index WHERE id = ?",
+				)
+				.get(schema1.payload.id) as { payload_json: string } | null;
+			expect(row).not.toBeNull();
+			const payload = JSON.parse(row?.payload_json ?? "{}") as {
+				planSchema?: number;
+			};
+			expect(payload.planSchema).toBe(1);
+		} finally {
+			db.close();
+		}
+	});
 });
+
+function bindingPayload(markdown: string): ImplementationBindingPayload {
+	const parsed = parseDeliveryBudget(markdown);
+	const ledger = parsed.ok
+		? parsed.value
+		: {
+				estimateConfidence: "high" as const,
+				workItems: [],
+				surface: {
+					subsystems: 1,
+					productionFiles: 1,
+					persistentOrExternalBoundaries: 0,
+				},
+			};
+	return {
+		kind: "implementation-binding",
+		version: 1,
+		id: "binding-1",
+		executionRunId: "exec",
+		sourceRunId: "source",
+		sourceSnapshotId: "snap-1",
+		sourceBaselineId: "base-1",
+		approvedPlanCommit: "a".repeat(40),
+		approvedPlanHash: hashPlanBytes(markdown),
+		approvedPlanBytes: markdown,
+		b0: 2,
+		governingB: 2,
+		mode: "enforced",
+		thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+		ledger,
+		effectiveDecisions: [],
+		phaseMap: [{ id: "1", heading: "Phase 1: Bind" }],
+		debtTargets: [],
+		ledgerHash: "sha256:ledger",
+		decisionsHash: "sha256:decisions",
+		createdAt: "2026-09-23 00:00:00",
+	};
+}
+
+function schema1Observation(
+	binding: ImplementationBindingPayload,
+	guard: ImplementationReviewObservationPayload["textGuard"],
+): ImplementationReviewObservationPayload {
+	return {
+		kind: "implementation-review",
+		version: 1,
+		id: "obs-1",
+		runId: binding.executionRunId,
+		stepKey: { stepName: "reviewer:review", phase: "1", iteration: 0 },
+		bindingId: binding.id,
+		contextId: "ctx-1",
+		domain: "implementation",
+		phase: "1",
+		originalVerdict: {
+			readiness: "not_ready",
+			items: [
+				{
+					id: "R1",
+					title: "Stale wording",
+					action: "auto_fix",
+					reason: "The sentence is stale.",
+					scopeClass: "plan_defect",
+					priority: "P2",
+					effortDelta: 0,
+					architectureDelta: 0,
+					planWorkItemIds: ["W1"],
+					planImpact: {
+						kind: "text_only",
+						locations: [
+							{
+								heading: "Phase 1: Bind",
+								staleText: SCHEMA1_STALE_TEXT,
+							},
+						],
+					},
+				},
+			],
+		},
+		outcomes: [],
+		route: "author_revision",
+		nextAction: "author_revision",
+		diagnostics: [],
+		claimObservations: [],
+		gateCauses: [],
+		telemetry: {
+			reviewCycles: 1,
+			fixCycles: 0,
+			reviewOriginatedCommits: 0,
+			qualityReruns: 0,
+			classCounts: {
+				implementation_defect: 0,
+				plan_defect: 1,
+				scope_expansion: 0,
+				pre_existing: 0,
+			},
+			planAmendments: 0,
+			addedPaths: [],
+			boundaryInventory: [],
+			effortVariance: 0,
+			architectureVariance: 0,
+		},
+		budgetInvariant: { W: 2, R: 0, B: 2, D: 0 },
+		completionAuthorized: false,
+		textGuard: guard,
+		createdAt: "2026-09-23 00:00:01",
+	};
+}

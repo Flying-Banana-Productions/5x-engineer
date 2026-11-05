@@ -15,6 +15,17 @@ export const PROTECTED_PLAN_SECTION_TITLES = new Set([
 /** Task-list item, including ordered-list markers (`1. [ ]`). */
 export const PLAN_CHECKBOX_LINE = /^\s*(?:[-*+]|\d+\.)\s+\[[ xX]\]/;
 
+/** Shared with the single-match checkbox identity. The document normalizer adds `gm`. */
+export const CHECKBOX_MARKER_SOURCE = String.raw`^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]`;
+
+/**
+ * Collapse `[ ]`, `[x]`, and `[X]` to `[ ]` without changing byte length.
+ * Other bytes, including text injected in place of a marker, stay intact.
+ */
+export function normalizeCheckboxMarkers(markdown: string): string {
+	return markdown.replace(new RegExp(CHECKBOX_MARKER_SOURCE, "gm"), "$1[ ]");
+}
+
 export interface PlanMarkdownLine {
 	raw: string;
 	text: string;

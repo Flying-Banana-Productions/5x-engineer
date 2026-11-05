@@ -1,5 +1,6 @@
 import type { Command } from "@commander-js/extra-typings";
 import { outputError, outputSuccess } from "../output.js";
+import { migratePlanSchema } from "../review-governance/schema-migration.js";
 import { resolveDbContext } from "./context.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
 import {
@@ -116,6 +117,7 @@ const JSON_FIELDS = new Set([
 	"approvedWorkItemIds",
 	"snapshotId",
 	"claimAdjustments",
+	"restriction",
 	"amendmentScope",
 ]);
 
@@ -151,6 +153,12 @@ export function registerReview(parent: Command) {
 		.option("--rationale <text>", "Decision rationale", collect, [])
 		.option("--evidence <text>", "Evidence (repeatable)", collect, [])
 		.option("--finding <id>", "Eligible finding id (repeatable)", collect, [])
+		.option(
+			"--restriction <text>",
+			"Operating restriction for accept_with_restriction (for example a release condition)",
+			collect,
+			[],
+		)
 		.option("--retain <scope>", "Retained scope (repeatable)", collect, [])
 		.option("--remove <scope>", "Removed scope (repeatable)", collect, [])
 		.option(
@@ -226,6 +234,7 @@ export function registerReview(parent: Command) {
 					opts.rationale,
 					opts.evidence,
 					opts.finding,
+					opts.restriction,
 					opts.retain,
 					opts.remove,
 					opts.baseline,
@@ -292,6 +301,7 @@ export function registerReview(parent: Command) {
 					);
 				const baselineRaw = scalar(opts.baseline, "--baseline");
 				const approvedPRaw = scalar(opts.approvedP, "--approved-p");
+				const restriction = scalar(opts.restriction, "--restriction");
 				payload = {
 					choice: choice as SubmitPlanReviewDecisionPayload["choice"],
 					rationale,
@@ -306,6 +316,7 @@ export function registerReview(parent: Command) {
 						: {}),
 					approvedItemIds: opts.approvedItem,
 					approvedWorkItemIds: opts.approvedWorkItem,
+					...(restriction !== undefined ? { restriction } : {}),
 					...(choice === "authorize_amendment"
 						? { amendmentScope: amendmentScopeFromFlags(opts) }
 						: {}),
@@ -386,6 +397,63 @@ export function registerReview(parent: Command) {
 						fromPhase: opts.fromPhase,
 						resolves: opts.resolves,
 						dryRun: opts.dryRun,
+					},
+					context,
+				),
+			);
+		});
+
+	review
+		.command("migrate-schema")
+		.description(
+			"Record a schema 0 to schema 1 migration. Equivalent mode is a mechanical proof. Selective mode confirms the operator exclusion digest. There is no snapshot flag. Works on a completed plan-review run without reopening it.",
+		)
+		.requiredOption(
+			"--run <id>",
+			"Bound execution run or approved plan-review run",
+		)
+		.option(
+			"--commit <sha>",
+			"Full sha of the schema 1 plan commit (required unless --prepare)",
+		)
+		.requiredOption("--mode <mode>", "equivalent or selective")
+		.option(
+			"--prepare",
+			"Prove the schema 1 target and commit only the plan file; records nothing. Equivalent writes the mechanical wrap; selective checks the file the operator edited",
+		)
+		.option(
+			"--dry-run",
+			"Print exclusions, non-governing text, and the digest without writing",
+		)
+		.option(
+			"--confirm-exclusions <digest>",
+			"Operator confirmation of the selective exclusion digest",
+		)
+		.option(
+			"--no-checkpoint",
+			"Leave the run's records uncommitted after recording",
+		)
+		.addHelpText(
+			"after",
+			"\nFlow (equivalent mode keeps Version, Status, and Revision History governing;\n" +
+				"a run records one migration, so choose the mode before preparing):\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --prepare --dry-run\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --prepare\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --commit <sha> --dry-run\n" +
+				"  $ 5x review migrate-schema --run <id> --mode equivalent --commit <sha>\n",
+		)
+		.action(async (opts) => {
+			const { runId, context } = await contextFor(opts.run);
+			outputSuccess(
+				await migratePlanSchema(
+					{
+						runId,
+						commit: opts.commit,
+						mode: opts.mode,
+						dryRun: opts.dryRun,
+						confirmExclusions: opts.confirmExclusions,
+						prepare: opts.prepare,
+						checkpoint: opts.checkpoint,
 					},
 					context,
 				),

@@ -2548,3 +2548,207 @@ describe("implementation completion boundaries", () => {
 		{ timeout: 60000 },
 	);
 });
+
+describe("boundary-changing implementation findings", () => {
+	test(
+		"offer the amendment path and accept an operating restriction",
+		async () => {
+			const { dir, planPath } = await initRepo("enforced");
+			const ok = (result: Awaited<ReturnType<typeof cli>>) => {
+				expect(result.exitCode, `${result.stdout}\n${result.stderr}`).toBe(0);
+				return JSON.parse(result.stdout).data;
+			};
+			try {
+				await approveSource(dir, planPath, 2);
+				const runId = await startRun(dir, planPath);
+				writeFileSync(planPath, planMarkdown(true));
+				const commit = await commitFile(
+					dir,
+					runId,
+					"1",
+					"src/migration.ts",
+					"export const migration = '0108';\n",
+					"phase 1",
+				);
+				ok(await recordAuthor(dir, runId, "1", commit, "0"));
+				const context = ok(
+					await renderReview(dir, runId, planPath, "1", commit),
+				).review_context_id;
+				const reviewed = ok(
+					await cli(
+						dir,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"reviewer:commit",
+							"--phase",
+							"1",
+							"--iteration",
+							"0",
+							"--review-context",
+							context,
+						],
+						{
+							readiness: "not_ready",
+							items: [
+								{
+									id: "I1",
+									title: "Migration timestamp precedes unmerged migrations",
+									action: "auto_fix",
+									reason:
+										"Deploying 0108 first lets the migrator skip lower timestamps",
+									priority: "P1",
+									scopeClass: "implementation_defect",
+									planWorkItemIds: ["W1"],
+									effortDelta: 0,
+									architectureDelta: 0,
+									boundaryChanges: ["schema"],
+									estimateConfidence: "high",
+									failure: "Lower-timestamp migrations are skipped",
+									lowestCostCorrection:
+										"Apply predecessor migrations before deploying",
+								},
+							],
+						},
+					),
+				);
+				const diagnostics = reviewed.result.governance.diagnostics as Array<{
+					code: string;
+					severity: string;
+				}>;
+				expect(diagnostics).toContainEqual(
+					expect.objectContaining({
+						code: "SOURCE_OF_CORRECTION_PRECEDENCE",
+						severity: "info",
+					}),
+				);
+				const gate = ok(
+					await cli(dir, [
+						"review",
+						"gate",
+						"show",
+						"--run",
+						runId,
+						"--phase",
+						"1",
+					]),
+				);
+				expect(
+					gate.causes.map((cause: { kind: string }) => cause.kind),
+				).toEqual(["plan_amendment"]);
+				expect(gate.allowedChoices).toEqual([
+					"authorize_amendment",
+					"defer_accept_risk",
+					"accept_with_restriction",
+					"abort",
+				]);
+				expect(gate.requiredFieldsByChoice.accept_with_restriction).toContain(
+					"restriction",
+				);
+				const decide = (...extra: string[]) =>
+					cli(dir, [
+						"review",
+						"decide",
+						"--run",
+						runId,
+						"--gate",
+						gate.gateId,
+						"--choice",
+						"accept_with_restriction",
+						"--finding",
+						"I1",
+						"--rationale",
+						"Release ordering, not a code defect",
+						...extra,
+					]);
+				const missing = await decide();
+				expect(missing.exitCode).not.toBe(0);
+				expect(JSON.parse(missing.stdout).error.code).toBe(
+					"REVIEW_DECISION_INVALID",
+				);
+				const restriction =
+					"Apply the venue-delete and plan 543 migrations before deploying 0108";
+				const decided = ok(await decide("--restriction", restriction));
+				expect(decided.decision.choice).toBe("accept_with_restriction");
+				// The gated review authorized nothing and left no author work,
+				// so the phase still needs a review before it can complete.
+				expect(decided.route).toBe("closure_review");
+				expect(decided.nextAction).toBe("closure_review");
+				expect(decided.decision.restriction).toBe(restriction);
+				const replay = ok(await decide("--restriction", restriction));
+				expect(replay.decision.decisionId).toBe(decided.decision.decisionId);
+				const state = ok(await cli(dir, ["run", "state", "--run", runId]));
+				expect(state.implementation_governance.restrictions).toEqual([
+					expect.objectContaining({
+						decisionId: decided.decision.decisionId,
+						phase: "1",
+						findingIds: ["I1"],
+						restriction,
+					}),
+				]);
+				const next = ok(await renderReview(dir, runId, planPath, "1", commit));
+				expect(next.prompt).toContain("### Operating restrictions");
+				expect(next.prompt).toContain(restriction);
+				// The restriction settles I1: closure no longer requires its outcome.
+				expect(next.prompt).not.toMatch(
+					/Required prior-finding outcome IDs: .*I1/,
+				);
+				const closure = await cli(
+					dir,
+					[
+						"protocol",
+						"validate",
+						"reviewer",
+						"--run",
+						runId,
+						"--record",
+						"--step",
+						"reviewer:commit",
+						"--phase",
+						"1",
+						"--iteration",
+						"1",
+						"--review-context",
+						next.review_context_id,
+					],
+					{ readiness: "ready", items: [] },
+				);
+				expect(governanceOf(closure.stdout).route).toBe("complete");
+				ok(
+					await cli(dir, [
+						"run",
+						"record",
+						"phase:complete",
+						"--run",
+						runId,
+						"--phase",
+						"1",
+						"--result",
+						'{"phase":"1"}',
+					]),
+				);
+				const completed = ok(
+					await cli(dir, [
+						"run",
+						"complete",
+						"--run",
+						runId,
+						"--status",
+						"completed",
+					]),
+				);
+				expect(completed.operating_restrictions).toEqual([
+					expect.objectContaining({ restriction, findingIds: ["I1"] }),
+				]);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 90_000 },
+	);
+});

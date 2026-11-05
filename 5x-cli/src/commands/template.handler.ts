@@ -16,7 +16,10 @@ import { loadConfig, resolveLayeredConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { runMigrations } from "../db/schema.js";
 import { outputError, outputSuccess } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativeBudget,
+} from "../plan-schema/authority.js";
 import {
 	CodeDiffError,
 	readHeadCommit,
@@ -402,12 +405,16 @@ export async function templateRender(
 			)({ runId: params.run, startDir: projectRoot }, warn);
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
-			const parsed = markdown === null ? null : parseDeliveryBudget(markdown);
-			if (parsed?.ok && config.reviewBudget.mode !== "off") {
-				outputError(
-					"IMPLEMENTATION_APPROVAL_REQUIRED",
-					`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
-				);
+			if (markdown !== null) {
+				const loaded = readAuthoritativeBudget(markdown, "file");
+				if (!loaded.ok) {
+					outputError(loaded.code, planSchemaCommandMessage(loaded));
+				} else if (loaded.parsed.ok && config.reviewBudget.mode !== "off") {
+					outputError(
+						"IMPLEMENTATION_APPROVAL_REQUIRED",
+						`Implementation admission requires an approved plan binding. Select a source with \`5x review implementation bind --run ${params.run} --source-run <plan-review>\`.`,
+					);
+				}
 			}
 		}
 		if (renderBudgetContext) {
@@ -675,7 +682,8 @@ export async function templateRender(
 		}
 	}
 	prompt = appendPlanReviewPromptContext({
-		prompt: prompt + codeDiffAppend,
+		prompt,
+		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
 	});

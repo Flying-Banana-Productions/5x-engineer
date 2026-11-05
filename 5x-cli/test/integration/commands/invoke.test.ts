@@ -15,6 +15,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runMigrations } from "../../../src/db/schema.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -39,27 +43,7 @@ function cleanupDir(dir: string): void {
 
 /** Create a minimal project with git repo. */
 function setupProject(dir: string): string {
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	mkdirSync(join(dir, ".5x"), { recursive: true });
 	const { Database } = require("bun:sqlite");
@@ -80,20 +64,7 @@ function setupProject(dir: string): string {
 		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 	);
 
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 
 	return dir;
 }

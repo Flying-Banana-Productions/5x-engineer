@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { _resetForTest, closeDb } from "../../../src/db/connection.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import {
+	commitAllSync,
+	copyInitializedRepo,
+} from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -28,27 +32,7 @@ function cleanupDir(dir: string): void {
 
 function setupProject(dir: string, qualityGates: string[] = []): void {
 	// Init git repo
-	Bun.spawnSync(["git", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "config", "user.name", "Test"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	copyInitializedRepo(dir);
 
 	// Create .5x directory
 	mkdirSync(join(dir, ".5x"), { recursive: true });
@@ -64,20 +48,7 @@ function setupProject(dir: string, qualityGates: string[] = []): void {
 	}
 
 	// Initial commit
-	Bun.spawnSync(["git", "add", "-A"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	Bun.spawnSync(["git", "commit", "-m", "init"], {
-		cwd: dir,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
+	commitAllSync(dir, "init");
 }
 
 interface CmdResult {
@@ -254,27 +225,7 @@ describe("5x quality run --run with sub-project config", () => {
 			const dir = makeTmpDir();
 			try {
 				// Set up monorepo git repo
-				Bun.spawnSync(["git", "init"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "config", "user.email", "test@test.com"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "config", "user.name", "Test"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				copyInitializedRepo(dir);
 
 				// Root config — no quality gates
 				writeFileSync(join(dir, "5x.toml"), "skipQualityGates = true\n");
@@ -307,20 +258,7 @@ describe("5x quality run --run with sub-project config", () => {
 				);
 
 				// Initial commit
-				Bun.spawnSync(["git", "add", "-A"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				Bun.spawnSync(["git", "commit", "-m", "init"], {
-					cwd: dir,
-					env: cleanGitEnv(),
-					stdin: "ignore",
-					stdout: "pipe",
-					stderr: "pipe",
-				});
+				commitAllSync(dir, "init");
 
 				// Init 5x (creates DB)
 				const initResult = await run5x(dir, ["init"]);

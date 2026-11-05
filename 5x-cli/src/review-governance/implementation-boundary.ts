@@ -10,14 +10,14 @@
 
 import type { RecordStore } from "../control-plane/record-store.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
+import { readAuthoritativeBudget } from "../plan-schema/authority.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationClaimObservation,
 	ImplementationCompatibilityPayload,
 	ImplementationCorrectionAttemptPayload,
 	ImplementationCreditReconciliationPayload,
-	ImplementationPlanAmendmentPayload,
+	ImplementationLineagePayload,
 	ImplementationReviewContextPayload,
 	ImplementationReviewObservationPayload,
 } from "../review-budget/record-lines.js";
@@ -28,7 +28,11 @@ import {
 } from "../review-budget/types.js";
 import type { EffectiveExecution } from "./implementation-amendment.js";
 import { foldEffectiveExecution } from "./implementation-amendment.js";
-import { detectPlanDrift } from "./implementation-state.js";
+import {
+	detectPlanDrift,
+	effectivePlanSchema,
+	recordedPlanSchemaFromBinding,
+} from "./implementation-state.js";
 import { deriveOpenImplementationGate } from "./store.js";
 
 export type ImplementationBoundaryIntent =
@@ -81,7 +85,7 @@ export interface ImplementationBoundaryInput {
 	binding: ImplementationBindingPayload | null;
 	compatibility: ImplementationCompatibilityPayload | null;
 	currentPlanBytes: string | null;
-	amendments: readonly ImplementationPlanAmendmentPayload[];
+	amendments: readonly ImplementationLineagePayload[];
 	observations: readonly ImplementationReviewObservationPayload[];
 	contexts: readonly ImplementationReviewContextPayload[];
 	reconciliations: readonly ImplementationCreditReconciliationPayload[];
@@ -356,8 +360,14 @@ export function evaluateImplementationBoundary(
 
 	const pinned = input.binding.mode;
 	const effective = input.effectiveExecution;
-	const parsedLedger = effective
-		? parseDeliveryBudget(effective.approvedPlanBytes)
+	// Schema 1 reads the ledger from the governing projection.
+	const effectiveBudget = effective
+		? readAuthoritativeBudget(effective.approvedPlanBytes, effective.planSchema)
+		: null;
+	const parsedLedger = effectiveBudget
+		? effectiveBudget.ok
+			? effectiveBudget.parsed
+			: { ok: false as const }
 		: null;
 	if (
 		effective &&
@@ -380,17 +390,20 @@ export function evaluateImplementationBoundary(
 				.map((edit) => edit.creditClaimId),
 		) ?? [],
 	);
+	const lineage = input.amendments.filter(
+		(amendment) => amendment.bindingId === input.binding?.id,
+	);
+	const recorded = effective
+		? effectivePlanSchema(effective)
+		: recordedPlanSchemaFromBinding(input.binding, lineage);
 	const drift = detectPlanDrift({
 		approvedPlanBytes:
 			effective?.approvedPlanBytes ?? input.binding.approvedPlanBytes,
 		approvedPlanHash:
 			effective?.approvedPlanHash ?? input.binding.approvedPlanHash,
-		amendments: effective
-			? []
-			: input.amendments.filter(
-					(amendment) => amendment.bindingId === input.binding?.id,
-				),
+		amendments: effective ? [] : lineage,
 		currentPlanBytes: input.currentPlanBytes ?? "",
+		...recorded,
 	});
 	const planMissing = input.currentPlanBytes === null;
 	const phasesToCheck = phasesForIntent(
@@ -596,7 +609,7 @@ export function evaluateStoredImplementationBoundary(input: {
 }): ImplementationBoundaryResult {
 	let binding: ImplementationBindingPayload | null = null;
 	let compatibility: ImplementationCompatibilityPayload | null = null;
-	let amendments: ImplementationPlanAmendmentPayload[] = [];
+	let amendments: ImplementationLineagePayload[] = [];
 	let observations: ImplementationReviewObservationPayload[] = [];
 	const contexts: ImplementationReviewContextPayload[] = [];
 	let reconciliations: ImplementationCreditReconciliationPayload[] = [];

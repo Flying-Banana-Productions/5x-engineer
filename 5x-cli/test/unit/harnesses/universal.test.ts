@@ -79,7 +79,11 @@ describe("universal plugin", () => {
 				expect(existsSync(skillPath)).toBe(true);
 
 				const content = readFileSync(skillPath, "utf-8");
-				if (name !== "5x-windows" && name !== "5x-config") {
+				if (
+					name !== "5x-windows" &&
+					name !== "5x-config" &&
+					name !== "5x-plan-migration"
+				) {
 					expect(content).toContain("5x invoke");
 				}
 				expect(content).not.toContain("Task tool");

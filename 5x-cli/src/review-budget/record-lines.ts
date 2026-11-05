@@ -35,6 +35,7 @@ export type BudgetRecordKind =
 	| "implementation-compatibility"
 	| "implementation-text-amendment"
 	| "implementation-plan-recovery"
+	| "plan-schema-migration"
 	| "implementation-plan-amendment"
 	| "implementation-review-context"
 	| "implementation-review"
@@ -307,6 +308,14 @@ export interface ImplementationBindingPayload {
 	ledgerHash: string;
 	decisionsHash: string;
 	createdAt: string;
+	/**
+	 * Omitted on schema 0. Schema 1 requires `governingHash` of the approved
+	 * document's comparison bytes. The binding version stays 1.
+	 */
+	planSchema?: 0 | 1;
+	governingHash?: string;
+	schemaMigrationId?: string;
+	predecessorPlanCommit?: string;
 }
 
 export interface ImplementationCompatibilityPayload {
@@ -395,6 +404,65 @@ export interface ImplementationSemanticAmendmentPayload {
 	invalidatedObservationIds: string[];
 	intentDigest: string;
 	createdAt: string;
+}
+
+/** One approved line removed from the governing projection. */
+export interface PlanSchemaExclusion {
+	id: string;
+	approvedLine: number;
+	approvedText: string;
+	approvedTextHash: string;
+}
+
+/** One target raw line the projection classifies as non-governing. */
+export interface PlanSchemaNonGoverningLine {
+	line: number;
+	text: string;
+}
+
+/**
+ * Recorded schema 0 to schema 1 transition. Selective authority is the
+ * operator exclusion digest. There is no reviewer snapshot on this payload.
+ */
+export interface PlanSchemaMigrationPayload {
+	kind: "plan-schema-migration";
+	version: 1;
+	id: string;
+	runId: string;
+	bindingId: string | null;
+	fromSchema: 0;
+	toSchema: 1;
+	authority: "verified_equivalent" | "operator";
+	parentLineageId: string | null;
+	priorApprovalCommit: string;
+	beforeCommit: string;
+	afterCommit: string;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	authorizedPlanBytes: string;
+	governingHash: string;
+	proposalDigest: string;
+	exclusions: PlanSchemaExclusion[];
+	nonGoverningText: PlanSchemaNonGoverningLine[];
+	createdAt: string;
+}
+
+export type ImplementationLineagePayload =
+	| ImplementationPlanAmendmentPayload
+	| PlanSchemaMigrationPayload;
+
+export function planSchemaMigrationKey(
+	runId: string,
+	proposalDigest: string,
+): string {
+	return `budget:plan-schema-migration:${runId}:${proposalDigest}`;
+}
+
+export function planSchemaMigrationStepKey(
+	runId: string,
+	proposalDigest: string,
+): string {
+	return `step:${runId}:schema-migration::0:${proposalDigest}`;
 }
 
 function recoveryStringArray(raw: unknown, field: string): string[] {
@@ -726,7 +794,14 @@ function versionField(value: unknown): typeof IMPLEMENTATION_STATE_VERSION {
 export function encodeImplementationBindingPayload(
 	payload: ImplementationBindingPayload,
 ): unknown {
-	return structuredClone(payload);
+	const encoded = structuredClone(payload);
+	if (encoded.planSchema === undefined) delete encoded.planSchema;
+	if (encoded.governingHash === undefined) delete encoded.governingHash;
+	if (encoded.schemaMigrationId === undefined) delete encoded.schemaMigrationId;
+	if (encoded.predecessorPlanCommit === undefined) {
+		delete encoded.predecessorPlanCommit;
+	}
+	return encoded;
 }
 
 export function decodeImplementationBindingPayload(
@@ -799,7 +874,48 @@ export function decodeImplementationBindingPayload(
 		ledgerHash: stringField(value.ledgerHash, "ledgerHash"),
 		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
 		createdAt: stringField(value.createdAt, "createdAt"),
+		...optionalBindingSchemaFields(value),
 	};
+}
+
+function optionalBindingSchemaFields(
+	value: Record<string, unknown>,
+): Pick<
+	ImplementationBindingPayload,
+	"planSchema" | "governingHash" | "schemaMigrationId" | "predecessorPlanCommit"
+> {
+	const fields: Pick<
+		ImplementationBindingPayload,
+		| "planSchema"
+		| "governingHash"
+		| "schemaMigrationId"
+		| "predecessorPlanCommit"
+	> = {};
+	if (value.planSchema !== undefined) {
+		if (value.planSchema !== 0 && value.planSchema !== 1) {
+			throw new TypeError("planSchema must be 0 or 1");
+		}
+		fields.planSchema = value.planSchema;
+	}
+	if (value.governingHash !== undefined) {
+		fields.governingHash = stringField(value.governingHash, "governingHash");
+	}
+	if (fields.planSchema === 1 && !fields.governingHash) {
+		throw new TypeError("schema 1 binding requires governingHash");
+	}
+	if (value.schemaMigrationId !== undefined) {
+		fields.schemaMigrationId = stringField(
+			value.schemaMigrationId,
+			"schemaMigrationId",
+		);
+	}
+	if (value.predecessorPlanCommit !== undefined) {
+		fields.predecessorPlanCommit = stringField(
+			value.predecessorPlanCommit,
+			"predecessorPlanCommit",
+		);
+	}
+	return fields;
 }
 
 export function encodeImplementationCompatibilityPayload(
@@ -876,6 +992,111 @@ export function decodeImplementationTextAmendmentPayload(
 			true,
 		),
 		...optionalRevisionId(value),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+function lineNumberField(value: unknown, field: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+		throw new TypeError(`${field} must be a positive integer`);
+	}
+	return value;
+}
+
+export function encodePlanSchemaMigrationPayload(
+	payload: PlanSchemaMigrationPayload,
+): unknown {
+	return structuredClone(payload);
+}
+
+export function decodePlanSchemaMigrationPayload(
+	raw: unknown,
+): PlanSchemaMigrationPayload {
+	const value = object(raw, "plan schema migration payload");
+	if (value.kind !== "plan-schema-migration") {
+		throw new TypeError("invalid plan schema migration kind");
+	}
+	if (value.version !== 1) {
+		throw new TypeError(
+			`unsupported plan schema migration version ${String(value.version)}`,
+		);
+	}
+	if (value.fromSchema !== 0 || value.toSchema !== 1) {
+		throw new TypeError("plan schema migration must be schema 0 to schema 1");
+	}
+	if (
+		value.authority !== "verified_equivalent" &&
+		value.authority !== "operator"
+	) {
+		throw new TypeError(
+			"plan schema migration authority must be verified_equivalent or operator",
+		);
+	}
+	if (!Array.isArray(value.exclusions)) {
+		throw new TypeError("exclusions must be an array");
+	}
+	if (!Array.isArray(value.nonGoverningText)) {
+		throw new TypeError("nonGoverningText must be an array");
+	}
+	const exclusions = value.exclusions.map((entry, index) => {
+		const exclusion = object(entry, `exclusions[${index}]`);
+		return {
+			id: stringField(exclusion.id, `exclusions[${index}].id`),
+			approvedLine: lineNumberField(
+				exclusion.approvedLine,
+				`exclusions[${index}].approvedLine`,
+			),
+			approvedText: stringField(
+				exclusion.approvedText,
+				`exclusions[${index}].approvedText`,
+				true,
+			),
+			approvedTextHash: stringField(
+				exclusion.approvedTextHash,
+				`exclusions[${index}].approvedTextHash`,
+			),
+		};
+	});
+	const nonGoverningText = value.nonGoverningText.map((entry, index) => {
+		const line = object(entry, `nonGoverningText[${index}]`);
+		return {
+			line: lineNumberField(line.line, `nonGoverningText[${index}].line`),
+			text: stringField(line.text, `nonGoverningText[${index}].text`, true),
+		};
+	});
+	return {
+		kind: "plan-schema-migration",
+		version: 1,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		bindingId:
+			value.bindingId === null
+				? null
+				: stringField(value.bindingId, "bindingId"),
+		fromSchema: 0,
+		toSchema: 1,
+		authority: value.authority,
+		parentLineageId:
+			value.parentLineageId === null
+				? null
+				: stringField(value.parentLineageId, "parentLineageId"),
+		priorApprovalCommit: stringField(
+			value.priorApprovalCommit,
+			"priorApprovalCommit",
+		),
+		beforeCommit: stringField(value.beforeCommit, "beforeCommit"),
+		afterCommit: stringField(value.afterCommit, "afterCommit"),
+		beforeBlobHash: stringField(value.beforeBlobHash, "beforeBlobHash"),
+		afterBlobHash: stringField(value.afterBlobHash, "afterBlobHash"),
+		authorizedPlanBytes: stringField(
+			value.authorizedPlanBytes,
+			"authorizedPlanBytes",
+			true,
+		),
+		governingHash: stringField(value.governingHash, "governingHash"),
+		proposalDigest: stringField(value.proposalDigest, "proposalDigest"),
+		exclusions,
+		nonGoverningText,
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }

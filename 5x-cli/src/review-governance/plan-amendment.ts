@@ -9,9 +9,17 @@
  */
 
 import { createHash } from "node:crypto";
+import {
+	type LoadPlanDocumentResult,
+	loadPlanDocument,
+	mapRawSpanToComparisonBytes,
+	planDocumentByteRange,
+} from "../plan-schema/document.js";
 import type { PlanImpactKind } from "../protocol.js";
 import type { ParsedDeliveryBudget } from "../review-budget/types.js";
 import {
+	CHECKBOX_MARKER_SOURCE,
+	normalizeCheckboxMarkers,
 	PLAN_CHECKBOX_LINE,
 	type PlanHeadingSpan,
 	type PlanMarkdownLine,
@@ -19,8 +27,11 @@ import {
 	planHeadingSpans,
 	planMarkdownLines,
 	protectedPlanByteRanges,
+	protectedPlanCharRanges,
 } from "./plan-markdown.js";
 import type { ResolvedPlanImpactSpan } from "./types.js";
+
+export { normalizeCheckboxMarkers };
 
 export interface TextAmendmentGuard {
 	id: string;
@@ -47,7 +58,9 @@ export type PlanAmendmentFailureCode =
 	| "PLAN_AMENDMENT_STALE"
 	| "PLAN_AMENDMENT_LINEAGE"
 	| "PLAN_AMENDMENT_NOT_APPROVED"
-	| "PLAN_AMENDMENT_CREDIT";
+	| "PLAN_AMENDMENT_CREDIT"
+	| "PLAN_SCHEMA_INVALID"
+	| "PLAN_SCHEMA_UNSUPPORTED";
 
 export interface PlanAmendmentFailure {
 	ok: false;
@@ -169,16 +182,11 @@ export function extractBudgetTableBytes(
 	return { ok: true, tableBytes: markdown.slice(start, end) };
 }
 
-const CHECKBOX_MARKER_SOURCE = String.raw`^(\s*(?:[-*+]|\d+\.)\s+)\[[ xX]\]`;
-
 /**
- * Collapse `[ ]`, `[x]`, and `[X]` to `[ ]` without changing byte length.
- * Other bytes, including text injected in place of a marker, stay intact.
+ * Normalize only the checkbox at the start of one newline-split line.
+ * A single non-multiline replace, so a lone CR does not open another match.
+ * `normalizeCheckboxMarkers` stays the global multiline document normalizer.
  */
-export function normalizeCheckboxMarkers(markdown: string): string {
-	return markdown.replace(new RegExp(CHECKBOX_MARKER_SOURCE, "gm"), "$1[ ]");
-}
-
 function checkboxIdentity(line: string): string {
 	return line.replace(new RegExp(CHECKBOX_MARKER_SOURCE), "$1[ ]");
 }
@@ -300,6 +308,8 @@ export function prepareTextAmendmentGuard(input: {
 	anchorCommit: string;
 	parentLineageId: string | null;
 	allowedSpans: readonly ResolvedPlanImpactSpan[];
+	/** Schema 0 keeps the raw guard. Schema 1 snapshots the governing projection. */
+	recordedSchema?: 0 | 1;
 }): { ok: true; guard: TextAmendmentGuard } | PlanAmendmentFailure {
 	if (input.allowedSpans.length === 0) {
 		return {
@@ -309,6 +319,7 @@ export function prepareTextAmendmentGuard(input: {
 				"Text-only authorization requires at least one resolved location span.",
 		};
 	}
+	if (input.recordedSchema === 1) return prepareSchema1Guard(input);
 	const table = extractBudgetTableBytes(input.anchorBytes);
 	if (!table.ok) return table;
 	const protectedRanges = protectedPlanByteRanges(input.anchorBytes);
@@ -340,7 +351,10 @@ export function prepareTextAmendmentGuard(input: {
 export function verifyGuardedPlanBytes(input: {
 	guard: TextAmendmentGuard;
 	committed: Buffer;
+	/** Schema 0 compares raw checkbox-normalized bytes. Schema 1 compares the projection. */
+	recordedSchema?: 0 | 1;
 }): { ok: true; authorizedPlanBytes: string } | PlanAmendmentFailure {
+	if (input.recordedSchema === 1) return verifySchema1GuardedPlanBytes(input);
 	if (!isValidUtf8(input.committed)) {
 		return {
 			ok: false,
@@ -401,6 +415,157 @@ export function verifyGuardedPlanBytes(input: {
 			code: "PLAN_AMENDMENT_STRUCTURE",
 			message:
 				"Phase headings, checklist identity, or a protected design, acceptance, or scope section changed.",
+		};
+	}
+	return { ok: true, authorizedPlanBytes: after };
+}
+
+function schemaProjectionFailure(
+	loaded: Extract<LoadPlanDocumentResult, { ok: false }>,
+): PlanAmendmentFailure {
+	const message = loaded.message.includes("not a legacy fallback")
+		? loaded.message
+		: `${loaded.message} This is not a legacy fallback.`;
+	return { ok: false, code: loaded.code, message };
+}
+
+function schema1ProtectedRawRanges(
+	raw: string,
+	mask: string,
+): Array<{ start: number; end: number }> {
+	return protectedPlanCharRanges(mask).map((range) =>
+		planDocumentByteRange(raw, range),
+	);
+}
+
+function prepareSchema1Guard(input: {
+	id: string;
+	anchorBytes: string;
+	anchorCommit: string;
+	parentLineageId: string | null;
+	allowedSpans: readonly ResolvedPlanImpactSpan[];
+}): { ok: true; guard: TextAmendmentGuard } | PlanAmendmentFailure {
+	const loaded = loadPlanDocument(input.anchorBytes, 1);
+	if (!loaded.ok) return schemaProjectionFailure(loaded);
+	const projection = loaded.document.comparisonBytes;
+	const table = extractBudgetTableBytes(projection);
+	if (!table.ok) return table;
+	const protectedRanges = schema1ProtectedRawRanges(
+		loaded.document.raw,
+		loaded.document.authorityMarkdown,
+	);
+	for (const span of input.allowedSpans) {
+		if (protectedRanges.some((range) => rangesOverlap(span, range))) {
+			return {
+				ok: false,
+				code: "PLAN_AMENDMENT_PROTECTED",
+				message:
+					"A text-only span intersects the budget table or protected plan structure.",
+			};
+		}
+		if (!mapRawSpanToComparisonBytes(loaded.document, span).ok) {
+			return {
+				ok: false,
+				code: "PLAN_AMENDMENT_OUT_OF_SPAN",
+				message:
+					"A span covers a non-governing byte and is not an authorized governing span.",
+			};
+		}
+	}
+	return {
+		ok: true,
+		guard: {
+			id: input.id,
+			anchorCommit: input.anchorCommit,
+			anchorBlobHash: hashBytes(input.anchorBytes),
+			parentLineageId: input.parentLineageId,
+			tableBytes: table.tableBytes,
+			allowedSpans: input.allowedSpans.map((span) => ({ ...span })),
+			structuralSignature: structuralSignature(projection),
+			anchorBytes: input.anchorBytes,
+		},
+	};
+}
+
+function verifySchema1GuardedPlanBytes(input: {
+	guard: TextAmendmentGuard;
+	committed: Buffer;
+}): { ok: true; authorizedPlanBytes: string } | PlanAmendmentFailure {
+	if (!isValidUtf8(input.committed)) {
+		return {
+			ok: false,
+			code: "PLAN_AMENDMENT_INVALID_BYTES",
+			message: "The committed plan blob is not valid UTF-8.",
+		};
+	}
+	if (hashBytes(input.guard.anchorBytes) !== input.guard.anchorBlobHash) {
+		return {
+			ok: false,
+			code: "PLAN_AMENDMENT_STALE",
+			message: "The text-amendment guard does not match its anchor bytes.",
+		};
+	}
+	const anchor = loadPlanDocument(input.guard.anchorBytes, 1);
+	if (!anchor.ok) return schemaProjectionFailure(anchor);
+	const after = new TextDecoder("utf-8", { fatal: true }).decode(
+		input.committed,
+	);
+	const committed = loadPlanDocument(after, 1);
+	if (!committed.ok) return schemaProjectionFailure(committed);
+	const protectedRanges = schema1ProtectedRawRanges(
+		anchor.document.raw,
+		anchor.document.authorityMarkdown,
+	);
+	const mapped: Array<{ start: number; end: number }> = [];
+	for (const span of input.guard.allowedSpans) {
+		if (protectedRanges.some((range) => rangesOverlap(span, range))) {
+			return {
+				ok: false,
+				code: "PLAN_AMENDMENT_PROTECTED",
+				message:
+					"Table, phase, debt, design, and acceptance protections take precedence over location authorization.",
+			};
+		}
+		const located = mapRawSpanToComparisonBytes(anchor.document, span);
+		if (!located.ok) {
+			return {
+				ok: false,
+				code: "PLAN_AMENDMENT_OUT_OF_SPAN",
+				message:
+					"A span covers a non-governing byte and is not an authorized governing span.",
+			};
+		}
+		mapped.push(located);
+	}
+	const table = extractBudgetTableBytes(committed.document.comparisonBytes);
+	if (!table.ok) return table;
+	if (table.tableBytes !== input.guard.tableBytes) {
+		return {
+			ok: false,
+			code: "PLAN_AMENDMENT_TABLE",
+			message:
+				"The Delivery Budget table bytes changed. Parsed equality does not authorize a budget edit.",
+		};
+	}
+	if (
+		structuralSignature(committed.document.comparisonBytes) !==
+		input.guard.structuralSignature
+	) {
+		return {
+			ok: false,
+			code: "PLAN_AMENDMENT_STRUCTURE",
+			message:
+				"Phase headings, checklist identity, or a protected design, acceptance, or scope section changed.",
+		};
+	}
+	const before = Buffer.from(anchor.document.comparisonBytes, "utf8");
+	const projected = Buffer.from(committed.document.comparisonBytes, "utf8");
+	if (!fixedSegmentsMatch(before, projected, mapped)) {
+		return {
+			ok: false,
+			code: "PLAN_AMENDMENT_OUT_OF_SPAN",
+			message:
+				"The committed plan changes governing bytes outside the authorized text spans and checkbox toggles.",
 		};
 	}
 	return { ok: true, authorizedPlanBytes: after };

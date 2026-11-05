@@ -102,8 +102,7 @@ import {
 	outputError,
 	outputSuccess,
 } from "../output.js";
-import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
-import { parsePlan } from "../parsers/plan.js";
+import type { DeliveryBudgetParseResult } from "../parsers/delivery-budget.js";
 import {
 	canonicalizePlanPath,
 	isPathUnder,
@@ -118,6 +117,11 @@ import {
 	isStdinPiped,
 	readUpstreamEnvelope,
 } from "../pipe.js";
+import {
+	planSchemaCommandMessage,
+	readAuthoritativeBudget,
+	readAuthoritativePlan,
+} from "../plan-schema/authority.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
@@ -171,9 +175,15 @@ import {
 	type ImplementationGovernanceReadiness,
 } from "../review-governance/implementation-boundary.js";
 import {
+	describeBindingReadError,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	isImplementationAuthorAdmission,
 } from "../review-governance/implementation-state.js";
+import {
+	listOperatingRestrictions,
+	type OperatingRestriction,
+} from "../review-governance/restrictions.js";
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
@@ -1260,6 +1270,8 @@ export interface ImplementationGovernanceState
 		architectureVariance: number;
 	} | null;
 	credit: ImplementationGovernanceCreditView | null;
+	/** Accepted operating restrictions on this binding, every phase. */
+	restrictions: OperatingRestriction[];
 	/**
 	 * Original binding provenance versus the effective revision. Absent when
 	 * the caller did not supply a record store. Never implementation completion.
@@ -1403,6 +1415,7 @@ export function presentImplementationGovernance(input: {
 	reconciliations: readonly ImplementationCreditReconciliationPayload[];
 	correctionAttempts: readonly ImplementationCorrectionAttemptPayload[];
 	activeGate: DerivedImplementationGate | null;
+	restrictions?: readonly OperatingRestriction[];
 	recordStore?: RecordStore;
 	runId?: string;
 }): ImplementationGovernanceState {
@@ -1503,6 +1516,7 @@ export function presentImplementationGovernance(input: {
 					}
 				: null,
 		credit: binding ? creditView(binding, input.reconciliations) : null,
+		restrictions: structuredClone([...(input.restrictions ?? [])]),
 		...(binding && input.recordStore && input.runId
 			? {
 					revision: readRevisionProvenance({
@@ -1565,6 +1579,13 @@ function tryPresentImplementationGovernance(
 				input.runId,
 				binding,
 			),
+			restrictions: binding
+				? listOperatingRestrictions({
+						recordStore: input.recordStore,
+						runId: input.runId,
+						bindingId: binding.id,
+					})
+				: [],
 			recordStore: input.recordStore,
 			runId: input.runId,
 		});
@@ -1599,6 +1620,40 @@ function tryDeriveGoverningReviewState(
  * Build the delivery-budget header from authoritative record lines. The
  * facade deliberately reads through (and repairs) an empty SQLite index.
  */
+function readBoundaryBudget(
+	markdown: string,
+	store: Parameters<typeof expectedSchemaForStore>[0],
+	runId: string,
+): DeliveryBudgetParseResult {
+	let expected: ReturnType<typeof expectedSchemaForStore>;
+	try {
+		expected = expectedSchemaForStore(store, runId);
+	} catch (error) {
+		const described = describeBindingReadError(error);
+		throw new RecordError(described.code, described.message);
+	}
+	const loaded = readAuthoritativeBudget(markdown, expected);
+	if (!loaded.ok) {
+		throw new RecordError(loaded.code, planSchemaCommandMessage(loaded));
+	}
+	return loaded.parsed;
+}
+
+function authoritativeBudgetOk(
+	markdown: string,
+	store: Parameters<typeof expectedSchemaForStore>[0],
+	runId: string,
+): boolean {
+	try {
+		return readBoundaryBudget(markdown, store, runId).ok;
+	} catch (error) {
+		if (error instanceof RecordError) {
+			outputError(error.code, error.message, error.detail);
+		}
+		throw error;
+	}
+}
+
 export function buildReviewBudgetState(input: {
 	runId: string;
 	mode: ReviewBudgetMode;
@@ -1626,9 +1681,13 @@ export function buildReviewBudgetState(input: {
 	const initialAssessment = snapshots.find(
 		(snapshot) => snapshot.baselineAssessment !== undefined,
 	)?.baselineAssessment;
-	let currentParse: ReturnType<typeof parseDeliveryBudget> | undefined;
+	let currentParse: DeliveryBudgetParseResult | undefined;
 	if (input.currentPlanMarkdown !== undefined) {
-		currentParse = parseDeliveryBudget(input.currentPlanMarkdown);
+		const loaded = readAuthoritativeBudget(
+			input.currentPlanMarkdown,
+			expectedSchemaForStore(input.store, input.runId),
+		);
+		if (loaded.ok) currentParse = loaded.parsed;
 	}
 
 	let derived = latest?.derived ?? null;
@@ -1985,6 +2044,11 @@ export function formatStateText(data: {
 				})
 				.join("; ");
 			console.log(`Implementation claims: ${claims}`);
+		}
+		for (const restriction of governance.restrictions ?? []) {
+			console.log(
+				`Implementation restriction: ${restriction.restriction} (phase ${restriction.phase}, findings ${restriction.findingIds.join(",")}, decision ${restriction.decisionId})`,
+			);
 		}
 	}
 
@@ -2848,7 +2912,11 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 								codeEquivalentCommits,
 								hasImplementationHistory,
 								hasDeliveryBudget: archivedPlan
-									? parseDeliveryBudget(archivedPlan).ok
+									? authoritativeBudgetOk(
+											archivedPlan,
+											archivedBudgetStore,
+											gitRecord.summary.id,
+										)
 									: false,
 							}).readiness;
 							if (readiness.executionObligations) {
@@ -2863,6 +2931,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 								);
 							}
 						} catch (error) {
+							if (error instanceof CliError) throw error;
 							warn(
 								`Unable to read implementation boundary for run ${gitRecord.summary.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
 							);
@@ -3119,7 +3188,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						codeEquivalentCommits,
 						hasImplementationHistory,
 						hasDeliveryBudget: currentPlanMarkdown
-							? parseDeliveryBudget(currentPlanMarkdown).ok
+							? authoritativeBudgetOk(currentPlanMarkdown, reviewStore, run.id)
 							: false,
 					}).readiness;
 					if (readiness.executionObligations) {
@@ -3134,6 +3203,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						);
 					}
 				} catch (error) {
+					if (error instanceof CliError) throw error;
 					warn(
 						`Unable to read implementation boundary for run ${run.id}; omitting implementation_governance: ${error instanceof Error ? error.message : String(error)}`,
 					);
@@ -3786,8 +3856,10 @@ async function enforceImplementationBoundary(input: {
 			planMarkdown = null;
 		}
 	}
-	const parsed = planMarkdown ? parseDeliveryBudget(planMarkdown) : null;
 	const store = createReviewBudgetStore(input.recordStore);
+	const parsed = planMarkdown
+		? readBoundaryBudget(planMarkdown, store, input.runId)
+		: null;
 	const codeEquivalentCommits =
 		headCommit && workdir
 			? await equivalentReviewedCommits({
@@ -4480,10 +4552,28 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		runId,
 	);
 
+	const binding =
+		status === "completed"
+			? createReviewBudgetStore(recordCtx.recordStore).getImplementationBinding(
+					runId,
+				)
+			: null;
+	const restrictions = binding
+		? listOperatingRestrictions({
+				recordStore: recordCtx.recordStore,
+				runId,
+				bindingId: binding.id,
+			})
+		: [];
 	outputSuccess({
 		run_id: runId,
 		status,
 		reason: params.reason ?? null,
+		// The run completed under these operator conditions. Carry them
+		// into release notes; completion does not lift them.
+		...(restrictions.length > 0
+			? { operating_restrictions: restrictions }
+			: {}),
 	});
 }
 
@@ -4697,11 +4787,31 @@ export async function runV1Relink(params: RunRelinkParams): Promise<void> {
 			});
 		}
 
-		// Validate plan parses correctly
+		// Validate plan parses correctly. A bound run uses its recorded schema.
 		try {
 			const markdown = readFileSync(newPlanPath, "utf-8");
-			parsePlan(markdown);
+			let expected: "file" | 0 | 1 = "file";
+			try {
+				const budgetContext = await createReviewBudgetContext(
+					{ runId, startDir: params.startDir },
+					() => {},
+				);
+				expected = expectedSchemaForStore(budgetContext.store, runId);
+			} catch (error) {
+				if (error instanceof RecordContextError) {
+					outputError(error.code, error.message, error.detail);
+				}
+				const described = describeBindingReadError(error);
+				outputError(described.code, described.message);
+			}
+			const read = readAuthoritativePlan(markdown, expected);
+			if (!read.ok) {
+				outputError(read.code, planSchemaCommandMessage(read), {
+					plan_path: newPlanPath,
+				});
+			}
 		} catch (err) {
+			if (err instanceof CliError) throw err;
 			outputError(
 				"INVALID_PLAN",
 				`File does not parse as a valid plan: ${newPlanPath}`,

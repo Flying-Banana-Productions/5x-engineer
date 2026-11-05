@@ -44,12 +44,12 @@ describe("skill loader", () => {
 		expect(names).toContain("5x-plan-review");
 		expect(names).toContain("5x-phase-execution");
 		expect(names).toContain("5x-config");
-		expect(names.length).toBe(6);
+		expect(names.length).toBe(7);
 	});
 
 	test("listSkills returns metadata with description and content", () => {
 		const skills = listSkills();
-		expect(skills.length).toBe(6);
+		expect(skills.length).toBe(7);
 
 		const planSkill = skills.find((s) => s.name === "5x-plan");
 		expect(planSkill).toBeDefined();
@@ -106,6 +106,7 @@ describe("skill loader", () => {
 			"5x-plan",
 			"5x-plan-review",
 			"5x-phase-execution",
+			"5x-plan-migration",
 			"5x-config",
 		]) {
 			const raw = getDefaultSkillRaw(name);
