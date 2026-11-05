@@ -136,6 +136,29 @@ describe("5x-issue-resolution skill", () => {
 		expect(sentences.some((s) => keyword.test(s))).toBe(true);
 	});
 
+	test("states the Receipt preflight ahead of closure branches a-g and both receipt kinds", () => {
+		for (const combo of COMBOS) {
+			const content = render(combo.ctx);
+			const preflight = content.indexOf("**Receipt preflight (mandatory;");
+			expect(preflight).toBeGreaterThan(-1);
+			let last = preflight;
+			for (const branch of ["a", "b", "c", "d", "e", "f", "g"]) {
+				const at = content.indexOf(`\n- ${branch}. `, last);
+				expect(at).toBeGreaterThan(last);
+				last = at;
+			}
+			expect(content).toContain("There is no fallthrough branch");
+			for (const kind of ["workflow", "external"]) {
+				expect(content).toContain(
+					`<!-- 5x:issue-resolution-comment v1 source=github.com/OWNER/REPO#42 pr=57 closure=${kind} -->`,
+				);
+			}
+			expect(content).toContain(
+				"`resolved_externally_closed_unverified` is terminal for its receipt",
+			);
+		}
+	});
+
 	test("contains the required gh, git, and 5x commands", () => {
 		const content = render(createRenderContext(false));
 		for (const required of [

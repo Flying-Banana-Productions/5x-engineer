@@ -360,7 +360,7 @@ export type StubState = {
 	timeline: Json[];
 	prs: StubPr[];
 	behaviors: {
-		/** ok | fail | timeout-created | timeout-lost */
+		/** ok | fail | timeout-created | timeout-lost | duplicate */
 		commentCreate?: string;
 		/** ok | fail */
 		commentUpdate?: string;
@@ -368,8 +368,10 @@ export type StubState = {
 		commentsList?: string;
 		/** ok | fail | timeout-closed */
 		close?: string;
-		/** ok | fail | lost */
+		/** ok | fail | lost | race-unmarked */
 		prCreate?: string;
+		/** ok | fail | fail-after-write */
+		timeline?: string;
 	};
 	log: string[][];
 	invalid: string[];
@@ -587,6 +589,8 @@ if (cmd === "api") {
   }
   if (method === "GET" && /^repos\\/OWNER\\/REPO\\/issues\\/42\\/timeline$/.test(endpoint)) {
     if (!flags["--paginate"]) invalid("timeline without --paginate");
+    const t = state.behaviors.timeline || "ok";
+    if (t === "fail" || (t === "fail-after-write" && state.writes > 0)) fail("HTTP 502", 1);
     process.stdout.write(pages(state.timeline)); save(); process.exit(0);
   }
   const m = /^repos\\/OWNER\\/REPO\\/issues\\/comments\\/(\\d+)$/.exec(endpoint || "");
@@ -616,6 +620,7 @@ if (cmd === "issue comment") {
   if (b === "fail" || b === "timeout-lost") fail(b === "fail" ? "HTTP 500" : "timeout", b === "fail" ? 1 : 124);
   const c = { id: state.nextId++, body: readFileSync(file, "utf8"), user: { login: state.login }, created_at: now(), updated_at: now() };
   state.comments.push(c);
+  if (b === "duplicate") state.comments.push({ ...c, id: state.nextId++, created_at: now() });
   if (b === "timeout-created") fail("timeout", 124);
   process.stdout.write("https://github.com/OWNER/REPO/issues/42#issuecomment-" + c.id + "\\n"); save(); process.exit(0);
 }
@@ -627,6 +632,8 @@ if (cmd === "issue close") {
   const b = state.behaviors.close || "ok";
   if (b === "fail") fail("HTTP 500", 1);
   state.issue.state = "CLOSED";
+  state.timeline.push({ event: "closed", actor: { login: state.login }, created_at: now() });
+  state.nextId++;
   if (b === "timeout-closed") fail("timeout", 124);
   save(); process.exit(0);
 }
@@ -645,6 +652,10 @@ if (cmd === "pr create") {
   state.writes++;
   const b = state.behaviors.prCreate || "ok";
   if (b === "fail") fail("HTTP 500", 1);
+  if (b === "race-unmarked") {
+    state.prs.push({ number: 58, state: "OPEN", headRefName: get("--head", "-H"), url: "https://github.com/OWNER/REPO/pull/58", body: "human work" });
+    fail("HTTP 422", 1);
+  }
   const pr = { number: 57, state: "OPEN", headRefName: get("--head", "-H"), url: "https://github.com/OWNER/REPO/pull/57", body: readFileSync(file, "utf8") };
   state.prs.push(pr);
   if (b === "lost") fail("timeout", 124);
@@ -662,22 +673,49 @@ if (cmd === "pr edit") {
 invalid("unhandled " + cmd);
 `;
 
+/**
+ * Stub `5x` responses keyed by the leading argv words ("run init", "run list",
+ * "plan list"). A string is printed as stdout with exit 0; `{ exit }` fails.
+ * Unlisted commands print an empty successful run list.
+ */
+export type FivexResponses = Record<string, string | { exit: number }>;
+
+const FIVEX_STUB_SOURCE = `
+const { appendFileSync, readFileSync } = require("node:fs");
+const argv = process.argv.slice(2);
+appendFileSync(process.env.FIVEX_STUB_LOG, JSON.stringify(argv) + "\\n");
+const responses = JSON.parse(readFileSync(process.env.FIVEX_STUB_RESPONSES, "utf8"));
+const key = argv.slice(0, 2).join(" ");
+const r = responses[key];
+if (r === undefined) { process.stdout.write('{"ok":true,"data":{"runs":[]}}\\n'); process.exit(0); }
+if (typeof r === "string") { process.stdout.write(r + "\\n"); process.exit(0); }
+process.stderr.write("stub 5x failure\\n"); process.exit(r.exit);
+`;
+
 /** Create a bin dir with stub `gh` and `5x`, plus a state file. */
 export function makeStubBin(
 	root: string,
 	state: Partial<StubState> = {},
-): { binDir: string; statePath: string; read(): StubState } {
+	fivex: FivexResponses = {},
+): {
+	binDir: string;
+	statePath: string;
+	env: Record<string, string>;
+	read(): StubState;
+	fivexLog(): string[][];
+} {
 	const binDir = join(root, "bin");
 	mkdirSync(binDir, { recursive: true });
 	const ghPath = join(binDir, "gh");
 	writeFileSync(ghPath, `#!${process.execPath}\n${STUB_SOURCE}`);
 	chmodSync(ghPath, 0o755);
 	const fivexPath = join(binDir, "5x");
-	writeFileSync(
-		fivexPath,
-		`#!/bin/sh\necho "$@" >> "${join(root, "5x.log")}"\necho '{"ok":true,"data":{"runs":[]}}'\n`,
-	);
+	writeFileSync(fivexPath, `#!${process.execPath}\n${FIVEX_STUB_SOURCE}`);
 	chmodSync(fivexPath, 0o755);
+	const fivexLogPath = join(root, "5x.log");
+	const fivexResponsesPath = join(root, "5x-responses.json");
+	writeFileSync(fivexResponsesPath, JSON.stringify(fivex));
+	writeFileSync(fivexLogPath, "");
 	const statePath = join(root, "gh-state.json");
 	const full: StubState = {
 		login: "five-x-bot",
@@ -696,7 +734,17 @@ export function makeStubBin(
 	return {
 		binDir,
 		statePath,
+		env: {
+			GH_STUB_STATE: statePath,
+			FIVEX_STUB_LOG: fivexLogPath,
+			FIVEX_STUB_RESPONSES: fivexResponsesPath,
+		},
 		read: () => JSON.parse(readFileSync(statePath, "utf8")) as StubState,
+		fivexLog: () =>
+			readFileSync(fivexLogPath, "utf8")
+				.split("\n")
+				.filter((l) => l.length > 0)
+				.map((l) => JSON.parse(l) as string[]),
 	};
 }
 

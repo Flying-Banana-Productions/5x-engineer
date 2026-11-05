@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	cleanupRoot,
@@ -58,9 +58,11 @@ test("the skill documents every recipe these tests execute", () => {
 			"classify-delivery",
 			"compatibility-intervals",
 			"discover-briefs",
+			"intake-association",
 			"prepare-pr",
 			"publish-resolution",
 			"refresh-compare",
+			"refresh-fetch",
 		].sort(),
 	);
 });
@@ -109,7 +111,7 @@ describe("discover-briefs recipe", () => {
 
 				const result = await runRecipe("discover-briefs", {
 					cwd: repo.dir,
-					env: { MARK, SOURCE, PLANS_REL },
+					env: { MARK, SOURCE, PLANS_REL, ...stub.env },
 					binDir: stub.binDir,
 				});
 				expect(result.exitCode, result.stderr).toBe(0);
@@ -131,6 +133,194 @@ describe("discover-briefs recipe", () => {
 				expect(result.lines.filter((l) => l.startsWith("valid "))).toHaveLength(
 					1,
 				);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a failed run-list query is an error, never evidence that a run exists",
+		async () => {
+			await withRoot("discover-runlist", async (root) => {
+				const repo = FixtureRepo.create(root);
+				// The plan file is absent at the ref, so validation must query runs.
+				await repo.commit("intake", { [BRIEF]: brief() });
+				const stub = makeStubBin(root, {}, { "run list": { exit: 1 } });
+				const result = await runRecipe("discover-briefs", {
+					cwd: repo.dir,
+					env: { MARK, SOURCE, PLANS_REL, ...stub.env },
+					binDir: stub.binDir,
+				});
+				expect(result.exitCode, result.stderr).toBe(0);
+				expect(result.lines).toEqual([
+					`error refs/heads/main ${BRIEF} run-list-failed`,
+				]);
+
+				const malformed = makeStubBin(
+					join(root, "m"),
+					{},
+					{ "run list": '{"ok":false,"error":{"code":"X"}}' },
+				);
+				const again = await runRecipe("discover-briefs", {
+					cwd: repo.dir,
+					env: { MARK, SOURCE, PLANS_REL, ...malformed.env },
+					binDir: malformed.binDir,
+				});
+				expect(again.lines).toEqual([
+					`error refs/heads/main ${BRIEF} run-list-failed`,
+				]);
+			});
+		},
+		TIMEOUT,
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Intake association (resume reuse)
+// ---------------------------------------------------------------------------
+
+describe("intake-association recipe", () => {
+	const initFor = (runId: string) =>
+		JSON.stringify({
+			ok: true,
+			data: { run_id: runId, worktree_path: "/wt/218", resumed: true },
+		});
+
+	async function associate(
+		root: string,
+		opts: { valid: string; fivex: Parameters<typeof makeStubBin>[2] },
+	) {
+		const repo = FixtureRepo.create(root);
+		await repo.commit("intake", {
+			[BRIEF]: brief().replace(
+				"Intake status: complete",
+				"Intake status: incomplete",
+			),
+		});
+		const stub = makeStubBin(root, {}, opts.fivex);
+		const result = await runRecipe("intake-association", {
+			cwd: repo.dir,
+			env: {
+				VALID: opts.valid,
+				TOP: repo.dir,
+				PLANS_DIR: join(repo.dir, PLANS_REL),
+				PLANS_REL,
+				N: "42",
+				SHORT_SLUG: "fresh",
+				...stub.env,
+			},
+			binDir: stub.binDir,
+		});
+		expect(result.exitCode, result.stderr).toBe(0);
+		return { repo, result, calls: stub.fivexLog() };
+	}
+
+	test(
+		"resume of an incomplete intake reuses the validated plan, brief, run, and worktree",
+		async () => {
+			await withRoot("assoc-reuse", async (root) => {
+				// The same brief found on a local branch and its origin ref is one association.
+				const valid = [
+					`valid refs/heads/main ${BRIEF} ${PLAN}`,
+					`valid refs/remotes/origin/main ${BRIEF} ${PLAN}`,
+				].join("\n");
+				const { repo, result, calls } = await associate(root, {
+					valid,
+					fivex: {
+						"run init": initFor("run_aaaa"),
+						"plan list": '{"ok":true,"data":{"plans":[{"file":"300-x.md"}]}}',
+					},
+				});
+				expect(result.lines).toEqual([
+					"association: existing",
+					`plan-path: ${join(repo.dir, PLAN)}`,
+					`plan-file: ${PLAN}`,
+					"plan-slug: 218-issue-42-example",
+					`brief-rel: ${BRIEF_REL}`,
+					"plan-run: run_aaaa",
+					"worktree: /wt/218",
+				]);
+				// No new plan number is allocated; init targets the existing plan.
+				expect(calls).toEqual([
+					["run", "init", "--plan", join(repo.dir, PLAN), "--worktree"],
+				]);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a different active planning run, ambiguous briefs, or a failed init stop instead of starting duplicate work",
+		async () => {
+			await withRoot("assoc-stop", async (root) => {
+				const mismatch = await associate(join(root, "a"), {
+					valid: `valid refs/heads/main ${BRIEF} ${PLAN}`,
+					fivex: { "run init": initFor("run_zzzz") },
+				});
+				expect(mismatch.result.lines).toEqual([
+					"stop: planning-run-mismatch run_aaaa run_zzzz",
+					"outcome: needs_human",
+				]);
+
+				const ambiguous = await associate(join(root, "b"), {
+					valid: [
+						`valid refs/heads/main ${BRIEF} ${PLAN}`,
+						`valid refs/heads/main docs/development/issues/230-issue-42-b/brief.md ${PLANS_REL}/230-issue-42-b.md`,
+					].join("\n"),
+					fivex: { "run init": initFor("run_aaaa") },
+				});
+				expect(ambiguous.result.lines).toEqual([
+					"stop: ambiguous-briefs",
+					"outcome: needs_human",
+				]);
+				expect(ambiguous.calls).toEqual([]);
+
+				const initFails = await associate(join(root, "c"), {
+					valid: `valid refs/heads/main ${BRIEF} ${PLAN}`,
+					fivex: { "run init": { exit: 1 } },
+				});
+				expect(initFails.result.lines).toEqual([
+					"stop: run-init",
+					"outcome: needs_human",
+				]);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"allocates a new association only when discovery found none",
+		async () => {
+			await withRoot("assoc-new", async (root) => {
+				const { repo, result, calls } = await associate(root, {
+					valid: "",
+					fivex: {
+						"plan list":
+							'{"ok":true,"data":{"plans":[{"file":"217-a.md"},{"file":"105-b.md"}]}}',
+						"run init": JSON.stringify({
+							ok: true,
+							data: {
+								run_id: "run_new",
+								worktree_path: "/wt/218",
+								warnings: ["harness stale"],
+							},
+						}),
+					},
+				});
+				expect(result.lines).toEqual([
+					"association: new",
+					'init-warnings: {"warnings":["harness stale"],"harness_freshness":null}',
+					`plan-path: ${join(repo.dir, PLANS_REL, "218-issue-42-fresh.md")}`,
+					`plan-file: ${PLANS_REL}/218-issue-42-fresh.md`,
+					"plan-slug: 218-issue-42-fresh",
+					"brief-rel: docs/development/issues/218-issue-42-fresh",
+					"plan-run: run_new",
+					"worktree: /wt/218",
+				]);
+				expect(calls.map((c) => c.slice(0, 2).join(" "))).toEqual([
+					"plan list",
+					"run init",
+				]);
 			});
 		},
 		TIMEOUT,
@@ -359,6 +549,7 @@ describe("delivery identity recipes", () => {
 				});
 				expect(prepared.intervals).toEqual([]);
 				expect(prepared.lines).toEqual([
+					"records no-accepted-interval",
 					`uncovered ${a1}`,
 					"delivery: needs_human",
 				]);
@@ -382,7 +573,111 @@ describe("delivery identity recipes", () => {
 					prHead: a1,
 				});
 				expect(gated.intervals).toEqual(["unsettled 1"]);
+				expect(gated.lines).toContain("records unsettled 1");
 				expect(gated.ok).toBe(false);
+			});
+		},
+		TIMEOUT,
+	);
+
+	async function classifyRaw(
+		repo: FixtureRepo,
+		env: Record<string, string>,
+	): Promise<string[]> {
+		const result = await runRecipe("classify-delivery", {
+			cwd: repo.dir,
+			env: { EXCLUDED, ...env },
+		});
+		expect(result.exitCode, result.stderr).toBe(0);
+		return result.lines;
+	}
+
+	test(
+		"unsettled, error, malformed, and empty interval output never classify as delivered when no code changed",
+		async () => {
+			await withRoot("deliver-unsettled", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const p = await repo.commit("plan", { [PLAN]: "plan\n" });
+				// BASE = FINAL = PR_HEAD: the phase has no code-touching commits.
+				const same = { BASE: p, FINAL: p, PR_HEAD: p };
+				expect(
+					await classifyRaw(repo, { ...same, INTERVALS: "unsettled 1" }),
+				).toEqual([
+					"records unsettled 1",
+					"records no-accepted-interval",
+					"delivery: needs_human",
+				]);
+				expect(
+					await classifyRaw(repo, {
+						...same,
+						INTERVALS: "needs_human records-unreadable",
+					}),
+				).toEqual([
+					"records records-unreadable",
+					"records no-accepted-interval",
+					"delivery: needs_human",
+				]);
+				expect(
+					await classifyRaw(repo, { ...same, INTERVALS: "garbage line" }),
+				).toEqual([
+					"records malformed-line garbage",
+					"records no-accepted-interval",
+					"delivery: needs_human",
+				]);
+				expect(
+					await classifyRaw(repo, {
+						...same,
+						INTERVALS: `interval 1 ${p} not-a-commit ${p}`,
+					}),
+				).toEqual([
+					"records malformed-interval 1",
+					"records no-accepted-interval",
+					"delivery: needs_human",
+				]);
+				expect(await classifyRaw(repo, { ...same, INTERVALS: "" })).toEqual([
+					"records no-accepted-interval",
+					"delivery: needs_human",
+				]);
+				// An unsettled phase is not masked by another phase's accepted interval.
+				expect(
+					await classifyRaw(repo, {
+						...same,
+						INTERVALS: `interval 1 ${p} ${p} ${p}\nunsettled 2`,
+					}),
+				).toEqual(["records unsettled 2", "delivery: needs_human"]);
+				// An unresolvable endpoint stops before classification.
+				expect(
+					await classifyRaw(repo, {
+						BASE: p,
+						FINAL: "0000000000000000000000000000000000000000",
+						PR_HEAD: p,
+						INTERVALS: `interval 1 ${p} ${p} ${p}`,
+					}),
+				).toEqual([
+					"records FINAL unresolved 0000000000000000000000000000000000000000",
+					"delivery: needs_human",
+				]);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"unreadable run records are an error line, not empty interval output",
+		async () => {
+			await withRoot("deliver-unreadable", async (root) => {
+				const repo = FixtureRepo.create(root);
+				for (const recipe of [
+					"accepted-intervals",
+					"compatibility-intervals",
+				]) {
+					const result = await runRecipe(recipe, {
+						cwd: repo.dir,
+						env: { RD: join(root, "missing-run") },
+					});
+					expect(result.exitCode, result.stderr).toBe(0);
+					expect(result.lines).toEqual(["needs_human records-unreadable"]);
+				}
 			});
 		},
 		TIMEOUT,
@@ -692,7 +987,7 @@ describe("refresh-compare recipe", () => {
 					}),
 					[`${BRIEF_REL}/source/comments.json`]: JSON.stringify(snapshot),
 				});
-				const receipt = `<!-- 5x:issue-resolution-comment v1 source=${SOURCE} pr=57 -->\nResolved by PR #57 (merge commit abc123, reviewed head def456).\n`;
+				const receipt = `<!-- 5x:issue-resolution-comment v1 source=${SOURCE} pr=57 closure=workflow -->\nResolved by PR #57 (merge commit abc123, reviewed head def456).\n`;
 				const live = [
 					comment(
 						1,
@@ -705,6 +1000,13 @@ describe("refresh-compare recipe", () => {
 					comment(4, receipt.replace("pr=57", "pr=58"), "five-x-bot"),
 					comment(5, "thanks!"),
 					comment(6, receipt, "five-x-bot"),
+					comment(
+						7,
+						receipt.replace("closure=workflow", "closure=external"),
+						"five-x-bot",
+					),
+					// A pre-amendment marker without closure= is not a receipt.
+					comment(8, receipt.replace(" closure=workflow", ""), "five-x-bot"),
 				];
 				writeFileSync(
 					join(repo.dir, "live-issue.json"),
@@ -733,6 +1035,9 @@ describe("refresh-compare recipe", () => {
 					"new-comment 4",
 					"new-comment 5",
 					"receipt 6",
+					"receipt 7",
+					"new-comment 8",
+					"refresh: compared",
 				]);
 			});
 		},
@@ -779,9 +1084,135 @@ describe("refresh-compare recipe", () => {
 					},
 				});
 				expect(result.exitCode, result.stderr).toBe(0);
-				expect(result.lines).toEqual([]);
+				expect(result.lines).toEqual(["refresh: compared"]);
 				expect(await repo.git(["status", "--porcelain"])).toBe(before);
 				expect(await repo.git(["rev-parse", "HEAD"])).toBe(briefCommit);
+			});
+		},
+		TIMEOUT,
+	);
+});
+
+describe("refresh fail-closed reads", () => {
+	const ENV = {
+		BRIEF_REL,
+		SOURCE,
+		ME: "five-x-bot",
+		PR: "57",
+		MERGE_COMMIT: "abc123",
+	};
+
+	test(
+		"missing pinned snapshots or malformed inputs are needs_human, never an empty comparison",
+		async () => {
+			await withRoot("refresh-fail", async (root) => {
+				const repo = FixtureRepo.create(root);
+				// The pinned commit has the brief but neither snapshot path.
+				const bare = await repo.commit("brief only", { [BRIEF]: brief() });
+				writeFileSync(
+					join(repo.dir, "live-issue.json"),
+					JSON.stringify({ title: "Bug", body: "Broken" }),
+				);
+				writeFileSync(join(repo.dir, "live-comments.json"), "[]");
+				const missing = await runRecipe("refresh-compare", {
+					cwd: repo.dir,
+					env: { ...ENV, BRIEF_COMMIT: bare },
+				});
+				expect(missing.exitCode, missing.stderr).toBe(0);
+				expect(missing.lines).toEqual([
+					"unreadable snapshot-issue",
+					"outcome: needs_human",
+				]);
+
+				const full = await repo.commit("snapshots", {
+					[`${BRIEF_REL}/source/issue.json`]: JSON.stringify({
+						title: "Bug",
+						body: "Broken",
+					}),
+					[`${BRIEF_REL}/source/comments.json`]: "[]",
+				});
+				// Empty or truncated live input is not "no differences".
+				writeFileSync(join(repo.dir, "live-comments.json"), "");
+				const emptyLive = await runRecipe("refresh-compare", {
+					cwd: repo.dir,
+					env: { ...ENV, BRIEF_COMMIT: full },
+				});
+				expect(emptyLive.lines).toEqual([
+					"unreadable live-comments",
+					"outcome: needs_human",
+				]);
+
+				writeFileSync(join(repo.dir, "live-comments.json"), "[]");
+				writeFileSync(join(repo.dir, "live-issue.json"), "{}");
+				const badIssue = await runRecipe("refresh-compare", {
+					cwd: repo.dir,
+					env: { ...ENV, BRIEF_COMMIT: full },
+				});
+				expect(badIssue.lines).toEqual([
+					"unreadable live-issue",
+					"outcome: needs_human",
+				]);
+
+				const noCommit = await runRecipe("refresh-compare", {
+					cwd: repo.dir,
+					env: {
+						...ENV,
+						BRIEF_COMMIT: "0000000000000000000000000000000000000000",
+					},
+				});
+				expect(noCommit.lines.at(-1)).toBe("outcome: needs_human");
+				expect(noCommit.lines).not.toContain("refresh: compared");
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"refresh-fetch checks every live read and writes complete inputs",
+		async () => {
+			await withRoot("refresh-fetch", async (root) => {
+				const comments = [comment(1, "a"), comment(2, "b"), comment(3, "c")];
+				const ok = makeStubBin(join(root, "ok"), { comments });
+				const fetched = await runRecipe("refresh-fetch", {
+					cwd: join(root, "ok"),
+					env: { OWNER_REPO: "OWNER/REPO", N: "42", ...ok.env },
+					binDir: ok.binDir,
+				});
+				expect(fetched.exitCode, fetched.stderr).toBe(0);
+				expect(fetched.lines).toEqual(["me: five-x-bot", "fetch: complete"]);
+				expect(ok.read().invalid).toEqual([]);
+				// Three comments arrive over two pages and are merged into one array.
+				const live = JSON.parse(
+					readFileSync(join(root, "ok", "live-comments.json"), "utf8"),
+				) as StubComment[];
+				expect(live.map((c) => c.id)).toEqual([1, 2, 3]);
+
+				const failing = makeStubBin(join(root, "fail"), {
+					comments,
+					behaviors: { commentsList: "fail" },
+				});
+				const failed = await runRecipe("refresh-fetch", {
+					cwd: join(root, "fail"),
+					env: { OWNER_REPO: "OWNER/REPO", N: "42", ...failing.env },
+					binDir: failing.binDir,
+				});
+				expect(failed.lines).toEqual([
+					"fetch-failed comments",
+					"outcome: needs_human",
+				]);
+
+				const noTimeline = makeStubBin(join(root, "timeline"), {
+					behaviors: { timeline: "fail" },
+				});
+				const timelineFailed = await runRecipe("refresh-fetch", {
+					cwd: join(root, "timeline"),
+					env: { OWNER_REPO: "OWNER/REPO", N: "42", ...noTimeline.env },
+					binDir: noTimeline.binDir,
+				});
+				expect(timelineFailed.lines).toEqual([
+					"fetch-failed timeline",
+					"outcome: needs_human",
+				]);
 			});
 		},
 		TIMEOUT,
@@ -793,7 +1224,27 @@ describe("refresh-compare recipe", () => {
 // ---------------------------------------------------------------------------
 
 const MERGE = "abc123";
-const RECEIPT_BODY = `<!-- 5x:issue-resolution-comment v1 source=${SOURCE} pr=57 -->\nResolved by PR #57 (merge commit ${MERGE}, reviewed head def456).\n`;
+const RMARK = `<!-- 5x:issue-resolution-comment v1 source=${SOURCE} pr=57`;
+const RECEIPT_BODY = `${RMARK} closure=workflow -->\nResolved by PR #57 (merge commit ${MERGE}, reviewed head def456).\n`;
+const EXTERNAL_TEMPLATE = `${RMARK} closure=external -->\nDelivered by PR #57 (merge commit ${MERGE}, reviewed head def456).\nThis issue was already closed by @CLOSED_BY@ at @CLOSED_AT@; that closure is not verified by this workflow.\n`;
+const EXTERNAL_BODY = EXTERNAL_TEMPLATE.replace(
+	"@CLOSED_BY@",
+	"maintainer",
+).replace("@CLOSED_AT@", "2026-11-02T00:00:00Z");
+const CLOSED = { state: "CLOSED" as const, title: "Bug", body: "Broken" };
+
+function receiptAt(
+	id: number,
+	body: string,
+	createdAt: string,
+	login = "five-x-bot",
+): StubComment {
+	return { ...comment(id, body, login), created_at: createdAt };
+}
+
+function closedBy(login: string, at: string) {
+	return { event: "closed", actor: { login }, created_at: at };
+}
 
 type Op = "list" | "create" | "patch" | "close" | "view" | "timeline" | "user";
 
@@ -810,19 +1261,27 @@ function ops(log: string[][]): Op[] {
 	});
 }
 
-async function publish(
-	root: string,
-	state: Parameters<typeof makeStubBin>[1],
-): Promise<{
+type PublishRun = {
 	lines: string[];
 	ops: Op[];
+	log: string[][];
 	markedComments: number;
+	bodies: string[];
 	closed: boolean;
 	invalid: string[];
-}> {
-	const stub = makeStubBin(root, state);
+	/** Resume again against the persisted stub state. */
+	again(): Promise<PublishRun>;
+};
+
+async function publishWith(
+	root: string,
+	stub: ReturnType<typeof makeStubBin>,
+): Promise<PublishRun> {
 	const commentFile = join(root, "comment.md");
+	const externalFile = join(root, "external-comment.md");
 	writeFileSync(commentFile, RECEIPT_BODY);
+	writeFileSync(externalFile, EXTERNAL_TEMPLATE);
+	const start = stub.read().log.length;
 	const result = await runRecipe("publish-resolution", {
 		cwd: root,
 		env: {
@@ -832,21 +1291,34 @@ async function publish(
 			PR: "57",
 			MERGE_COMMIT: MERGE,
 			COMMENT_FILE: commentFile,
-			GH_STUB_STATE: stub.statePath,
+			EXTERNAL_COMMENT_FILE: externalFile,
+			...stub.env,
 		},
 		binDir: stub.binDir,
 	});
 	expect(result.exitCode, result.stderr).toBe(0);
 	const final = stub.read();
+	const marked = final.comments.filter((c) =>
+		c.body.startsWith("<!-- 5x:issue-resolution-comment v1"),
+	);
+	const log = final.log.slice(start);
 	return {
 		lines: result.lines,
-		ops: ops(final.log),
-		markedComments: final.comments.filter((c) =>
-			c.body.startsWith("<!-- 5x:issue-resolution-comment v1"),
-		).length,
+		ops: ops(log),
+		log,
+		markedComments: marked.length,
+		bodies: marked.map((c) => c.body),
 		closed: final.issue.state === "CLOSED",
 		invalid: final.invalid,
+		again: () => publishWith(root, stub),
 	};
+}
+
+function publish(
+	root: string,
+	state: Parameters<typeof makeStubBin>[1],
+): Promise<PublishRun> {
+	return publishWith(root, makeStubBin(root, state));
 }
 
 function before(list: Op[], a: Op, b: Op): boolean {
@@ -855,22 +1327,235 @@ function before(list: Op[], a: Op, b: Op): boolean {
 	return ia >= 0 && ib > ia && list.slice(ia + 1, ib).includes("list");
 }
 
+/** No comment create, no PATCH, and no close in the argv log. */
+function expectNoWrites(r: PublishRun): void {
+	expect(r.log.filter((a) => a[0] === "issue" && a[1] === "comment")).toEqual(
+		[],
+	);
+	expect(r.log.filter((a) => a[0] === "api" && a.includes("PATCH"))).toEqual(
+		[],
+	);
+	expect(r.log.filter((a) => a[0] === "issue" && a[1] === "close")).toEqual([]);
+}
+
 describe("publish-resolution recipe", () => {
 	test(
-		"open issue: creates, confirms by re-list, then closes and re-reads",
+		"open issue: creates a workflow receipt, confirms by re-list, closes, and re-reads",
 		async () => {
 			await withRoot("pub-ok", async (root) => {
 				const r = await publish(root, {});
 				expect(r.invalid).toEqual([]);
+				expect(r.lines).toContain("branch: g");
+				expect(r.lines).toContain("branch: b");
 				expect(r.lines.at(-1)).toBe("outcome: resolved");
 				expect(before(r.ops, "create", "close")).toBe(true);
-				expect(r.ops.at(-1)).toBe("view");
+				// After the close: state, timeline, and comments are re-read.
+				expect(r.ops.slice(r.ops.indexOf("close") + 1)).toEqual([
+					"view",
+					"timeline",
+					"list",
+				]);
 				expect(r.markedComments).toBe(1);
+				expect(r.bodies[0]?.split("\n")[0]).toBe(
+					`${RMARK} closure=workflow -->`,
+				);
 				expect(r.closed).toBe(true);
 			});
 		},
 		TIMEOUT,
 	);
+
+	test(
+		"ordinary successful close stays resolved on a second resume with no writes",
+		async () => {
+			await withRoot("pub-idempotent", async (root) => {
+				const first = await publish(root, {});
+				expect(first.lines.at(-1)).toBe("outcome: resolved");
+				const second = await first.again();
+				expect(second.lines).toEqual(["branch: b", "outcome: resolved"]);
+				expectNoWrites(second);
+				expect(second.markedComments).toBe(1);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"externally closed issue: external receipt, no close, and the outcome never becomes resolved on later resumes",
+		async () => {
+			await withRoot("pub-external", async (root) => {
+				const first = await publish(root, {
+					issue: CLOSED,
+					timeline: [closedBy("maintainer", "2026-11-02T00:00:00Z")],
+				});
+				expect(first.invalid).toEqual([]);
+				expect(first.lines).toEqual([
+					"branch: f",
+					"outcome: resolved_externally_closed_unverified",
+				]);
+				expect(first.ops).toContain("create");
+				expect(first.ops).not.toContain("close");
+				expect(first.bodies).toEqual([EXTERNAL_BODY]);
+
+				for (const run of [await first.again(), await first.again()]) {
+					expect(run.lines).toEqual([
+						"branch: e",
+						"outcome: resolved_externally_closed_unverified",
+					]);
+					expectNoWrites(run);
+					expect(run.markedComments).toBe(1);
+				}
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a workflow receipt followed by another actor's close, or an earlier close, is externally closed",
+		async () => {
+			await withRoot("pub-later-external", async (root) => {
+				const receipt = receiptAt(10, RECEIPT_BODY, "2026-11-02T00:00:00Z");
+				const later = await publish(join(root, "a"), {
+					issue: CLOSED,
+					comments: [receipt],
+					timeline: [closedBy("maintainer", "2026-11-03T00:00:00Z")],
+				});
+				expect(later.lines).toEqual([
+					"branch: c",
+					"outcome: resolved_externally_closed_unverified",
+				]);
+				expectNoWrites(later);
+
+				const earlier = await publish(join(root, "b"), {
+					issue: CLOSED,
+					comments: [receipt],
+					timeline: [closedBy("five-x-bot", "2026-11-01T00:00:00Z")],
+				});
+				expect(earlier.lines.at(-1)).toBe(
+					"outcome: resolved_externally_closed_unverified",
+				);
+				expectNoWrites(earlier);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a failed timeline read is needs_human, never a closure outcome",
+		async () => {
+			await withRoot("pub-timeline", async (root) => {
+				const before = await publish(join(root, "a"), {
+					issue: CLOSED,
+					comments: [receiptAt(10, RECEIPT_BODY, "2026-11-02T00:00:00Z")],
+					timeline: [closedBy("five-x-bot", "2026-11-02T00:00:01Z")],
+					behaviors: { timeline: "fail" },
+				});
+				expect(before.lines).toEqual([
+					"stop: timeline-unreadable",
+					"outcome: needs_human",
+				]);
+				expectNoWrites(before);
+
+				// After the workflow's own close, an unreadable timeline is not success.
+				const after = await publish(join(root, "b"), {
+					behaviors: { timeline: "fail-after-write" },
+				});
+				expect(after.lines.at(-1)).toBe("outcome: needs_human");
+				expect(after.lines).toContain("stop: timeline-unreadable");
+				expect(after.lines).not.toContain("outcome: resolved");
+			});
+		},
+		TIMEOUT,
+	);
+
+	describe("Receipt preflight runs first", () => {
+		const invalidMarker = receiptAt(
+			10,
+			RECEIPT_BODY.replace(MERGE, "0000000"),
+			"2026-11-02T00:00:00Z",
+		);
+		const legacyMarker = receiptAt(
+			11,
+			RECEIPT_BODY.replace(" closure=workflow", ""),
+			"2026-11-02T00:00:00Z",
+		);
+		const workflow = receiptAt(12, RECEIPT_BODY, "2026-11-02T00:00:00Z");
+		const external = receiptAt(13, EXTERNAL_BODY, "2026-11-02T00:00:01Z");
+		const cases: {
+			name: string;
+			state: Parameters<typeof makeStubBin>[1];
+			stop: string;
+		}[] = [
+			{
+				name: "(i) invalid authenticated marker on an open issue",
+				state: { comments: [invalidMarker] },
+				stop: "stop: preflight invalid-receipt 10",
+			},
+			{
+				name: "(i) legacy marker without closure= on an open issue",
+				state: { comments: [legacyMarker] },
+				stop: "stop: preflight invalid-receipt 11",
+			},
+			{
+				name: "(i) invalid marker beside a validated receipt",
+				state: { comments: [workflow, invalidMarker] },
+				stop: "stop: preflight invalid-receipt 10",
+			},
+			{
+				name: "(ii) duplicate workflow and external receipts on an open issue",
+				state: { comments: [workflow, external] },
+				stop: "stop: preflight duplicate-receipts 12 13",
+			},
+			{
+				name: "(iii) duplicate pair on a closed issue whose latest close is a workflow close",
+				state: {
+					issue: CLOSED,
+					comments: [workflow, external],
+					timeline: [closedBy("five-x-bot", "2026-11-03T00:00:00Z")],
+				},
+				stop: "stop: preflight duplicate-receipts 12 13",
+			},
+			{
+				name: "(iv) one external receipt on an open issue",
+				state: { comments: [external] },
+				stop: "stop: preflight external-receipt-on-open-issue 13",
+			},
+		];
+		for (const c of cases) {
+			test(
+				`${c.name} is needs_human with no writes`,
+				async () => {
+					await withRoot("pub-preflight", async (root) => {
+						const r = await publish(root, c.state);
+						expect(r.invalid).toEqual([]);
+						expect(r.lines).toEqual([c.stop, "outcome: needs_human"]);
+						expectNoWrites(r);
+						expect(r.lines).not.toContain("outcome: resolved");
+						expect(r.lines).not.toContain(
+							"outcome: resolved_externally_closed_unverified",
+						);
+					});
+				},
+				TIMEOUT,
+			);
+		}
+
+		test(
+			"a confirming re-list that shows a second receipt makes no close call",
+			async () => {
+				await withRoot("pub-dup-create", async (root) => {
+					const r = await publish(root, {
+						behaviors: { commentCreate: "duplicate" },
+					});
+					expect(r.lines.at(-1)).toBe("outcome: needs_human");
+					expect(r.lines[0]).toMatch(/^stop: preflight duplicate-receipts /);
+					expect(r.ops).not.toContain("close");
+					expect(r.closed).toBe(false);
+				});
+			},
+			TIMEOUT,
+		);
+	});
 
 	test(
 		"failed create is comment-create pending with no close call",
@@ -930,50 +1615,17 @@ describe("publish-resolution recipe", () => {
 	);
 
 	test(
-		"second resume after a successful close makes no writes",
-		async () => {
-			await withRoot("pub-idempotent", async (root) => {
-				const r = await publish(root, {
-					issue: { state: "CLOSED", title: "Bug", body: "Broken" },
-					comments: [comment(10, RECEIPT_BODY, "five-x-bot")],
-				});
-				expect(r.lines.at(-1)).toBe("outcome: resolved");
-				expect(r.ops).not.toContain("create");
-				expect(r.ops).not.toContain("patch");
-				expect(r.ops).not.toContain("close");
-			});
-		},
-		TIMEOUT,
-	);
-
-	test(
-		"existing marked comment with an open issue is reused and the close is completed",
+		"existing workflow receipt with an open issue is reused and the close is completed",
 		async () => {
 			await withRoot("pub-reuse", async (root) => {
 				const r = await publish(root, {
 					comments: [comment(10, RECEIPT_BODY, "five-x-bot")],
 				});
+				expect(r.lines).toContain("branch: d");
 				expect(r.lines.at(-1)).toBe("outcome: resolved");
 				expect(r.ops).not.toContain("create");
 				expect(r.ops).toContain("close");
 				expect(r.markedComments).toBe(1);
-			});
-		},
-		TIMEOUT,
-	);
-
-	test(
-		"externally closed issue gets a marked comment and no close call",
-		async () => {
-			await withRoot("pub-external", async (root) => {
-				const r = await publish(root, {
-					issue: { state: "CLOSED", title: "Bug", body: "Broken" },
-				});
-				expect(r.lines.at(-1)).toBe(
-					"outcome: resolved_externally_closed_unverified",
-				);
-				expect(r.ops).toContain("create");
-				expect(r.ops).not.toContain("close");
 			});
 		},
 		TIMEOUT,
@@ -986,13 +1638,15 @@ describe("publish-resolution recipe", () => {
 				const r = await publish(root, {
 					comments: [comment(10, RECEIPT_BODY, "five-x-bot")],
 					timeline: [
-						{ event: "closed", created_at: "2026-11-01T00:00:01Z" },
+						closedBy("five-x-bot", "2026-11-01T00:00:01Z"),
 						{ event: "reopened", created_at: "2026-11-03T00:00:00Z" },
 					],
 				});
-				expect(r.lines.at(-1)).toBe("outcome: needs_human");
-				expect(r.ops).not.toContain("create");
-				expect(r.ops).not.toContain("close");
+				expect(r.lines).toEqual([
+					"stop: reopened-after-receipt",
+					"outcome: needs_human",
+				]);
+				expectNoWrites(r);
 			});
 		},
 		TIMEOUT,
@@ -1038,15 +1692,16 @@ describe("publish-resolution recipe", () => {
 	);
 
 	test(
-		"stale marked comment is updated and confirmed; update failure is comment-update pending",
+		"a stale validated workflow receipt is updated and confirmed; update failure is comment-update pending",
 		async () => {
-			const stale = RECEIPT_BODY.replace(MERGE, "0000000");
+			const stale = `${RECEIPT_BODY}Quality: pending.\n`;
 			await withRoot("pub-update", async (root) => {
 				const updated = await publish(join(root, "a"), {
 					comments: [comment(10, stale, "five-x-bot")],
 				});
 				expect(updated.ops).toContain("patch");
 				expect(before(updated.ops, "patch", "close")).toBe(true);
+				expect(updated.bodies).toEqual([RECEIPT_BODY]);
 				expect(updated.lines.at(-1)).toBe("outcome: resolved");
 
 				const failed = await publish(join(root, "b"), {
@@ -1054,6 +1709,7 @@ describe("publish-resolution recipe", () => {
 					behaviors: { commentUpdate: "fail" },
 				});
 				expect(failed.lines).toContain("missing: comment-update");
+				expect(failed.lines.at(-1)).toBe("outcome: delivered_sync_pending");
 				expect(failed.ops).not.toContain("close");
 			});
 		},
@@ -1071,11 +1727,13 @@ async function prepare(
 		authorized: string;
 		origin?: "ok" | "broken";
 		state?: Parameters<typeof makeStubBin>[1];
+		body?: string;
 	},
 ): Promise<{
 	lines: string[];
 	log: string[][];
 	prs: number;
+	bodies: string[];
 	invalid: string[];
 }> {
 	const repo = FixtureRepo.create(root);
@@ -1092,10 +1750,7 @@ async function prepare(
 	]);
 	const stub = makeStubBin(root, opts.state);
 	const body = join(root, "pr-body.md");
-	writeFileSync(
-		body,
-		`<!-- 5x:issue-resolution v1 source=${SOURCE} plan=${PLAN} -->\nRefs ${SOURCE}\n`,
-	);
+	writeFileSync(body, opts.body ?? PR_BODY);
 	const result = await runRecipe("prepare-pr", {
 		cwd: repo.dir,
 		env: {
@@ -1105,7 +1760,9 @@ async function prepare(
 			TARGET: "main",
 			TITLE: "Fix issue 42",
 			BODY_FILE: body,
-			GH_STUB_STATE: stub.statePath,
+			SOURCE,
+			PLAN_FILE: PLAN,
+			...stub.env,
 		},
 		binDir: stub.binDir,
 	});
@@ -1115,9 +1772,31 @@ async function prepare(
 		lines: result.lines,
 		log: final.log,
 		prs: final.prs.length,
+		bodies: final.prs.map((p) => p.body),
 		invalid: final.invalid,
 	};
 }
+
+const PR_MARK = `<!-- 5x:issue-resolution v1 source=${SOURCE} plan=${PLAN} -->`;
+const PR_BODY = `${PR_MARK}\nRefs ${SOURCE}\n`;
+const BRANCH = "5x/218-issue-42-example";
+
+function pr(
+	number: number,
+	body: string,
+	state: "OPEN" | "CLOSED" | "MERGED" = "OPEN",
+) {
+	return {
+		number,
+		state,
+		headRefName: BRANCH,
+		url: `https://github.com/OWNER/REPO/pull/${number}`,
+		body,
+	};
+}
+
+const isWrite = (a: string[]) =>
+	a[0] === "pr" && (a[1] === "create" || a[1] === "edit");
 
 describe("prepare-pr recipe", () => {
 	test(
@@ -1169,27 +1848,111 @@ describe("prepare-pr recipe", () => {
 	);
 
 	test(
-		"an existing open pull request is edited instead of re-created",
+		"this workflow's marked open pull request is edited instead of re-created",
 		async () => {
 			await withRoot("pr-existing", async (root) => {
 				const r = await prepare(root, {
 					authorized: "yes",
-					state: {
-						prs: [
-							{
-								number: 57,
-								state: "OPEN",
-								headRefName: "5x/218-issue-42-example",
-								url: "https://github.com/OWNER/REPO/pull/57",
-								body: "old",
-							},
-						],
-					},
+					state: { prs: [pr(57, `${PR_MARK}\nold body\n`)] },
 				});
 				expect(r.invalid).toEqual([]);
 				expect(r.log.filter((a) => a[1] === "create")).toHaveLength(0);
 				expect(r.log.filter((a) => a[1] === "edit")).toHaveLength(1);
+				expect(r.bodies).toEqual([PR_BODY]);
 				expect(r.lines.at(-1)).toBe("outcome: awaiting_merge");
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"an unmarked, mismatched, or ambiguous pull request on the branch is never adopted or edited",
+		async () => {
+			await withRoot("pr-foreign", async (root) => {
+				const cases: {
+					name: string;
+					prs: ReturnType<typeof pr>[];
+					stop: string;
+				}[] = [
+					{
+						name: "unmarked",
+						prs: [pr(57, "old")],
+						stop: "stop: unowned-pr 57",
+					},
+					{
+						name: "other-plan",
+						prs: [pr(57, PR_BODY.replace(PLAN, `${PLANS_REL}/999-other.md`))],
+						stop: "stop: unowned-pr 57",
+					},
+					{
+						name: "other-source",
+						prs: [pr(57, PR_BODY.replace("#42", "#43"))],
+						stop: "stop: unowned-pr 57",
+					},
+					{
+						name: "quoted-marker",
+						prs: [pr(57, `Human PR\n${PR_BODY}`)],
+						stop: "stop: unowned-pr 57",
+					},
+					{
+						name: "marked-plus-human",
+						prs: [pr(57, PR_BODY), pr(58, "human work", "CLOSED")],
+						stop: "stop: unowned-pr 58",
+					},
+					{
+						name: "multiple-owned",
+						prs: [pr(57, PR_BODY), pr(59, PR_BODY, "CLOSED")],
+						stop: "stop: multiple-owned-prs 57 59",
+					},
+				];
+				for (const c of cases) {
+					const r = await prepare(join(root, c.name), {
+						authorized: "yes",
+						state: { prs: c.prs },
+					});
+					expect(r.invalid).toEqual([]);
+					expect(r.lines.slice(-2)).toEqual([c.stop, "outcome: needs_human"]);
+					expect(r.log.filter(isWrite)).toEqual([]);
+					expect(r.bodies).toEqual(c.prs.map((p) => p.body));
+				}
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"the read-back after a create is validated the same way",
+		async () => {
+			await withRoot("pr-race", async (root) => {
+				const r = await prepare(root, {
+					authorized: "yes",
+					state: { behaviors: { prCreate: "race-unmarked" } },
+				});
+				expect(r.invalid).toEqual([]);
+				expect(r.log.filter((a) => a[1] === "create")).toHaveLength(1);
+				expect(r.log.filter((a) => a[1] === "edit")).toHaveLength(0);
+				expect(r.lines.slice(-2)).toEqual([
+					"stop: unowned-pr 58",
+					"outcome: needs_human",
+				]);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"a body file without this workflow's marker stops before any remote call",
+		async () => {
+			await withRoot("pr-body", async (root) => {
+				const r = await prepare(root, {
+					authorized: "yes",
+					body: `Refs ${SOURCE}\n`,
+				});
+				expect(r.lines).toEqual([
+					"stop: body-marker-mismatch",
+					"outcome: needs_human",
+				]);
+				expect(r.log).toEqual([]);
 			});
 		},
 		TIMEOUT,

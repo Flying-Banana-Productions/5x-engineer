@@ -383,8 +383,8 @@ Quality: pass. Restrictions: none.
 - [x] Update skill-list tests in loader, cursor, opencode, universal, and invoke-content suites
 - [x] Add skill rendering test and resume-matrix fixture/test (including the added source-refresh, closure-order, delivery-identity, and publication-failure rows)
 - [x] Confirm `5x-issue-resolution` frontmatter parses under `parseSkillFrontmatter` (name pattern, description ≤ 1024)
-- [ ] Align the skill's resolution-comment marker, receipt validation, mandatory Receipt preflight ahead of closure branches a-g, closure branches a-g, and comment formats with the amended closure-provenance rule (I2, R6)
-- [ ] Add the two-resume external-closure, ordinary successful-close idempotency, later-external-close, timeline-failure, and Receipt-preflight recipe fixtures (invalid authenticated marker on an open issue; duplicate workflow/external receipts on an open and on a closed issue; external receipt on an open issue; each asserting no write) plus the matching resume-matrix rows (I2, R6)
+- [x] Align the skill's resolution-comment marker, receipt validation, mandatory Receipt preflight ahead of closure branches a-g, closure branches a-g, and comment formats with the amended closure-provenance rule (I2, R6)
+- [x] Add the two-resume external-closure, ordinary successful-close idempotency, later-external-close, timeline-failure, and Receipt-preflight recipe fixtures (invalid authenticated marker on an open issue; duplicate workflow/external receipts on an open and on a closed issue; external receipt on an open issue; each asserting no write) plus the matching resume-matrix rows (I2, R6)
 
 ---
 

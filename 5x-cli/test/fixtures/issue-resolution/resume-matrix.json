@@ -57,9 +57,9 @@
 		},
 		{
 			"id": "existing-marker-comment-reused",
-			"scenario": "Validated marked comment exists, issue still open",
+			"scenario": "Validated closure=workflow receipt exists, issue still open",
 			"expected_outcome": "resolved",
-			"rule": "c. Marked comment present and issue open with no later reopen: the close never completed; run the close and re-read."
+			"rule": "d. Exactly one validated `closure=workflow` receipt and issue open with no later reopen: the close never completed; run the close and re-read, re-run the preflight, then apply b or c."
 		},
 		{
 			"id": "already-closed-externally",
@@ -71,7 +71,7 @@
 			"id": "reopened-material-change",
 			"scenario": "Issue reopened after the marked comment",
 			"expected_outcome": "needs_human",
-			"rule": "A timeline `reopened` event later than the marked comment's `created_at`: `needs_human` (material)."
+			"rule": "a. Exactly one validated receipt and a timeline `reopened` event later than its `created_at`: `needs_human` (material), for either receipt kind."
 		},
 		{
 			"id": "missing-acceptance-evidence",
@@ -149,19 +149,19 @@
 			"id": "second-resume-after-close",
 			"scenario": "Resume again after a successful close",
 			"expected_outcome": "resolved",
-			"rule": "b. Marked comment present and issue closed: `resolved` (idempotent second resume; no writes)."
+			"rule": "b. Exactly one validated `closure=workflow` receipt, issue closed, and the latest `closed` event is a workflow close: `resolved` (idempotent second resume; no writes)."
 		},
 		{
 			"id": "externally-closed-before-reconciliation",
-			"scenario": "No marked comment and the issue is already closed",
+			"scenario": "No receipt and the issue is already closed",
 			"expected_outcome": "resolved_externally_closed_unverified",
-			"rule": "d. No marked comment and issue closed (closed externally)"
+			"rule": "f. Zero validated receipts, zero invalid authenticated markers, and issue closed (closed externally): publish a `closure=external` receipt"
 		},
 		{
 			"id": "reopened-after-marked-close",
 			"scenario": "Issue reopened after the workflow closed it",
 			"expected_outcome": "needs_human",
-			"rule": "A timeline `reopened` event later than the marked comment's `created_at`"
+			"rule": "a timeline `reopened` event later than its `created_at`"
 		},
 		{
 			"id": "material-new-comment",
@@ -252,6 +252,72 @@
 			"scenario": "Worktree, branch, and remote branch all missing",
 			"expected_outcome": "needs_human",
 			"rule": "Neither local nor remote work available: `needs_human`."
+		},
+		{
+			"id": "second-resume-after-external-receipt",
+			"scenario": "Resume again after an external-closure receipt was published",
+			"expected_outcome": "resolved_externally_closed_unverified",
+			"rule": "e. Exactly one validated `closure=external` receipt and issue closed: `resolved_externally_closed_unverified` on this and every later resume; no writes and no close call."
+		},
+		{
+			"id": "workflow-receipt-later-external-close",
+			"scenario": "closure=workflow receipt, then the issue was closed by another actor",
+			"expected_outcome": "resolved_externally_closed_unverified",
+			"rule": "the latest `closed` event is not a workflow close (another actor, or earlier than the receipt): `resolved_externally_closed_unverified`; no writes."
+		},
+		{
+			"id": "external-receipt-open-issue",
+			"scenario": "One validated closure=external receipt while the issue is open",
+			"expected_outcome": "needs_human",
+			"rule": "or exactly one validated `closure=external` receipt on an open issue"
+		},
+		{
+			"id": "preflight-invalid-authenticated-marker-open",
+			"scenario": "Workflow-login comment with the marker prefix that fails validation, issue open, no validated receipt",
+			"expected_outcome": "needs_human",
+			"rule": "any invalid authenticated marker (whatever the issue state, and never post a receipt beside it)"
+		},
+		{
+			"id": "preflight-duplicate-receipts-open",
+			"scenario": "Validated closure=workflow and closure=external receipts, issue open",
+			"expected_outcome": "needs_human",
+			"rule": "when there is more than one validated receipt (whatever their kinds and the issue state)"
+		},
+		{
+			"id": "preflight-duplicate-receipts-closed",
+			"scenario": "Validated closure=workflow and closure=external receipts, issue closed by a workflow close",
+			"expected_outcome": "needs_human",
+			"rule": "Receipt preflight (mandatory; runs before branches a-g, before any comment create/update or close call, and before any success or closure outcome is decided)."
+		},
+		{
+			"id": "timeline-read-failure",
+			"scenario": "Timeline read fails during reconciliation",
+			"expected_outcome": "needs_human",
+			"rule": "A timeline or comment read that fails or is incomplete returns `needs_human`, never a closure outcome."
+		},
+		{
+			"id": "resume-incomplete-intake-reuses-association",
+			"scenario": "Resume of a checkpointed incomplete intake",
+			"expected_outcome": "intake_incomplete",
+			"rule": "Resume never allocates a second association for an issue that already has one."
+		},
+		{
+			"id": "unowned-pr-on-branch",
+			"scenario": "An unmarked or mismatched PR already uses the plan branch",
+			"expected_outcome": "needs_human",
+			"rule": "Any other pull request on the branch (unmarked, a different source or plan, or a human's) is never edited or adopted"
+		},
+		{
+			"id": "unreadable-refresh-snapshot",
+			"scenario": "Pinned snapshot or live input cannot be read",
+			"expected_outcome": "needs_human",
+			"rule": "returns `needs_human` with no publication, never an empty comparison."
+		},
+		{
+			"id": "unsettled-phase-no-code",
+			"scenario": "Latest phase observation unsettled and the phase has no code commits",
+			"expected_outcome": "needs_human",
+			"rule": "is never an empty successful classification, even when the phase has no code-touching commits."
 		}
 	]
 }

@@ -67,6 +67,12 @@ const REQUIRED_IDS = [
 	"multiple-phases",
 	"unbound-compatibility",
 	"squash-merge",
+	"second-resume-after-external-receipt",
+	"workflow-receipt-later-external-close",
+	"external-receipt-open-issue",
+	"preflight-invalid-authenticated-marker-open",
+	"preflight-duplicate-receipts-open",
+	"preflight-duplicate-receipts-closed",
 ];
 
 const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
