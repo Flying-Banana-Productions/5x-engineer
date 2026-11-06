@@ -38,7 +38,9 @@ import {
 import type { ReviewerVerdict } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import {
+	type BindingApprovalFinalization,
 	encodeImplementationBindingPayload,
+	encodePlanApprovalFinalizationPayload,
 	encodePlanChecklistRepairPayload,
 	IMPLEMENTATION_STATE_VERSION,
 	type ImplementationBindingPayload,
@@ -54,8 +56,11 @@ import {
 	type ImplementationReviewObservationPayload,
 	type ImplementationTextAmendmentPayload,
 	implementationBindingKey,
+	type PlanApprovalFinalizationPayload,
+	type PlanApprovalStepRef,
 	type PlanChecklistRepairPayload,
 	type PlanSchemaMigrationPayload,
+	planApprovalFinalizationKey,
 	planChecklistRepairKey,
 } from "../review-budget/record-lines.js";
 import type {
@@ -94,6 +99,12 @@ import {
 	verifyGuardedPlanBytes,
 	worktreeMatchesCommit,
 } from "./plan-amendment.js";
+import {
+	describeFinalLedgerChanges,
+	legacyReReviewNext,
+	reconcileFinalApprovalLedger,
+	sameRunFinalizationNext,
+} from "./plan-approval-finalization.js";
 import { routeAfterDecision } from "./routing.js";
 import { createReviewGovernanceStore } from "./store.js";
 import type { PlanReviewRoute, ReviewDecisionRoute } from "./types.js";
@@ -1028,9 +1039,15 @@ interface ApprovalEvidence {
 	governingB: number;
 	mode: Exclude<ReviewBudgetMode, "off">;
 	thresholds: ReviewBudgetThresholds;
+	/** Effective approved ledger: the finalization record's, else the snapshot's. */
 	ledger: ParsedDeliveryBudget;
+	/** The approving reviewer snapshot's ledger. Never rewritten. */
+	snapshotLedger: ParsedDeliveryBudget;
 	decisions: ReviewDecisionPayload[];
 	approvedCommit: string;
+	/** The paired finalization record consumed for this approval. */
+	finalization: PlanApprovalFinalizationPayload | null;
+	route: TerminalRouteDetail | null;
 }
 
 function assessApprovedSource(input: {
@@ -1119,6 +1136,19 @@ function assessApprovedSource(input: {
 	if (!finalized.commit) {
 		return { status: "ok", approval: null, refusal: finalized.refusal };
 	}
+	const recorded = recordedFinalization({
+		store: input.store,
+		sourceRunId: input.sourceRunId,
+		snapshot,
+		decisions: governing.history,
+		finalCommit: finalized.commit,
+		steps: parsedSteps,
+		route: route.detail ?? null,
+	});
+	if (recorded.status === "invalid") {
+		return { status: "ok", approval: null, refusal: recorded.refusal };
+	}
+	const record = recorded.status === "ok" ? recorded.record : null;
 	return {
 		status: "ok",
 		approval: {
@@ -1129,9 +1159,204 @@ function assessApprovedSource(input: {
 			governingB: governing.governingBaseline,
 			mode: baseline.mode,
 			thresholds: structuredClone(baseline.configSnapshot),
-			ledger: structuredClone(snapshot.currentLedger),
+			ledger: structuredClone(record ? record.ledger : snapshot.currentLedger),
+			snapshotLedger: structuredClone(snapshot.currentLedger),
 			decisions: structuredClone(governing.history),
 			approvedCommit: finalized.commit,
+			finalization: record ? structuredClone(record) : null,
+			route: route.detail ? structuredClone(route.detail) : null,
+		},
+	};
+}
+
+/**
+ * The paired finalization record for the sealed plan commit, re-proved
+ * against the source's snapshot, decisions, completion step and route. A
+ * source with no record is a legacy source (`none`).
+ */
+function recordedFinalization(input: {
+	store: ReviewBudgetStore;
+	sourceRunId: string;
+	snapshot: ReviewBudgetSnapshotRecord;
+	decisions: readonly ReviewDecisionPayload[];
+	finalCommit: string;
+	steps: readonly StepRecordPayload[];
+	route: TerminalRouteDetail | null;
+}):
+	| { status: "none" }
+	| { status: "ok"; record: PlanApprovalFinalizationPayload }
+	| { status: "invalid"; refusal: string } {
+	let records: PlanApprovalFinalizationPayload[];
+	try {
+		records = input.store.listPlanApprovalFinalizations(input.sourceRunId);
+	} catch (error) {
+		return {
+			status: "invalid",
+			refusal: `Source run ${input.sourceRunId} has an unreadable plan-approval finalization: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+	if (records.length === 0) return { status: "none" };
+	const record = records
+		.filter((entry) => entry.finalCommit === input.finalCommit)
+		.at(-1);
+	const refuse = (reason: string) => ({
+		status: "invalid" as const,
+		refusal: `Source run ${input.sourceRunId} plan-approval finalization ${reason}. Refusing to bind an inconsistent approval.`,
+	});
+	if (!record) {
+		return refuse(
+			`does not name the sealed plan commit ${input.finalCommit}; a later HEAD is not approval`,
+		);
+	}
+	const completion = input.steps.find(
+		(step) =>
+			step.step_name === "run:complete" &&
+			step.iteration === record.completion.iteration &&
+			commitOf(step) === record.finalCommit,
+	);
+	if (!completion) return refuse("is not paired with its run:complete step");
+	if (
+		record.sourceSnapshotId !== input.snapshot.id ||
+		record.snapshotLedgerHash !== hashJson(input.snapshot.currentLedger)
+	) {
+		return refuse("does not name the approving reviewer snapshot");
+	}
+	if (record.decisionsHash !== hashJson(input.decisions)) {
+		return refuse("does not match the source decisions");
+	}
+	if (record.ledgerHash !== hashJson(record.ledger)) {
+		return refuse("ledger hash does not match its ledger");
+	}
+	const route = input.route;
+	if (
+		!route ||
+		record.route !== route.route ||
+		record.reviewer.stepName !== route.reviewer.stepName ||
+		record.reviewer.iteration !== route.reviewer.iteration ||
+		(record.authorCorrection?.commit ?? null) !==
+			(route.correction?.author.commit ?? null) ||
+		JSON.stringify([...record.admittedFindingIds].sort()) !==
+			JSON.stringify(route.correction?.admittedFindingIds ?? [])
+	) {
+		return refuse("does not match the recorded reviewer route");
+	}
+	const proof = reconcileFinalApprovalLedger({
+		reviewed: input.snapshot.currentLedger,
+		final: record.ledger,
+		admittedFindingIds: record.admittedFindingIds,
+	});
+	if (
+		!proof.ok ||
+		JSON.stringify(proof.addressAdditions) !==
+			JSON.stringify(record.addressAdditions)
+	) {
+		return refuse("ledger is not admitted correction bookkeeping");
+	}
+	return { status: "ok", record };
+}
+
+/**
+ * The effective approved ledger for the source's committed plan bytes.
+ *
+ * A recorded finalization is consumed when the blob hash matches. A legacy
+ * source without one keeps the snapshot ledger when consistent; for the
+ * stale-`Addresses` case its final-corrections evidence and the same proof
+ * derive the committed ledger, with provenance for the binding. Any other
+ * delta returns an exact-plan re-review path; nothing is silently accepted
+ * and the sealed source is never rewritten.
+ */
+function resolveSourceApprovalLedger(input: {
+	approval: ApprovalEvidence;
+	approvedBytes: string;
+	planPath: string;
+	executionRunId: string | null;
+}):
+	| {
+			status: "ok";
+			ledger: ParsedDeliveryBudget;
+			provenance: BindingApprovalFinalization | null;
+	  }
+	| { status: "error"; code: string; message: string; detail?: unknown } {
+	const approval = input.approval;
+	const blobHash = hashPlanBytes(input.approvedBytes);
+	const record = approval.finalization;
+	if (record) {
+		if (record.finalBlobHash !== blobHash) {
+			return {
+				status: "error",
+				code: "IMPLEMENTATION_SOURCE_INVALID",
+				message: `Plan bytes at ${approval.approvedCommit} do not match the recorded plan-approval finalization blob. Refusing to bind a drifted approval.`,
+			};
+		}
+		return {
+			status: "ok",
+			ledger: structuredClone(record.ledger),
+			provenance: {
+				derivation: "recorded",
+				finalizationId: record.id,
+				sourceRunId: approval.sourceRunId,
+				sourceSnapshotId: approval.snapshotId,
+				finalCommit: record.finalCommit,
+				finalBlobHash: record.finalBlobHash,
+				snapshotLedgerHash: record.snapshotLedgerHash,
+				admittedFindingIds: [...record.admittedFindingIds],
+				addressAdditions: structuredClone(record.addressAdditions),
+				authorCommit: record.authorCorrection?.commit ?? null,
+			},
+		};
+	}
+	const unchanged = {
+		status: "ok" as const,
+		ledger: structuredClone(approval.snapshotLedger),
+		provenance: null,
+	};
+	const read = readAuthoritativeBudget(input.approvedBytes, "file");
+	// Unparseable bytes keep the legacy path; its own checks report them.
+	if (!read.ok || !read.parsed.ok) return unchanged;
+	if (ledgersMatch(read.parsed.value, approval.snapshotLedger)) {
+		return unchanged;
+	}
+	const correction = approval.route?.correction ?? null;
+	const proof = reconcileFinalApprovalLedger({
+		reviewed: approval.snapshotLedger,
+		final: read.parsed.value,
+		admittedFindingIds: correction?.admittedFindingIds ?? [],
+	});
+	if (correction && proof.ok) {
+		return {
+			status: "ok",
+			ledger: proof.ledger,
+			provenance: {
+				derivation: "legacy_stale_addresses",
+				sourceRunId: approval.sourceRunId,
+				sourceSnapshotId: approval.snapshotId,
+				finalCommit: approval.approvedCommit,
+				finalBlobHash: blobHash,
+				snapshotLedgerHash: hashJson(approval.snapshotLedger),
+				admittedFindingIds: [...correction.admittedFindingIds],
+				addressAdditions: proof.addressAdditions,
+				authorCommit: correction.author.commit,
+			},
+		};
+	}
+	const changes = proof.ok ? [] : proof.changes;
+	const next = legacyReReviewNext({
+		planPath: input.planPath,
+		executionRunId: input.executionRunId ?? "<execution-run>",
+	});
+	return {
+		status: "error",
+		code: "IMPLEMENTATION_SOURCE_INVALID",
+		message: `Approved plan bytes do not match the source review ledger. Refusing to bind a drifted approval. ${
+			changes.length > 0
+				? `${describeFinalLedgerChanges(changes)} `
+				: "The recorded route admitted no final corrections. "
+		}The sealed source ${approval.sourceRunId} is not reopened; re-review the exact committed plan in a new plan-review run and bind from it (${next.join("; ")}).`,
+		detail: {
+			sourceRunId: approval.sourceRunId,
+			approvedCommit: approval.approvedCommit,
+			changes,
+			next,
 		},
 	};
 }
@@ -1166,13 +1391,28 @@ function resolveFinalizedPlanCommit(
 	return { commit: summary.final_head_commit, refusal: "" };
 }
 
+/** The approving reviewer and, for one-pass corrections, its author step. */
+interface TerminalRouteDetail {
+	route: "complete" | "final_corrections";
+	reviewer: PlanApprovalStepRef;
+	/** Recorded final-corrections author step and the findings it admitted. */
+	correction: {
+		author: PlanApprovalStepRef & { commit: string };
+		admittedFindingIds: string[];
+	} | null;
+}
+
 function terminalRoute(input: {
 	steps: readonly StepRecordPayload[];
 	snapshot: ReviewBudgetSnapshotRecord;
 	baselineB0: number;
 	thresholds: ReviewBudgetThresholds;
 	governing: GoverningReviewState;
-}): { approvedCommit: string | null; refusal: string } {
+}): {
+	approvedCommit: string | null;
+	refusal: string;
+	detail?: TerminalRouteDetail;
+} {
 	const steps = input.steps;
 	const reviewers = steps.flatMap((payload, index) => {
 		if (
@@ -1259,15 +1499,24 @@ function terminalRoute(input: {
 		}
 		const commit = commitOf(latest.payload);
 		return commit
-			? { approvedCommit: commit, refusal: "" }
+			? {
+					approvedCommit: commit,
+					refusal: "",
+					detail: {
+						route: "complete",
+						reviewer: stepRef(latest.payload),
+						correction: null,
+					},
+				}
 			: {
 					approvedCommit: null,
 					refusal: "Completed plan review has no recorded commit",
 				};
 	}
 	if (route === "final_corrections") {
-		const author = authorCommitAfter(steps, latest.index, steps.length);
-		if (!author) {
+		const authorStep = authorStepAfter(steps, latest.index, steps.length);
+		const author = authorStep ? commitOf(authorStep) : null;
+		if (!authorStep || !author) {
 			return {
 				approvedCommit: null,
 				refusal:
@@ -1282,11 +1531,40 @@ function terminalRoute(input: {
 					"Plan review continued after final corrections without a completed route",
 			};
 		}
-		return { approvedCommit: author, refusal: "" };
+		const verdict = latest.payload.result_json as ReviewerVerdict | null;
+		const admittedFindingIds = Array.isArray(verdict?.items)
+			? [
+					...new Set(
+						verdict.items
+							.filter((item) => item.action === "auto_fix")
+							.map((item) => item.id),
+					),
+				].sort()
+			: [];
+		return {
+			approvedCommit: author,
+			refusal: "",
+			detail: {
+				route: "final_corrections",
+				reviewer: stepRef(latest.payload),
+				correction: {
+					author: { ...stepRef(authorStep), commit: author },
+					admittedFindingIds,
+				},
+			},
+		};
 	}
 	return {
 		approvedCommit: null,
 		refusal: `Source plan review route ${route ?? "missing"} is not terminal approval`,
+	};
+}
+
+function stepRef(payload: StepRecordPayload): PlanApprovalStepRef {
+	return {
+		stepName: payload.step_name,
+		iteration: payload.iteration,
+		commit: commitOf(payload),
 	};
 }
 
@@ -1295,6 +1573,16 @@ function authorCommitAfter(
 	afterIndex: number,
 	beforeIndex: number,
 ): string | null {
+	const step = authorStepAfter(steps, afterIndex, beforeIndex);
+	return step ? commitOf(step) : null;
+}
+
+/** First completed plan author step with a commit in the open interval. */
+function authorStepAfter(
+	steps: readonly StepRecordPayload[],
+	afterIndex: number,
+	beforeIndex: number,
+): StepRecordPayload | null {
 	for (let index = afterIndex + 1; index < beforeIndex; index++) {
 		const payload = steps[index];
 		if (!payload) continue;
@@ -1309,8 +1597,7 @@ function authorCommitAfter(
 		) {
 			continue;
 		}
-		const commit = commitOf(payload);
-		if (commit) return commit;
+		if (commitOf(payload)) return payload;
 	}
 	return null;
 }
@@ -1558,6 +1845,15 @@ export async function readSchemaMigrationSubject(input: {
 			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
 		};
 	}
+	const effective = resolveSourceApprovalLedger({
+		approval: assessed.approval,
+		approvedBytes: sourceBytes,
+		planPath: summary.plan_path,
+		executionRunId: null,
+	});
+	if (effective.status === "error") {
+		return { ok: false, code: effective.code, message: effective.message };
+	}
 	const migrations = input.store.listPlanSchemaMigrations(input.runId);
 	return {
 		ok: true,
@@ -1570,7 +1866,7 @@ export async function readSchemaMigrationSubject(input: {
 			beforeCommit: assessed.approval.approvedCommit,
 			priorApprovalCommit: assessed.approval.approvedCommit,
 			parentLineageId: null,
-			ledger: assessed.approval.ledger,
+			ledger: effective.ledger,
 			migrations,
 		},
 	};
@@ -1920,12 +2216,26 @@ export async function readChecklistRepairSubject(input: {
 			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
 		};
 	}
+	const effective = resolveSourceApprovalLedger({
+		approval: assessed.approval,
+		approvedBytes,
+		planPath: summary.plan_path,
+		executionRunId: null,
+	});
+	if (effective.status === "error") {
+		return {
+			ok: false,
+			code: effective.code,
+			message: effective.message,
+			detail: effective.detail,
+		};
+	}
 	const migrated = await resolveSourceSchemaMigration({
 		store: input.store,
 		sourceRunId: input.runId,
 		approvedBytes,
 		approvedCommit: assessed.approval.approvedCommit,
-		ledger: assessed.approval.ledger,
+		ledger: effective.ledger,
 		readPlanAtCommit: input.readPlanAtCommit,
 	});
 	if (migrated.status === "error") {
@@ -2081,12 +2391,20 @@ export async function bindImplementationExecution(input: {
 			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
 		};
 	}
+	const effective = resolveSourceApprovalLedger({
+		approval: assessed.approval,
+		approvedBytes,
+		planPath: input.planPath,
+		executionRunId: input.executionRunId,
+	});
+	if (effective.status === "error") return effective;
+	const approvedLedger = effective.ledger;
 	const migrated = await resolveSourceSchemaMigration({
 		store: input.store,
 		sourceRunId: input.sourceRunId,
 		approvedBytes,
 		approvedCommit: assessed.approval.approvedCommit,
-		ledger: assessed.approval.ledger,
+		ledger: approvedLedger,
 		readPlanAtCommit: input.readPlanAtCommit,
 	});
 	if (migrated.status === "error") return migrated;
@@ -2119,7 +2437,7 @@ export async function bindImplementationExecution(input: {
 			message: parsed.message,
 		};
 	}
-	if (!ledgersMatch(parsed.value, assessed.approval.ledger)) {
+	if (!ledgersMatch(parsed.value, approvedLedger)) {
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_SOURCE_INVALID",
@@ -2127,10 +2445,7 @@ export async function bindImplementationExecution(input: {
 				"Approved plan bytes do not match the source review ledger. Refusing to bind a drifted approval.",
 		};
 	}
-	const mapped = mapApprovedPhases(
-		approvedDocument.document,
-		assessed.approval.ledger,
-	);
+	const mapped = mapApprovedPhases(approvedDocument.document, approvedLedger);
 	if (mapped.status === "error") return mapped;
 	const governingHash =
 		migrated.status === "migrated"
@@ -2186,11 +2501,11 @@ export async function bindImplementationExecution(input: {
 		governingB: assessed.approval.governingB,
 		mode: assessed.approval.mode,
 		thresholds: assessed.approval.thresholds,
-		ledger: assessed.approval.ledger,
+		ledger: approvedLedger,
 		effectiveDecisions: decisions,
 		phaseMap: mapped.phaseMap,
 		debtTargets: mapped.debtTargets,
-		ledgerHash: hashJson(assessed.approval.ledger),
+		ledgerHash: hashJson(approvedLedger),
 		decisionsHash: hashJson(decisions),
 		createdAt: now(),
 		...(migrated.status === "migrated"
@@ -2198,6 +2513,9 @@ export async function bindImplementationExecution(input: {
 			: approvedDocument.document.schema === 1 && governingHash
 				? { planSchema: 1 as const, governingHash }
 				: {}),
+		...(effective.provenance
+			? { approvalFinalization: effective.provenance }
+			: {}),
 	};
 	const carried = repairs.carry(payload.id);
 	const saved =
@@ -2232,6 +2550,201 @@ export async function bindImplementationExecution(input: {
 				};
 	}
 	return { status: "bound", binding: saved.payload, created: true };
+}
+
+export type SourceApprovalFinalization =
+	| { status: "not_applicable" }
+	| {
+			status: "ready";
+			/** `completion.iteration` is set when the record is paired. */
+			payload: PlanApprovalFinalizationPayload;
+			/** An identical record for this commit is already paired. */
+			existing: boolean;
+	  }
+	| { status: "error"; code: string; message: string; detail?: unknown };
+
+/**
+ * Final committed approval for a plan-review run about to complete.
+ *
+ * Applies only to an approved terminal route with no binding. Reads the
+ * committed plan at `finalCommit` (never the working tree), proves its ledger
+ * against the approving snapshot under the recorded route's admitted
+ * corrections, and returns the record to pair with `run:complete`. A
+ * substantive delta returns an error: the caller leaves the run active with
+ * the same-run review remedy rather than sealing an unusable approval.
+ */
+export async function prepareSourceApprovalFinalization(input: {
+	store: ReviewBudgetStore;
+	recordStore: RecordStore;
+	runId: string;
+	finalCommit: string | null;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<SourceApprovalFinalization> {
+	const notApplicable = { status: "not_applicable" as const };
+	if (!input.recordStore.getRun(input.runId)) return notApplicable;
+	if (readBinding(input.store, input.runId).status !== "missing") {
+		return notApplicable;
+	}
+	const baseline = input.store.getBaseline(input.runId);
+	const snapshot = input.store.latestSnapshot(input.runId);
+	if (!baseline || !snapshot) return notApplicable;
+	const listed = listGovernanceDecisions(input.recordStore, input.runId);
+	if (listed.diagnostics.length > 0) return notApplicable;
+	const steps = input.recordStore.listLines(input.runId, "steps");
+	const parsedSteps = steps.flatMap((line) => {
+		const payload = stepPayload(line.payload);
+		return payload ? [payload] : [];
+	});
+	const governing = foldGoverningReviewState({
+		b0: baseline.b0,
+		decisions: listed.decisions,
+		steps,
+		budget: input.recordStore.listLines(input.runId, "budget"),
+	});
+	if (governing.aborted) return notApplicable;
+	const openGate = createReviewGovernanceStore(
+		input.recordStore,
+	).deriveOpenGate(input.runId);
+	if (openGate && !openGate.resolved) return notApplicable;
+	const route = terminalRoute({
+		steps: parsedSteps,
+		snapshot,
+		baselineB0: baseline.b0,
+		thresholds: baseline.configSnapshot,
+		governing,
+	});
+	if (!route.approvedCommit || !route.detail || !input.finalCommit) {
+		return notApplicable;
+	}
+	const detail = route.detail;
+	const finalCommit = input.finalCommit;
+	const next = sameRunFinalizationNext(input.runId);
+	const bytes = await input.readPlanAtCommit(finalCommit);
+	if (bytes === null) {
+		return {
+			status: "error",
+			code: "PLAN_APPROVAL_FINALIZATION_UNAVAILABLE",
+			message: `The plan is not committed at ${finalCommit}. Commit the approved plan (a working-tree file is not an approval anchor), then repeat \`5x run complete --run ${input.runId}\`. The run stays active.`,
+			detail: { finalCommit },
+		};
+	}
+	const read = readAuthoritativeBudget(bytes, "file");
+	if (!read.ok || !read.parsed.ok) {
+		return {
+			status: "error",
+			code: read.ok ? "PLAN_APPROVAL_FINALIZATION_DELTA" : read.code,
+			message: `The committed plan at ${finalCommit} has no readable Delivery Budget (${read.ok ? (read.parsed as { message: string }).message : read.message}). The run stays active; correct and review the plan on this run, then complete it.`,
+			detail: { finalCommit, next },
+		};
+	}
+	const admittedFindingIds = detail.correction?.admittedFindingIds ?? [];
+	const proof = reconcileFinalApprovalLedger({
+		reviewed: snapshot.currentLedger,
+		final: read.parsed.value,
+		admittedFindingIds,
+	});
+	if (!proof.ok) {
+		return {
+			status: "error",
+			code: "PLAN_APPROVAL_FINALIZATION_DELTA",
+			message: `The committed plan at ${finalCommit} changes the approved ledger beyond the recorded ${detail.route} route: ${describeFinalLedgerChanges(proof.changes)} The run stays active and nothing was sealed. Review the corrected plan on this run (or revert the change), then complete it again.`,
+			detail: {
+				finalCommit,
+				route: detail.route,
+				admittedFindingIds,
+				changes: proof.changes,
+				next,
+			},
+		};
+	}
+	const payload: PlanApprovalFinalizationPayload = {
+		kind: "plan-approval-finalization",
+		version: 1,
+		id: `approval-finalization:${createReviewBudgetId()}`,
+		runId: input.runId,
+		sourceSnapshotId: snapshot.id,
+		sourceBaselineId: baseline.id,
+		route: detail.route,
+		reviewer: { ...detail.reviewer },
+		authorCorrection: detail.correction
+			? { ...detail.correction.author }
+			: null,
+		admittedFindingIds: [...admittedFindingIds],
+		decisionsHash: hashJson(governing.history),
+		completion: { stepName: "run:complete", iteration: 0 },
+		finalCommit,
+		finalBlobHash: hashPlanBytes(bytes),
+		planSchema: read.document.schema,
+		...(read.document.schema === 1
+			? { governingHash: hashPlanBytes(read.document.comparisonBytes) }
+			: {}),
+		snapshotLedgerHash: hashJson(snapshot.currentLedger),
+		ledger: proof.ledger,
+		ledgerHash: hashJson(proof.ledger),
+		addressAdditions: proof.addressAdditions,
+		createdAt: now(),
+	};
+	let prior: PlanApprovalFinalizationPayload | undefined;
+	try {
+		prior = input.store
+			.listPlanApprovalFinalizations(input.runId)
+			.find((entry) => entry.finalCommit === finalCommit);
+	} catch (error) {
+		return {
+			status: "error",
+			code: "PLAN_APPROVAL_FINALIZATION_CONFLICT",
+			message: `An existing plan-approval finalization on ${input.runId} is unreadable: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+	if (prior) {
+		const same =
+			prior.sourceSnapshotId === payload.sourceSnapshotId &&
+			prior.finalBlobHash === payload.finalBlobHash &&
+			prior.ledgerHash === payload.ledgerHash &&
+			prior.decisionsHash === payload.decisionsHash;
+		if (!same) {
+			return {
+				status: "error",
+				code: "PLAN_APPROVAL_FINALIZATION_CONFLICT",
+				message: `Run ${input.runId} already records a different plan-approval finalization for ${finalCommit}. Inspect the run's budget records before completing.`,
+				detail: { finalizationId: prior.id },
+			};
+		}
+		return { status: "ready", payload: prior, existing: true };
+	}
+	return { status: "ready", payload, existing: false };
+}
+
+/** Budget-line op pairing a finalization record with its `run:complete` step. */
+export function planApprovalFinalizationOp(input: {
+	payload: PlanApprovalFinalizationPayload;
+	completionIteration: number;
+	completionHead: string | null;
+}): {
+	stream: "budget";
+	idempotencyKey: string;
+	payload: unknown;
+} {
+	if (input.completionHead !== input.payload.finalCommit) {
+		throw new RecordStoreError(
+			"RECORD_PRECONDITION_FAILED",
+			`HEAD moved from ${input.payload.finalCommit} to ${input.completionHead ?? "none"} during completion. Nothing was sealed; repeat \`5x run complete --run ${input.payload.runId}\`.`,
+		);
+	}
+	return {
+		stream: "budget",
+		idempotencyKey: planApprovalFinalizationKey(
+			input.payload.runId,
+			input.payload.finalCommit,
+		),
+		payload: encodePlanApprovalFinalizationPayload({
+			...input.payload,
+			completion: {
+				stepName: "run:complete",
+				iteration: input.completionIteration,
+			},
+		}),
+	};
 }
 
 function saveBindingWithCarriedRepairs(input: {

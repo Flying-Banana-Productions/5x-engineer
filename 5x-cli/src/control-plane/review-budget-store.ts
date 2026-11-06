@@ -13,6 +13,7 @@ import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
+	decodePlanApprovalFinalizationPayload,
 	decodePlanChecklistRepairPayload,
 	decodePlanSchemaMigrationPayload,
 	encodeBudgetBaselinePayload,
@@ -40,6 +41,7 @@ import {
 	implementationReviewContextKey,
 	implementationReviewObservationKey,
 	implementationTextAmendmentKey,
+	type PlanApprovalFinalizationPayload,
 	type PlanChecklistRepairPayload,
 	type PlanSchemaMigrationPayload,
 	snapshotIdempotencyKey,
@@ -159,6 +161,10 @@ export interface ReviewBudgetStore {
 	listPlanSchemaMigrations(runId: string): PlanSchemaMigrationPayload[];
 	/** Checklist repairs on this run (source and execution), in journal order. */
 	listPlanChecklistRepairs(runId: string): PlanChecklistRepairPayload[];
+	/** Final committed plan approvals on a plan-review run, in journal order. */
+	listPlanApprovalFinalizations(
+		runId: string,
+	): PlanApprovalFinalizationPayload[];
 	/** Semantic amendment receipts in journal order. Not plan snapshots. */
 	listImplementationSemanticAmendments(
 		runId: string,
@@ -546,6 +552,20 @@ export function createReviewBudgetStore(
 				repairs.push(decodePlanChecklistRepairPayload(line.payload));
 			}
 			return repairs;
+		},
+
+		listPlanApprovalFinalizations(runId) {
+			const records: PlanApprovalFinalizationPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					(line.payload as { kind?: unknown } | null)?.kind !==
+					"plan-approval-finalization"
+				) {
+					continue;
+				}
+				records.push(decodePlanApprovalFinalizationPayload(line.payload));
+			}
+			return records;
 		},
 
 		listImplementationSemanticAmendments(runId, bindingId) {

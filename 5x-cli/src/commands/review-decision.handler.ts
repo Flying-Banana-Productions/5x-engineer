@@ -18,6 +18,7 @@ import {
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
 import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
+import type { BindingApprovalFinalization } from "../review-budget/record-lines.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
 import {
 	assertCleanCodeWorktree,
@@ -913,6 +914,8 @@ export async function bindApprovedImplementation(
 	mode: "advisory" | "enforced";
 	b0: number;
 	governingB: number;
+	/** How the approved ledger was finalized. Null for an unchanged snapshot ledger. */
+	approvalFinalization: BindingApprovalFinalization | null;
 }> {
 	const ctx = deps.context;
 	const planPath = ctx.executionContext.run.plan_path;
@@ -946,6 +949,7 @@ export async function bindApprovedImplementation(
 			mode: result.binding.mode,
 			b0: result.binding.b0,
 			governingB: result.binding.governingB,
+			approvalFinalization: result.binding.approvalFinalization ?? null,
 		};
 	}
 	if (result.status === "approval_required" || result.status === "error") {

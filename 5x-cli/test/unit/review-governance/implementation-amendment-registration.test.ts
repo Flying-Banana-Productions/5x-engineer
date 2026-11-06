@@ -149,6 +149,8 @@ function world(options?: {
 	worktree?: string;
 	unresolvedApprovalGate?: boolean;
 	boundaryCommit?: string;
+	/** Plan whose ledger the in-run approval snapshot recorded. Defaults to `amended`. */
+	snapshotPlan?: string;
 }) {
 	const base = options?.base ?? PLAN;
 	const amended =
@@ -411,7 +413,7 @@ function world(options?: {
 		stepName: "reviewer:plan",
 		phase: "plan",
 		iteration: 1,
-		currentLedger: ledger(amended),
+		currentLedger: ledger(options?.snapshotPlan ?? amended),
 		findings: [],
 		assessments: [],
 		effectiveGateCauses: [],
@@ -1162,5 +1164,116 @@ describe("amendment registration", async () => {
 				fingerprint: laterFingerprint,
 			},
 		]);
+	});
+});
+
+describe("source finalization does not relax amendment exact-hash reassessment", () => {
+	const amended = PLAN.replace("Read digits", "Honor offsets");
+	const W1 = "| W1 | Foundation | 2 | 0 | - | - | Required |";
+	const bookkept = amended.replace(
+		W1,
+		"| W1 | Foundation | 2 | 0 | - | R1 | Required |",
+	);
+	const amendments = (built: ReturnType<typeof world>) =>
+		built.store
+			.listLines(runId, "budget")
+			.filter(
+				(line) =>
+					(line.payload as { kind?: string }).kind ===
+					"implementation-plan-amendment",
+			);
+
+	test("committed bytes must be the exact reviewed bytes", async () => {
+		const cases: Array<
+			[string, Partial<ReturnType<typeof world>["input"]>, string]
+		> = [
+			[
+				"hook rewrite",
+				{
+					committedPlanBytes: `${amended}<!-- hook -->\n`,
+					worktreePlanBytes: `${amended}<!-- hook -->\n`,
+				},
+				"reviewed plan hash",
+			],
+			[
+				"status edit",
+				{
+					committedPlanBytes: amended.replace(
+						"# Plan\n",
+						"# Plan\n\n**Status:** Approved\n",
+					),
+					worktreePlanBytes: amended.replace(
+						"# Plan\n",
+						"# Plan\n\n**Status:** Approved\n",
+					),
+				},
+				"reviewed plan hash",
+			],
+			[
+				"Addresses bookkeeping after approval",
+				{ committedPlanBytes: bookkept, worktreePlanBytes: bookkept },
+				"reviewed plan hash",
+			],
+			[
+				"working tree differs",
+				{ worktreePlanBytes: bookkept },
+				"worktree plan",
+			],
+			["later unrelated HEAD", { headAccepted: false }, "HEAD is stale"],
+		];
+		for (const [label, overrides, message] of cases) {
+			const built = world({ amended });
+			await expect(register(built, overrides), label).rejects.toThrow(message);
+			expect(amendments(built), label).toHaveLength(0);
+		}
+	});
+
+	test("a final-corrections-style ledger delta is not reconciled inside an execution run", async () => {
+		// The assessment names the exact committed bytes, but the in-run
+		// approval snapshot recorded the pre-bookkeeping ledger.
+		const built = world({ amended: bookkept, snapshotPlan: amended });
+		// A source-style finalization line on this run grants nothing.
+		built.store.append({
+			runId,
+			stream: "budget",
+			idempotencyKey: `budget:plan-approval-finalization:${runId}:${COMMIT}`,
+			payload: {
+				kind: "plan-approval-finalization",
+				version: 1,
+				id: "approval-finalization:forged",
+				runId,
+				admittedFindingIds: ["R1"],
+			},
+			...recordedEnvelope(origin),
+		});
+		await expect(register(built)).rejects.toThrow(
+			"latest plan-review snapshot must match",
+		);
+		expect(amendments(built)).toHaveLength(0);
+	});
+
+	test("after a rejection, the exact retry records once and survives a fresh fold", async () => {
+		const built = world({ amended });
+		await expect(
+			register(built, { committedPlanBytes: bookkept }),
+		).rejects.toThrow();
+		const recorded = await register(built);
+		expect(recorded.created).toBe(true);
+		const retried = await register(built);
+		expect(retried).toMatchObject({
+			created: false,
+			amendmentId: recorded.amendmentId,
+		});
+		expect(amendments(built)).toHaveLength(1);
+		const restarted = foldEffectiveExecution({
+			recordStore: built.store,
+			runId,
+		});
+		expect(restarted.ok && restarted.currentRevisionId).toBe(
+			recorded.amendmentId,
+		);
+		if (restarted.ok) {
+			expect(restarted.approvedPlanHash).toBe(hashPlanBytes(amended));
+		}
 	});
 });

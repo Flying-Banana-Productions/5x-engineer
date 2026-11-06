@@ -37,6 +37,7 @@ export type BudgetRecordKind =
 	| "implementation-plan-recovery"
 	| "plan-schema-migration"
 	| "plan-checklist-repair"
+	| "plan-approval-finalization"
 	| "implementation-plan-amendment"
 	| "implementation-review-context"
 	| "implementation-review"
@@ -317,6 +318,33 @@ export interface ImplementationBindingPayload {
 	governingHash?: string;
 	schemaMigrationId?: string;
 	predecessorPlanCommit?: string;
+	/**
+	 * How the approved ledger was finalized from the committed plan. Absent
+	 * when the source snapshot ledger was bound unchanged without a record.
+	 * The source snapshot stays the original reviewer snapshot either way.
+	 */
+	approvalFinalization?: BindingApprovalFinalization;
+}
+
+/** Binding provenance for a finalized approval ledger. */
+export interface BindingApprovalFinalization {
+	/**
+	 * `recorded`: the source's paired `plan-approval-finalization` record.
+	 * `legacy_stale_addresses`: derived at bind time from a sealed legacy
+	 * source's final-corrections evidence; the source journal is unchanged.
+	 */
+	derivation: "recorded" | "legacy_stale_addresses";
+	/** The consumed record. Absent on a legacy derivation. */
+	finalizationId?: string;
+	sourceRunId: string;
+	sourceSnapshotId: string;
+	finalCommit: string;
+	finalBlobHash: string;
+	snapshotLedgerHash: string;
+	admittedFindingIds: string[];
+	addressAdditions: Array<{ workItemId: string; findingIds: string[] }>;
+	/** Final-corrections author commit, when that route admitted the delta. */
+	authorCommit: string | null;
 }
 
 export interface ImplementationCompatibilityPayload {
@@ -637,6 +665,226 @@ export function decodePlanChecklistRepairPayload(
 		resetCheckedLines,
 		reason: stringField(value.reason, "reason"),
 		intentDigest: stringField(value.intentDigest, "intentDigest"),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+/** Plan-review step identity named by a finalization record. */
+export interface PlanApprovalStepRef {
+	stepName: string;
+	iteration: number;
+	/** The step's recorded commit. Null when a reviewer step recorded none. */
+	commit: string | null;
+}
+
+/**
+ * Final committed plan approval, appended atomically with the plan-review
+ * run's `run:complete` step. Binds the approving reviewer snapshot, the
+ * recorded final-corrections author commit, the decisions, the committed
+ * plan blob and the effective ledger. Mechanical bookkeeping, not a reviewer
+ * verdict: the source snapshot is unchanged and binding consumes this anchor.
+ */
+export interface PlanApprovalFinalizationPayload {
+	kind: "plan-approval-finalization";
+	version: 1;
+	id: string;
+	/** The plan-review run being completed. */
+	runId: string;
+	sourceSnapshotId: string;
+	sourceBaselineId: string;
+	route: "complete" | "final_corrections";
+	reviewer: PlanApprovalStepRef;
+	/** The recorded final-corrections author step. Null on a ready approval. */
+	authorCorrection: PlanApprovalStepRef | null;
+	/** Findings the recorded route admitted as one-pass corrections. */
+	admittedFindingIds: string[];
+	decisionsHash: string;
+	/** The paired completion step. */
+	completion: { stepName: "run:complete"; iteration: number };
+	finalCommit: string;
+	/** sha256 of the raw plan blob at `finalCommit`. */
+	finalBlobHash: string;
+	planSchema: 0 | 1;
+	/** Schema 1 governing comparison hash. */
+	governingHash?: string;
+	snapshotLedgerHash: string;
+	ledger: ParsedDeliveryBudget;
+	ledgerHash: string;
+	addressAdditions: Array<{ workItemId: string; findingIds: string[] }>;
+	createdAt: string;
+}
+
+/** One record per committed final plan blob; a retry at the same commit is idempotent. */
+export function planApprovalFinalizationKey(
+	runId: string,
+	finalCommit: string,
+): string {
+	return `budget:plan-approval-finalization:${runId}:${finalCommit}`;
+}
+
+const APPROVAL_FINALIZATION_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"sourceSnapshotId",
+	"sourceBaselineId",
+	"route",
+	"reviewer",
+	"authorCorrection",
+	"admittedFindingIds",
+	"decisionsHash",
+	"completion",
+	"finalCommit",
+	"finalBlobHash",
+	"planSchema",
+	"governingHash",
+	"snapshotLedgerHash",
+	"ledger",
+	"ledgerHash",
+	"addressAdditions",
+	"createdAt",
+]);
+
+function approvalStepRef(raw: unknown, field: string): PlanApprovalStepRef {
+	const value = object(raw, field);
+	rejectUnknownKeys(value, new Set(["stepName", "iteration", "commit"]), field);
+	return {
+		stepName: stringField(value.stepName, `${field}.stepName`),
+		iteration: nonNegativeInteger(value.iteration, `${field}.iteration`),
+		commit:
+			value.commit === null
+				? null
+				: stringField(value.commit, `${field}.commit`),
+	};
+}
+
+function addressAdditionsField(
+	raw: unknown,
+	field: string,
+): Array<{ workItemId: string; findingIds: string[] }> {
+	if (!Array.isArray(raw)) throw new TypeError(`${field} must be an array`);
+	return raw.map((entry, index) => {
+		const value = object(entry, `${field}[${index}]`);
+		rejectUnknownKeys(
+			value,
+			new Set(["workItemId", "findingIds"]),
+			`${field}[${index}]`,
+		);
+		if (!Array.isArray(value.findingIds) || value.findingIds.length === 0) {
+			throw new TypeError(`${field}[${index}].findingIds must be non-empty`);
+		}
+		return {
+			workItemId: stringField(
+				value.workItemId,
+				`${field}[${index}].workItemId`,
+			),
+			findingIds: value.findingIds.map((id) =>
+				stringField(id, `${field}[${index}].findingIds`),
+			),
+		};
+	});
+}
+
+function findingIdsField(raw: unknown, field: string): string[] {
+	if (!Array.isArray(raw)) throw new TypeError(`${field} must be an array`);
+	return raw.map((id) => stringField(id, field));
+}
+
+export function encodePlanApprovalFinalizationPayload(
+	payload: PlanApprovalFinalizationPayload,
+): unknown {
+	const encoded = structuredClone(payload);
+	if (encoded.governingHash === undefined) delete encoded.governingHash;
+	return encoded;
+}
+
+export function decodePlanApprovalFinalizationPayload(
+	raw: unknown,
+): PlanApprovalFinalizationPayload {
+	const value = object(raw, "plan approval finalization payload");
+	if (value.kind !== "plan-approval-finalization") {
+		throw new TypeError("invalid plan approval finalization kind");
+	}
+	if (value.version !== 1) {
+		throw new TypeError(
+			`unsupported plan approval finalization version ${String(value.version)}`,
+		);
+	}
+	rejectUnknownKeys(
+		value,
+		APPROVAL_FINALIZATION_KEYS,
+		"plan approval finalization",
+	);
+	if (value.route !== "complete" && value.route !== "final_corrections") {
+		throw new TypeError("route must be complete or final_corrections");
+	}
+	if (value.planSchema !== 0 && value.planSchema !== 1) {
+		throw new TypeError("planSchema must be 0 or 1");
+	}
+	const authorCorrection =
+		value.authorCorrection === null
+			? null
+			: approvalStepRef(value.authorCorrection, "authorCorrection");
+	if ((value.route === "final_corrections") !== (authorCorrection !== null)) {
+		throw new TypeError(
+			"a final_corrections finalization names its author correction; a ready approval has none",
+		);
+	}
+	const completion = object(value.completion, "completion");
+	rejectUnknownKeys(
+		completion,
+		new Set(["stepName", "iteration"]),
+		"completion",
+	);
+	if (completion.stepName !== "run:complete") {
+		throw new TypeError("completion.stepName must be run:complete");
+	}
+	const governingHash =
+		value.governingHash === undefined
+			? undefined
+			: stringField(value.governingHash, "governingHash");
+	if (value.planSchema === 1 && governingHash === undefined) {
+		throw new TypeError("schema 1 finalization requires governingHash");
+	}
+	return {
+		kind: "plan-approval-finalization",
+		version: 1,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		sourceSnapshotId: stringField(value.sourceSnapshotId, "sourceSnapshotId"),
+		sourceBaselineId: stringField(value.sourceBaselineId, "sourceBaselineId"),
+		route: value.route,
+		reviewer: approvalStepRef(value.reviewer, "reviewer"),
+		authorCorrection,
+		admittedFindingIds: findingIdsField(
+			value.admittedFindingIds,
+			"admittedFindingIds",
+		),
+		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
+		completion: {
+			stepName: "run:complete",
+			iteration: nonNegativeInteger(
+				completion.iteration,
+				"completion.iteration",
+			),
+		},
+		finalCommit: stringField(value.finalCommit, "finalCommit"),
+		finalBlobHash: stringField(value.finalBlobHash, "finalBlobHash"),
+		planSchema: value.planSchema,
+		...(governingHash !== undefined ? { governingHash } : {}),
+		snapshotLedgerHash: stringField(
+			value.snapshotLedgerHash,
+			"snapshotLedgerHash",
+		),
+		ledger: structuredClone(
+			object(value.ledger, "ledger"),
+		) as unknown as ParsedDeliveryBudget,
+		ledgerHash: stringField(value.ledgerHash, "ledgerHash"),
+		addressAdditions: addressAdditionsField(
+			value.addressAdditions,
+			"addressAdditions",
+		),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
@@ -991,6 +1239,11 @@ export function encodeImplementationBindingPayload(
 	if (encoded.predecessorPlanCommit === undefined) {
 		delete encoded.predecessorPlanCommit;
 	}
+	if (encoded.approvalFinalization === undefined) {
+		delete encoded.approvalFinalization;
+	} else if (encoded.approvalFinalization.finalizationId === undefined) {
+		delete encoded.approvalFinalization.finalizationId;
+	}
 	return encoded;
 }
 
@@ -1065,6 +1318,89 @@ export function decodeImplementationBindingPayload(
 		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
 		createdAt: stringField(value.createdAt, "createdAt"),
 		...optionalBindingSchemaFields(value),
+		...(value.approvalFinalization !== undefined
+			? {
+					approvalFinalization: bindingApprovalFinalization(
+						value.approvalFinalization,
+					),
+				}
+			: {}),
+	};
+}
+
+const BINDING_FINALIZATION_KEYS = new Set([
+	"derivation",
+	"finalizationId",
+	"sourceRunId",
+	"sourceSnapshotId",
+	"finalCommit",
+	"finalBlobHash",
+	"snapshotLedgerHash",
+	"admittedFindingIds",
+	"addressAdditions",
+	"authorCommit",
+]);
+
+function bindingApprovalFinalization(
+	raw: unknown,
+): BindingApprovalFinalization {
+	const value = object(raw, "approvalFinalization");
+	rejectUnknownKeys(value, BINDING_FINALIZATION_KEYS, "approvalFinalization");
+	if (
+		value.derivation !== "recorded" &&
+		value.derivation !== "legacy_stale_addresses"
+	) {
+		throw new TypeError(
+			"approvalFinalization.derivation must be recorded or legacy_stale_addresses",
+		);
+	}
+	const finalizationId =
+		value.finalizationId === undefined
+			? undefined
+			: stringField(
+					value.finalizationId,
+					"approvalFinalization.finalizationId",
+				);
+	if ((value.derivation === "recorded") !== (finalizationId !== undefined)) {
+		throw new TypeError(
+			"a recorded finalization names its record; a legacy derivation has none",
+		);
+	}
+	return {
+		derivation: value.derivation,
+		...(finalizationId !== undefined ? { finalizationId } : {}),
+		sourceRunId: stringField(
+			value.sourceRunId,
+			"approvalFinalization.sourceRunId",
+		),
+		sourceSnapshotId: stringField(
+			value.sourceSnapshotId,
+			"approvalFinalization.sourceSnapshotId",
+		),
+		finalCommit: stringField(
+			value.finalCommit,
+			"approvalFinalization.finalCommit",
+		),
+		finalBlobHash: stringField(
+			value.finalBlobHash,
+			"approvalFinalization.finalBlobHash",
+		),
+		snapshotLedgerHash: stringField(
+			value.snapshotLedgerHash,
+			"approvalFinalization.snapshotLedgerHash",
+		),
+		admittedFindingIds: findingIdsField(
+			value.admittedFindingIds,
+			"approvalFinalization.admittedFindingIds",
+		),
+		addressAdditions: addressAdditionsField(
+			value.addressAdditions,
+			"approvalFinalization.addressAdditions",
+		),
+		authorCommit:
+			value.authorCommit === null
+				? null
+				: stringField(value.authorCommit, "approvalFinalization.authorCommit"),
 	};
 }
 

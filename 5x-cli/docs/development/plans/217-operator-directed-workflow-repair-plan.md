@@ -165,12 +165,12 @@ The subsystems are plan parsing/authority, CLI boundaries, review/approval gover
 
 **Completion gate:** The incident's final-corrections change to W2's `Addresses` binds successfully from the completed approval without an extra review, while unapproved substantive changes remain visible and recoverable in the same run.
 
-- [ ] Add final committed-plan reconciliation using existing final-corrections eligibility and decisions. Accept admitted `Addresses` bookkeeping and ignore nonidentity parse positions/rationale without accepting unrelated ledger or claim changes.
-- [ ] Pair a `plan-approval-finalization` record with plan-run completion, anchored to committed bytes and the effective ledger; consume it in source selection/binding and preserve the original snapshot.
-- [ ] Keep unsupported substantive corrections in the active plan run with concrete same-run review instructions; do not seal a source that admission will reject for a known mismatch.
-- [ ] Preserve exact-hash reassessment for semantic amendments in active executions. Cover working-tree/commit mismatch, hook rewrites, later unrelated HEAD, status/note edits, retries and restart.
-- [ ] Support consistent legacy sources unchanged and deterministically reconcile the documented stale-Addresses legacy case from sealed evidence, recording provenance in the new binding without rewriting the source journal.
-- [ ] Add a lifecycle regression from initial `ready_with_corrections` through author correction, completion and admission; assert the final committed blob/hash and ledger agree and that ordinary authorized corrections invoke no second reviewer.
+- [x] Add final committed-plan reconciliation using existing final-corrections eligibility and decisions. Accept admitted `Addresses` bookkeeping and ignore nonidentity parse positions/rationale without accepting unrelated ledger or claim changes.
+- [x] Pair a `plan-approval-finalization` record with plan-run completion, anchored to committed bytes and the effective ledger; consume it in source selection/binding and preserve the original snapshot.
+- [x] Keep unsupported substantive corrections in the active plan run with concrete same-run review instructions; do not seal a source that admission will reject for a known mismatch.
+- [x] Preserve exact-hash reassessment for semantic amendments in active executions. Cover working-tree/commit mismatch, hook rewrites, later unrelated HEAD, status/note edits, retries and restart.
+- [x] Support consistent legacy sources unchanged and deterministically reconcile the documented stale-Addresses legacy case from sealed evidence, recording provenance in the new binding without rewriting the source journal.
+- [x] Add a lifecycle regression from initial `ready_with_corrections` through author correction, completion and admission; assert the final committed blob/hash and ledger agree and that ordinary authorized corrections invoke no second reviewer.
 
 ## Phase 4: Truthful review evidence and actionable routing (W4)
 
