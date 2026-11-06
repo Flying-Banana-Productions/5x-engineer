@@ -34,7 +34,7 @@ import {
 	type ChecklistRepairSelection,
 	checklistRepairDigest,
 	planChecklistRepair,
-	proveChecklistRepair,
+	scopeCommittedChecklistRepair,
 } from "../plan-schema/checklist-repair.js";
 import { resolveRecordsRoot } from "../records/paths.js";
 import {
@@ -515,29 +515,68 @@ export async function repairChecklistsForRun(
 			`Plan bytes at ${committed.commit} are unavailable after the repair commit. Nothing was recorded; repeat the same command.`,
 		);
 	}
-	let recordedBytes = plan.targetBytes;
-	let edits = plan.edits;
+	let recorded = plan;
+	let notApplied: Extract<ChecklistRepairPlanResult, { ok: true }>["edits"] =
+		[];
 	if (committedBytes !== plan.targetBytes) {
-		// A commit hook may rewrite the file. Prove the bytes git holds.
-		const proof = proveChecklistRepair({
-			beforeBytes: subject.anchorBytes,
-			afterBytes: committedBytes,
+		// A commit hook may rewrite the file. Prove the bytes git holds and
+		// keep them inside the presented preview: no added edit and no
+		// changed checkbox state. A narrower result is reported as committed.
+		const scoped = scopeCommittedChecklistRepair({
+			anchorBytes: subject.anchorBytes,
+			committedBytes,
 			schema: subject.schema,
+			authorized: plan,
 		});
-		if (
-			!proof.ok ||
-			proof.edits.length === 0 ||
-			proof.checkedIntroductions.length > 0
-		) {
+		if (!scoped.ok && scoped.reason === "not_mechanical") {
 			throw new CliError(
 				"PLAN_CHECKLIST_REPAIR_HOOK_CHANGED",
 				`The committed plan at ${committed.commit} is not a mechanical checklist repair of the authorized anchor (a hook or concurrent edit changed it). Nothing was recorded.`,
-				proof.ok ? undefined : { disallowed: proof.disallowed },
+				scoped.disallowed ? { disallowed: scoped.disallowed } : undefined,
 			);
 		}
-		recordedBytes = committedBytes;
-		edits = proof.edits;
+		if (!scoped.ok) {
+			const refreshed = planChecklistRepair({
+				anchorBytes: subject.anchorBytes,
+				currentBytes: committedBytes,
+				schema: subject.schema,
+				...(selection ? { selection } : {}),
+			});
+			const refreshedDigest = refreshed.ok
+				? digestFor(refreshed.targetBytes, refreshed.edits)
+				: undefined;
+			throw new CliError(
+				"PLAN_CHECKLIST_REPAIR_HOOK_CHANGED",
+				`The committed plan at ${committed.commit} goes beyond the authorized preview (a hook or concurrent edit changed it). ${scoped.message} Nothing was recorded; the commit is kept. Review the refreshed candidate before authorizing it.`,
+				{
+					commit: committed.commit,
+					authorizedIntentDigest: intentDigest,
+					outsidePreview: scoped.outsidePreview,
+					...(refreshed.ok && refreshedDigest
+						? {
+								refreshed: {
+									...identity,
+									intentDigest: refreshedDigest,
+									...previewOf(refreshed),
+								},
+								next: [
+									[
+										"5x plan repair-checklists",
+										`--run ${input.runId}`,
+										...selectionFlags(selection),
+										"--dry-run",
+									].join(" "),
+								],
+							}
+						: {}),
+				},
+			);
+		}
+		recorded = scoped.plan;
+		notApplied = scoped.notApplied;
 	}
+	const recordedBytes = recorded.targetBytes;
+	const edits = recorded.edits;
 	const recordedDigest = digestFor(recordedBytes, edits);
 	const payload: PlanChecklistRepairPayload = {
 		kind: "plan-checklist-repair",
@@ -554,7 +593,7 @@ export async function repairChecklistsForRun(
 		authorizedPlanBytes: recordedBytes,
 		planSchema: subject.schema,
 		edits,
-		resetCheckedLines: plan.resetChecked.map((reset) => reset.line),
+		resetCheckedLines: recorded.resetChecked.map((reset) => reset.line),
 		reason: (input.reason ?? "").trim(),
 		intentDigest: recordedDigest,
 		createdAt: new Date().toISOString(),
@@ -653,7 +692,8 @@ export async function repairChecklistsForRun(
 			blobHash: stored.afterBlobHash,
 			parentLineageId: stored.id,
 		},
-		...previewOf(plan),
+		...previewOf(recorded),
+		...(notApplied.length > 0 ? { notApplied } : {}),
 		commit: committed.commit,
 		committed: committed.committed,
 		repair: receiptOf(stored),

@@ -9,6 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { mapSpanThroughChecklistRepair } from "../plan-schema/checklist-repair.js";
 import {
 	type LoadPlanDocumentResult,
 	loadPlanDocument,
@@ -569,6 +570,137 @@ function verifySchema1GuardedPlanBytes(input: {
 		};
 	}
 	return { ok: true, authorizedPlanBytes: after };
+}
+
+/** One recorded mechanical checklist repair in the authorized lineage. */
+export interface GuardRebaseRepair {
+	id: string;
+	parentLineageId: string | null;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	afterCommit: string;
+	planSchema: 0 | 1;
+	authorizedPlanBytes: string;
+}
+
+function byteOffsetOf(text: string, charIndex: number): number {
+	return Buffer.byteLength(text.slice(0, charIndex), "utf8");
+}
+
+function uniqueSpanAt(input: {
+	anchorText: string;
+	byteSource: string;
+	span: ResolvedPlanImpactSpan;
+}): boolean {
+	const sections = planHeadingSpans(input.anchorText).filter(
+		(heading) => heading.text === input.span.heading,
+	);
+	const section = sections.length === 1 ? sections[0] : undefined;
+	if (!section || input.span.staleText.length === 0) return false;
+	const body = input.anchorText.slice(section.lineStart, section.sectionEnd);
+	const first = body.indexOf(input.span.staleText);
+	if (first < 0 || body.indexOf(input.span.staleText, first + 1) >= 0) {
+		return false;
+	}
+	const charStart = section.lineStart + first;
+	return (
+		byteOffsetOf(input.byteSource, charStart) === input.span.start &&
+		byteOffsetOf(input.byteSource, charStart + input.span.staleText.length) ===
+			input.span.end
+	);
+}
+
+/**
+ * Carry an unconsumed text guard across mechanical checklist repairs that
+ * moved the authorized anchor after the guard was snapshotted. The original
+ * guard is not changed. Each repair must continue the guard's lineage
+ * exactly; each span must map onto byte-identical text outside every
+ * repaired list prefix and checkbox, and must stay the unique occurrence
+ * under its heading. Any other intervening lineage is stale.
+ */
+export function rebaseTextAmendmentGuard(input: {
+	guard: TextAmendmentGuard;
+	repairs: readonly GuardRebaseRepair[];
+	target: { parentLineageId: string | null; blobHash: string };
+	recordedSchema: 0 | 1;
+}): { ok: true; guard: TextAmendmentGuard } | PlanAmendmentFailure {
+	const stale = (message: string): PlanAmendmentFailure => ({
+		ok: false,
+		code: "PLAN_AMENDMENT_STALE",
+		message,
+	});
+	if (hashBytes(input.guard.anchorBytes) !== input.guard.anchorBlobHash) {
+		return stale("The text-amendment guard does not match its anchor bytes.");
+	}
+	let bytes = input.guard.anchorBytes;
+	let hash = input.guard.anchorBlobHash;
+	let parent = input.guard.parentLineageId;
+	let commit = input.guard.anchorCommit;
+	let spans = input.guard.allowedSpans.map((span) => ({ ...span }));
+	for (let step = 0; step <= input.repairs.length; step++) {
+		if (
+			parent === input.target.parentLineageId &&
+			hash === input.target.blobHash
+		) {
+			break;
+		}
+		const repair = input.repairs.find(
+			(entry) =>
+				entry.parentLineageId === parent && entry.beforeBlobHash === hash,
+		);
+		if (!repair || step === input.repairs.length) {
+			return stale(
+				"The text guard does not match the current authorized lineage, and the change since the review is not only a mechanical checklist repair. A new review is required.",
+			);
+		}
+		const mapped: ResolvedPlanImpactSpan[] = [];
+		for (const span of spans) {
+			const moved = mapSpanThroughChecklistRepair({
+				beforeBytes: bytes,
+				afterBytes: repair.authorizedPlanBytes,
+				schema: repair.planSchema,
+				start: span.start,
+				end: span.end,
+			});
+			if (!moved.ok) {
+				return stale(
+					`The guarded span under '${span.heading}' was changed by checklist repair ${repair.id}. ${moved.message} A new review is required.`,
+				);
+			}
+			mapped.push({ ...span, start: moved.start, end: moved.end });
+		}
+		spans = mapped;
+		bytes = repair.authorizedPlanBytes;
+		hash = repair.afterBlobHash;
+		parent = repair.id;
+		commit = repair.afterCommit;
+	}
+	if (hashBytes(bytes) !== input.target.blobHash) {
+		return stale(
+			"The rebased anchor does not match the current authorized plan.",
+		);
+	}
+	let anchorText = bytes;
+	if (input.recordedSchema === 1) {
+		const loaded = loadPlanDocument(bytes, 1);
+		if (!loaded.ok) return schemaProjectionFailure(loaded);
+		anchorText = loaded.document.authorityMarkdown;
+	}
+	for (const span of spans) {
+		if (!uniqueSpanAt({ anchorText, byteSource: bytes, span })) {
+			return stale(
+				`The guarded text under '${span.heading}' is no longer a unique span on the repaired anchor. A new review is required.`,
+			);
+		}
+	}
+	return prepareTextAmendmentGuard({
+		id: input.guard.id,
+		anchorBytes: bytes,
+		anchorCommit: commit,
+		parentLineageId: parent,
+		allowedSpans: spans,
+		recordedSchema: input.recordedSchema,
+	});
 }
 
 export function worktreeMatchesCommit(input: {

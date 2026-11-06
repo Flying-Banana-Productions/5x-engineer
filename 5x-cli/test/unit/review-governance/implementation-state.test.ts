@@ -17,6 +17,10 @@ import {
 	readAuthoritativeBudget,
 	readAuthoritativePlan,
 } from "../../../src/plan-schema/authority.js";
+import {
+	checklistRepairDigest,
+	planChecklistRepair,
+} from "../../../src/plan-schema/checklist-repair.js";
 import { loadPlanDocument } from "../../../src/plan-schema/document.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import {
@@ -24,10 +28,12 @@ import {
 	decodeImplementationBindingPayload,
 	encodeImplementationBindingPayload,
 	encodeImplementationReviewObservationPayload,
+	encodePlanChecklistRepairPayload,
 	type ImplementationBindingPayload,
 	type ImplementationReviewObservationPayload,
 	implementationBindingKey,
 	implementationReviewObservationKey,
+	planChecklistRepairKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { deriveInheritedBudgetGovernance } from "../../../src/review-governance/architecture-approval.js";
@@ -1678,3 +1684,328 @@ function schema1Observation(
 		createdAt: "2026-09-23 00:00:01",
 	};
 }
+
+const R1_STALE = "Follow the old plan sentence.";
+const R1_PLAN = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+**Completion gate:** bound
+
+- Bind execution
+- Record the binding
+
+## Phase 2: Follow
+
+**Completion gate:** followed
+
+${R1_STALE}
+
+- [ ] Follow up
+`;
+/** Schema 1: Phase 2 loses its markers, so the repair is after the span. */
+const R1_SCHEMA1_PLAN = SCHEMA1_AUTHORITY_PLAN.replace(
+	"- [ ] Third item",
+	"- Third item",
+);
+
+function guardedRepairFixture(input: {
+	markdown: string;
+	schema: 0 | 1;
+	heading: string;
+	staleText: string;
+}) {
+	const recordStore = createMemoryRecordStore();
+	putRun(recordStore, "exec");
+	const store = createReviewBudgetStore(recordStore);
+	let anchorText = input.markdown;
+	let governingHash: string | undefined;
+	if (input.schema === 1) {
+		const loaded = loadPlanDocument(input.markdown, 1);
+		if (!loaded.ok) throw new Error(loaded.message);
+		anchorText = loaded.document.authorityMarkdown;
+		governingHash = hashPlanBytes(loaded.document.comparisonBytes);
+	}
+	const binding = store.saveImplementationBinding(
+		{
+			...bindingPayload(input.markdown),
+			...(input.schema === 1 ? { planSchema: 1 as const, governingHash } : {}),
+		},
+		ORIGIN,
+	).payload;
+	const resolved = resolvePlanImpactSpans({
+		anchorText,
+		...(input.schema === 1 ? { byteSource: input.markdown } : {}),
+		locations: [
+			{ itemId: "R1", heading: input.heading, staleText: input.staleText },
+		],
+	});
+	if (resolved.status !== "resolved") throw new Error(resolved.message);
+	const prepared = prepareTextAmendmentGuard({
+		id: "guard-1",
+		anchorBytes: input.markdown,
+		anchorCommit: "a".repeat(40),
+		parentLineageId: null,
+		allowedSpans: resolved.spans,
+		recordedSchema: input.schema,
+	});
+	if (!prepared.ok) throw new Error(prepared.message);
+	const observation = schema1Observation(binding, prepared.guard);
+	recordStore.append({
+		runId: "exec",
+		stream: "budget",
+		idempotencyKey: implementationReviewObservationKey(
+			"exec",
+			observation.stepKey,
+		),
+		payload: encodeImplementationReviewObservationPayload(observation),
+		createdAt: observation.createdAt,
+		...recordedEnvelope(ORIGIN),
+	});
+	const repair = (current: string, id = "checklist-repair:1") => {
+		const folded = store.readEffectiveImplementationRevision("exec");
+		if (!folded?.ok) throw new Error("fold failed before repair");
+		const planned = planChecklistRepair({
+			anchorBytes: folded.approvedPlanBytes,
+			currentBytes: current,
+			schema: input.schema,
+		});
+		if (!planned.ok) throw new Error(planned.message);
+		expect(planned.edits.length).toBeGreaterThan(0);
+		const beforeBlobHash = folded.approvedPlanHash;
+		const afterBlobHash = hashPlanBytes(planned.targetBytes);
+		const intentDigest = checklistRepairDigest({
+			scope: `execution:exec:${binding.id}`,
+			beforeBlobHash,
+			afterBlobHash,
+			parentLineageId: folded.lineageParentId,
+			edits: planned.edits,
+		});
+		recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: planChecklistRepairKey("exec", intentDigest),
+			payload: encodePlanChecklistRepairPayload({
+				kind: "plan-checklist-repair",
+				version: 1,
+				id,
+				runId: "exec",
+				subject: "execution",
+				bindingId: binding.id,
+				parentLineageId: folded.lineageParentId,
+				beforeCommit: "a".repeat(40),
+				afterCommit: "b".repeat(40),
+				beforeBlobHash,
+				afterBlobHash,
+				authorizedPlanBytes: planned.targetBytes,
+				planSchema: input.schema,
+				edits: planned.edits,
+				resetCheckedLines: [],
+				reason: "Operator authorized checklist-format repair",
+				intentDigest,
+				createdAt: "2026-11-06T00:00:00.000Z",
+			}),
+			createdAt: "2026-11-06T00:00:00.000Z",
+			...recordedEnvelope(ORIGIN),
+		});
+		return planned.targetBytes;
+	};
+	const verify = (bytes: string, afterCommit = "c".repeat(40)) => {
+		const buffer = Buffer.from(bytes, "utf8");
+		return verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: buffer,
+			worktreePlanBytes: buffer,
+			afterCommit,
+		});
+	};
+	return { recordStore, store, binding, guard: prepared.guard, repair, verify };
+}
+
+describe("text guard across a mechanical checklist repair", () => {
+	for (const schema of [0, 1] as const) {
+		test(`schema ${schema}: review, repair elsewhere, then consume the original guard`, () => {
+			const markdown = schema === 0 ? R1_PLAN : R1_SCHEMA1_PLAN;
+			const staleText = schema === 0 ? R1_STALE : SCHEMA1_STALE_TEXT;
+			const heading = schema === 0 ? "Phase 2: Follow" : "Phase 1: Bind";
+			const ctx = guardedRepairFixture({
+				markdown,
+				schema,
+				heading,
+				staleText,
+			});
+			// Schema 1 also carries a non-governing status edit, which shifts
+			// every guarded byte offset through the repair.
+			const current =
+				schema === 0 ? markdown : withSchema1Status(markdown, "Approved");
+			const repaired = ctx.repair(current);
+			expect(repaired).not.toBe(markdown);
+			const repairedSpanStart = Buffer.from(repaired, "utf8").indexOf(
+				staleText,
+			);
+			expect(repairedSpanStart).not.toBe(ctx.guard.allowedSpans[0]?.start);
+
+			// Unchanged repaired bytes are not stale.
+			expect(ctx.verify(repaired)).toEqual({ status: "unchanged" });
+
+			const corrected = repaired.replace(
+				staleText,
+				"Follow the approved plan.",
+			);
+			const verified = ctx.verify(corrected);
+			expect(verified.status).toBe("verified");
+			if (verified.status !== "verified") return;
+			expect(verified.amendment.guardId).toBe("guard-1");
+			expect(verified.amendment.sourceObservationId).toBe("obs-1");
+			expect(verified.amendment.parentLineageId).toBe("checklist-repair:1");
+			expect(verified.amendment.beforeBlobHash).toBe(hashPlanBytes(repaired));
+			expect(verified.amendment.beforeCommit).toBe("b".repeat(40));
+			expect(verified.amendment.authorizedPlanBytes).toBe(corrected);
+
+			// The recorded review guard is immutable; the fold accepts the result.
+			const observation = ctx.store
+				.listImplementationReviews("exec")
+				.find((entry) => entry.id === "obs-1");
+			expect(observation?.textGuard).toEqual(ctx.guard);
+			const folded = ctx.store.readEffectiveImplementationRevision("exec");
+			if (!folded?.ok) throw new Error("fold failed");
+			expect(folded.approvedPlanBytes).toBe(corrected);
+			expect(folded.invalidatedObservationIds).not.toContain("obs-1");
+			// Consumed once: a second verification is not applicable.
+			expect(ctx.verify(corrected).status).toBe("not_applicable");
+		});
+
+		test(`schema ${schema}: the rebased guard still refuses edits outside its span`, () => {
+			const markdown = schema === 0 ? R1_PLAN : R1_SCHEMA1_PLAN;
+			const staleText = schema === 0 ? R1_STALE : SCHEMA1_STALE_TEXT;
+			const heading = schema === 0 ? "Phase 2: Follow" : "Phase 1: Bind";
+			const ctx = guardedRepairFixture({
+				markdown,
+				schema,
+				heading,
+				staleText,
+			});
+			const repaired = ctx.repair(markdown);
+			const outside = repaired
+				.replace(staleText, "Follow the approved plan.")
+				.replace(
+					schema === 0
+						? "**Completion gate:** bound"
+						: "Keep the approved ledger.",
+					schema === 0 ? "**Completion gate:** done" : "Keep a new ledger.",
+				);
+			const result = ctx.verify(outside);
+			expect(result.status).toBe("failed");
+			if (result.status !== "failed") return;
+			expect(result.code).not.toBe("PLAN_AMENDMENT_STALE");
+			expect(result.blocking).toBe(true);
+			expect(
+				ctx.store.listImplementationTextAmendments("exec", ctx.binding.id),
+			).toHaveLength(1);
+		});
+	}
+
+	test("a substantive change after the repair keeps the guard stale", () => {
+		const ctx = guardedRepairFixture({
+			markdown: R1_PLAN,
+			schema: 0,
+			heading: "Phase 2: Follow",
+			staleText: R1_STALE,
+		});
+		const repaired = ctx.repair(R1_PLAN);
+		const other = recordVerifiedTextAmendment({
+			store: ctx.store,
+			binding: ctx.binding,
+			origin: ORIGIN,
+			guardId: "guard-other",
+			sourceObservationId: "obs-other",
+			beforeCommit: "b".repeat(40),
+			afterCommit: "d".repeat(40),
+			authorizedPlanBytes: repaired.replace(
+				"**Completion gate:** followed",
+				"**Completion gate:** followed fully",
+			),
+		});
+		expect(other.status).toBe("ok");
+		const result = ctx.verify(repaired.replace(R1_STALE, "Follow the plan."));
+		expect(result).toMatchObject({
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			blocking: true,
+		});
+	});
+
+	test("a repair that rewrites the guarded text's list prefix keeps the guard stale", () => {
+		const ctx = guardedRepairFixture({
+			markdown: R1_PLAN,
+			schema: 0,
+			heading: "Phase 1: Bind",
+			staleText: "- Bind execution",
+		});
+		const repaired = ctx.repair(R1_PLAN);
+		expect(repaired).toContain("- [ ] Bind execution");
+		const result = ctx.verify(
+			repaired.replace("- [ ] Bind execution", "- [ ] Bind the execution"),
+		);
+		expect(result).toMatchObject({
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			blocking: true,
+		});
+		expect(
+			ctx.store.listImplementationTextAmendments("exec", ctx.binding.id),
+		).toHaveLength(1);
+	});
+
+	test("a lineage parent that only claims to be a repair is not trusted", () => {
+		const ctx = guardedRepairFixture({
+			markdown: R1_PLAN,
+			schema: 0,
+			heading: "Phase 2: Follow",
+			staleText: R1_STALE,
+		});
+		const repaired = ctx.repair(R1_PLAN);
+		// A guard whose parent is not continued by the recorded repair chain
+		// cannot be rebased onto the repaired anchor.
+		const forged = { ...ctx.guard, parentLineageId: "missing-parent" };
+		const observation = schema1Observation(ctx.binding, forged);
+		ctx.recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: implementationReviewObservationKey("exec", {
+				...observation.stepKey,
+				iteration: 1,
+			}),
+			payload: encodeImplementationReviewObservationPayload({
+				...observation,
+				id: "obs-2",
+				stepKey: { ...observation.stepKey, iteration: 1 },
+			}),
+			createdAt: observation.createdAt,
+			...recordedEnvelope(ORIGIN),
+		});
+		const result = ctx.verify(repaired.replace(R1_STALE, "Follow the plan."));
+		expect(result).toMatchObject({
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			blocking: true,
+		});
+	});
+});

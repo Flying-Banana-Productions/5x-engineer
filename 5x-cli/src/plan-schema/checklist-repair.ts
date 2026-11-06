@@ -63,6 +63,8 @@ export interface ChecklistCheckedReset {
 /** An existing task marker whose recorded state is retained. */
 export interface ChecklistToggle {
 	line: number;
+	/** 1-based raw line in the anchor bytes. */
+	anchorLine: number;
 	phase: string | null;
 	before: string;
 	after: string;
@@ -398,17 +400,31 @@ function topLevel(text: string): boolean {
 	return /^\S/.test(text);
 }
 
+interface AlignedRepairLines {
+	ok: true;
+	schema: PlanSchema;
+	anchor: ReturnType<typeof lineInfo>;
+	target: RawLine[];
+	pairs: Array<{ anchorIndex: number; targetIndex: number }>;
+	disallowed: ChecklistDisallowedChange[];
+}
+
 /**
- * Prove that `afterBytes` differs from `beforeBytes` only by introduced task
- * markers on eligible phase list items and by existing checkbox toggles.
- * Both sides are read under the same schema. Schema 1 compares governing
- * lines only; non-governing text may differ.
+ * Pair anchor and repaired lines under one schema. Schema 0 pairs every raw
+ * line; schema 1 pairs governing lines in order.
  */
-export function proveChecklistRepair(input: {
+function alignRepairLines(input: {
 	beforeBytes: string;
 	afterBytes: string;
 	schema: ExpectedPlanSchema;
-}): ChecklistProofResult {
+}):
+	| AlignedRepairLines
+	| {
+			ok: false;
+			code: "PLAN_SCHEMA_INVALID";
+			message: string;
+			disallowed: ChecklistDisallowedChange[];
+	  } {
 	const before = loadForRepair(input.beforeBytes, input.schema);
 	if (!before.ok) {
 		return {
@@ -479,6 +495,23 @@ export function proveChecklistRepair(input: {
 			}
 		}
 	}
+	return { ok: true, schema, anchor, target, pairs, disallowed };
+}
+
+/**
+ * Prove that `afterBytes` differs from `beforeBytes` only by introduced task
+ * markers on eligible phase list items and by existing checkbox toggles.
+ * Both sides are read under the same schema. Schema 1 compares governing
+ * lines only; non-governing text may differ.
+ */
+export function proveChecklistRepair(input: {
+	beforeBytes: string;
+	afterBytes: string;
+	schema: ExpectedPlanSchema;
+}): ChecklistProofResult {
+	const aligned = alignRepairLines(input);
+	if (!aligned.ok) return aligned;
+	const { schema, anchor, target, pairs, disallowed } = aligned;
 	const edits: ChecklistRepairEdit[] = [];
 	const checkedIntroductions: ChecklistRepairEdit[] = [];
 	const toggles: ChecklistToggle[] = [];
@@ -490,6 +523,7 @@ export function proveChecklistRepair(input: {
 		if (isToggle(left, right)) {
 			toggles.push({
 				line: pair.targetIndex + 1,
+				anchorLine: pair.anchorIndex + 1,
 				phase: at?.phase ?? null,
 				before: left,
 				after: right,
@@ -916,4 +950,242 @@ export function checklistRepairDigest(input: {
 		canonicalEdits(input.edits),
 	]);
 	return `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+}
+
+function editKey(edit: {
+	anchorLine: number;
+	before: string;
+	after: string;
+}): string {
+	return JSON.stringify([edit.anchorLine, edit.before, edit.after]);
+}
+
+export type CommittedChecklistRepairScope =
+	| {
+			ok: true;
+			/** The committed result, described like a preview. */
+			plan: Extract<ChecklistRepairPlanResult, { ok: true }>;
+			/** Previewed edits the committed blob does not contain. */
+			notApplied: ChecklistRepairEdit[];
+	  }
+	| {
+			ok: false;
+			reason: "not_mechanical" | "outside_preview";
+			message: string;
+			disallowed?: ChecklistDisallowedChange[];
+			/** Edits and checkbox states the committed blob has but the preview did not. */
+			outsidePreview?: {
+				edits: ChecklistRepairEdit[];
+				toggles: ChecklistToggle[];
+				revertedToggles: ChecklistToggle[];
+			};
+	  };
+
+/**
+ * Scope a committed blob (possibly rewritten by a commit hook) to the
+ * authorized preview. The blob must be a strict mechanical repair of the
+ * anchor whose edits are a subset of the previewed edits and whose checkbox
+ * states match the preview. A narrower result is described truthfully; any
+ * added edit or changed checkbox state is outside the authorization.
+ */
+export function scopeCommittedChecklistRepair(input: {
+	anchorBytes: string;
+	committedBytes: string;
+	schema: ExpectedPlanSchema;
+	authorized: Extract<ChecklistRepairPlanResult, { ok: true }>;
+}): CommittedChecklistRepairScope {
+	const proof = proveChecklistRepair({
+		beforeBytes: input.anchorBytes,
+		afterBytes: input.committedBytes,
+		schema: input.schema,
+	});
+	if (!proof.ok) {
+		return {
+			ok: false,
+			reason: "not_mechanical",
+			message: proof.message,
+			disallowed: proof.disallowed,
+		};
+	}
+	if (proof.checkedIntroductions.length > 0) {
+		return {
+			ok: false,
+			reason: "not_mechanical",
+			message: "A repair cannot introduce a checked task marker.",
+		};
+	}
+	if (proof.edits.length === 0) {
+		return {
+			ok: false,
+			reason: "not_mechanical",
+			message: "The committed plan introduces no task marker.",
+		};
+	}
+	const previewEdits = new Set(input.authorized.edits.map(editKey));
+	const committedEdits = new Set(proof.edits.map(editKey));
+	const previewToggles = new Set(input.authorized.toggles.map(editKey));
+	const committedToggles = new Set(proof.toggles.map(editKey));
+	const extraEdits = proof.edits.filter(
+		(edit) => !previewEdits.has(editKey(edit)),
+	);
+	const extraToggles = proof.toggles.filter(
+		(toggle) => !previewToggles.has(editKey(toggle)),
+	);
+	const revertedToggles = input.authorized.toggles.filter(
+		(toggle) => !committedToggles.has(editKey(toggle)),
+	);
+	if (
+		extraEdits.length > 0 ||
+		extraToggles.length > 0 ||
+		revertedToggles.length > 0
+	) {
+		return {
+			ok: false,
+			reason: "outside_preview",
+			message: `The committed plan changes ${extraEdits.length + extraToggles.length + revertedToggles.length} list marker(s) or checkbox state(s) outside the authorized preview.`,
+			outsidePreview: {
+				edits: extraEdits,
+				toggles: extraToggles,
+				revertedToggles,
+			},
+		};
+	}
+	const anchor = loadForRepair(input.anchorBytes, proof.schema);
+	const committed = loadForRepair(input.committedBytes, proof.schema);
+	if (!anchor.ok || !committed.ok) {
+		return {
+			ok: false,
+			reason: "not_mechanical",
+			message: "The committed plan could not be read.",
+		};
+	}
+	const keptAnchorLines = new Set(proof.edits.map((edit) => edit.anchorLine));
+	const keptTargetLines = new Set(
+		input.authorized.edits
+			.filter((edit) => keptAnchorLines.has(edit.anchorLine))
+			.map((edit) => edit.line),
+	);
+	return {
+		ok: true,
+		plan: {
+			...input.authorized,
+			targetBytes: input.committedBytes,
+			edits: proof.edits,
+			toggles: proof.toggles,
+			resetChecked: input.authorized.resetChecked.filter((reset) =>
+				keptTargetLines.has(reset.line),
+			),
+			phases: phaseSummaries(anchor.document, committed.document),
+		},
+		notApplied: input.authorized.edits.filter(
+			(edit) => !committedEdits.has(editKey(edit)),
+		),
+	};
+}
+
+function commonPrefix(left: Buffer, right: Buffer): number {
+	const limit = Math.min(left.length, right.length);
+	let index = 0;
+	while (index < limit && left[index] === right[index]) index += 1;
+	return index;
+}
+
+function commonSuffix(left: Buffer, right: Buffer, prefix: number): number {
+	const limit = Math.min(left.length, right.length) - prefix;
+	let count = 0;
+	while (
+		count < limit &&
+		left[left.length - 1 - count] === right[right.length - 1 - count]
+	) {
+		count += 1;
+	}
+	return count;
+}
+
+/**
+ * Map a UTF-8 byte span on the anchor onto a proven mechanical repair of
+ * it. The span must lie outside every changed list prefix and checkbox,
+ * and the mapped bytes must equal the original bytes exactly.
+ */
+export function mapSpanThroughChecklistRepair(input: {
+	beforeBytes: string;
+	afterBytes: string;
+	schema: ExpectedPlanSchema;
+	start: number;
+	end: number;
+}): { ok: true; start: number; end: number } | { ok: false; message: string } {
+	const proof = proveChecklistRepair({
+		beforeBytes: input.beforeBytes,
+		afterBytes: input.afterBytes,
+		schema: input.schema,
+	});
+	if (!proof.ok) return { ok: false, message: proof.message };
+	const aligned = alignRepairLines(input);
+	if (!aligned.ok || aligned.disallowed.length > 0) {
+		return { ok: false, message: "The repair lines could not be aligned." };
+	}
+	const offsets = (lines: readonly RawLine[]) => {
+		const starts: number[] = [];
+		let at = 0;
+		for (const line of lines) {
+			starts.push(at);
+			at += Buffer.byteLength(line.text + line.ending, "utf8");
+		}
+		return starts;
+	};
+	const anchorLines = aligned.anchor.lines;
+	const targetLines = aligned.target;
+	const anchorStarts = offsets(anchorLines);
+	const targetStarts = offsets(targetLines);
+	const pairOf = new Map(
+		aligned.pairs.map((pair) => [pair.anchorIndex, pair.targetIndex]),
+	);
+	const mapPoint = (pos: number, isEnd: boolean): number | null => {
+		const index = anchorLines.findIndex((line, i) => {
+			const start = anchorStarts[i] ?? 0;
+			const end = start + Buffer.byteLength(line.text + line.ending, "utf8");
+			return isEnd ? pos > start && pos <= end : pos >= start && pos < end;
+		});
+		if (index < 0) return null;
+		const targetIndex = pairOf.get(index);
+		if (targetIndex === undefined) return null;
+		const left = anchorLines[index];
+		const right = targetLines[targetIndex];
+		if (!left || !right) return null;
+		const offset = pos - (anchorStarts[index] ?? 0);
+		const leftText = Buffer.from(left.text, "utf8");
+		const rightText = Buffer.from(right.text, "utf8");
+		const base = targetStarts[targetIndex] ?? 0;
+		if (offset > leftText.length && left.ending !== right.ending) return null;
+		const prefix = commonPrefix(leftText, rightText);
+		const suffix = commonSuffix(leftText, rightText, prefix);
+		const shifted = base + offset + (rightText.length - leftText.length);
+		const before = offset <= prefix;
+		const after = offset >= leftText.length - suffix;
+		// At an insertion point a span start follows the inserted marker and
+		// a span end precedes it.
+		if (isEnd) {
+			if (before) return base + offset;
+			if (after) return shifted;
+		} else {
+			if (after) return shifted;
+			if (before) return base + offset;
+		}
+		return null;
+	};
+	const start = mapPoint(input.start, false);
+	const end = mapPoint(input.end, true);
+	const failure = {
+		ok: false as const,
+		message:
+			"The span touches a repaired list prefix or checkbox and cannot be rebased.",
+	};
+	if (start === null || end === null || end < start) return failure;
+	const original = Buffer.from(input.beforeBytes, "utf8").subarray(
+		input.start,
+		input.end,
+	);
+	const mapped = Buffer.from(input.afterBytes, "utf8").subarray(start, end);
+	if (!original.equals(mapped)) return failure;
+	return { ok: true, start, end };
 }

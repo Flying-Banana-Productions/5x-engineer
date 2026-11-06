@@ -535,6 +535,190 @@ describe("repairChecklistsForRun", () => {
 			"- [ ] Add the type",
 			"- [ ] Map fields",
 		]);
+		// The returned preview describes the committed, narrower result.
+		if (!("edits" in recorded)) throw new Error("expected a preview");
+		expect(recorded.edits.map((edit) => edit.after)).toEqual([
+			"- [ ] Add the type",
+			"- [ ] Map fields",
+		]);
+		expect(
+			"notApplied" in recorded
+				? recorded.notApplied?.map((edit) => edit.after)
+				: undefined,
+		).toEqual(["- [ ] Render the modal"]);
+		expect(recorded.phases.find((phase) => phase.id === "2")).toMatchObject({
+			itemsAfter: 0,
+		});
+	});
+
+	const expandPhase2 = (bytes: string) =>
+		bytes.replace("- Render the modal", "- [ ] Render the modal");
+	const repairLines = (
+		recordStore: ReturnType<typeof fixture>["recordStore"],
+	) =>
+		recordStore
+			.listLines(runId, "budget")
+			.filter(
+				(line) =>
+					(line.payload as { kind?: string }).kind === "plan-checklist-repair",
+			);
+
+	for (const scope of [
+		{ name: "--phase 1", phases: ["1"] },
+		{ name: "--lines 21-23", lines: ["21-23"] },
+	]) {
+		test(`a hook that adds a marker outside ${scope.name} records nothing; retry is safe`, async () => {
+			const { deps, recordStore, state } = fixture({ hook: expandPhase2 });
+			const selection = {
+				...(scope.phases ? { phases: scope.phases } : {}),
+				...(scope.lines ? { lines: scope.lines } : {}),
+			};
+			const preview = await repairChecklistsForRun(
+				{ runId, dryRun: true, ...selection },
+				deps,
+			);
+			if (!("edits" in preview)) throw new Error("expected a preview");
+			expect(preview.edits.map((edit) => edit.phase)).toEqual(["1", "1"]);
+			const error = await rejects(
+				repairChecklistsForRun(
+					{
+						runId,
+						apply: true,
+						reason: REASON,
+						intent: preview.intentDigest,
+						...selection,
+					},
+					deps,
+				),
+			);
+			expect(error.code).toBe("PLAN_CHECKLIST_REPAIR_HOOK_CHANGED");
+			const detail = error.detail as {
+				commit: string;
+				authorizedIntentDigest: string;
+				outsidePreview: { edits: Array<{ phase: string; after: string }> };
+				refreshed: {
+					intentDigest: string;
+					edits: Array<{ phase: string }>;
+					recorded?: boolean;
+				};
+			};
+			expect(detail.authorizedIntentDigest).toBe(preview.intentDigest);
+			expect(detail.outsidePreview.edits).toEqual([
+				expect.objectContaining({
+					phase: "2",
+					after: "- [ ] Render the modal",
+				}),
+			]);
+			expect(detail.refreshed.intentDigest).not.toBe(preview.intentDigest);
+			expect(detail.refreshed.edits.map((edit) => edit.phase)).toEqual([
+				"1",
+				"1",
+				"2",
+			]);
+			// No receipt or step; the hook's commit and bytes are kept.
+			expect(repairLines(recordStore)).toHaveLength(0);
+			expect(recordStore.listLines(runId, "steps")).toHaveLength(0);
+			expect(state.head).toBe(detail.commit);
+			expect(state.head).not.toBe(COMMIT);
+			expect(state.file).toContain("- [ ] Render the modal");
+
+			// Repeating the authorized command is refused as stale: no write,
+			// no commit, no record.
+			const writes = state.writes;
+			const commits = state.commitCalls;
+			const retried = await rejects(
+				repairChecklistsForRun(
+					{
+						runId,
+						apply: true,
+						reason: REASON,
+						intent: preview.intentDigest,
+						...selection,
+					},
+					deps,
+				),
+			);
+			expect(retried.code).toBe("PLAN_CHECKLIST_REPAIR_STALE");
+			expect(state.writes).toBe(writes);
+			expect(state.commitCalls).toBe(commits);
+			expect(repairLines(recordStore)).toHaveLength(0);
+			expect(recordStore.listLines(runId, "steps")).toHaveLength(0);
+
+			// Only an explicit authorization of the refreshed candidate records.
+			const accepted = await repairChecklistsForRun(
+				{
+					runId,
+					apply: true,
+					reason: REASON,
+					intent: detail.refreshed.intentDigest,
+					...selection,
+				},
+				deps,
+			);
+			expect(accepted.created).toBe(true);
+			expect(receipt(accepted)?.edits.map((edit) => edit.phase)).toEqual([
+				"1",
+				"1",
+				"2",
+			]);
+			expect(receipt(accepted)?.afterCommit).toBe(detail.commit);
+			const again = await repairChecklistsForRun(
+				{
+					runId,
+					apply: true,
+					reason: REASON,
+					intent: detail.refreshed.intentDigest,
+					...selection,
+				},
+				deps,
+			);
+			expect(again.created).toBe(false);
+			expect(repairLines(recordStore)).toHaveLength(1);
+			expect(recordStore.listLines(runId, "steps")).toHaveLength(1);
+		});
+	}
+
+	test("a hook that changes an existing checkbox state records nothing", async () => {
+		let hook: ((bytes: string) => string) | undefined;
+		const { deps, recordStore } = fixture({
+			hook: (bytes) => (hook ? hook(bytes) : bytes),
+		});
+		await repairChecklistsForRun(
+			{ runId, apply: true, reason: REASON, phases: ["1"] },
+			deps,
+		);
+		expect(repairLines(recordStore)).toHaveLength(1);
+		hook = (bytes) => bytes.replace("- [ ] Map fields", "- [x] Map fields");
+		const preview = await repairChecklistsForRun(
+			{ runId, dryRun: true, phases: ["2"] },
+			deps,
+		);
+		if (!("preservedCheckboxToggles" in preview)) {
+			throw new Error("expected a preview");
+		}
+		expect(preview.preservedCheckboxToggles).toEqual([]);
+		const error = await rejects(
+			repairChecklistsForRun(
+				{
+					runId,
+					apply: true,
+					reason: REASON,
+					phases: ["2"],
+					intent: preview.intentDigest,
+				},
+				deps,
+			),
+		);
+		expect(error.code).toBe("PLAN_CHECKLIST_REPAIR_HOOK_CHANGED");
+		expect(
+			(
+				error.detail as {
+					outsidePreview: { toggles: Array<{ after: string }> };
+				}
+			).outsidePreview.toggles.map((toggle) => toggle.after),
+		).toEqual(["- [x] Map fields"]);
+		expect(repairLines(recordStore)).toHaveLength(1);
+		expect(recordStore.listLines(runId, "steps")).toHaveLength(1);
 	});
 
 	test("nothing to repair is reported without writing or recording", async () => {

@@ -3,6 +3,7 @@ import { parsePlan } from "../../../src/parsers/plan.js";
 import {
 	checklistRepairDigest,
 	introduceUncheckedMarker,
+	mapSpanThroughChecklistRepair,
 	planChecklistRepair,
 	proveChecklistRepair,
 	verifyRecordedChecklistRepair,
@@ -427,5 +428,42 @@ describe("verifyRecordedChecklistRepair", () => {
 		expect(checklistRepairDigest({ ...base, scope: "source:run:-" })).not.toBe(
 			checklistRepairDigest(base),
 		);
+	});
+});
+
+describe("mapSpanThroughChecklistRepair", () => {
+	const before = `# Plan\n\n${BUDGET}\n## Phase 1: Model\n\n**Completion gate:** Typed.\n\n- Add the type ✓\n- Map fields\n\nKeep the stale sentence.\n`;
+	const plan = planChecklistRepair({
+		anchorBytes: before,
+		currentBytes: before,
+		schema: 0,
+	});
+	if (!plan.ok) throw new Error(plan.message);
+	const after = plan.targetBytes;
+	const span = (text: string) => {
+		const start = Buffer.from(before, "utf8").indexOf(text);
+		return { start, end: start + Buffer.byteLength(text, "utf8") };
+	};
+	const map = (text: string) =>
+		mapSpanThroughChecklistRepair({
+			beforeBytes: before,
+			afterBytes: after,
+			schema: 0,
+			...span(text),
+		});
+	const slice = (bytes: string, range: { start: number; end: number }) =>
+		Buffer.from(bytes, "utf8").subarray(range.start, range.end).toString();
+
+	test("shifts later spans and item text past an inserted marker", () => {
+		for (const text of ["Keep the stale sentence.", "Add the type ✓", "Map"]) {
+			const mapped = map(text);
+			if (!mapped.ok) throw new Error(mapped.message);
+			expect(slice(after, mapped)).toBe(text);
+		}
+	});
+
+	test("refuses a span that covers a repaired list prefix", () => {
+		expect(map("- Map fields").ok).toBe(false);
+		expect(map("✓\n- Map").ok).toBe(false);
 	});
 });

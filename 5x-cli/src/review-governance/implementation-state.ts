@@ -89,6 +89,8 @@ import type { EffectiveExecution } from "./implementation-amendment.js";
 import {
 	evaluateSupersedingLedger,
 	normalizeCheckboxMarkers,
+	rebaseTextAmendmentGuard,
+	type TextAmendmentGuard,
 	verifyGuardedPlanBytes,
 	worktreeMatchesCommit,
 } from "./plan-amendment.js";
@@ -2524,28 +2526,51 @@ export function verifyAuthorTextAmendment(input: {
 			blocking,
 		};
 	}
-	const guard = latest.textGuard;
+	const recordedGuard = latest.textGuard;
 	if (
 		loaded.amendments.some(
 			(amendment) =>
 				amendment.kind !== "plan-schema-migration" &&
 				amendment.kind !== "plan-checklist-repair" &&
-				amendment.guardId === guard.id,
+				amendment.guardId === recordedGuard.id,
 		)
 	) {
 		return { status: "not_applicable" };
 	}
+	let guard: TextAmendmentGuard = recordedGuard;
 	if (
-		guard.parentLineageId !== folded.lineageParentId ||
-		guard.anchorBlobHash !== folded.approvedPlanHash
+		recordedGuard.parentLineageId !== folded.lineageParentId ||
+		recordedGuard.anchorBlobHash !== folded.approvedPlanHash
 	) {
-		return {
-			status: "failed",
-			code: "PLAN_AMENDMENT_STALE",
-			message:
-				"The text guard does not match the current authorized lineage. A new review is required.",
-			blocking,
-		};
+		// Only proven mechanical checklist repairs may sit between the guard
+		// and the current anchor. The recorded guard stays immutable; its spans
+		// are re-proven on the repaired anchor for this consumption.
+		const rebased = rebaseTextAmendmentGuard({
+			guard: recordedGuard,
+			repairs: loaded.amendments.flatMap((amendment) =>
+				amendment.kind === "plan-checklist-repair" &&
+				amendment.bindingId === input.binding.id
+					? [amendment]
+					: [],
+			),
+			target: {
+				parentLineageId: folded.lineageParentId,
+				blobHash: folded.approvedPlanHash,
+			},
+			recordedSchema: folded.planSchema,
+		});
+		if (!rebased.ok) {
+			return {
+				status: "failed",
+				code: "PLAN_AMENDMENT_STALE",
+				message:
+					rebased.code === "PLAN_AMENDMENT_STALE"
+						? rebased.message
+						: `The text guard cannot be carried across the checklist repair. ${rebased.message} A new review is required.`,
+				blocking,
+			};
+		}
+		guard = rebased.guard;
 	}
 	const clean = worktreeMatchesCommit({
 		worktree: input.worktreePlanBytes,
