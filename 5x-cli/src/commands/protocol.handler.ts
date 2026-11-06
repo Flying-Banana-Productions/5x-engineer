@@ -359,6 +359,19 @@ export async function evaluatePhaseChecklist(
 		};
 	}
 
+	// A phase with no parser-recognized items can never be checked off.
+	// Point at the mechanical repair instead of asking for impossible [x].
+	if (phase.items.length === 0 && !phase.isComplete) {
+		const repair = params.run
+			? `5x plan repair-checklists --run ${params.run} --dry-run`
+			: `5x plan repair-checklists --plan ${planPath} --dry-run`;
+		return {
+			ok: false,
+			code: "PHASE_CHECKLIST_INCOMPLETE",
+			message: `Phase ${params.phase} has no executable checklist items, so it cannot be checked off. Preview a mechanical repair with \`${repair}\` (an approved plan uses the --run form under the operator's repair instruction; no reviewer finding, gate, or new run is needed). Missing requirements still need author work.`,
+		};
+	}
+
 	// Check if phase is complete
 	if (!phase.isComplete) {
 		return {

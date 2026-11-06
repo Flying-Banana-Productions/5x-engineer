@@ -25,6 +25,7 @@ import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import type { ParsedPlan, Phase } from "../parsers/plan.js";
 import { readAuthoritativePlan } from "../plan-schema/authority.js";
+import { verifyRecordedChecklistRepair } from "../plan-schema/checklist-repair.js";
 import {
 	governingLinesInLineRange,
 	type LoadedPlanDocument,
@@ -51,6 +52,7 @@ import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
+	decodePlanChecklistRepairPayload,
 	decodePlanSchemaMigrationPayload,
 	type ImplementationBindingPayload,
 	type ImplementationCorrectionAttemptPayload,
@@ -262,6 +264,7 @@ interface OpenBoundary {
 const LINEAGE_KINDS = new Set([
 	"implementation-text-amendment",
 	"plan-schema-migration",
+	"plan-checklist-repair",
 	"implementation-plan-recovery",
 	"implementation-plan-amendment",
 ]);
@@ -1109,6 +1112,56 @@ export function foldEffectiveExecution(input: {
 				governingHash = migration.governingHash;
 				governingAnchorBytes = migration.authorizedPlanBytes;
 			}
+			rememberAuthorized();
+			continue;
+		}
+
+		if (kind === "plan-checklist-repair") {
+			let repair: ReturnType<typeof decodePlanChecklistRepairPayload>;
+			try {
+				repair = decodePlanChecklistRepairPayload(line.payload);
+			} catch (error) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			// A source-run repair with no binding is not execution lineage.
+			if (repair.bindingId === null) continue;
+			if (repair.bindingId !== binding.id) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`${repair.id} names a different binding.`,
+				);
+			}
+			const afterHash = hashPlanBytes(repair.authorizedPlanBytes);
+			const proof = verifyRecordedChecklistRepair({
+				beforeBytes: authorizedBytes,
+				afterBytes: repair.authorizedPlanBytes,
+				schema: planSchema,
+				edits: repair.edits,
+			});
+			if (
+				repair.parentLineageId !== parent ||
+				repair.beforeBlobHash !== authorizedHash ||
+				repair.afterBlobHash !== afterHash ||
+				repair.planSchema !== planSchema ||
+				!proof.ok
+			) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Checklist repair ${repair.id} has a wrong parent, plan hash, or schema, or fails its mechanical proof${proof.ok ? "" : `: ${proof.message}`}.`,
+					repair.id,
+				);
+			}
+			// Mechanical repair moves only the authorized anchor. Evidence,
+			// revisions, findings and completed phases are untouched.
+			authorizedBytes = repair.authorizedPlanBytes;
+			authorizedHash = afterHash;
+			parent = repair.id;
 			rememberAuthorized();
 			continue;
 		}
@@ -2474,6 +2527,12 @@ function lineageTail(
 				parentId = migration.id;
 				beforeCommit = migration.afterCommit;
 				beforeHash = migration.afterBlobHash;
+			} else if (kind === "plan-checklist-repair") {
+				const repair = decodePlanChecklistRepairPayload(line.payload);
+				if (repair.bindingId !== binding.id) continue;
+				parentId = repair.id;
+				beforeCommit = repair.afterCommit;
+				beforeHash = repair.afterBlobHash;
 			} else if (kind === "implementation-plan-amendment") {
 				const amendment = decodeImplementationSemanticAmendmentPayload(
 					line.payload,

@@ -10,19 +10,27 @@ import {
 	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
 import { createReviewBudgetStore } from "../../../src/control-plane/review-budget-store.js";
+import {
+	checklistRepairDigest,
+	planChecklistRepair,
+} from "../../../src/plan-schema/checklist-repair.js";
 import type { AmendmentClaimEdit, VerdictItem } from "../../../src/protocol.js";
 import { REVIEWER_PROTOCOL_HELP } from "../../../src/protocol-help.js";
 import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
+	decodePlanChecklistRepairPayload,
 	encodeImplementationReviewObservationPayload,
 	encodeImplementationSemanticAmendmentPayload,
+	encodePlanChecklistRepairPayload,
 	type ImplementationBindingPayload,
 	type ImplementationPlanRecoveryPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationSemanticAmendmentPayload,
 	implementationBindingKey,
 	implementationReviewContextKey,
+	type PlanChecklistRepairPayload,
+	planChecklistRepairKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
@@ -38,7 +46,10 @@ import {
 	phaseReopenedByRevision,
 	verifyAmendmentAssessment,
 } from "../../../src/review-governance/implementation-amendment.js";
-import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
+import {
+	detectPlanDrift,
+	hashPlanBytes,
+} from "../../../src/review-governance/implementation-state.js";
 
 const origin: RecordOrigin = {
 	recorder: { installation_id: "11111111-1111-4111-8111-111111111111" },
@@ -470,6 +481,8 @@ function openSemantic(input: {
 	invalidatedContextIds?: string[];
 	invalidatedObservationIds?: string[];
 	decorateBinding?: (approved: ImplementationBindingPayload) => void;
+	/** Checklist repairs recorded before the semantic amendment. */
+	repairs?: PlanChecklistRepairPayload[];
 }) {
 	const base = input.base ?? PLAN;
 	const approved = binding(base);
@@ -494,6 +507,11 @@ function openSemantic(input: {
 		invalidatedContextIds: input.invalidatedContextIds,
 		invalidatedObservationIds: input.invalidatedObservationIds,
 	});
+	const repairTip = input.repairs?.at(-1);
+	if (repairTip) {
+		payload.beforeBlobHash = repairTip.afterBlobHash;
+		payload.parentLineageId = repairTip.id;
+	}
 	const human = step("human:review-governance", input.authorization.phase, 4, {
 		decisionId: input.authorization.decisionId,
 		gateId: input.authorization.gateId,
@@ -537,6 +555,10 @@ function openSemantic(input: {
 			...observations.map((entry) => ({
 				key: entry.id,
 				payload: encodeImplementationReviewObservationPayload(entry),
+			})),
+			...(input.repairs ?? []).map((repair) => ({
+				key: planChecklistRepairKey(runId, repair.intentDigest),
+				payload: encodePlanChecklistRepairPayload(repair),
 			})),
 			{
 				key: "budget:implementation-plan-amendment:binding-1:rev-1",
@@ -2189,5 +2211,266 @@ describe("former-contract decision hashes", () => {
 				amendmentScope: scoped.amendmentScope,
 			}),
 		).toThrow("only valid on authorize_amendment");
+	});
+});
+
+/** Phase 3 lost its task marker: a pure prefix repair restores it. */
+const UNMARKED = PLAN.replace("- [ ] Verify timestamps", "- Verify timestamps");
+
+function repairOf(input: {
+	before: string;
+	current?: string;
+	parent: string | null;
+	id?: string;
+	bindingId?: string | null;
+}): PlanChecklistRepairPayload {
+	const plan = planChecklistRepair({
+		anchorBytes: input.before,
+		currentBytes: input.current ?? input.before,
+		schema: 0,
+	});
+	if (!plan.ok) throw new Error(plan.message);
+	const beforeBlobHash = hashPlanBytes(input.before);
+	const afterBlobHash = hashPlanBytes(plan.targetBytes);
+	const bindingId =
+		input.bindingId === undefined ? "binding-1" : input.bindingId;
+	return {
+		kind: "plan-checklist-repair",
+		version: 1,
+		id: input.id ?? "checklist-repair:1",
+		runId,
+		subject: bindingId === null ? "source" : "execution",
+		bindingId,
+		parentLineageId: input.parent,
+		beforeCommit: COMMIT,
+		afterCommit: "b".repeat(40),
+		beforeBlobHash,
+		afterBlobHash,
+		authorizedPlanBytes: plan.targetBytes,
+		planSchema: 0,
+		edits: plan.edits,
+		resetCheckedLines: [],
+		reason: "Operator authorized checklist-format repair and continuation",
+		intentDigest: checklistRepairDigest({
+			scope: `execution:${runId}:binding-1`,
+			beforeBlobHash,
+			afterBlobHash,
+			parentLineageId: input.parent,
+			edits: plan.edits,
+		}),
+		createdAt: "2026-11-06T00:00:00.000Z",
+	};
+}
+
+describe("plan-checklist-repair lineage", () => {
+	test("codec round-trips and rejects malformed receipts", () => {
+		const repair = repairOf({ before: UNMARKED, parent: null });
+		expect(
+			decodePlanChecklistRepairPayload(
+				JSON.parse(JSON.stringify(encodePlanChecklistRepairPayload(repair))),
+			),
+		).toEqual(repair);
+		const carried = {
+			...repair,
+			carriedFrom: { runId: "source-run", repairId: "checklist-repair:s" },
+		};
+		expect(
+			decodePlanChecklistRepairPayload(
+				encodePlanChecklistRepairPayload(carried),
+			).carriedFrom,
+		).toEqual(carried.carriedFrom);
+		expect(() =>
+			decodePlanChecklistRepairPayload({ ...repair, snapshotId: "x" }),
+		).toThrow("unknown field");
+		expect(() =>
+			decodePlanChecklistRepairPayload({ ...repair, subject: "source" }),
+		).toThrow("source repair has no binding");
+		expect(() =>
+			decodePlanChecklistRepairPayload({ ...repair, edits: [] }),
+		).toThrow("non-empty");
+		expect(() =>
+			decodePlanChecklistRepairPayload({ ...repair, version: 2 }),
+		).toThrow("unsupported plan checklist repair version");
+	});
+
+	test("a pure prefix repair keeps evidence, findings, revision and phases", () => {
+		const evidenceLines = [
+			{ key: implementationBindingKey(runId), payload: binding(UNMARKED) },
+			{ key: "ctx-obs-1", payload: context("ctx-obs-1", "1") },
+			{
+				key: "obs-1",
+				payload: encodeImplementationReviewObservationPayload(
+					observation({
+						id: "obs-1",
+						phase: "1",
+						iteration: 1,
+						completionAuthorized: true,
+					}),
+				),
+			},
+			{ key: "ctx-obs-2", payload: context("ctx-obs-2", "2") },
+			{
+				key: "obs-2",
+				payload: encodeImplementationReviewObservationPayload(
+					observation({
+						id: "obs-2",
+						phase: "2",
+						iteration: 1,
+						items: [item("R7", "Providers")],
+					}),
+				),
+			},
+			{ key: "corr-1", payload: correction("corr-1", "obs-2", "2") },
+			{ key: "credit-1", payload: credit("credit-1", "obs-1", "1") },
+		];
+		const before = foldEffectiveExecution({
+			recordStore: storeWith({ budget: evidenceLines }),
+			runId,
+		});
+		const repair = repairOf({ before: UNMARKED, parent: null });
+		const after = foldEffectiveExecution({
+			recordStore: storeWith({
+				budget: [
+					...evidenceLines,
+					{
+						key: planChecklistRepairKey(runId, repair.intentDigest),
+						payload: encodePlanChecklistRepairPayload(repair),
+					},
+				],
+			}),
+			runId,
+		});
+		if (!before.ok || !after.ok) throw new Error("fold failed");
+		expect(after.approvedPlanBytes).toBe(repair.authorizedPlanBytes);
+		expect(after.approvedPlanBytes).toContain("- [ ] Verify timestamps");
+		expect(after.lineageParentId).toBe(repair.id);
+		expect(after.currentRevisionId).toBe(before.currentRevisionId);
+		expect(after.revisions).toEqual(before.revisions);
+		expect(after.evidence).toEqual(before.evidence);
+		expect(after.findings).toEqual(before.findings);
+		expect(after.findings.map((finding) => finding.findingId)).toEqual(["R7"]);
+		expect(
+			after.evidence
+				.filter((entry) => entry.applicability === "applicable")
+				.map((entry) => entry.recordId),
+		).toEqual([
+			"ctx-obs-1",
+			"obs-1",
+			"ctx-obs-2",
+			"obs-2",
+			"corr-1",
+			"credit-1",
+		]);
+		expect(after.invalidatedContextIds).toEqual([]);
+		expect(after.invalidatedObservationIds).toEqual([]);
+		expect(after.pinned).toEqual(before.pinned);
+		// Newly introduced boxes can be checked without drift; reverting is drift.
+		const checked = repair.authorizedPlanBytes.replace(
+			"- [ ] Verify timestamps",
+			"- [x] Verify timestamps",
+		);
+		const drift = (current: string) =>
+			detectPlanDrift({
+				approvedPlanBytes: UNMARKED,
+				approvedPlanHash: hashPlanBytes(UNMARKED),
+				amendments: [repair],
+				currentPlanBytes: current,
+				recordedSchema: 0,
+			});
+		expect(drift(checked).drifted).toBe(false);
+		expect(drift(checked).chainValid).toBe(true);
+		expect(drift(UNMARKED).drifted).toBe(true);
+	});
+
+	test("replay rejects a forged or misparented repair", () => {
+		const repair = repairOf({ before: UNMARKED, parent: null });
+		const forgedBytes = repair.authorizedPlanBytes.replace(
+			"- [ ] Verify timestamps",
+			"- [ ] Verify all timestamps",
+		);
+		const forged = {
+			...repair,
+			authorizedPlanBytes: forgedBytes,
+			afterBlobHash: hashPlanBytes(forgedBytes),
+			edits: repair.edits.map((edit) => ({
+				...edit,
+				after: "- [ ] Verify all timestamps",
+			})),
+		};
+		const misparented = { ...repair, parentLineageId: "elsewhere" };
+		for (const bad of [forged, misparented]) {
+			const folded = foldEffectiveExecution({
+				recordStore: storeWith({
+					budget: [
+						{
+							key: implementationBindingKey(runId),
+							payload: binding(UNMARKED),
+						},
+						{
+							key: planChecklistRepairKey(runId, bad.intentDigest),
+							payload: encodePlanChecklistRepairPayload(bad),
+						},
+					],
+				}),
+				runId,
+			});
+			expect(folded.ok).toBe(false);
+			if (!folded.ok) {
+				expect(folded.diagnostic.message).toContain("Checklist repair");
+			}
+			expect(
+				detectPlanDrift({
+					approvedPlanBytes: UNMARKED,
+					approvedPlanHash: hashPlanBytes(UNMARKED),
+					amendments: [bad],
+					currentPlanBytes: bad.authorizedPlanBytes,
+					recordedSchema: 0,
+				}).chainValid,
+			).toBe(false);
+		}
+	});
+
+	test("a source-run repair line is not execution lineage", () => {
+		const source = repairOf({
+			before: UNMARKED,
+			parent: null,
+			bindingId: null,
+		});
+		const folded = foldEffectiveExecution({
+			recordStore: storeWith({
+				budget: [
+					{ key: implementationBindingKey(runId), payload: binding(UNMARKED) },
+					{
+						key: planChecklistRepairKey(runId, source.intentDigest),
+						payload: encodePlanChecklistRepairPayload(source),
+					},
+				],
+			}),
+			runId,
+		});
+		if (!folded.ok) throw new Error(folded.diagnostic.message);
+		expect(folded.approvedPlanBytes).toBe(UNMARKED);
+	});
+
+	test("a later semantic amendment accepts the repaired anchor", () => {
+		const repair = repairOf({ before: UNMARKED, parent: null });
+		const authorization = decision({
+			id: "11111111-1111-4111-8111-111111111177",
+			observationId: "obs-2",
+			phase: "2",
+			scope: true,
+		});
+		const folded = foldSemantic({
+			base: UNMARKED,
+			repairs: [repair],
+			amended: repair.authorizedPlanBytes.replace(
+				"- [ ] Read digits",
+				"- [ ] Read digits and signs",
+			),
+			authorization,
+		});
+		if (!folded.ok) throw new Error(folded.diagnostic.message);
+		expect(folded.currentRevisionId).toBe("rev-1");
+		expect(folded.approvedPlanBytes).toContain("- [ ] Verify timestamps");
 	});
 });

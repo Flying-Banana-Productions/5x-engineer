@@ -166,6 +166,54 @@ export function parsePlan(markdown: string): ParsedPlan {
 	};
 }
 
+/** One phase section as {@link parsePlan} scopes it. Lines are 1-based. */
+export interface PhaseSectionRange {
+	number: string;
+	heading: string;
+	/** Line of the phase heading. */
+	startLine: number;
+	/** Last line still attributed to this phase. */
+	endLine: number;
+}
+
+/**
+ * Phase section bounds using the same heading and closing rules as
+ * {@link parsePlan}. A phase ends before the next phase heading or the next
+ * non-phase `#`/`##` heading. Callers that edit list prefixes use this so
+ * their scope cannot disagree with the parser's item attribution.
+ */
+export function phaseSectionRanges(markdown: string): PhaseSectionRange[] {
+	const lines = markdown.split(/\r\n|\n|\r/);
+	const ranges: PhaseSectionRange[] = [];
+	let open: PhaseSectionRange | null = null;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i] ?? "";
+		const lineNum = i + 1;
+		const phaseMatch = line.match(PHASE_HEADING_RE);
+		if (phaseMatch) {
+			if (open) open.endLine = lineNum - 1;
+			open = {
+				number: phaseMatch[2]?.trim() ?? "?",
+				heading: line,
+				startLine: lineNum,
+				endLine: lines.length,
+			};
+			ranges.push(open);
+			continue;
+		}
+		if (open && /^#{1,2}\s+[^#]/.test(line)) {
+			open.endLine = lineNum - 1;
+			open = null;
+		}
+	}
+	// A trailing newline yields one empty pseudo-line; keep it out of range.
+	const last = ranges.at(-1);
+	if (last && open === last && lines.at(-1) === "" && lines.length > 1) {
+		last.endLine = lines.length - 1;
+	}
+	return ranges;
+}
+
 /**
  * True when {@link parsePlan} found at least one `## Phase N:` / `### Phase …`
  * heading. Markdown under `paths.plans` without phase sections is still listed

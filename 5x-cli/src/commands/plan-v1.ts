@@ -7,9 +7,28 @@
  */
 
 import type { Command } from "@commander-js/extra-typings";
-import { outputSuccess } from "../output.js";
+import { outputError, outputSuccess } from "../output.js";
+import { resolveDbContext } from "./context.js";
+import { repairChecklists } from "./plan-checklist-repair.handler.js";
 import { planMigrate } from "./plan-migrate.handler.js";
 import { planArchive, planList, planPhases } from "./plan-v1.handler.js";
+import { createReviewBudgetContext } from "./review-budget-context.js";
+
+function collect(value: string, previous: string[]): string[] {
+	return [...previous, value];
+}
+
+async function repairRunContext(runId: string) {
+	const dbContext = await resolveDbContext();
+	if (!dbContext.controlPlane)
+		outputError(
+			"NO_CONTROL_PLANE",
+			"No 5x control-plane DB found. Initialize with 5x init first.",
+		);
+	return createReviewBudgetContext({ runId, dbContext }, (message) =>
+		console.error(`Warning: ${message}`),
+	);
+}
 
 export function registerPlan(parent: Command) {
 	const plan = parent
@@ -128,6 +147,78 @@ export function registerPlan(parent: Command) {
 					write: opts.write,
 					dryRun: opts.dryRun,
 				}),
+			);
+		});
+
+	plan
+		.command("repair-checklists")
+		.summary("Mechanically repair missing checklist markers")
+		.description(
+			"Convert plain list markers in identified completion-gate lists into unchecked\n" +
+				"task markers. The proof allows only list-prefix changes and existing checkbox\n" +
+				"toggles; requirement text, nesting, headings, budget and schema stay byte-identical.\n" +
+				"--plan repairs an unapproved draft in place and records nothing. --run proves the\n" +
+				"repair against the run's authorized anchor (bound execution, or a completed\n" +
+				"plan-review source before binding), commits only the plan file and records a\n" +
+				"plan-checklist-repair receipt on the same run. --reason records the operator's\n" +
+				"instruction; no reviewer finding, gate, re-review or new run is required, and no\n" +
+				"phase is marked complete. Usable while admission reports drift. Repaired runs\n" +
+				"need a CLI that understands plan-checklist-repair lineage.",
+		)
+		.option("--plan <path>", "Unapproved draft plan file")
+		.option("--run <id>", "Bound execution run or completed plan-review run")
+		.option("--dry-run", "Preview the exact edits without writing")
+		.option("--apply", "Write (and on --run, commit and record) the repair")
+		.option(
+			"--reason <text>",
+			"Operator instruction being recorded (required with --run --apply)",
+		)
+		.option(
+			"--phase <id>",
+			"Repair this phase (repeatable); replaces the default selection",
+			collect,
+			[] as string[],
+		)
+		.option(
+			"--lines <start-end>",
+			"Repair only list items in this raw line range (repeatable)",
+			collect,
+			[] as string[],
+		)
+		.option(
+			"--intent <digest>",
+			"Preview digest; a changed candidate is re-previewed instead of applied",
+		)
+		.option(
+			"--no-checkpoint",
+			"Leave the run's records uncommitted after recording",
+		)
+		.addHelpText(
+			"after",
+			"\nExamples:\n" +
+				"  $ 5x plan repair-checklists --plan docs/plan.md --dry-run\n" +
+				"  $ 5x plan repair-checklists --plan docs/plan.md --apply\n" +
+				"  $ 5x plan repair-checklists --run <id> --dry-run\n" +
+				'  $ 5x plan repair-checklists --run <id> --apply --intent <digest> --reason "Operator authorized checklist-format repair and continuation"\n' +
+				"  $ 5x plan repair-checklists --run <id> --phase 2 --lines 40-52 --dry-run\n",
+		)
+		.action(async (opts) => {
+			outputSuccess(
+				await repairChecklists(
+					{
+						planPath: opts.plan,
+						runId: opts.run,
+						dryRun: opts.dryRun,
+						apply: opts.apply,
+						reason: opts.reason,
+						phases: opts.phase,
+						lines: opts.lines,
+						intent: opts.intent,
+						checkpoint: opts.checkpoint,
+						startDir: process.cwd(),
+					},
+					repairRunContext,
+				),
 			);
 		});
 

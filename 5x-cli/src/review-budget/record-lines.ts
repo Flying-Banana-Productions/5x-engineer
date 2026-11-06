@@ -36,6 +36,7 @@ export type BudgetRecordKind =
 	| "implementation-text-amendment"
 	| "implementation-plan-recovery"
 	| "plan-schema-migration"
+	| "plan-checklist-repair"
 	| "implementation-plan-amendment"
 	| "implementation-review-context"
 	| "implementation-review"
@@ -447,9 +448,198 @@ export interface PlanSchemaMigrationPayload {
 	createdAt: string;
 }
 
+/** One proven list-prefix edit. Lines are 1-based. */
+export interface PlanChecklistRepairEdit {
+	line: number;
+	anchorLine: number;
+	phase: string;
+	before: string;
+	after: string;
+	topLevel: boolean;
+}
+
+/**
+ * Operator-authorized mechanical checklist repair. Moves the authorized plan
+ * anchor only: no reviewer snapshot, text guard, semantic assessment, new
+ * revision, evidence invalidation, phase completion or finding resolution.
+ * Source lines (`bindingId: null`) sit on a completed plan-review run and are
+ * carried onto an execution binding when it is created.
+ */
+export interface PlanChecklistRepairPayload {
+	kind: "plan-checklist-repair";
+	version: 1;
+	id: string;
+	/** Run whose journal holds this line. */
+	runId: string;
+	subject: "execution" | "source";
+	bindingId: string | null;
+	/** Present on a binding's copy of a source-run repair. */
+	carriedFrom?: { runId: string; repairId: string };
+	parentLineageId: string | null;
+	beforeCommit: string;
+	afterCommit: string;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	authorizedPlanBytes: string;
+	planSchema: 0 | 1;
+	edits: PlanChecklistRepairEdit[];
+	/** Lines whose proposed checked marker was recorded as unchecked. */
+	resetCheckedLines: number[];
+	/** The operator instruction this repair records. Not a reviewer verdict. */
+	reason: string;
+	intentDigest: string;
+	createdAt: string;
+}
+
 export type ImplementationLineagePayload =
 	| ImplementationPlanAmendmentPayload
-	| PlanSchemaMigrationPayload;
+	| PlanSchemaMigrationPayload
+	| PlanChecklistRepairPayload;
+
+export function planChecklistRepairKey(
+	runId: string,
+	intentDigest: string,
+): string {
+	return `budget:plan-checklist-repair:${runId}:${intentDigest}`;
+}
+
+export function planChecklistRepairStepKey(
+	runId: string,
+	intentDigest: string,
+): string {
+	return `step:${runId}:checklist-repair::0:${intentDigest}`;
+}
+
+const CHECKLIST_REPAIR_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"subject",
+	"bindingId",
+	"carriedFrom",
+	"parentLineageId",
+	"beforeCommit",
+	"afterCommit",
+	"beforeBlobHash",
+	"afterBlobHash",
+	"authorizedPlanBytes",
+	"planSchema",
+	"edits",
+	"resetCheckedLines",
+	"reason",
+	"intentDigest",
+	"createdAt",
+]);
+
+const CHECKLIST_REPAIR_EDIT_KEYS = new Set([
+	"line",
+	"anchorLine",
+	"phase",
+	"before",
+	"after",
+	"topLevel",
+]);
+
+export function encodePlanChecklistRepairPayload(
+	payload: PlanChecklistRepairPayload,
+): unknown {
+	const encoded = structuredClone(payload);
+	if (encoded.carriedFrom === undefined) delete encoded.carriedFrom;
+	return encoded;
+}
+
+export function decodePlanChecklistRepairPayload(
+	raw: unknown,
+): PlanChecklistRepairPayload {
+	const value = object(raw, "plan checklist repair payload");
+	if (value.kind !== "plan-checklist-repair") {
+		throw new TypeError("invalid plan checklist repair kind");
+	}
+	if (value.version !== 1) {
+		throw new TypeError(
+			`unsupported plan checklist repair version ${String(value.version)}`,
+		);
+	}
+	rejectUnknownKeys(value, CHECKLIST_REPAIR_KEYS, "plan checklist repair");
+	if (value.subject !== "execution" && value.subject !== "source") {
+		throw new TypeError("subject must be execution or source");
+	}
+	const bindingId =
+		value.bindingId === null ? null : stringField(value.bindingId, "bindingId");
+	if ((value.subject === "source") !== (bindingId === null)) {
+		throw new TypeError(
+			"a source repair has no binding; an execution repair names one",
+		);
+	}
+	if (value.planSchema !== 0 && value.planSchema !== 1) {
+		throw new TypeError("planSchema must be 0 or 1");
+	}
+	if (!Array.isArray(value.edits) || value.edits.length === 0) {
+		throw new TypeError("edits must be a non-empty array");
+	}
+	const edits = value.edits.map((entry, index) => {
+		const edit = object(entry, `edits[${index}]`);
+		rejectUnknownKeys(edit, CHECKLIST_REPAIR_EDIT_KEYS, `edits[${index}]`);
+		if (typeof edit.topLevel !== "boolean") {
+			throw new TypeError(`edits[${index}].topLevel must be a boolean`);
+		}
+		return {
+			line: lineNumberField(edit.line, `edits[${index}].line`),
+			anchorLine: lineNumberField(
+				edit.anchorLine,
+				`edits[${index}].anchorLine`,
+			),
+			phase: stringField(edit.phase, `edits[${index}].phase`),
+			before: stringField(edit.before, `edits[${index}].before`),
+			after: stringField(edit.after, `edits[${index}].after`),
+			topLevel: edit.topLevel,
+		};
+	});
+	if (!Array.isArray(value.resetCheckedLines)) {
+		throw new TypeError("resetCheckedLines must be an array");
+	}
+	const resetCheckedLines = value.resetCheckedLines.map((line, index) =>
+		lineNumberField(line, `resetCheckedLines[${index}]`),
+	);
+	let carriedFrom: PlanChecklistRepairPayload["carriedFrom"];
+	if (value.carriedFrom !== undefined) {
+		const carried = object(value.carriedFrom, "carriedFrom");
+		rejectUnknownKeys(carried, new Set(["runId", "repairId"]), "carriedFrom");
+		carriedFrom = {
+			runId: stringField(carried.runId, "carriedFrom.runId"),
+			repairId: stringField(carried.repairId, "carriedFrom.repairId"),
+		};
+	}
+	return {
+		kind: "plan-checklist-repair",
+		version: 1,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		subject: value.subject,
+		bindingId,
+		...(carriedFrom ? { carriedFrom } : {}),
+		parentLineageId:
+			value.parentLineageId === null
+				? null
+				: stringField(value.parentLineageId, "parentLineageId"),
+		beforeCommit: stringField(value.beforeCommit, "beforeCommit"),
+		afterCommit: stringField(value.afterCommit, "afterCommit"),
+		beforeBlobHash: stringField(value.beforeBlobHash, "beforeBlobHash"),
+		afterBlobHash: stringField(value.afterBlobHash, "afterBlobHash"),
+		authorizedPlanBytes: stringField(
+			value.authorizedPlanBytes,
+			"authorizedPlanBytes",
+			true,
+		),
+		planSchema: value.planSchema,
+		edits,
+		resetCheckedLines,
+		reason: stringField(value.reason, "reason"),
+		intentDigest: stringField(value.intentDigest, "intentDigest"),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
 
 export function planSchemaMigrationKey(
 	runId: string,

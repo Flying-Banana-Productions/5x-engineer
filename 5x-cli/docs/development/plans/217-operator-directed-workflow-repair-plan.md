@@ -143,12 +143,12 @@ The subsystems are plan parsing/authority, CLI boundaries, review/approval gover
 
 **Completion gate:** An already admitted malformed plan can be repaired on the same run after one operator instruction, with no reviewer invocation or preexisting gate required, and unchanged evidence remains usable.
 
-- [ ] Implement a pure candidate/proof module for selected completion-gate list prefixes, preserving wording, phase identity, budget, schema and unrelated governing content; cover nested lists, ordered markers, mixed valid/invalid lists, ambiguous selections, non-ASCII text and line endings.
-- [ ] Add `plan repair-checklists` preview/apply forms for unapproved files, completed approval sources and active bound runs. Resolve canonical worktree paths; detect an approved subject when the file form is used and return its run-aware command rather than bypassing authority.
-- [ ] Add `plan-checklist-repair` decoding, paired receipt, idempotency and effective-lineage integration. Bind and later semantic/text amendments accept the repaired anchor while retaining the original source, policy, ledger and run identity.
-- [ ] Make the command accessible through missing-checklist and ordinary drift failures. Preview a manually introduced checked marker as a proposed reset to unchecked; do not erase existing recognized checkbox progress or unrelated edits.
-- [ ] Reuse plan-only commit and atomic-append seams, including hook-changed bytes, interrupted prepare/record, identical retry, concurrent edit and index-rebuild coverage. A failed proof has no new authority or overwritten user work.
-- [ ] Demonstrate that a pure prefix repair preserves valid quality/review/debt evidence and completed phases, leaves unrelated open findings intact, and permits checking newly introduced boxes against already-recorded evidence without a redundant review or quality cycle.
+- [x] Implement a pure candidate/proof module for selected completion-gate list prefixes, preserving wording, phase identity, budget, schema and unrelated governing content; cover nested lists, ordered markers, mixed valid/invalid lists, ambiguous selections, non-ASCII text and line endings.
+- [x] Add `plan repair-checklists` preview/apply forms for unapproved files, completed approval sources and active bound runs. Resolve canonical worktree paths; detect an approved subject when the file form is used and return its run-aware command rather than bypassing authority.
+- [x] Add `plan-checklist-repair` decoding, paired receipt, idempotency and effective-lineage integration. Bind and later semantic/text amendments accept the repaired anchor while retaining the original source, policy, ledger and run identity.
+- [x] Make the command accessible through missing-checklist and ordinary drift failures. Preview a manually introduced checked marker as a proposed reset to unchecked; do not erase existing recognized checkbox progress or unrelated edits.
+- [x] Reuse plan-only commit and atomic-append seams, including hook-changed bytes, interrupted prepare/record, identical retry, concurrent edit and index-rebuild coverage. A failed proof has no new authority or overwritten user work.
+- [x] Demonstrate that a pure prefix repair preserves valid quality/review/debt evidence and completed phases, leaves unrelated open findings intact, and permits checking newly introduced boxes against already-recorded evidence without a redundant review or quality cycle.
 
 ## Phase 2: Early diagnostics that lead directly to repair (W2)
 

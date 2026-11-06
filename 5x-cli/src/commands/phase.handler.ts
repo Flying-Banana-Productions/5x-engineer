@@ -69,7 +69,7 @@ function remediationFor(code: string): string {
 		case "INVALID_ARGS":
 			return "Fix the author JSON payload and re-run `5x phase finish` with the same keys. Quality is skipped on resume if it already passed.";
 		case "PHASE_CHECKLIST_INCOMPLETE":
-			return "Mark all phase checklist items [x] and re-run `5x phase finish` with the same keys. Quality is skipped on resume.";
+			return "Mark all phase checklist items [x] and re-run `5x phase finish` with the same keys. Quality is skipped on resume. A phase with no executable items needs the `5x plan repair-checklists` command from the error first.";
 		case "PHASE_NOT_FOUND":
 			return "Pass a --phase that exists in the plan, or --no-phase-checklist-validate to skip the gate.";
 		case "RUN_CONTEXT_REQUIRED":

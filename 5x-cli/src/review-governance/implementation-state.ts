@@ -29,6 +29,7 @@ import {
 	readAuthoritativeBudget,
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
+import { verifyRecordedChecklistRepair } from "../plan-schema/checklist-repair.js";
 import {
 	type ExpectedPlanSchema,
 	loadPlanDocument,
@@ -37,6 +38,8 @@ import {
 import type { ReviewerVerdict } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
 import {
+	encodeImplementationBindingPayload,
+	encodePlanChecklistRepairPayload,
 	IMPLEMENTATION_STATE_VERSION,
 	type ImplementationBindingPayload,
 	type ImplementationCompatibilityPayload,
@@ -50,7 +53,10 @@ import {
 	type ImplementationReviewContextPayload,
 	type ImplementationReviewObservationPayload,
 	type ImplementationTextAmendmentPayload,
+	implementationBindingKey,
+	type PlanChecklistRepairPayload,
 	type PlanSchemaMigrationPayload,
+	planChecklistRepairKey,
 } from "../review-budget/record-lines.js";
 import type {
 	DebtClaimEvidence,
@@ -221,7 +227,8 @@ export interface ReplayablePlanSchemaMigration {
 
 export type ReplayableLineageRecord =
 	| ImplementationPlanAmendmentPayload
-	| ReplayablePlanSchemaMigration;
+	| ReplayablePlanSchemaMigration
+	| PlanChecklistRepairPayload;
 
 const SCHEMA0_DRIFT_REASON =
 	"Plan bytes differ from the approved text and its verified amendment lineage, ignoring checkbox state.";
@@ -409,6 +416,26 @@ function replayTextAmendments(input: {
 			schema = 1;
 			migrationGoverningHash = amendment.governingHash;
 			sawMigration = true;
+			continue;
+		}
+		if (amendment.kind === "plan-checklist-repair") {
+			const afterHash = hashPlanBytes(amendment.authorizedPlanBytes);
+			const valid =
+				amendment.version === 1 &&
+				amendment.parentLineageId === parent &&
+				amendment.beforeBlobHash === authorizedHash &&
+				amendment.afterBlobHash === afterHash &&
+				(!sawMigration || amendment.planSchema === 1) &&
+				verifyRecordedChecklistRepair({
+					beforeBytes: authorizedBytes,
+					afterBytes: amendment.authorizedPlanBytes,
+					schema: amendment.planSchema,
+					edits: amendment.edits,
+				}).ok;
+			if (!valid) return invalid();
+			authorizedBytes = amendment.authorizedPlanBytes;
+			authorizedHash = afterHash;
+			parent = amendment.id;
 			continue;
 		}
 		const afterHash = hashPlanBytes(amendment.authorizedPlanBytes);
@@ -936,16 +963,21 @@ async function admitExistingBinding(
 		...recorded,
 	});
 	if (!amendments.ok || drift.drifted) {
+		const chainValid = amendments.ok && drift.chainValid;
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_DRIFT",
-			message:
+			message: `${
 				drift.reason ??
-				"Plan bytes differ from the approved text. An unverified amendment chain does not authorize drift.",
+				"Plan bytes differ from the approved text. An unverified amendment chain does not authorize drift."
+			}${chainValid ? ` ${checklistRepairHint(input.executionRunId)}` : ""}`,
 			detail: {
 				bindingId: binding.id,
-				chainValid: amendments.ok && drift.chainValid,
+				chainValid,
 				amendmentHelp: planDriftRecoveryHelp(recorded.recordedSchema),
+				...(chainValid
+					? { repairCommand: checklistRepairCommand(input.executionRunId) }
+					: {}),
 			},
 		};
 	}
@@ -1502,6 +1534,18 @@ export async function readSchemaMigrationSubject(input: {
 			message: `${assessed.refusal ?? "This run is not a bound execution or an approved plan review."} Use 5x plan migrate for an unapproved working-tree file.`,
 		};
 	}
+	if (
+		input.store
+			.listPlanChecklistRepairs(input.runId)
+			.some((repair) => repair.subject === "source")
+	) {
+		return {
+			ok: false,
+			code: "PLAN_MIGRATION_CONFLICT",
+			message:
+				"This source already records a checklist repair against its schema. Bind an execution run from it and migrate there, or migrate before repairing.",
+		};
+	}
 	const sourceBytes = await input.readPlanAtCommit(
 		assessed.approval.approvedCommit,
 	);
@@ -1629,6 +1673,363 @@ async function resolveSourceSchemaMigration(input: {
 	};
 }
 
+/**
+ * Completed-source checklist repairs, replayed from the binding bytes and
+ * carried onto the new binding as execution lineage. The binding keeps the
+ * original approval commit, source, policy and ledger; only the authorized
+ * anchor moves. Repairs recorded after a binding exists are never carried.
+ */
+async function replaySourceChecklistRepairs(input: {
+	store: ReviewBudgetStore;
+	sourceRunId: string;
+	baseBytes: string;
+	baseParentId: string | null;
+	schema: 0 | 1;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| {
+			status: "ok";
+			repairs: PlanChecklistRepairPayload[];
+			bytes: string;
+			parentId: string | null;
+			afterCommit: string | null;
+	  }
+	| { status: "error"; code: string; message: string }
+> {
+	const repairs = input.store
+		.listPlanChecklistRepairs(input.sourceRunId)
+		.filter((repair) => repair.subject === "source");
+	let bytes = input.baseBytes;
+	let parentId = input.baseParentId;
+	let afterCommit: string | null = null;
+	for (const repair of repairs) {
+		const proof = verifyRecordedChecklistRepair({
+			beforeBytes: bytes,
+			afterBytes: repair.authorizedPlanBytes,
+			schema: input.schema,
+			edits: repair.edits,
+		});
+		const atCommit = await input.readPlanAtCommit(repair.afterCommit);
+		if (
+			repair.parentLineageId !== parentId ||
+			repair.beforeBlobHash !== hashPlanBytes(bytes) ||
+			repair.afterBlobHash !== hashPlanBytes(repair.authorizedPlanBytes) ||
+			repair.planSchema !== input.schema ||
+			!proof.ok ||
+			atCommit !== repair.authorizedPlanBytes
+		) {
+			return {
+				status: "error",
+				code: "PLAN_CHECKLIST_REPAIR_INVALID",
+				message: `Source checklist repair ${repair.id} does not replay from the approved plan${proof.ok ? "" : `: ${proof.message}`}. Refusing to choose a binding anchor.`,
+			};
+		}
+		bytes = repair.authorizedPlanBytes;
+		parentId = repair.id;
+		afterCommit = repair.afterCommit;
+	}
+	return { status: "ok", repairs, bytes, parentId, afterCommit };
+}
+
+/**
+ * Completed-source checklist repairs, replayed from the binding bytes and
+ * carried onto the new binding as execution lineage. The binding keeps the
+ * original approval commit, source, policy and ledger; only the authorized
+ * anchor moves. Repairs recorded after a binding exists are never carried.
+ */
+async function resolveSourceChecklistRepairs(input: {
+	store: ReviewBudgetStore;
+	sourceRunId: string;
+	executionRunId: string;
+	baseBytes: string;
+	baseParentId: string | null;
+	schema: 0 | 1;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| {
+			status: "ok";
+			carry: (bindingId: string) => PlanChecklistRepairPayload[];
+	  }
+	| { status: "error"; code: string; message: string }
+> {
+	const replayed = await replaySourceChecklistRepairs(input);
+	if (replayed.status === "error") return replayed;
+	const repairs = replayed.repairs;
+	return {
+		status: "ok",
+		carry: (bindingId) => {
+			let carriedParent: string | null = null;
+			return repairs.map((repair) => {
+				const copy: PlanChecklistRepairPayload = {
+					...structuredClone(repair),
+					id: `checklist-repair:${createReviewBudgetId()}`,
+					runId: input.executionRunId,
+					subject: "execution",
+					bindingId,
+					carriedFrom: { runId: input.sourceRunId, repairId: repair.id },
+					parentLineageId: carriedParent,
+				};
+				carriedParent = copy.id;
+				return copy;
+			});
+		},
+	};
+}
+
+/** The authorized anchor a checklist repair on this run is proven against. */
+export interface ChecklistRepairSubject {
+	kind: "execution" | "source";
+	runId: string;
+	bindingId: string | null;
+	anchorBytes: string;
+	anchorHash: string;
+	anchorCommit: string;
+	parentLineageId: string | null;
+	schema: 0 | 1;
+	/** Repairs already recorded for this subject on this run, journal order. */
+	repairs: PlanChecklistRepairPayload[];
+	/** Execution only: the fold this repair must leave unchanged. */
+	evidence?: {
+		revisionId: string;
+		applicableEvidence: number;
+		pendingFindings: number;
+		invalidatedContextIds: string[];
+		invalidatedObservationIds: string[];
+	};
+}
+
+/**
+ * Bound execution, or a completed plan-review approval with no binding
+ * drawn from it. Reads the effective authorized anchor, not the working
+ * tree. Callable while admission would report drift.
+ */
+export async function readChecklistRepairSubject(input: {
+	store: ReviewBudgetStore;
+	recordStore: RecordStore;
+	runId: string;
+	readPlanAtCommit: (commit: string) => Promise<string | null>;
+}): Promise<
+	| { ok: true; subject: ChecklistRepairSubject }
+	| { ok: false; code: string; message: string; detail?: unknown }
+> {
+	const summary = input.recordStore.getRun(input.runId);
+	if (!summary) {
+		return {
+			ok: false,
+			code: "RUN_NOT_FOUND",
+			message: `Run ${input.runId} was not found. Use 5x plan repair-checklists --plan <path> for an unapproved draft.`,
+		};
+	}
+	const binding = readBinding(input.store, input.runId);
+	if (binding.status === "error") {
+		return { ok: false, code: binding.code, message: binding.message };
+	}
+	if (binding.status === "ok") {
+		const folded = input.store.readEffectiveImplementationRevision(input.runId);
+		if (!folded?.ok) {
+			return {
+				ok: false,
+				code: "IMPLEMENTATION_TEXT_LINEAGE_INVALID",
+				message:
+					`Refusing to repair against an unverified plan lineage. ${folded ? folded.diagnostic.message : ""}`.trim(),
+			};
+		}
+		const lineage = input.store.listImplementationTextAmendments(
+			input.runId,
+			binding.binding.id,
+		);
+		const semantic = input.store.listImplementationSemanticAmendments(
+			input.runId,
+			binding.binding.id,
+		);
+		const parent = [...lineage, ...semantic].find(
+			(entry) => entry.id === folded.lineageParentId,
+		);
+		return {
+			ok: true,
+			subject: {
+				kind: "execution",
+				runId: input.runId,
+				bindingId: binding.binding.id,
+				anchorBytes: folded.approvedPlanBytes,
+				anchorHash: folded.approvedPlanHash,
+				anchorCommit: parent?.afterCommit ?? binding.binding.approvedPlanCommit,
+				parentLineageId: folded.lineageParentId,
+				schema: folded.planSchema,
+				repairs: lineage.filter(
+					(entry): entry is PlanChecklistRepairPayload =>
+						entry.kind === "plan-checklist-repair",
+				),
+				evidence: {
+					revisionId: folded.currentRevisionId,
+					applicableEvidence: folded.evidence.filter(
+						(entry) => entry.applicability === "applicable",
+					).length,
+					pendingFindings: folded.findings.filter(
+						(entry) => entry.status === "pending",
+					).length,
+					invalidatedContextIds: [...folded.invalidatedContextIds],
+					invalidatedObservationIds: [...folded.invalidatedObservationIds],
+				},
+			},
+		};
+	}
+	const bound = bindingsFromSource({
+		recordStore: input.recordStore,
+		store: input.store,
+		sourceRunId: input.runId,
+		planPath: summary.plan_path,
+	});
+	if (bound.length > 0) {
+		const executionRunId = bound[0] as string;
+		return {
+			ok: false,
+			code: "PLAN_CHECKLIST_REPAIR_BOUND",
+			message: `Source run ${input.runId} already has implementation binding(s) on ${bound.join(", ")}. Repair the binding on its execution run: ${checklistRepairCommand(executionRunId)}. A later source repair cannot change an existing binding.`,
+			detail: {
+				executionRunIds: bound,
+				next: [checklistRepairCommand(executionRunId)],
+			},
+		};
+	}
+	const assessed = assessApprovedSource({
+		recordStore: input.recordStore,
+		store: input.store,
+		sourceRunId: input.runId,
+		planPath: summary.plan_path,
+	});
+	if (assessed.status === "error") {
+		return { ok: false, code: assessed.code, message: assessed.message };
+	}
+	if (!assessed.approval) {
+		return {
+			ok: false,
+			code: "PLAN_CHECKLIST_REPAIR_UNAPPROVED",
+			message: `${assessed.refusal ?? "This run is not a bound execution or a completed plan-review approval."} An unapproved draft is repaired with 5x plan repair-checklists --plan <path>, then reviewed normally.`,
+		};
+	}
+	const approvedBytes = await input.readPlanAtCommit(
+		assessed.approval.approvedCommit,
+	);
+	if (approvedBytes === null) {
+		return {
+			ok: false,
+			code: "IMPLEMENTATION_APPROVED_PLAN_UNAVAILABLE",
+			message: `Approved plan bytes at ${assessed.approval.approvedCommit} are unavailable`,
+		};
+	}
+	const migrated = await resolveSourceSchemaMigration({
+		store: input.store,
+		sourceRunId: input.runId,
+		approvedBytes,
+		approvedCommit: assessed.approval.approvedCommit,
+		ledger: assessed.approval.ledger,
+		readPlanAtCommit: input.readPlanAtCommit,
+	});
+	if (migrated.status === "error") {
+		return { ok: false, code: migrated.code, message: migrated.message };
+	}
+	const baseBytes =
+		migrated.status === "migrated" ? migrated.bytes : approvedBytes;
+	const loaded = loadPlanDocument(
+		baseBytes,
+		migrated.status === "migrated" ? 1 : "file",
+	);
+	if (!loaded.ok) {
+		return { ok: false, code: loaded.code, message: loaded.message };
+	}
+	const schema = loaded.document.schema;
+	const replayed = await replaySourceChecklistRepairs({
+		store: input.store,
+		sourceRunId: input.runId,
+		baseBytes,
+		baseParentId:
+			migrated.status === "migrated" ? migrated.fields.schemaMigrationId : null,
+		schema,
+		readPlanAtCommit: input.readPlanAtCommit,
+	});
+	if (replayed.status === "error") {
+		return { ok: false, code: replayed.code, message: replayed.message };
+	}
+	return {
+		ok: true,
+		subject: {
+			kind: "source",
+			runId: input.runId,
+			bindingId: null,
+			anchorBytes: replayed.bytes,
+			anchorHash: hashPlanBytes(replayed.bytes),
+			anchorCommit:
+				replayed.afterCommit ??
+				(migrated.status === "migrated"
+					? migrated.commit
+					: assessed.approval.approvedCommit),
+			parentLineageId: replayed.parentId,
+			schema,
+			repairs: replayed.repairs,
+		},
+	};
+}
+
+/** Execution runs whose binding was drawn from this source run. */
+function bindingsFromSource(input: {
+	recordStore: RecordStore;
+	store: ReviewBudgetStore;
+	sourceRunId: string;
+	planPath: string;
+}): string[] {
+	const slug = planSlugFromPath(input.planPath);
+	const out: string[] = [];
+	for (const run of input.recordStore.listRuns({ planSlug: slug })) {
+		if (run.id === input.sourceRunId) continue;
+		if (!planPathsIdentifySamePlan(run.plan_path, input.planPath)) continue;
+		const binding = readBinding(input.store, run.id);
+		if (
+			binding.status === "ok" &&
+			binding.binding.sourceRunId === input.sourceRunId
+		) {
+			out.push(run.id);
+		}
+	}
+	return out.sort();
+}
+
+/**
+ * The run whose authority governs this plan file, preferring an execution
+ * binding over its completed source. Null for an unapproved draft.
+ */
+export function planFileGoverningRun(input: {
+	recordStore: RecordStore;
+	store: ReviewBudgetStore;
+	planPath: string;
+}): { runId: string; kind: "execution" | "source" } | null {
+	const slug = planSlugFromPath(input.planPath);
+	const runs = input.recordStore
+		.listRuns({ planSlug: slug })
+		.filter((run) => planPathsIdentifySamePlan(run.plan_path, input.planPath));
+	let source: string | null = null;
+	const executions: Array<{ id: string; active: boolean }> = [];
+	for (const run of runs) {
+		const binding = readBinding(input.store, run.id);
+		if (binding.status === "ok") {
+			executions.push({ id: run.id, active: run.status === "active" });
+			continue;
+		}
+		if (source !== null) continue;
+		const assessed = assessApprovedSource({
+			recordStore: input.recordStore,
+			store: input.store,
+			sourceRunId: run.id,
+			planPath: run.plan_path,
+		});
+		if (assessed.status === "ok" && assessed.approval) source = run.id;
+	}
+	const execution =
+		executions.find((entry) => entry.active) ?? executions.at(-1);
+	if (execution) return { runId: execution.id, kind: "execution" };
+	return source ? { runId: source, kind: "source" } : null;
+}
+
 export async function bindImplementationExecution(input: {
 	store: ReviewBudgetStore;
 	recordStore: RecordStore;
@@ -1735,10 +2136,21 @@ export async function bindImplementationExecution(input: {
 			: approvedDocument.document.schema === 1
 				? hashPlanBytes(approvedDocument.document.comparisonBytes)
 				: undefined;
+	const repairs = await resolveSourceChecklistRepairs({
+		store: input.store,
+		sourceRunId: assessed.approval.sourceRunId,
+		executionRunId: input.executionRunId,
+		baseBytes: bindingBytes,
+		baseParentId:
+			migrated.status === "migrated" ? migrated.fields.schemaMigrationId : null,
+		schema: approvedDocument.document.schema,
+		readPlanAtCommit: input.readPlanAtCommit,
+	});
+	if (repairs.status === "error") return repairs;
 	const drift = detectPlanDrift({
 		approvedPlanBytes: bindingBytes,
 		approvedPlanHash: hashPlanBytes(bindingBytes),
-		amendments: [],
+		amendments: repairs.carry("pending"),
 		currentPlanBytes: input.planMarkdown,
 		recordedSchema: approvedDocument.document.schema,
 		...(governingHash ? { governingHash } : {}),
@@ -1747,9 +2159,13 @@ export async function bindImplementationExecution(input: {
 		return {
 			status: "error",
 			code: "IMPLEMENTATION_PLAN_DRIFT",
-			message:
+			message: `${
 				drift.reason ??
-				"The execution plan differs from the approved plan bytes. Checkbox-only edits are ignored. `5x review implementation bind` only attaches the initial source; semantic edits require an amendmentAssessment after that binding exists.",
+				"The execution plan differs from the approved plan bytes. Checkbox-only edits are ignored. `5x review implementation bind` only attaches the initial source; semantic edits require an amendmentAssessment after that binding exists."
+			} ${checklistRepairHint(assessed.approval.sourceRunId)}`,
+			detail: {
+				repairCommand: checklistRepairCommand(assessed.approval.sourceRunId),
+			},
 		};
 	}
 	const decisions = assessed.approval.decisions;
@@ -1781,7 +2197,16 @@ export async function bindImplementationExecution(input: {
 				? { planSchema: 1 as const, governingHash }
 				: {}),
 	};
-	const saved = input.store.saveImplementationBinding(payload, input.origin);
+	const carried = repairs.carry(payload.id);
+	const saved =
+		carried.length === 0
+			? input.store.saveImplementationBinding(payload, input.origin)
+			: saveBindingWithCarriedRepairs({
+					recordStore: input.recordStore,
+					payload,
+					carried,
+					origin: input.origin,
+				});
 	if (!saved.created) {
 		const again = readBinding(input.store, input.executionRunId);
 		if (again.status === "ok") {
@@ -1805,6 +2230,44 @@ export async function bindImplementationExecution(input: {
 				};
 	}
 	return { status: "bound", binding: saved.payload, created: true };
+}
+
+function saveBindingWithCarriedRepairs(input: {
+	recordStore: RecordStore;
+	payload: ImplementationBindingPayload;
+	carried: readonly PlanChecklistRepairPayload[];
+	origin: RecordOrigin;
+}): { created: boolean; payload: ImplementationBindingPayload } {
+	const runId = input.payload.executionRunId;
+	const result = input.recordStore.atomicAppendIfAllNew([
+		{
+			runId,
+			stream: "budget",
+			idempotencyKey: implementationBindingKey(runId),
+			payload: encodeImplementationBindingPayload(input.payload),
+			createdAt: input.payload.createdAt,
+			...recordedEnvelope(input.origin),
+		},
+		...input.carried.map((repair) => ({
+			runId,
+			stream: "budget" as const,
+			idempotencyKey: planChecklistRepairKey(runId, repair.intentDigest),
+			payload: encodePlanChecklistRepairPayload(repair),
+			createdAt: input.payload.createdAt,
+			...recordedEnvelope(input.origin),
+		})),
+	]);
+	return { created: result.created, payload: input.payload };
+}
+
+/** Next command for a mechanical checklist repair on this run. */
+export function checklistRepairCommand(runId: string): string {
+	return `5x plan repair-checklists --run ${runId} --dry-run`;
+}
+
+/** Appended to drift and missing-checklist failures. */
+export function checklistRepairHint(runId: string): string {
+	return `If the only governing change is introduced checklist markers, or a phase has no executable checklist, preview the operator-authorized mechanical repair with \`${checklistRepairCommand(runId)}\`; it needs no reviewer finding, gate, or new run.`;
 }
 
 function mapApprovedPhases(
@@ -2066,6 +2529,7 @@ export function verifyAuthorTextAmendment(input: {
 		loaded.amendments.some(
 			(amendment) =>
 				amendment.kind !== "plan-schema-migration" &&
+				amendment.kind !== "plan-checklist-repair" &&
 				amendment.guardId === guard.id,
 		)
 	) {

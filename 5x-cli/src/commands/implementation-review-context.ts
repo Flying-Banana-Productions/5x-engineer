@@ -755,7 +755,8 @@ export async function composeImplementationReviewerRecord(input: {
 		observations: priorObservations,
 		amendments: textAmendments.filter(
 			(entry): entry is ImplementationPlanAmendmentPayload =>
-				entry.kind !== "plan-schema-migration",
+				entry.kind !== "plan-schema-migration" &&
+				entry.kind !== "plan-checklist-repair",
 		),
 		current: gateCauses,
 	});
