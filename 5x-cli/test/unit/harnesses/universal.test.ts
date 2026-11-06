@@ -220,3 +220,37 @@ describe("universal plugin renderAssets()", () => {
 		}
 	});
 });
+
+describe("universal install delivers 5x-issue-resolution", () => {
+	test("installed skill uses invoke intake and states the receipt preflight first", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await universalPlugin.install({
+				scope: "project",
+				projectRoot: tmp,
+				force: false,
+				config: {},
+			});
+			const skill = readFileSync(
+				join(tmp, ".agents", "skills", "5x-issue-resolution", "SKILL.md"),
+				"utf-8",
+			);
+			expect(skill).toContain("<!-- 5x:issue-source v1");
+			expect(skill).toContain("<!-- 5x:issue-resolution v1 source=");
+			expect(skill).toContain("<!-- 5x:issue-resolution-comment v1 source=");
+			expect(skill).toContain("Refs github.com/OWNER/REPO#42");
+			expect(skill).toContain("5x invoke author author-issue-intake");
+			expect(skill).toContain("--record-step author:issue-intake --phase plan");
+			expect(skill).not.toContain("Task tool");
+			expect(skill).not.toContain("5x protocol validate");
+			const preflight = skill.indexOf("**Receipt preflight (mandatory");
+			expect(preflight).toBeGreaterThan(-1);
+			expect(preflight).toBeLessThan(
+				skill.indexOf("- a. Exactly one validated receipt"),
+			);
+			expect(preflight).toBeLessThan(skill.indexOf("- g. Zero validated"));
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});

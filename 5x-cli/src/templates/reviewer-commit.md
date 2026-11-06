@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit
 description: Review implementation commits
-version: 9
+version: 10
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -37,6 +37,7 @@ Evaluate the implementation across these dimensions:
 - **Operability**: Error handling, logging, monitoring hooks, graceful degradation?
 - **Test strategy**: Are the tests sufficient? Do they test the right things? Edge cases covered?
 - **Plan compliance**: Does the work match the phase requirements in the implementation plan?
+- **Issue acceptance (plans with `## Issue Coverage` only)**: Check the reviewed work against each mapped criterion's Evidence required for this phase. In a bound run, an unmet criterion inside approved work is an `implementation_defect` linked to the approved `Wn` IDs that map it, and a criterion the approved plan cannot satisfy without changing approved scope is a `plan_defect`; source-of-correction precedence, hunk evidence, and `planImpact` rules apply unchanged. In mode off and unbound compatibility runs, report the gap with the existing v1 output and add no implementation-only fields. Never use `acceptance_required` for implementation items; it is a plan-review scope class.
 
 ### Phase Readiness
 

@@ -366,3 +366,45 @@ describe("cursor plugin renderAssets()", () => {
 		}
 	});
 });
+
+describe("cursor install delivers 5x-issue-resolution", () => {
+	test("project install writes the skill and the orchestrator rule lists it", async () => {
+		const tmp = makeTmpDir();
+		try {
+			await cursorPlugin.install({
+				scope: "project",
+				projectRoot: tmp,
+				force: false,
+				config: {},
+			});
+			const skill = readFileSync(
+				join(tmp, ".cursor", "skills", "5x-issue-resolution", "SKILL.md"),
+				"utf-8",
+			);
+			expect(skill).toContain("<!-- 5x:issue-source v1");
+			expect(skill).toContain("<!-- 5x:issue-resolution v1 source=");
+			expect(skill).toContain("<!-- 5x:issue-resolution-comment v1 source=");
+			expect(skill).toContain("Refs github.com/OWNER/REPO#42");
+			expect(skill).toContain("gh issue close");
+			expect(skill).toContain("resolved_externally_closed_unverified");
+			const preflight = skill.indexOf("**Receipt preflight (mandatory");
+			expect(preflight).toBeGreaterThan(-1);
+			expect(preflight).toBeLessThan(
+				skill.indexOf("- a. Exactly one validated receipt"),
+			);
+			expect(preflight).toBeLessThan(skill.indexOf("- g. Zero validated"));
+			// Default config is native for both roles (Cursor subagent wording).
+			expect(skill).toContain('subagent="5x-plan-author"');
+			expect(skill).not.toContain("Task tool");
+			expect(skill).not.toContain("5x invoke author author-issue-intake");
+
+			const rule = readFileSync(
+				join(tmp, ".cursor", "rules", "5x-orchestrator.mdc"),
+				"utf-8",
+			);
+			expect(rule).toContain("5x-issue-resolution");
+		} finally {
+			cleanupDir(tmp);
+		}
+	});
+});

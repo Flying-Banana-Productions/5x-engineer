@@ -122,6 +122,7 @@ describe("schema 1 plan skeletons", () => {
 		if (!loaded.ok) return;
 		expect(loaded.document.notes.map((note) => note.id)).toEqual([
 			"generator-design",
+			"generator-compact",
 			"generator-budget",
 			"generator-debt",
 			"generator-checklist",
@@ -131,6 +132,25 @@ describe("schema 1 plan skeletons", () => {
 		expect(governing).not.toContain("Explain the chosen approach");
 		expect(governing).not.toContain("Write observable requirements");
 		expect(loaded.document.comparisonBytes).not.toContain("Example row:");
+	});
+
+	test("bundled skeleton carries compact and Issue Coverage guidance only as a note", () => {
+		const loaded = loadPlanDocument(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE, 1);
+		expect(loaded.ok).toBe(true);
+		if (!loaded.ok) return;
+		expect(
+			loaded.document.notes.filter((note) => note.id === "generator-compact"),
+		).toHaveLength(1);
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain(
+			"may use compact mode",
+		);
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain(
+			"Issue Coverage section",
+		);
+		const governing = loaded.document.governingLines.join("\n");
+		expect(governing).not.toContain("compact mode");
+		expect(governing).not.toContain("Issue Coverage");
+		expect(loaded.document.comparisonBytes).not.toContain("compact mode");
 	});
 
 	test("configured paths.templates.plan resolves the schema 1 skeleton", async () => {

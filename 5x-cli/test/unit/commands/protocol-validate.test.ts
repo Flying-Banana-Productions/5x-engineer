@@ -1143,7 +1143,11 @@ describe("protocol validate author with legacy status payloads (Phase 3)", () =>
 // Phase 4 (019-orchestrator-improvements): Checklist gate
 // ===========================================================================
 
-/** Create a plan file with the given phase checklist items. */
+/**
+ * Create a schema 1 plan file with the given phase checklist items.
+ * The declaration and contract markers keep the fixture valid when an
+ * ambient run (e.g. a linked worktree) makes schema 1 the expected schema.
+ */
 function writePlan(
 	dir: string,
 	phases: Array<{
@@ -1152,7 +1156,13 @@ function writePlan(
 		items: Array<{ text: string; checked: boolean }>;
 	}>,
 ): string {
-	const lines = ["# Test Plan\n", "**Version:** 1.0\n", "**Status:** Draft\n"];
+	const lines = [
+		"<!-- 5x:plan-schema:1 -->",
+		"**Version:** 1.0\n",
+		"**Status:** Draft\n",
+		"<!-- 5x:contract:start -->",
+		"# Test Plan\n",
+	];
 	for (const phase of phases) {
 		lines.push(`\n## Phase ${phase.number}: ${phase.title}\n`);
 		lines.push("**Completion gate:** All items checked.\n");
@@ -1161,6 +1171,7 @@ function writePlan(
 		}
 		lines.push("");
 	}
+	lines.push("<!-- 5x:contract:end -->", "");
 	const planPath = join(dir, "test-plan.md");
 	writeFileSync(planPath, lines.join("\n"));
 	return planPath;

@@ -9,6 +9,9 @@ import authorFixQualityRaw from "./author-fix-quality.md" with { type: "text" };
 import authorGeneratePlanRaw from "./author-generate-plan.md" with {
 	type: "text",
 };
+import authorIssueIntakeRaw from "./author-issue-intake.md" with {
+	type: "text",
+};
 import authorNextPhaseRaw from "./author-next-phase.md" with { type: "text" };
 import authorProcessImplReviewRaw from "./author-process-impl-review.md" with {
 	type: "text",
@@ -58,6 +61,7 @@ interface ParsedTemplate {
 const TEMPLATES: Record<string, string> = {
 	"author-fix-quality": authorFixQualityRaw,
 	"author-generate-plan": authorGeneratePlanRaw,
+	"author-issue-intake": authorIssueIntakeRaw,
 	"author-next-phase": authorNextPhaseRaw,
 	"author-process-plan-review": authorProcessPlanReviewRaw,
 	"author-process-impl-review": authorProcessImplReviewRaw,
@@ -124,6 +128,7 @@ export function getTemplateSource(name: string): "bundled" | "override" {
 const STEP_NAME_FALLBACKS: Record<string, string> = {
 	"author-fix-quality": "author:fix-quality",
 	"author-generate-plan": "author:generate-plan",
+	"author-issue-intake": "author:issue-intake",
 	"author-next-phase": "author:implement",
 	"author-process-plan-review": "author:fix-review",
 	"author-process-impl-review": "author:fix-review",

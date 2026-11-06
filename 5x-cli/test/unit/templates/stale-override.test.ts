@@ -53,7 +53,7 @@ describe("stale override version warning", () => {
 				true,
 			);
 			expect(
-				stderrLines.some((l) => l.includes("older than bundled (v5)")),
+				stderrLines.some((l) => l.includes("older than bundled (v6)")),
 			).toBe(true);
 			expect(
 				stderrLines.some((l) =>
@@ -67,13 +67,13 @@ describe("stale override version warning", () => {
 
 	test("no warning when override version matches bundled version", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "tmpl-current-"));
-		// Write a v5 override — same as bundled
+		// Write a v6 override — same as bundled
 		writeFileSync(
 			join(tmpDir, "author-generate-plan.md"),
 			[
 				"---",
 				"name: author-generate-plan",
-				"version: 5",
+				"version: 6",
 				"variables:",
 				"  - prd_path",
 				"  - plan_path",
@@ -96,7 +96,7 @@ describe("stale override version warning", () => {
 
 			// Should use the override
 			expect(body).toContain("CURRENT OVERRIDE:");
-			expect(metadata.version).toBe(5);
+			expect(metadata.version).toBe(6);
 
 			// Should NOT have emitted a stale warning
 			expect(stderrLines.some((l) => l.includes("older than bundled"))).toBe(

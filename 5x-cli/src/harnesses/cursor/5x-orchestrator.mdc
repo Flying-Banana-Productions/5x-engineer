@@ -19,6 +19,10 @@ workflow:
 - **5x-plan-review**: Run review/fix cycles on a plan until approved
 - **5x-phase-execution**: Execute approved plan phases through author
   implementation, quality gates, and code review
+- **5x-issue-resolution**: Resolve or resume one GitHub issue end to end.
+  It composes `5x-plan`, `5x-plan-review`, and `5x-phase-execution` in this
+  orchestrator itself; `git push`, pull request, comment, and close writes
+  need operator authorization
 
 ## Key principles
 

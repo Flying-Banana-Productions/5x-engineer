@@ -21,4 +21,16 @@ Slices 1, 2, 3, 5, 6, 7, 8, and 10 are complete on main, including the recently 
 
 ## Follow-up plans
 
+### Explicit issue resolution
+
+[`11-explicit-issue-resolution.plan-input.md`](./11-explicit-issue-resolution.plan-input.md)
+scopes the first issue-driven workflow: one named GitHub issue, a durable intake
+brief, ordinary governed planning/execution, and resumable merge-aware closure.
+The broader direction is in [`210-issue-resolution.md`](../210-issue-resolution.md).
+Its implementation plan is
+[`217-explicit-issue-resolution-plan.md`](../../development/plans/217-explicit-issue-resolution-plan.md).
+Implementation has not started; batching and package infrastructure are later work.
+
+### Implementation plan amendments
+
 [`215-implementation-plan-amendment-plan.md`](../../development/plans/215-implementation-plan-amendment-plan.md) is a required follow-up to completed plan 210. It adds same-run registration of human-authorized, reviewer-approved semantic plan amendments, with immutable revision lineage and revision-aware evidence handling. Plan 215 is draft, pending review; with plan 210 now merged, review and approve 215 before implementing it in a separate branch.
