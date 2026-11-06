@@ -44,6 +44,7 @@ import {
 	planSchemaCommandMessage,
 	readAuthoritativeBudget,
 } from "../plan-schema/authority.js";
+import type { ExpectedPlanSchema } from "../plan-schema/document.js";
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
@@ -94,6 +95,7 @@ import {
 	capturePhaseAuthorAdmission,
 	effectivePlanSchema,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	isImplementationAuthorTemplate,
 	PRE_AUTHOR_STEP_NAME,
 	prepareImplementationReviewContext,
@@ -605,6 +607,7 @@ export async function invokeAgent(
 		const checkAuthorPhaseExecutable = (
 			planMarkdown: string | null,
 			subject: ExecutabilityRepairSubject,
+			expected: ExpectedPlanSchema = "file",
 		) => {
 			if (planMarkdown === null) return;
 			const phase = canonicalPhaseId(
@@ -615,6 +618,7 @@ export async function invokeAgent(
 				planMarkdown,
 				phase,
 				subject,
+				expected,
 			});
 			if (gate.status === "error") {
 				outputError(gate.code, gate.message, gate.detail);
@@ -641,12 +645,21 @@ export async function invokeAgent(
 				outputError(admission.code, admission.message, admission.detail);
 			}
 			authorExecutabilityChecked = true;
-			checkAuthorPhaseExecutable(
-				markdown,
-				admission.status === "bound"
-					? { kind: "run", runId: params.run }
-					: { kind: "file", planPath: resolvedPlanPath },
-			);
+			// A bound execution reads the plan under its recorded schema,
+			// exactly as repair, inspection and completion do; only an
+			// ungoverned file infers its schema from file markers.
+			if (admission.status === "bound") {
+				checkAuthorPhaseExecutable(
+					markdown,
+					{ kind: "run", runId: params.run },
+					expectedSchemaForStore(budgetContext.store, params.run),
+				);
+			} else {
+				checkAuthorPhaseExecutable(markdown, {
+					kind: "file",
+					planPath: resolvedPlanPath,
+				});
+			}
 			if (admission.status === "bound") {
 				const phase = canonicalPhaseId(
 					params.phase ?? mergedVars.phase_number ?? "",
@@ -794,20 +807,35 @@ export async function invokeAgent(
 		if (ensured.status === "error") {
 			outputError(ensured.code, ensured.message, ensured.detail);
 		}
-		// A non-executable draft goes back to the author before the reviewer
-		// is invoked, in every review-budget mode. No iteration is consumed.
-		if (
-			resolved.selectedTemplateName.replace(/-continued$/, "") ===
-			"reviewer-plan"
-		) {
+		optInCapturedBeforeInvoke =
+			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";
+	}
+	// A non-executable draft goes back to the author before the reviewer is
+	// invoked, in every review-budget mode and with or without a run (the
+	// same boundary as native rendering). Nothing is recorded, no iteration
+	// is consumed and no provider or session is created.
+	if (
+		resolved.selectedTemplateName.replace(/-continued$/, "") ===
+			"reviewer-plan" &&
+		resolvedPlanPath
+	) {
+		const reviewPlanPath =
+			(params.run
+				? budgetContext?.executionContext.effectivePlanPath
+				: undefined) ?? resolvedPlanPath;
+		let reviewMarkdown: string | null = null;
+		try {
+			reviewMarkdown = readFileSync(reviewPlanPath, "utf-8");
+		} catch {
+			reviewMarkdown = null;
+		}
+		if (reviewMarkdown !== null) {
 			const gate = planReviewExecutabilityGate({
-				planMarkdown,
-				planPath: budgetContext.executionContext.effectivePlanPath,
+				planMarkdown: reviewMarkdown,
+				planPath: reviewPlanPath,
 			});
 			if (gate) outputError(gate.code, gate.message, gate.detail);
 		}
-		optInCapturedBeforeInvoke =
-			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";
 	}
 
 	// Append the review diff block (continued plan reviews only). The diff

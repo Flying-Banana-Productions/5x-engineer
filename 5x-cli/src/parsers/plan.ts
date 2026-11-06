@@ -31,16 +31,46 @@ const METADATA_RE = /^\*\*(\w[\w\s]*):\*\*\s*(.+)$/;
 const COMPLETION_GATE_RE = /^\*\*Completion gate:\*\*\s*(.+)$/;
 const COMPLETE_SUFFIX_RE = /\s*[-–—]\s*COMPLETE\s*$/i;
 const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+/** A backtick fence's info string may not contain backticks (CommonMark). */
+const BACKTICK_FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,})[^`]*$/;
 const COMMENT_OPEN_RE = /^[ \t]{0,3}<!--/;
+const INLINE_CODE_RE = /(`+)(?:(?!\1)[\s\S])*?\1(?!`)/g;
+
+/** The fence a line opens, or null when the line is not a fence opener. */
+function fenceOpener(line: string): string | null {
+	const marker = line.match(FENCE_RE)?.[1] ?? null;
+	if (marker === null) return null;
+	if (marker[0] === "`" && !BACKTICK_FENCE_OPEN_RE.test(line)) return null;
+	return marker;
+}
+
+/**
+ * Whether text leaves an HTML comment open at its end. Inline code spans
+ * are ignored, so a literal `<!--` in backticks does not open a comment.
+ */
+function leavesCommentOpen(text: string): boolean {
+	const visible = text.replace(INLINE_CODE_RE, "");
+	let index = 0;
+	for (;;) {
+		const open = visible.indexOf("<!--", index);
+		if (open === -1) return false;
+		const close = visible.indexOf("-->", open + 4);
+		if (close === -1) return true;
+		index = close + 3;
+	}
+}
 
 /**
  * Lines that are literal example or commentary text rather than plan
- * structure: fenced code blocks (delimiters included) and HTML comment
- * blocks that start a line. Phase headings, completion gates and checklist
- * items on these lines do not count. {@link parsePlan},
- * {@link phaseSectionRanges} and executability diagnostics share this one
- * rule so their counts cannot disagree. Indexes are 0-based line positions
- * of `markdown.split(/\r\n|\n|\r/)`.
+ * structure: fenced code blocks (delimiters included) and HTML comments.
+ * A comment that starts a line is literal on that line; a comment opened
+ * after visible prose leaves that line visible and makes the following
+ * lines literal until it closes. A line that only looks like a fence (for
+ * example a triple-backtick inline code span) is not a fence. Phase
+ * headings, completion gates and checklist items on literal lines do not
+ * count. {@link parsePlan}, {@link phaseSectionRanges} and executability
+ * diagnostics share this one rule so their counts cannot disagree. Indexes
+ * are 0-based line positions of `markdown.split(/\r\n|\n|\r/)`.
  */
 export function literalPlanLines(lines: readonly string[]): boolean[] {
 	const literal: boolean[] = [];
@@ -62,10 +92,11 @@ export function literalPlanLines(lines: readonly string[]): boolean[] {
 		}
 		if (comment) {
 			literal.push(true);
-			if (line.includes("-->")) comment = false;
+			const close = line.indexOf("-->");
+			if (close !== -1) comment = leavesCommentOpen(line.slice(close + 3));
 			continue;
 		}
-		const opener = line.match(FENCE_RE)?.[1] ?? null;
+		const opener = fenceOpener(line);
 		if (opener !== null) {
 			fence = opener;
 			literal.push(true);
@@ -73,11 +104,11 @@ export function literalPlanLines(lines: readonly string[]): boolean[] {
 		}
 		if (COMMENT_OPEN_RE.test(line)) {
 			literal.push(true);
-			const rest = line.slice(line.indexOf("<!--") + 4);
-			if (!rest.includes("-->")) comment = true;
+			comment = leavesCommentOpen(line);
 			continue;
 		}
 		literal.push(false);
+		comment = leavesCommentOpen(line);
 	}
 	return literal;
 }

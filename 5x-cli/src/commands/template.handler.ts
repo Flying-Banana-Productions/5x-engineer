@@ -20,6 +20,7 @@ import {
 	planSchemaCommandMessage,
 	readAuthoritativeBudget,
 } from "../plan-schema/authority.js";
+import type { ExpectedPlanSchema } from "../plan-schema/document.js";
 import {
 	type ExecutabilityRepairSubject,
 	implementationPhaseExecutabilityGate,
@@ -45,6 +46,7 @@ import { evaluateStoredImplementationBoundary } from "../review-governance/imple
 import {
 	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	isImplementationAuthorTemplate,
 	PRE_AUTHOR_STEP_NAME,
 	prepareImplementationReviewContext,
@@ -428,6 +430,7 @@ export async function templateRender(
 		const checkAuthorPhaseExecutable = (
 			planMarkdown: string | null,
 			subject: ExecutabilityRepairSubject,
+			expected: ExpectedPlanSchema = "file",
 		) => {
 			if (planMarkdown === null) return;
 			const phase = canonicalPhaseId(
@@ -438,6 +441,7 @@ export async function templateRender(
 				planMarkdown,
 				phase,
 				subject,
+				expected,
 			});
 			if (gate.status === "error") {
 				outputError(gate.code, gate.message, gate.detail);
@@ -464,12 +468,21 @@ export async function templateRender(
 				outputError(admission.code, admission.message, admission.detail);
 			}
 			authorExecutabilityChecked = true;
-			checkAuthorPhaseExecutable(
-				markdown,
-				admission.status === "bound"
-					? { kind: "run", runId: params.run }
-					: { kind: "file", planPath: resolvedPlanPath },
-			);
+			// A bound execution reads the plan under its recorded schema,
+			// exactly as repair, inspection and completion do; only an
+			// ungoverned file infers its schema from file markers.
+			if (admission.status === "bound") {
+				checkAuthorPhaseExecutable(
+					markdown,
+					{ kind: "run", runId: params.run },
+					expectedSchemaForStore(renderBudgetContext.store, params.run),
+				);
+			} else {
+				checkAuthorPhaseExecutable(markdown, {
+					kind: "file",
+					planPath: resolvedPlanPath,
+				});
+			}
 			if (admission.status === "bound") {
 				const phase = canonicalPhaseId(
 					explicitVars.phase_number ?? mergedVars.phase_number ?? "",

@@ -335,6 +335,102 @@ Risks:
 		expect(result.diagnostics[0]?.repair).toBe("author");
 	});
 
+	test("a triple-backtick inline code span is not a fence and hides nothing", () => {
+		const raw = `# Plan
+
+## Phase 1: Work
+
+\`\`\`literal example\`\`\`
+
+**Completion gate:** Done.
+
+- [ ] Real requirement
+`;
+		expect(parsePlan(raw).phases[0]?.items.map((item) => item.text)).toEqual([
+			"Real requirement",
+		]);
+		const result = expectAligned(raw);
+		expect(result.executable).toBe(true);
+		expect(result.diagnostics).toEqual([]);
+
+		// A plain gate list after the span stays visible to the repair.
+		const plain = raw.replace("- [ ] Real requirement", "- Real requirement");
+		const diagnosed = expectAligned(plain);
+		expect(diagnosed.executable).toBe(false);
+		expect(diagnosed.diagnostics[0]?.repair).toBe("mechanical");
+		const repair = planChecklistRepair({
+			anchorBytes: plain,
+			currentBytes: plain,
+			schema: 0,
+		});
+		expect(repair.ok && repair.edits.map((edit) => edit.after)).toEqual([
+			"- [ ] Real requirement",
+		]);
+
+		// Backticks in a backtick fence's info string mean no fence; a
+		// tilde fence may carry them.
+		const tilde = `# Plan
+
+## Phase 1: Work
+
+~~~ \`info\`
+- [ ] fenced example
+~~~
+
+- [ ] Real requirement
+`;
+		expect(expectAligned(tilde).phases[0]?.items).toBe(1);
+	});
+
+	test("a multiline comment opened after prose hides its items", () => {
+		const raw = `# Plan
+
+## Phase 1: Work
+
+Explanation <!--
+- [x] Commented example, not a requirement
+-->
+`;
+		const parsed = parsePlan(raw);
+		expect(parsed.phases[0]?.items).toEqual([]);
+		expect(parsed.completionPercentage).toBe(0);
+		const result = expectAligned(raw);
+		expect(result.executable).toBe(false);
+		expect(result.diagnostics[0]?.repair).toBe("author");
+
+		// Commented plain bullets are not offered as a mechanical repair.
+		const plain = raw.replace("- [x] Commented", "- Commented");
+		expect(expectAligned(plain).diagnostics[0]?.repair).toBe("author");
+		const repair = planChecklistRepair({
+			anchorBytes: plain,
+			currentBytes: plain,
+			schema: 0,
+		});
+		expect(repair.ok && repair.edits).toEqual([]);
+
+		// Items before the comment, after it closes, and after a closed
+		// inline comment still count; a quoted \`<!--\` opens nothing.
+		const mixed = `# Plan
+
+## Phase 1: Work
+
+- [ ] Before <!--
+- [x] hidden
+--> 
+
+- [ ] After <!-- note --> text
+- [ ] Use \`<!--\` literally
+- [ ] Last
+`;
+		expect(parsePlan(mixed).phases[0]?.items.map((item) => item.text)).toEqual([
+			"Before <!--",
+			"After <!-- note --> text",
+			"Use `<!--` literally",
+			"Last",
+		]);
+		expect(expectAligned(mixed).executable).toBe(true);
+	});
+
 	test("schema 1 notes and outside-contract examples cannot satisfy executability", () => {
 		const raw = `<!-- 5x:plan-schema:1 -->
 

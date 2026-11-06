@@ -301,6 +301,46 @@ describe("phaseFinish", () => {
 		}
 	});
 
+	test("zero items under a COMPLETE heading: PHASE_CHECKLIST_INCOMPLETE with the mechanical repair; completes after repair", async () => {
+		const ctx = setup();
+		try {
+			const draft =
+				"# Test Plan\n\n## Phase 1: Setup - COMPLETE\n\n**Completion gate:** Done.\n\n- Do the thing\n";
+			writeFileSync(ctx.planPath, draft);
+			const input = writeAuthor(ctx, {
+				result: "complete",
+				commit: "abc123def",
+			});
+			const params = finishParams(ctx, { input });
+			try {
+				await phaseFinishCore(params);
+				throw new Error("expected PHASE_CHECKLIST_INCOMPLETE");
+			} catch (err) {
+				const cli = expectCliError(err, "PHASE_CHECKLIST_INCOMPLETE");
+				expect(cli.message).toContain(
+					"COMPLETE heading is not executable evidence",
+				);
+				expect(cli.message).toContain(
+					`5x plan repair-checklists --plan ${ctx.planPath} --dry-run`,
+				);
+			}
+			expect(
+				getSteps(ctx.db, ctx.runId).some((r) => r.step_name === AUTHOR_STEP),
+			).toBe(false);
+
+			writeFileSync(
+				ctx.planPath,
+				draft.replace("- Do the thing", "- [x] Do the thing"),
+			);
+			await phaseFinishCore(params);
+			expect(
+				getSteps(ctx.db, ctx.runId).some((r) => r.step_name === AUTHOR_STEP),
+			).toBe(true);
+		} finally {
+			teardown(ctx);
+		}
+	});
+
 	test("fresh needs_human: protocol completed; checklist skipped; author recorded; exit 0", async () => {
 		const ctx = setup({ checklistChecked: false });
 		try {

@@ -2083,3 +2083,292 @@ model = "sample/test"
 		}
 	}, 30000);
 });
+
+describe("invoke executability preflight", () => {
+	const plainGateDraft = `# Plan
+
+## Phase 1: Work
+
+**Completion gate:** The work is done.
+
+- Do the work
+- Verify the work
+`;
+
+	async function setupAmbientReviewer(dir: string) {
+		copyInitializedRepo(dir);
+		const db = openPrivateControlPlaneDb(dir);
+		const planPath = join(dir, "plan.md");
+		writeFileSync(planPath, plainGateDraft);
+		createRunV1(db, { id: "run1", planPath });
+		writeFileSync(
+			join(dir, "5x.toml"),
+			`[reviewer]
+provider = "sample"
+model = "sample/test"
+
+[sample]
+echo = false
+
+[sample.structured]
+readiness = "ready"
+items = []
+`,
+		);
+		return { db, planPath };
+	}
+
+	for (const variant of [
+		{ template: "reviewer-plan", session: undefined },
+		{ template: "reviewer-plan-continued", session: "sess-ambient" },
+	] as const) {
+		test(`${variant.template} without --run refuses a non-executable draft before provider creation, then proceeds after repair`, async () => {
+			const dir = makeTmpDir();
+			const { db, planPath } = await setupAmbientReviewer(dir);
+			// Nonbudgeted (mode off) context: the boundary must not depend on
+			// durable review-budget machinery.
+			const ctx = makeBudgetContext({ mode: "off" });
+			ctx.executionContext.effectivePlanPath = planPath;
+			try {
+				let providerCreations = 0;
+				let sessions = 0;
+				const invoke = () =>
+					invokeAgent(
+						"reviewer",
+						{
+							template: variant.template,
+							...(variant.session ? { session: variant.session } : {}),
+							vars: [`plan_path=${planPath}`],
+							quiet: true,
+							workdir: dir,
+							env: { FIVEX_RUN: "run1" },
+						},
+						{
+							db,
+							createReviewBudgetContext: async () => ctx,
+							createProvider: async (role, config) => {
+								providerCreations++;
+								const provider = await createProvider(role, config);
+								return {
+									...provider,
+									startSession: async (options) => {
+										sessions++;
+										return provider.startSession(options);
+									},
+									resumeSession: async (id, options) => {
+										sessions++;
+										return provider.resumeSession(id, options);
+									},
+									close: () => provider.close(),
+								};
+							},
+						},
+					);
+				await expect(invoke()).rejects.toMatchObject({
+					code: "PLAN_REPAIR_REQUIRED",
+					detail: {
+						reviewRoute: "author_revision",
+						runPreserved: true,
+						next: [`5x plan repair-checklists --plan ${planPath} --dry-run`],
+					},
+				});
+				expect(providerCreations).toBe(0);
+				expect(sessions).toBe(0);
+				expect(ctx.recordStore.listLines("run1", "budget")).toHaveLength(0);
+
+				// The author applies the repair; the same invocation proceeds.
+				writeFileSync(
+					planPath,
+					plainGateDraft
+						.replace("- Do the work", "- [ ] Do the work")
+						.replace("- Verify the work", "- [ ] Verify the work"),
+				);
+				await invoke();
+				expect(providerCreations).toBe(1);
+				expect(sessions).toBe(1);
+			} finally {
+				ctx.db.close();
+				db.close();
+				cleanupDir(dir);
+			}
+		}, 30000);
+	}
+});
+
+describe("author delegation uses the recorded plan schema", () => {
+	// Schema-1-looking markers, but the binding recorded schema 0: the task
+	// after the apparent contract end governs and the phase is executable.
+	const markedLegacy = `<!-- 5x:plan-schema:1 -->
+
+# Plan
+
+<!-- 5x:contract:start -->
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+## Phase 1: Bind
+
+**Completion gate:** Bound.
+
+- plain gate item
+
+<!-- 5x:contract:end -->
+
+- [ ] Existing task after the apparent contract end
+`;
+
+	function stableStringify(value: unknown): string {
+		if (Array.isArray(value))
+			return `[${value.map(stableStringify).join(",")}]`;
+		if (value && typeof value === "object") {
+			return `{${Object.entries(value as Record<string, unknown>)
+				.filter(([, item]) => item !== undefined)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+				.join(",")}}`;
+		}
+		return JSON.stringify(value);
+	}
+
+	function setupBoundSchemaZero(dir: string) {
+		copyInitializedRepo(dir);
+		const planPath = join(dir, "plan.md");
+		writeFileSync(planPath, markedLegacy);
+		writeFileSync(
+			join(dir, "5x.toml"),
+			`[author]
+provider = "sample"
+model = "sample/test"
+`,
+		);
+		const db = openPrivateControlPlaneDb(dir);
+		try {
+			createRunV1(db, { id: "run1", planPath });
+			commitAllSync(dir, "approved plan");
+			const ctx = makeBudgetContext({ mode: "enforced" });
+			const ledger = {
+				estimateConfidence: "high" as const,
+				workItems: [
+					{
+						id: "W1",
+						title: "Bind",
+						effort: 2 as const,
+						architectureDelta: 0 as const,
+						debtClaim: null,
+						addresses: [],
+						rationale: "Required",
+						line: 1,
+					},
+				],
+				surface: {
+					subsystems: 1,
+					productionFiles: 1,
+					persistentOrExternalBoundaries: 0,
+				},
+			};
+			ctx.store.saveImplementationBinding(
+				{
+					kind: "implementation-binding",
+					version: 1,
+					id: "binding-1",
+					executionRunId: "run1",
+					sourceRunId: "source",
+					sourceSnapshotId: "snap",
+					sourceBaselineId: "base",
+					approvedPlanCommit: "c".repeat(40),
+					approvedPlanBytes: markedLegacy,
+					approvedPlanHash: hashPlanBytes(markedLegacy),
+					planSchema: 0,
+					b0: 2,
+					governingB: 2,
+					mode: "enforced",
+					thresholds: { ...DEFAULT_REVIEW_BUDGET_CONFIG },
+					ledger,
+					effectiveDecisions: [],
+					phaseMap: [{ id: "1", heading: "Phase 1: Bind" }],
+					debtTargets: [],
+					ledgerHash: hashPlanBytes(stableStringify(ledger)),
+					decisionsHash: hashPlanBytes(stableStringify([])),
+					createdAt: "2026-01-01 00:00:00",
+				},
+				TEST_ORIGIN,
+			);
+			ctx.executionContext.controlPlaneRoot = dir;
+			ctx.executionContext.effectiveWorkingDirectory = dir;
+			ctx.executionContext.effectivePlanPath = planPath;
+			ctx.executionContext.planPathInWorktreeExists = true;
+			ctx.executionContext.run.plan_path = planPath;
+			return { ctx, planPath, db };
+		} catch (error) {
+			db.close();
+			throw error;
+		}
+	}
+
+	test("native rendering delegates a schema-0 bound phase that file inference would block", async () => {
+		const dir = makeTmpDir();
+		const { ctx, planPath, db } = setupBoundSchemaZero(dir);
+		db.close();
+		try {
+			let prompt = "";
+			await templateRender(
+				{
+					template: "author-next-phase",
+					run: "run1",
+					workdir: dir,
+					vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
+				},
+				{
+					createReviewBudgetContext: async () => ctx,
+					onRenderedPrompt: (rendered) => {
+						prompt = rendered;
+					},
+				},
+			);
+			expect(prompt.length).toBeGreaterThan(0);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	}, 30000);
+
+	test("invoke delegates a schema-0 bound phase that file inference would block", async () => {
+		const dir = makeTmpDir();
+		const { ctx, planPath, db } = setupBoundSchemaZero(dir);
+		try {
+			let providerCreations = 0;
+			await expect(
+				invokeAgent(
+					"author",
+					{
+						template: "author-next-phase",
+						run: "run1",
+						phase: "1",
+						quiet: true,
+						workdir: dir,
+						vars: [`plan_path=${planPath}`, "phase_number=1", "user_notes=x"],
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () => {
+							providerCreations++;
+							throw new Error("provider reached");
+						},
+					},
+				),
+			).rejects.toThrow("provider reached");
+			expect(providerCreations).toBe(1);
+		} finally {
+			ctx.db.close();
+			db.close();
+			cleanupDir(dir);
+		}
+	}, 30000);
+});

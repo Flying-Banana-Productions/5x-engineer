@@ -367,10 +367,12 @@ export async function evaluatePhaseChecklist(
 		};
 	}
 
-	// A phase with no parser-recognized items can never be checked off.
-	// Point at the mechanical repair instead of asking for impossible [x].
-	// Same shared executability result as delegation, with the same repair.
-	if (phase.items.length === 0 && !phase.isComplete) {
+	// A phase with no parser-recognized items can never be checked off, even
+	// when its heading says COMPLETE: that suffix is historical display, not
+	// executable evidence. Point at the mechanical repair instead of asking
+	// for impossible [x]. Same shared executability result as delegation,
+	// with the same repair.
+	if (phase.items.length === 0) {
 		const gate = implementationPhaseExecutabilityGate({
 			planMarkdown: planContent,
 			phase: phase.number,
@@ -384,10 +386,13 @@ export async function evaluatePhaseChecklist(
 			gate.status === "error"
 				? `Preview the mechanical repair with \`${gate.detail.next.join("` or `")}\` (an approved plan uses the --run form under the operator's repair instruction; no reviewer finding, gate, or new run is needed).`
 				: (gate.warning ?? "Missing requirements still need author work.");
+		const heading = phase.isComplete
+			? " Its COMPLETE heading is not executable evidence."
+			: "";
 		return {
 			ok: false,
 			code: "PHASE_CHECKLIST_INCOMPLETE",
-			message: `Phase ${params.phase} has no executable checklist items, so it cannot be checked off. ${how}`,
+			message: `Phase ${params.phase} has no executable checklist items, so it cannot be checked off.${heading} ${how}`,
 		};
 	}
 
