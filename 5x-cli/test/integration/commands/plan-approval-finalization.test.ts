@@ -50,7 +50,12 @@ async function cli(cwd: string, args: string[], stdin?: unknown) {
 	return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
-function plan(options?: { w2Addresses?: string; w2Effort?: number }): string {
+function plan(options?: {
+	w2Addresses?: string;
+	w2Effort?: number;
+	/** Phase 2's sole gate item, verbatim. */
+	w2Item?: string;
+}): string {
 	return `# Finalization plan
 
 ## Delivery Budget
@@ -78,7 +83,7 @@ function plan(options?: { w2Addresses?: string; w2Effort?: number }): string {
 
 **Completion gate:** The follow-up works.
 
-- [ ] Build the follow-up
+${options?.w2Item ?? "- [ ] Build the follow-up"}
 `;
 }
 
@@ -154,7 +159,11 @@ function budget(dir: string, runId: string): Array<Record<string, unknown>> {
 }
 
 /** Initial `ready_with_corrections` review admitting P1.1 as a final correction. */
-async function reviewWithCorrection(dir: string, planPath: string) {
+async function reviewWithCorrection(
+	dir: string,
+	planPath: string,
+	correction: Record<string, unknown> = CORRECTION,
+) {
 	const init = await cli(dir, ["run", "init", "--plan", planPath]);
 	if (init.exitCode !== 0) throw new Error(`${init.stdout}\n${init.stderr}`);
 	const runId = JSON.parse(init.stdout).data.run_id as string;
@@ -176,7 +185,7 @@ async function reviewWithCorrection(dir: string, planPath: string) {
 		],
 		{
 			readiness: "ready_with_corrections",
-			items: [CORRECTION],
+			items: [correction],
 			baselineAssessment: {
 				independentEffortEstimate: 3,
 				confidence: "high",
@@ -442,6 +451,194 @@ describe("final-corrections approval finalization", () => {
 				if (bound.exitCode !== 0) {
 					throw new Error(`${bound.stdout}\n${bound.stderr}`);
 				}
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60_000 },
+	);
+	test(
+		"an already-admitted one-point correction completes and binds without a second reviewer",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await reviewWithCorrection(dir, planPath, {
+					...CORRECTION,
+					effortDelta: 1,
+				});
+				const authorCommit = await authorCorrection(
+					dir,
+					planPath,
+					sourceId,
+					plan({ w2Addresses: "P1.1", w2Effort: 2 }),
+				);
+				const completed = await cli(dir, [
+					"run",
+					"complete",
+					"--run",
+					sourceId,
+				]);
+				if (completed.exitCode !== 0) {
+					throw new Error(`${completed.stdout}\n${completed.stderr}`);
+				}
+				expect(
+					JSON.parse(completed.stdout).data.plan_approval_finalization,
+				).toMatchObject({
+					route: "final_corrections",
+					final_commit: authorCommit,
+					recorded: true,
+				});
+				const record = budget(dir, sourceId).find(
+					(line) => line.kind === "plan-approval-finalization",
+				);
+				expect(record).toMatchObject({
+					correctionBudget: {
+						corrections: [{ findingId: "P1.1", effortDelta: 1 }],
+					},
+					effortCorrections: [
+						{ workItemId: "W2", before: 1, after: 2, findingIds: ["P1.1"] },
+					],
+				});
+				const execInit = await cli(dir, ["run", "init", "--plan", planPath]);
+				if (execInit.exitCode !== 0) throw new Error(execInit.stderr);
+				const execId = JSON.parse(execInit.stdout).data.run_id as string;
+				const bound = await cli(dir, [
+					"review",
+					"implementation",
+					"bind",
+					"--run",
+					execId,
+					"--source-run",
+					sourceId,
+				]);
+				if (bound.exitCode !== 0) {
+					throw new Error(`${bound.stdout}\n${bound.stderr}`);
+				}
+				expect(JSON.parse(bound.stdout).data).toMatchObject({
+					approvedPlanCommit: authorCommit,
+					approvalFinalization: {
+						derivation: "recorded",
+						effortCorrections: [
+							{ workItemId: "W2", before: 1, after: 2, findingIds: ["P1.1"] },
+						],
+					},
+				});
+				const binding = budget(dir, execId).find(
+					(line) => line.kind === "implementation-binding",
+				) as { ledger: { workItems: Array<{ effort: number }> } };
+				expect(binding.ledger.workItems[1]?.effort).toBe(2);
+				expect(
+					steps(dir, sourceId).filter((step) =>
+						String(step.step_name).startsWith("reviewer:"),
+					),
+				).toHaveLength(1);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60_000 },
+	);
+
+	test(
+		"a non-executable committed blob is refused even when the working tree is valid; the run stays active",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await reviewWithCorrection(dir, planPath);
+				const broken = await authorCorrection(
+					dir,
+					planPath,
+					sourceId,
+					plan({ w2Addresses: "P1.1", w2Item: "Build the follow-up" }),
+				);
+				// The working copy keeps the valid checkbox; it is not the anchor.
+				writeFileSync(planPath, plan({ w2Addresses: "P1.1" }));
+				const refused = await cli(dir, ["run", "complete", "--run", sourceId]);
+				expect(refused.exitCode).not.toBe(0);
+				const error = JSON.parse(refused.stdout).error;
+				expect(error.code).toBe("PLAN_REPAIR_REQUIRED");
+				expect(error.message).toContain(broken);
+				expect(error.detail.finalCommit).toBe(broken);
+				expect(error.detail.diagnostics).toEqual([
+					expect.objectContaining({
+						code: "PLAN_PHASE_NO_CHECKLIST",
+						phase: "2",
+						repair: "author",
+					}),
+				]);
+				expect(error.detail.next.at(-1)).toBe(
+					`5x run complete --run ${sourceId}`,
+				);
+				expect(
+					steps(dir, sourceId).some(
+						(step) => step.step_name === "run:complete",
+					),
+				).toBe(false);
+				expect(
+					budget(dir, sourceId).some(
+						(line) => line.kind === "plan-approval-finalization",
+					),
+				).toBe(false);
+				const state = await cli(dir, ["run", "state", "--run", sourceId]);
+				expect(JSON.parse(state.stdout).data.run.status).toBe("active");
+
+				// Existing path: commit the restored checklist and complete again.
+				git(dir, "add", planPath);
+				git(dir, "commit", "-m", "restore the follow-up checklist");
+				const fixedCommit = git(dir, "rev-parse", "HEAD");
+				const completed = await cli(dir, [
+					"run",
+					"complete",
+					"--run",
+					sourceId,
+				]);
+				if (completed.exitCode !== 0) {
+					throw new Error(`${completed.stdout}\n${completed.stderr}`);
+				}
+				expect(
+					JSON.parse(completed.stdout).data.plan_approval_finalization,
+				).toMatchObject({ final_commit: fixedCommit, recorded: true });
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 60_000 },
+	);
+
+	test(
+		"a valid committed blob finalizes; a broken working copy is reported, not sealed",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await reviewWithCorrection(dir, planPath);
+				const authorCommit = await authorCorrection(
+					dir,
+					planPath,
+					sourceId,
+					plan({ w2Addresses: "P1.1" }),
+				);
+				writeFileSync(
+					planPath,
+					plan({ w2Addresses: "P1.1", w2Item: "Build the follow-up" }),
+				);
+				const completed = await cli(dir, [
+					"run",
+					"complete",
+					"--run",
+					sourceId,
+				]);
+				if (completed.exitCode !== 0) {
+					throw new Error(`${completed.stdout}\n${completed.stderr}`);
+				}
+				const data = JSON.parse(completed.stdout).data;
+				expect(data.plan_approval_finalization).toMatchObject({
+					final_commit: authorCommit,
+					final_blob_hash: blobHash(dir, authorCommit),
+					recorded: true,
+					uncommitted_plan_changes: true,
+				});
+				// Nonblocking progress inspection of the working copy.
+				expect(data.plan_executability).toMatchObject({ executable: false });
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}

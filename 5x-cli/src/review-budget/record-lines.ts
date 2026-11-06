@@ -343,6 +343,8 @@ export interface BindingApprovalFinalization {
 	snapshotLedgerHash: string;
 	admittedFindingIds: string[];
 	addressAdditions: Array<{ workItemId: string; findingIds: string[] }>;
+	/** Work-item effort funded by admitted corrections. Absent when none. */
+	effortCorrections?: PlanApprovalEffortCorrection[];
 	/** Final-corrections author commit, when that route admitted the delta. */
 	authorCommit: string | null;
 }
@@ -711,7 +713,27 @@ export interface PlanApprovalFinalizationPayload {
 	ledger: ParsedDeliveryBudget;
 	ledgerHash: string;
 	addressAdditions: Array<{ workItemId: string; findingIds: string[] }>;
+	/**
+	 * The final-corrections route's effort evidence: each admitted
+	 * correction's recorded effort and the effective ceiling. Present on a
+	 * final_corrections finalization; absent on a ready approval.
+	 */
+	correctionBudget?: PlanApprovalCorrectionBudget;
+	/** Work-item effort changes funded by admitted corrections. Absent when none. */
+	effortCorrections?: PlanApprovalEffortCorrection[];
 	createdAt: string;
+}
+
+export interface PlanApprovalCorrectionBudget {
+	corrections: Array<{ findingId: string; effortDelta: number }>;
+	effectiveCeiling: number;
+}
+
+export interface PlanApprovalEffortCorrection {
+	workItemId: string;
+	before: number;
+	after: number;
+	findingIds: string[];
 }
 
 /** One record per committed final plan blob; a retry at the same commit is idempotent. */
@@ -743,6 +765,8 @@ const APPROVAL_FINALIZATION_KEYS = new Set([
 	"ledger",
 	"ledgerHash",
 	"addressAdditions",
+	"correctionBudget",
+	"effortCorrections",
 	"createdAt",
 ]);
 
@@ -786,6 +810,79 @@ function addressAdditionsField(
 	});
 }
 
+function finiteNumber(raw: unknown, field: string): number {
+	if (typeof raw !== "number" || !Number.isFinite(raw)) {
+		throw new TypeError(`${field} must be a finite number`);
+	}
+	return raw;
+}
+
+function correctionBudgetField(
+	raw: unknown,
+	field: string,
+): PlanApprovalCorrectionBudget {
+	const value = object(raw, field);
+	rejectUnknownKeys(value, new Set(["corrections", "effectiveCeiling"]), field);
+	if (!Array.isArray(value.corrections)) {
+		throw new TypeError(`${field}.corrections must be an array`);
+	}
+	return {
+		corrections: value.corrections.map((entry, index) => {
+			const item = object(entry, `${field}.corrections[${index}]`);
+			rejectUnknownKeys(
+				item,
+				new Set(["findingId", "effortDelta"]),
+				`${field}.corrections[${index}]`,
+			);
+			return {
+				findingId: stringField(
+					item.findingId,
+					`${field}.corrections[${index}].findingId`,
+				),
+				effortDelta: finiteNumber(
+					item.effortDelta,
+					`${field}.corrections[${index}].effortDelta`,
+				),
+			};
+		}),
+		effectiveCeiling: finiteNumber(
+			value.effectiveCeiling,
+			`${field}.effectiveCeiling`,
+		),
+	};
+}
+
+function effortCorrectionsField(
+	raw: unknown,
+	field: string,
+): PlanApprovalEffortCorrection[] {
+	if (!Array.isArray(raw) || raw.length === 0) {
+		throw new TypeError(`${field} must be a non-empty array when present`);
+	}
+	return raw.map((entry, index) => {
+		const value = object(entry, `${field}[${index}]`);
+		rejectUnknownKeys(
+			value,
+			new Set(["workItemId", "before", "after", "findingIds"]),
+			`${field}[${index}]`,
+		);
+		if (!Array.isArray(value.findingIds) || value.findingIds.length === 0) {
+			throw new TypeError(`${field}[${index}].findingIds must be non-empty`);
+		}
+		return {
+			workItemId: stringField(
+				value.workItemId,
+				`${field}[${index}].workItemId`,
+			),
+			before: finiteNumber(value.before, `${field}[${index}].before`),
+			after: finiteNumber(value.after, `${field}[${index}].after`),
+			findingIds: value.findingIds.map((id) =>
+				stringField(id, `${field}[${index}].findingIds`),
+			),
+		};
+	});
+}
+
 function findingIdsField(raw: unknown, field: string): string[] {
 	if (!Array.isArray(raw)) throw new TypeError(`${field} must be an array`);
 	return raw.map((id) => stringField(id, field));
@@ -796,6 +893,8 @@ export function encodePlanApprovalFinalizationPayload(
 ): unknown {
 	const encoded = structuredClone(payload);
 	if (encoded.governingHash === undefined) delete encoded.governingHash;
+	if (encoded.correctionBudget === undefined) delete encoded.correctionBudget;
+	if (encoded.effortCorrections === undefined) delete encoded.effortCorrections;
 	return encoded;
 }
 
@@ -847,6 +946,24 @@ export function decodePlanApprovalFinalizationPayload(
 	if (value.planSchema === 1 && governingHash === undefined) {
 		throw new TypeError("schema 1 finalization requires governingHash");
 	}
+	const correctionBudget =
+		value.correctionBudget === undefined
+			? undefined
+			: correctionBudgetField(value.correctionBudget, "correctionBudget");
+	if (correctionBudget !== undefined && value.route !== "final_corrections") {
+		throw new TypeError(
+			"only a final_corrections finalization records a correction budget",
+		);
+	}
+	const effortCorrections =
+		value.effortCorrections === undefined
+			? undefined
+			: effortCorrectionsField(value.effortCorrections, "effortCorrections");
+	if (effortCorrections !== undefined && correctionBudget === undefined) {
+		throw new TypeError(
+			"effortCorrections require the route's recorded correction budget",
+		);
+	}
 	return {
 		kind: "plan-approval-finalization",
 		version: 1,
@@ -885,6 +1002,8 @@ export function decodePlanApprovalFinalizationPayload(
 			value.addressAdditions,
 			"addressAdditions",
 		),
+		...(correctionBudget !== undefined ? { correctionBudget } : {}),
+		...(effortCorrections !== undefined ? { effortCorrections } : {}),
 		createdAt: stringField(value.createdAt, "createdAt"),
 	};
 }
@@ -1241,8 +1360,13 @@ export function encodeImplementationBindingPayload(
 	}
 	if (encoded.approvalFinalization === undefined) {
 		delete encoded.approvalFinalization;
-	} else if (encoded.approvalFinalization.finalizationId === undefined) {
-		delete encoded.approvalFinalization.finalizationId;
+	} else {
+		if (encoded.approvalFinalization.finalizationId === undefined) {
+			delete encoded.approvalFinalization.finalizationId;
+		}
+		if (encoded.approvalFinalization.effortCorrections === undefined) {
+			delete encoded.approvalFinalization.effortCorrections;
+		}
 	}
 	return encoded;
 }
@@ -1338,6 +1462,7 @@ const BINDING_FINALIZATION_KEYS = new Set([
 	"snapshotLedgerHash",
 	"admittedFindingIds",
 	"addressAdditions",
+	"effortCorrections",
 	"authorCommit",
 ]);
 
@@ -1397,6 +1522,14 @@ function bindingApprovalFinalization(
 			value.addressAdditions,
 			"approvalFinalization.addressAdditions",
 		),
+		...(value.effortCorrections !== undefined
+			? {
+					effortCorrections: effortCorrectionsField(
+						value.effortCorrections,
+						"approvalFinalization.effortCorrections",
+					),
+				}
+			: {}),
 		authorCommit:
 			value.authorCommit === null
 				? null

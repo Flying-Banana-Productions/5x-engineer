@@ -11,6 +11,7 @@ import {
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import {
+	describeFinalLedgerChanges,
 	type FinalLedgerChangeField,
 	legacyReReviewNext,
 	reconcileFinalApprovalLedger,
@@ -65,7 +66,138 @@ describe("final committed ledger reconciliation", () => {
 			ok: true,
 			ledger: final,
 			addressAdditions: [{ workItemId: "W2", findingIds: ["P1.1"] }],
+			effortCorrections: [],
 		});
+	});
+
+	test("admits the recorded one-point correction effort when the item records the funding finding", () => {
+		const reviewed = ledger(`${W1}\n${W2}`);
+		const final = ledger(
+			`| W1 | Foundation | 3 | 0 | - | R1 | Required |\n${W2}`,
+		);
+		const result = reconcileFinalApprovalLedger({
+			reviewed,
+			final,
+			admittedFindingIds: ["R1"],
+			correctionBudget: {
+				corrections: [{ findingId: "R1", effortDelta: 1 }],
+				effectiveCeiling: 4,
+			},
+		});
+		expect(result).toEqual({
+			ok: true,
+			ledger: final,
+			addressAdditions: [{ workItemId: "W1", findingIds: ["R1"] }],
+			effortCorrections: [
+				{ workItemId: "W1", before: 2, after: 3, findingIds: ["R1"] },
+			],
+		});
+	});
+
+	test("rejects effort changes the recorded corrections do not fund", () => {
+		const reviewed = ledger(`${W1}\n${W2}`);
+		const budget = {
+			corrections: [{ findingId: "R1", effortDelta: 1 }],
+			effectiveCeiling: 4,
+		};
+		const cases: Array<{
+			label: string;
+			rows: string;
+			admitted?: string[];
+			budget?: typeof budget | null;
+			reason: string;
+		}> = [
+			{
+				label: "no recorded correction budget",
+				rows: `| W1 | Foundation | 3 | 0 | - | R1 | Required |\n${W2}`,
+				budget: null,
+				reason: "without an admitted correction",
+			},
+			{
+				label: "funding finding not recorded on the item",
+				rows: `| W1 | Foundation | 3 | 0 | - | - | Required |\n| W2 | Follow-up | 1 | 0 | - | R1 | Follow |`,
+				reason: "without an admitted correction",
+			},
+			{
+				label: "over the recorded allowance",
+				rows: `| W1 | Foundation | 5 | 0 | - | R1 | Required |\n${W2}`,
+				reason: "beyond the 1 point(s) recorded for R1",
+			},
+			{
+				label: "decrease is rescoring",
+				rows: `| W1 | Foundation | 1 | 0 | - | R1 | Required |\n${W2}`,
+				reason: "re-score",
+			},
+			{
+				label: "counted once across items",
+				rows: `| W1 | Foundation | 3 | 0 | - | R1 | Required |\n| W2 | Follow-up | 2 | 0 | - | R1 | Follow |`,
+				reason: "W2 effort changed without an admitted correction",
+			},
+			{
+				label: "zero-effort correction funds nothing",
+				rows: `| W1 | Foundation | 3 | 0 | - | R1 | Required |\n${W2}`,
+				budget: {
+					corrections: [{ findingId: "R1", effortDelta: 0 }],
+					effectiveCeiling: 4,
+				},
+				reason: "without an admitted correction",
+			},
+			{
+				label: "unadmitted funding is ignored",
+				rows: `| W1 | Foundation | 3 | 0 | - | R1 | Required |\n${W2}`,
+				admitted: ["R2"],
+				reason: "without an admitted correction",
+			},
+			{
+				label: "over the effective ceiling",
+				rows: `| W1 | Foundation | 3 | 0 | - | R1 | Required |\n${W2}`,
+				budget: {
+					corrections: [{ findingId: "R1", effortDelta: 1 }],
+					effectiveCeiling: 3,
+				},
+				reason: "above the effective ceiling 3",
+			},
+			{
+				label: "over the route's one-point limit",
+				rows: `| W1 | Foundation | 3 | 0 | - | R1 | Required |\n| W2 | Follow-up | 2 | 0 | - | R2 | Follow |`,
+				admitted: ["R1", "R2"],
+				budget: {
+					corrections: [
+						{ findingId: "R1", effortDelta: 1 },
+						{ findingId: "R2", effortDelta: 1 },
+					],
+					effectiveCeiling: 10,
+				},
+				reason: "admits at most 1",
+			},
+		];
+		for (const entry of cases) {
+			const result = reconcileFinalApprovalLedger({
+				reviewed,
+				final: ledger(entry.rows),
+				admittedFindingIds: entry.admitted ?? ["R1"],
+				correctionBudget: entry.budget === undefined ? budget : entry.budget,
+			});
+			expect({ label: entry.label, ok: result.ok }).toEqual({
+				label: entry.label,
+				ok: false,
+			});
+			if (!result.ok) {
+				expect({
+					label: entry.label,
+					fields: [...new Set(result.changes.map((change) => change.field))],
+				}).toEqual({
+					label: entry.label,
+					fields:
+						entry.label === "unadmitted funding is ignored"
+							? ["effort", "addresses"]
+							: ["effort"],
+				});
+				expect(describeFinalLedgerChanges(result.changes)).toContain(
+					entry.reason,
+				);
+			}
+		}
 	});
 
 	test("an ordinary ready approval must match exactly", () => {
@@ -242,6 +374,50 @@ describe("plan-approval-finalization codec", () => {
 		);
 	});
 
+	test("round-trips correction effort evidence and rejects it off the corrections route", () => {
+		const payload: PlanApprovalFinalizationPayload = {
+			...finalization(),
+			correctionBudget: {
+				corrections: [{ findingId: "P1.1", effortDelta: 1 }],
+				effectiveCeiling: 4,
+			},
+			effortCorrections: [
+				{ workItemId: "W2", before: 1, after: 2, findingIds: ["P1.1"] },
+			],
+		};
+		const encoded = encodePlanApprovalFinalizationPayload(payload);
+		expect(decodePlanApprovalFinalizationPayload(encoded)).toEqual(payload);
+		expect(
+			encodePlanApprovalFinalizationPayload(finalization()),
+		).not.toHaveProperty("correctionBudget");
+		expect(() =>
+			decodePlanApprovalFinalizationPayload({
+				...payload,
+				route: "complete",
+				authorCorrection: null,
+				effortCorrections: undefined,
+			}),
+		).toThrow("only a final_corrections finalization");
+		expect(() =>
+			decodePlanApprovalFinalizationPayload({
+				...payload,
+				correctionBudget: undefined,
+			}),
+		).toThrow("require the route's recorded correction budget");
+		expect(() =>
+			decodePlanApprovalFinalizationPayload({
+				...payload,
+				effortCorrections: [],
+			}),
+		).toThrow("non-empty");
+		expect(() =>
+			decodePlanApprovalFinalizationPayload({
+				...payload,
+				correctionBudget: { corrections: [], effectiveCeiling: "4" },
+			}),
+		).toThrow("effectiveCeiling must be a finite number");
+	});
+
 	test("rejects unknown fields, unpaired routes and schema 1 without a governing hash", () => {
 		const payload = finalization();
 		expect(() =>
@@ -312,7 +488,33 @@ describe("plan-approval-finalization codec", () => {
 		expect(
 			(encoded as { approvalFinalization: object }).approvalFinalization,
 		).not.toHaveProperty("finalizationId");
+		expect(
+			(encoded as { approvalFinalization: object }).approvalFinalization,
+		).not.toHaveProperty("effortCorrections");
 		expect(decodeImplementationBindingPayload(encoded)).toEqual(legacy);
+		const funded: ImplementationBindingPayload = {
+			...base,
+			approvalFinalization: {
+				derivation: "recorded",
+				finalizationId: "approval-finalization:1",
+				sourceRunId: "source",
+				sourceSnapshotId: "snapshot-1",
+				finalCommit: "b".repeat(40),
+				finalBlobHash: "sha256:blob",
+				snapshotLedgerHash: "sha256:snapshot",
+				admittedFindingIds: ["R1"],
+				addressAdditions: [{ workItemId: "W1", findingIds: ["R1"] }],
+				effortCorrections: [
+					{ workItemId: "W1", before: 2, after: 3, findingIds: ["R1"] },
+				],
+				authorCommit: "b".repeat(40),
+			},
+		};
+		expect(
+			decodeImplementationBindingPayload(
+				encodeImplementationBindingPayload(funded),
+			),
+		).toEqual(funded);
 		expect(() =>
 			decodeImplementationBindingPayload({
 				...(encoded as object),

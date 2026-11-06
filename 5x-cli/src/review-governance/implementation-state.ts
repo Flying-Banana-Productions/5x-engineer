@@ -29,14 +29,19 @@ import {
 	readAuthoritativeBudget,
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
-import { verifyRecordedChecklistRepair } from "../plan-schema/checklist-repair.js";
+import {
+	diagnosePlanExecutability,
+	type PlanExecutabilityDiagnostic,
+	verifyRecordedChecklistRepair,
+} from "../plan-schema/checklist-repair.js";
 import {
 	type ExpectedPlanSchema,
 	loadPlanDocument,
 	type PlanSchema,
 } from "../plan-schema/document.js";
-import type { ReviewerVerdict } from "../protocol.js";
+import type { ReviewerVerdict, VerdictItem } from "../protocol.js";
 import { deriveBudget } from "../review-budget/arithmetic.js";
+import { executabilityRepairCommands } from "../review-budget/plan-repair.js";
 import {
 	type BindingApprovalFinalization,
 	encodeImplementationBindingPayload,
@@ -101,6 +106,7 @@ import {
 } from "./plan-amendment.js";
 import {
 	describeFinalLedgerChanges,
+	type FinalCorrectionBudget,
 	legacyReReviewNext,
 	reconcileFinalApprovalLedger,
 	sameRunFinalizationNext,
@@ -1236,7 +1242,9 @@ function recordedFinalization(input: {
 		(record.authorCorrection?.commit ?? null) !==
 			(route.correction?.author.commit ?? null) ||
 		JSON.stringify([...record.admittedFindingIds].sort()) !==
-			JSON.stringify(route.correction?.admittedFindingIds ?? [])
+			JSON.stringify(route.correction?.admittedFindingIds ?? []) ||
+		JSON.stringify(record.correctionBudget ?? null) !==
+			JSON.stringify(route.correction?.budget ?? null)
 	) {
 		return refuse("does not match the recorded reviewer route");
 	}
@@ -1244,11 +1252,14 @@ function recordedFinalization(input: {
 		reviewed: input.snapshot.currentLedger,
 		final: record.ledger,
 		admittedFindingIds: record.admittedFindingIds,
+		correctionBudget: record.correctionBudget ?? null,
 	});
 	if (
 		!proof.ok ||
 		JSON.stringify(proof.addressAdditions) !==
-			JSON.stringify(record.addressAdditions)
+			JSON.stringify(record.addressAdditions) ||
+		JSON.stringify(proof.effortCorrections) !==
+			JSON.stringify(record.effortCorrections ?? [])
 	) {
 		return refuse("ledger is not admitted correction bookkeeping");
 	}
@@ -1301,6 +1312,9 @@ function resolveSourceApprovalLedger(input: {
 				snapshotLedgerHash: record.snapshotLedgerHash,
 				admittedFindingIds: [...record.admittedFindingIds],
 				addressAdditions: structuredClone(record.addressAdditions),
+				...(record.effortCorrections
+					? { effortCorrections: structuredClone(record.effortCorrections) }
+					: {}),
 				authorCommit: record.authorCorrection?.commit ?? null,
 			},
 		};
@@ -1399,7 +1413,53 @@ interface TerminalRouteDetail {
 	correction: {
 		author: PlanApprovalStepRef & { commit: string };
 		admittedFindingIds: string[];
+		/** The admitted corrections' recorded effort and the route's ceiling. */
+		budget: FinalCorrectionBudget;
 	} | null;
+}
+
+/**
+ * Effort evidence for a recorded final-corrections route: the approving
+ * verdict's admitted corrections with their recorded `effortDelta`, and the
+ * effective ceiling derived as the route derived it (snapshot ledger and the
+ * admitted findings under the governing baseline).
+ */
+function finalCorrectionBudget(input: {
+	items: readonly VerdictItem[];
+	snapshot: ReviewBudgetSnapshotRecord;
+	baselineB0: number;
+	thresholds: ReviewBudgetThresholds;
+	governing: GoverningReviewState;
+}): FinalCorrectionBudget {
+	const admitted = new Set(input.items.map((item) => item.id));
+	const corrections = [...admitted].sort().map((findingId) => ({
+		findingId,
+		effortDelta: input.items
+			.filter((item) => item.id === findingId)
+			.reduce((total, item) => total + (item.effortDelta ?? 0), 0),
+	}));
+	let effectiveCeiling: number;
+	try {
+		effectiveCeiling = deriveBudget({
+			B0: input.baselineB0,
+			B: input.governing.governingBaseline,
+			I: input.snapshot.baselineAssessment?.independentEffortEstimate ?? null,
+			workItems: input.snapshot.currentLedger.workItems,
+			findings: input.snapshot.findings.filter((finding) =>
+				admitted.has(finding.id),
+			),
+			assessments: input.snapshot.assessments,
+			config: input.thresholds,
+			semanticHumanRequired: false,
+		}).E;
+	} catch {
+		// Without a derivable ceiling no correction effort is admitted.
+		effectiveCeiling = input.snapshot.currentLedger.workItems.reduce(
+			(total, item) => total + item.effort,
+			0,
+		);
+	}
+	return { corrections, effectiveCeiling };
 }
 
 function terminalRoute(input: {
@@ -1532,15 +1592,12 @@ function terminalRoute(input: {
 			};
 		}
 		const verdict = latest.payload.result_json as ReviewerVerdict | null;
-		const admittedFindingIds = Array.isArray(verdict?.items)
-			? [
-					...new Set(
-						verdict.items
-							.filter((item) => item.action === "auto_fix")
-							.map((item) => item.id),
-					),
-				].sort()
+		const admittedItems = Array.isArray(verdict?.items)
+			? verdict.items.filter((item) => item.action === "auto_fix")
 			: [];
+		const admittedFindingIds = [
+			...new Set(admittedItems.map((item) => item.id)),
+		].sort();
 		return {
 			approvedCommit: author,
 			refusal: "",
@@ -1550,6 +1607,13 @@ function terminalRoute(input: {
 				correction: {
 					author: { ...stepRef(authorStep), commit: author },
 					admittedFindingIds,
+					budget: finalCorrectionBudget({
+						items: admittedItems,
+						snapshot: input.snapshot,
+						baselineB0: input.baselineB0,
+						thresholds: input.thresholds,
+						governing: input.governing,
+					}),
 				},
 			},
 		};
@@ -2552,6 +2616,14 @@ export async function bindImplementationExecution(input: {
 	return { status: "bound", binding: saved.payload, created: true };
 }
 
+/** A committed-blob checklist defect and its run-form repair commands. */
+export interface CommittedPlanRepair {
+	executable: false;
+	finalCommit: string;
+	diagnostics: PlanExecutabilityDiagnostic[];
+	next: string[];
+}
+
 export type SourceApprovalFinalization =
 	| { status: "not_applicable" }
 	| {
@@ -2560,6 +2632,12 @@ export type SourceApprovalFinalization =
 			payload: PlanApprovalFinalizationPayload;
 			/** An identical record for this commit is already paired. */
 			existing: boolean;
+			/**
+			 * The committed blob has a checklist defect with a mechanical or
+			 * line-selected repair, applied on the completed source before
+			 * binding.
+			 */
+			executability?: CommittedPlanRepair;
 	  }
 	| { status: "error"; code: string; message: string; detail?: unknown };
 
@@ -2567,11 +2645,14 @@ export type SourceApprovalFinalization =
  * Final committed approval for a plan-review run about to complete.
  *
  * Applies only to an approved terminal route with no binding. Reads the
- * committed plan at `finalCommit` (never the working tree), proves its ledger
+ * committed plan at `finalCommit` (never the working tree), validates those
+ * exact bytes with the shared executability result, proves their ledger
  * against the approving snapshot under the recorded route's admitted
- * corrections, and returns the record to pair with `run:complete`. A
- * substantive delta returns an error: the caller leaves the run active with
- * the same-run review remedy rather than sealing an unusable approval.
+ * corrections and correction effort, and returns the record to pair with
+ * `run:complete`. An author-required executability defect or a substantive
+ * delta returns an error: the caller leaves the run active with the
+ * same-run remedy rather than sealing an unusable approval. A checklist
+ * defect with a deterministic repair finalizes with that run-form repair.
  */
 export async function prepareSourceApprovalFinalization(input: {
 	store: ReviewBudgetStore;
@@ -2628,6 +2709,16 @@ export async function prepareSourceApprovalFinalization(input: {
 			detail: { finalCommit },
 		};
 	}
+	const executability = committedPlanExecutability({
+		bytes,
+		finalCommit,
+		runId: input.runId,
+	});
+	if (executability?.status === "blocked") return executability.error;
+	const repair =
+		executability?.status === "repairable"
+			? { executability: executability.repair }
+			: {};
 	const read = readAuthoritativeBudget(bytes, "file");
 	if (!read.ok || !read.parsed.ok) {
 		return {
@@ -2638,10 +2729,12 @@ export async function prepareSourceApprovalFinalization(input: {
 		};
 	}
 	const admittedFindingIds = detail.correction?.admittedFindingIds ?? [];
+	const correctionBudget = detail.correction?.budget ?? null;
 	const proof = reconcileFinalApprovalLedger({
 		reviewed: snapshot.currentLedger,
 		final: read.parsed.value,
 		admittedFindingIds,
+		correctionBudget,
 	});
 	if (!proof.ok) {
 		return {
@@ -2682,6 +2775,12 @@ export async function prepareSourceApprovalFinalization(input: {
 		ledger: proof.ledger,
 		ledgerHash: hashJson(proof.ledger),
 		addressAdditions: proof.addressAdditions,
+		...(correctionBudget
+			? { correctionBudget: structuredClone(correctionBudget) }
+			: {}),
+		...(proof.effortCorrections.length > 0
+			? { effortCorrections: proof.effortCorrections }
+			: {}),
 		createdAt: now(),
 	};
 	let prior: PlanApprovalFinalizationPayload | undefined;
@@ -2710,9 +2809,72 @@ export async function prepareSourceApprovalFinalization(input: {
 				detail: { finalizationId: prior.id },
 			};
 		}
-		return { status: "ready", payload: prior, existing: true };
+		return { status: "ready", payload: prior, existing: true, ...repair };
 	}
-	return { status: "ready", payload, existing: false };
+	return { status: "ready", payload, existing: false, ...repair };
+}
+
+/**
+ * The shared executability result over the exact committed finalization
+ * bytes. Warnings (such as prose gates beside executable items) never
+ * block. Author-required defects (no phases, duplicate phase ids, a phase
+ * with no list to convert) block: sealing would publish an approval that no
+ * deterministic repair can make executable, so the run stays active for
+ * author work reviewed on this run. A defect with only a mechanical or
+ * line-selected checklist repair keeps the approved path: the approval
+ * finalizes and the completed source is repaired with the run form before
+ * binding, so the committed-blob diagnostic is returned with that repair.
+ */
+function committedPlanExecutability(input: {
+	bytes: string;
+	finalCommit: string;
+	runId: string;
+}):
+	| {
+			status: "blocked";
+			error: Extract<SourceApprovalFinalization, { status: "error" }>;
+	  }
+	| { status: "repairable"; repair: CommittedPlanRepair }
+	| null {
+	const diagnosed = diagnosePlanExecutability(input.bytes, "file");
+	// Schema errors are reported by the Delivery Budget read that follows.
+	if (!diagnosed.ok || diagnosed.result.executable) return null;
+	const errors = diagnosed.result.diagnostics.filter(
+		(entry) => entry.severity === "error",
+	);
+	if (errors.every((entry) => entry.repair !== "author")) {
+		return {
+			status: "repairable",
+			repair: {
+				executable: false,
+				finalCommit: input.finalCommit,
+				diagnostics: errors,
+				next: executabilityRepairCommands(errors, {
+					kind: "run",
+					runId: input.runId,
+				}),
+			},
+		};
+	}
+	const remediation =
+		"Have the author restore executable phases and checklist items (or revert the breaking correction), commit the plan, review it on this run, then complete the run again. No new run is needed.";
+	return {
+		status: "blocked",
+		error: {
+			status: "error",
+			code: "PLAN_REPAIR_REQUIRED",
+			message: `The committed plan at ${input.finalCommit} is not executable [PLAN_NOT_EXECUTABLE]: ${errors.map((entry) => entry.message).join(" ")} The run stays active and nothing was sealed. ${remediation}`,
+			detail: {
+				finalCommit: input.finalCommit,
+				reviewRoute: "author_revision",
+				executability: diagnosed.result,
+				diagnostics: errors,
+				next: sameRunFinalizationNext(input.runId),
+				remediation,
+				runPreserved: true,
+			},
+		},
+	};
 }
 
 /** Budget-line op pairing a finalization record with its `run:complete` step. */

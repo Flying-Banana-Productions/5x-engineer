@@ -5,10 +5,14 @@
  * `final_corrections` route then lets the author apply the admitted
  * corrections without a second review. Recording a corrected finding in a
  * work item's `Addresses` is ledger bookkeeping for that route; it is not a
- * new budget, claim or scope decision. This module proves that the final
- * committed ledger differs from the reviewed ledger only by that bookkeeping
- * and nonidentity parse data (line numbers, titles, rationale). Every other
- * delta is substantive and is reported field by field.
+ * new budget, claim or scope decision. The route also admits the effort its
+ * corrections were recorded with (at most one point, within the effective
+ * ceiling, counted once), so a work item may carry that effort when it
+ * records the funding finding in `Addresses`. This module proves that the
+ * final committed ledger differs from the reviewed ledger only by that
+ * bookkeeping, that attributable effort, and nonidentity parse data (line
+ * numbers, titles, rationale). Every other delta is substantive and is
+ * reported field by field.
  *
  * Pure: no store, Git or clock access.
  */
@@ -18,6 +22,7 @@ import type {
 	ParsedDeliveryBudget,
 	ParsedWorkItem,
 } from "../review-budget/types.js";
+import { FINAL_CORRECTION_EFFORT_LIMIT } from "./routing.js";
 
 export type FinalLedgerChangeField =
 	| "estimateConfidence"
@@ -43,12 +48,31 @@ export interface AddressAddition {
 	findingIds: string[];
 }
 
+/**
+ * The recorded final-corrections route's effort evidence: each admitted
+ * correction's reviewer-recorded `effortDelta` and the effective ceiling the
+ * route was admitted under. Absent for a ready approval, which admits none.
+ */
+export interface FinalCorrectionBudget {
+	corrections: Array<{ findingId: string; effortDelta: number }>;
+	effectiveCeiling: number;
+}
+
+/** One work item's effort change, funded by the named admitted corrections. */
+export interface EffortCorrection {
+	workItemId: string;
+	before: number;
+	after: number;
+	findingIds: string[];
+}
+
 export type FinalLedgerReconciliation =
 	| {
 			ok: true;
 			/** The final committed ledger: the effective approved ledger. */
 			ledger: ParsedDeliveryBudget;
 			addressAdditions: AddressAddition[];
+			effortCorrections: EffortCorrection[];
 	  }
 	| { ok: false; changes: FinalLedgerChange[] };
 
@@ -81,23 +105,22 @@ function same(a: unknown, b: unknown): boolean {
 	return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * Correction effort not yet attributed to a work item. A finding funds at
+ * most one item, so its effort is counted once.
+ */
+type UnspentCorrectionEffort = Map<string, number>;
+
 function compareItem(
 	reviewed: ParsedWorkItem,
 	final: ParsedWorkItem,
 	admitted: ReadonlySet<string>,
+	unspent: UnspentCorrectionEffort,
 	changes: FinalLedgerChange[],
 	additions: AddressAddition[],
+	effortCorrections: EffortCorrection[],
 ): void {
 	const id = reviewed.id;
-	if (reviewed.effort !== final.effort) {
-		changes.push({
-			field: "effort",
-			workItemId: id,
-			before: reviewed.effort,
-			after: final.effort,
-			reason: `${id} effort changed; final corrections do not re-score work.`,
-		});
-	}
 	if (reviewed.architectureDelta !== final.architectureDelta) {
 		changes.push({
 			field: "architectureDelta",
@@ -123,7 +146,16 @@ function compareItem(
 	const removed = [...before].filter((entry) => !after.has(entry)).sort();
 	const added = [...after].filter((entry) => !before.has(entry)).sort();
 	const unadmitted = added.filter((entry) => !admitted.has(entry));
-	if (removed.length > 0 || unadmitted.length > 0) {
+	const addressesValid = removed.length === 0 && unadmitted.length === 0;
+	compareEffort(
+		reviewed,
+		final,
+		addressesValid ? added : [],
+		unspent,
+		changes,
+		effortCorrections,
+	);
+	if (!addressesValid) {
 		changes.push({
 			field: "addresses",
 			workItemId: id,
@@ -145,18 +177,81 @@ function compareItem(
 }
 
 /**
+ * An effort change is admitted only as an increase funded by admitted
+ * corrections this item newly records in `Addresses`, using their recorded
+ * effort not already attributed to another item. Decreases and unfunded
+ * increases are rescoring.
+ */
+function compareEffort(
+	reviewed: ParsedWorkItem,
+	final: ParsedWorkItem,
+	addedAdmitted: readonly string[],
+	unspent: UnspentCorrectionEffort,
+	changes: FinalLedgerChange[],
+	effortCorrections: EffortCorrection[],
+): void {
+	const id = reviewed.id;
+	const delta = final.effort - reviewed.effort;
+	if (delta === 0) return;
+	const funding = addedAdmitted.filter(
+		(findingId) => (unspent.get(findingId) ?? 0) > 0,
+	);
+	const available = funding.reduce(
+		(total, findingId) => total + (unspent.get(findingId) ?? 0),
+		0,
+	);
+	if (delta < 0 || delta > available) {
+		changes.push({
+			field: "effort",
+			workItemId: id,
+			before: reviewed.effort,
+			after: final.effort,
+			reason:
+				delta < 0 || funding.length === 0
+					? `${id} effort changed without an admitted correction recorded in its Addresses to fund it; final corrections do not re-score work.`
+					: `${id} effort changed by ${delta}, beyond the ${available} point(s) recorded for ${funding.join(", ")}.`,
+		});
+		return;
+	}
+	for (const findingId of funding) unspent.set(findingId, 0);
+	effortCorrections.push({
+		workItemId: id,
+		before: reviewed.effort,
+		after: final.effort,
+		findingIds: [...funding],
+	});
+}
+
+function totalEffort(ledger: ParsedDeliveryBudget): number {
+	return ledger.workItems.reduce((total, item) => total + item.effort, 0);
+}
+
+/**
  * Reconcile the final committed ledger against the reviewed ledger.
  * `admittedFindingIds` are the corrections the recorded route admitted;
  * empty for an ordinary ready approval, which must match exactly.
+ * `correctionBudget` is the route's recorded effort evidence; without it no
+ * effort change is admitted.
  */
 export function reconcileFinalApprovalLedger(input: {
 	reviewed: ParsedDeliveryBudget;
 	final: ParsedDeliveryBudget;
 	admittedFindingIds: readonly string[];
+	correctionBudget?: FinalCorrectionBudget | null;
 }): FinalLedgerReconciliation {
 	const admitted = new Set(input.admittedFindingIds);
 	const changes: FinalLedgerChange[] = [];
 	const additions: AddressAddition[] = [];
+	const effortCorrections: EffortCorrection[] = [];
+	const unspent: UnspentCorrectionEffort = new Map();
+	for (const correction of input.correctionBudget?.corrections ?? []) {
+		if (!admitted.has(correction.findingId)) continue;
+		if (!(correction.effortDelta > 0)) continue;
+		unspent.set(
+			correction.findingId,
+			(unspent.get(correction.findingId) ?? 0) + correction.effortDelta,
+		);
+	}
 	if (input.reviewed.estimateConfidence !== input.final.estimateConfidence) {
 		changes.push({
 			field: "estimateConfidence",
@@ -189,13 +284,46 @@ export function reconcileFinalApprovalLedger(input: {
 	for (const reviewed of input.reviewed.workItems) {
 		const final = finalById.get(reviewed.id);
 		if (!final) continue;
-		compareItem(reviewed, final, admitted, changes, additions);
+		compareItem(
+			reviewed,
+			final,
+			admitted,
+			unspent,
+			changes,
+			additions,
+			effortCorrections,
+		);
+	}
+	const corrected = effortCorrections.reduce(
+		(total, entry) => total + (entry.after - entry.before),
+		0,
+	);
+	if (corrected > 0) {
+		const reviewedEffort = totalEffort(input.reviewed);
+		const ceiling = input.correctionBudget?.effectiveCeiling ?? reviewedEffort;
+		if (corrected > FINAL_CORRECTION_EFFORT_LIMIT) {
+			changes.push({
+				field: "effort",
+				before: reviewedEffort,
+				after: reviewedEffort + corrected,
+				reason: `Final corrections add ${corrected} effort point(s); the final-corrections route admits at most ${FINAL_CORRECTION_EFFORT_LIMIT}.`,
+			});
+		}
+		if (reviewedEffort + corrected > ceiling) {
+			changes.push({
+				field: "effort",
+				before: reviewedEffort,
+				after: reviewedEffort + corrected,
+				reason: `Final corrections raise committed effort to ${reviewedEffort + corrected}, above the effective ceiling ${ceiling} recorded for the route.`,
+			});
+		}
 	}
 	if (changes.length > 0) return { ok: false, changes };
 	return {
 		ok: true,
 		ledger: structuredClone(input.final),
 		addressAdditions: additions,
+		effortCorrections,
 	};
 }
 

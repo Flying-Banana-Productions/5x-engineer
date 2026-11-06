@@ -4645,6 +4645,12 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 						final_blob_hash: finalization.payload.finalBlobHash,
 						address_additions: finalization.payload.addressAdditions,
 						recorded: !finalization.existing,
+						// Nonblocking: the committed blob's checklist has a
+						// deterministic repair, applied on this completed
+						// source before binding.
+						...(finalization.executability
+							? { committed_plan_executability: finalization.executability }
+							: {}),
 						// The committed blob is the anchor; working-tree edits
 						// are not part of this approval.
 						...(uncommittedPlanChanges

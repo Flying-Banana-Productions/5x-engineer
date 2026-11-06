@@ -177,6 +177,9 @@ function causesFor(input: {
 	return causes;
 }
 
+/** Most correction effort a one-pass `final_corrections` route admits. */
+export const FINAL_CORRECTION_EFFORT_LIMIT = 1;
+
 /**
  * `projectedEffort` is the committed-plan forecast before these final
  * corrections. The validator adds their effort exactly once.
@@ -194,7 +197,7 @@ export function validateFinalCorrections(input: {
 		(total, item) => total + (item.effortDelta ?? 0),
 		0,
 	);
-	if (effort > 1) reasons.push("effort_exceeded");
+	if (effort > FINAL_CORRECTION_EFFORT_LIMIT) reasons.push("effort_exceeded");
 	if (input.items.some((item) => (item.architectureDelta ?? 0) !== 0))
 		reasons.push("architecture_change");
 	if (input.items.some((item) => item.requiresReviewerVerification === true))
