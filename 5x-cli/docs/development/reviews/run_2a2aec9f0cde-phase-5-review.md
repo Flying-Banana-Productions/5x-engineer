@@ -98,3 +98,37 @@ No unrelated prior-phase defects are reopened. The coverage limitations above sh
 - [ ] R2: retain scoped selectors through apply and retry.
 
 After these mechanical W5 corrections and focused verification, no further plan or architectural decision is identified by this review.
+
+## Addendum (November 6, 2026) — R1/R2 closure
+
+**Reviewed:** `43fae815af285ef94f22e366ee02c9fa77f44f81`  
+**Authoritative closure range:** `2110de51ff5e07faa1fab709479e84e6d6a36ed7..43fae815af285ef94f22e366ee02c9fa77f44f81`, with the supplied plan/review/run-record exclusions.  
+**Governance context:** `55451bf1-7a2f-4cff-8832-0569f1dbfcb9`, enforced; required prior outcomes R1 and R2 only.
+
+### What's addressed
+
+- **R1 — addressed.** Both `src/templates/author-next-phase.md:37` and `src/templates/author-process-impl-review.md:45` now explicitly allow ordinary implementation, testing, and check-off of newly performed work before returning complete and before its first review. Recorded review/quality evidence is required only when checking off solely from carried historical evidence. The execution recovery recipe also expressly continues unimplemented remaining phases normally. Effective-render assertions cover both cases. The real CLI/Git lifecycle now goes beyond rendering Phase 2: it writes new implementation, checks repaired boxes, commits, and successfully records the Phase 2 complete author result while the only recorded reviewer step is still Phase 1's. Phase 2's quality run and first review then occur, followed by phase completion. The existing binding and single repair receipt remain unchanged.
+- **R2 — addressed.** Execution recovery now uses the preview's `.data.next[0]`, replacing only the operator-reason placeholder, and explicitly retains the exact phase/line selectors through apply, re-preview, and retry. A new real-CLI `--phase 1` regression first drops the selector and verifies stale refusal with unchanged plan bytes, HEAD, and receipt count. Applying the returned command then records the original instruction and intent, repairs Phase 1 only, and leaves later phase bullets untouched. Repeating that identical selector-preserving command returns the existing receipt without a new commit or receipt. Rendered-skill assertions cover selector retention in every delegation-mode case.
+
+### Local verification
+
+From `5x-cli/`:
+
+```bash
+bun test test/integration/commands/workflow-repair-e2e.test.ts test/unit/skills/implementation-review-governance.test.ts
+```
+
+**Result:** 34 passed, 0 failed, 828 assertions, 10.99 seconds. These are actual CLI/Git fixture and effective-render checks, not live agent or GitHub execution. The new scoped regression exercises phase selection; line-selection retention is explicit in the recipe, rather than a separate new CLI case.
+
+The full mandatory closure diff contains only the two author-prompt corrections, execution-skill correction, and their targeted regression additions. The governing plan, quality scripts, parallelism configuration, issue-delivery recipes, and approval/gate policy are unchanged. Independent current-commit lint/full-test/checklist success and the author's typecheck results were supplied by the orchestrator; those broader checks were not redundantly re-run in this closure review. Earlier coverage qualifications remain applicable except that the real lifecycle now also implements/checks off Phase 2 as described above.
+
+### Remaining concerns
+
+No remaining R1/R2 work and no new revision-caused material blocker identified. No unrelated missed or pre-existing issue is reopened.
+
+### Updated readiness
+
+- [x] R1 addressed: normal new-work check-off precedes first review; historical evidence-only check-off retains its evidence requirement.
+- [x] R2 addressed: scoped apply and retry retain the authorized selectors and operator reason.
+- **Phase 5 / W5 completion:** Ready.
+- **Overall approved plan readiness:** Ready on the previously approved W1–W4 dependencies and this W5 closure assessment; no new gate, amendment, or repeat authorization is required by this review.
