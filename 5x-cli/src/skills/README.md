@@ -13,6 +13,7 @@ src/skills/
     5x-plan/SKILL.tmpl.md
     5x-plan-review/SKILL.tmpl.md
     5x-phase-execution/SKILL.tmpl.md
+    5x-issue-resolution/SKILL.tmpl.md
     5x-config/SKILL.md   (static markdown; no native/invoke conditional blocks)
   renderer.ts            Conditional template renderer
   loader.ts              Template registry + render helpers

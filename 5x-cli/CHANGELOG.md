@@ -14,6 +14,21 @@ pending and may be deferred beyond 2.0.0.
 
 ### Features
 
+- **Explicit GitHub issue resolution** — new `5x-issue-resolution` skill
+  resolves one github.com issue in the current repository by composing the
+  existing plan, plan-review, and phase-execution workflows, with no new CLI
+  command, schema, or run type. A new `author-issue-intake` prompt (recorded as
+  `author:issue-intake` in phase `plan`, never implementation admission)
+  commits a write-once source snapshot and intake brief outside plan discovery.
+  Plan author/reviewer and implementation reviewer prompts gain compact-plan
+  and `## Issue Coverage` guidance gated on the brief marker; non-issue renders
+  are unchanged. Publication asks for operator authorization, PR bodies use
+  `Refs` only, merge stays external, and resume verifies delivery identity
+  from sealed run records before posting one marked resolution comment and
+  closing. A mandatory receipt preflight stops with `needs_human` and no
+  writes on duplicate or invalid receipts; external closures are reported as
+  `resolved_externally_closed_unverified` on every resume. Operator docs and a
+  manual smoke matrix (`docs/issue-resolution-smoke.md`) are included.
 - **Harness asset freshness** — installed harnesses track baked configuration
   and per-file hashes in `.5x-manifest.json`. Freshness warnings surface at
   `run init`, baked-key config changes, `config show`, and `harness list`.

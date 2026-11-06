@@ -47,6 +47,19 @@ the required failure behavior. Optional batching remains outside this change.
 -->
 <!-- 5x:note:end id="generator-design" -->
 
+<!-- 5x:note:start id="generator-compact" -->
+<!--
+Scale the plan to the work. Localized, low-uncertainty changes may use compact mode:
+one phase with its gate and checklist, keeping Overview, Design Decisions, the budget
+and surface snapshot, Files Touched, Tests, and Not In Scope. Keep Debt Claims only
+when a negative row needs them; add no timeline or filler phases. Uncertain scope,
+persistence, or authorization work is never forced compact. When requirements
+come from an issue brief, add an Issue Coverage section inside the contract that pins
+the brief commit, copies each acceptance criterion verbatim, and maps it to a work
+item, phase, and evidence. Acceptance criteria never go in the Addresses column.
+-->
+<!-- 5x:note:end id="generator-compact" -->
+
 **{Decision statement}.** {Rationale and trade-offs.}
 
 ## Delivery Budget

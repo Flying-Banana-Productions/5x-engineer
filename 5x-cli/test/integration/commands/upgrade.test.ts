@@ -1343,3 +1343,240 @@ describe("schema 1 workflow assets", () => {
 		{ timeout: 120000 },
 	);
 });
+
+describe("issue resolution workflow assets", () => {
+	const intakeVars = [
+		"--var",
+		"issue_ref=octo/widgets#42",
+		"--var",
+		"brief_dir=docs/development/issues/001-thing",
+		"--var",
+		"plan_path=docs/development/plans/001-thing.md",
+	];
+
+	function expectReceiptPreflightFirst(skill: string): void {
+		const preflight = skill.indexOf("**Receipt preflight (mandatory");
+		expect(preflight).toBeGreaterThan(-1);
+		for (const branch of [
+			"- a. Exactly one validated receipt",
+			"- f. Zero validated receipts",
+			"- g. Zero validated receipts",
+		]) {
+			const at = skill.indexOf(branch);
+			expect(at).toBeGreaterThan(preflight);
+		}
+	}
+
+	test(
+		"fresh OpenCode install and sync deliver 5x-issue-resolution without rewriting customized skills",
+		async () => {
+			const project = await setupProject();
+			try {
+				const install = await run5x(project, [
+					"harness",
+					"install",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(install.exitCode, install.stderr).toBe(0);
+				const skillPath = opencodePath(
+					project,
+					"skills",
+					"5x-issue-resolution",
+					"SKILL.md",
+				);
+				const skill = readFileSync(skillPath, "utf-8");
+				expect(skill).toContain("<!-- 5x:issue-source v1");
+				expect(skill).toContain("<!-- 5x:issue-resolution v1 source=");
+				expect(skill).toContain("<!-- 5x:issue-resolution-comment v1 source=");
+				expect(skill).toContain("closure=workflow");
+				expect(skill).toContain("closure=external");
+				expect(skill).toContain("Refs github.com/OWNER/REPO#42");
+				expect(skill).toContain("--reason completed");
+				expect(skill).toContain("resolved_externally_closed_unverified");
+				expect(skill).toContain("awaiting_merge");
+				expectReceiptPreflightFirst(skill);
+				const orchestrator = readFileSync(
+					opencodePath(project, "agents", "5x-orchestrator.md"),
+					"utf-8",
+				);
+				expect(orchestrator).toContain("5x-issue-resolution");
+				const foundation = readFileSync(
+					opencodePath(project, "skills", "5x", "SKILL.md"),
+					"utf-8",
+				);
+				expect(foundation).toContain("5x-issue-resolution");
+				expect(foundation).not.toContain("Receipt preflight");
+
+				rmSync(opencodePath(project, "skills", "5x-issue-resolution"), {
+					recursive: true,
+					force: true,
+				});
+				expect(existsSync(skillPath)).toBe(false);
+				const restored = await run5x(project, [
+					"harness",
+					"sync",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(
+					restored.exitCode,
+					`${restored.stdout}\n${restored.stderr}`,
+				).toBe(0);
+				expect(readFileSync(skillPath, "utf-8")).toBe(skill);
+
+				const planSkill = opencodePath(
+					project,
+					"skills",
+					"5x-plan",
+					"SKILL.md",
+				);
+				const customPlan = "# custom 5x-plan\n";
+				writeFileSync(planSkill, customPlan);
+				const preserved = await run5x(project, [
+					"harness",
+					"sync",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(preserved.exitCode).not.toBe(0);
+				expect(`${preserved.stdout}\n${preserved.stderr}`).toContain(
+					"local modifications",
+				);
+				expect(readFileSync(planSkill, "utf-8")).toBe(customPlan);
+				expect(readFileSync(skillPath, "utf-8")).toBe(skill);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
+	);
+
+	test(
+		"--install-templates scaffolds author-issue-intake; the override resolves and a stale copy warns",
+		async () => {
+			const project = await setupProject();
+			try {
+				const init = await run5x(project, [
+					"init",
+					"--install-templates",
+					"--force",
+				]);
+				expect(init.exitCode, `${init.stdout}\n${init.stderr}`).toBe(0);
+				const overridePath = join(
+					project.dir,
+					".5x",
+					"templates",
+					"prompts",
+					"author-issue-intake.md",
+				);
+				expect(readFileSync(overridePath, "utf-8")).toBe(
+					getDefaultTemplateRaw("author-issue-intake"),
+				);
+
+				const probe = "PROJECT-OVERRIDE-PROBE: intake override resolved.";
+				const customized = `${getDefaultTemplateRaw("author-issue-intake")}\n${probe}\n`;
+				writeFileSync(overridePath, customized);
+				const rendered = await run5x(project, [
+					"template",
+					"render",
+					"author-issue-intake",
+					...intakeVars,
+				]);
+				expect(
+					rendered.exitCode,
+					`${rendered.stdout}\n${rendered.stderr}`,
+				).toBe(0);
+				expect(rendered.stderr).not.toContain("older than bundled");
+				const prompt = envelopeData(rendered.stdout).prompt as string;
+				expect(prompt).toContain(probe);
+				expect(prompt).toContain("octo/widgets#42");
+				expect(envelopeData(rendered.stdout).step_name).toBe(
+					"author:issue-intake",
+				);
+
+				const stale = customized.replace(/^version: 1$/m, "version: 0");
+				expect(stale).not.toBe(customized);
+				writeFileSync(overridePath, stale);
+				const staleRender = await run5x(project, [
+					"template",
+					"render",
+					"author-issue-intake",
+					...intakeVars,
+				]);
+				expect(
+					staleRender.exitCode,
+					`${staleRender.stdout}\n${staleRender.stderr}`,
+				).toBe(0);
+				expect(staleRender.stderr).toContain("older than bundled");
+				expect(envelopeData(staleRender.stdout).prompt as string).toContain(
+					probe,
+				);
+				expect(readFileSync(overridePath, "utf-8")).toBe(stale);
+
+				const upgraded = await run5x(project, ["upgrade", "--no-sync"]);
+				expect(
+					upgraded.exitCode,
+					`${upgraded.stdout}\n${upgraded.stderr}`,
+				).toBe(0);
+				expect(upgraded.stdout).toContain("author-issue-intake");
+				expect(readFileSync(overridePath, "utf-8")).toBe(stale);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
+	);
+
+	test(
+		"mixed delegation (author invoke, reviewer native) installs only the matching skill branches",
+		async () => {
+			const project = await setupProject();
+			try {
+				for (const [key, value] of [
+					["author.delegationMode", "invoke"],
+					["reviewer.delegationMode", "native"],
+				] as const) {
+					const set = await run5x(project, ["config", "set", key, value]);
+					expect(set.exitCode, `${set.stdout}\n${set.stderr}`).toBe(0);
+				}
+				const install = await run5x(project, [
+					"harness",
+					"install",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(install.exitCode, install.stderr).toBe(0);
+				const skill = readFileSync(
+					opencodePath(project, "skills", "5x-issue-resolution", "SKILL.md"),
+					"utf-8",
+				);
+				expect(skill).toContain("**Author:** invoke (`5x invoke author ...`)");
+				expect(skill).toContain("5x invoke author author-issue-intake");
+				expect(skill).toContain(
+					"--record --record-step author:issue-intake --phase plan",
+				);
+				expect(skill).not.toContain('subagent_type="5x-plan-author"');
+				expect(skill).not.toContain("**Author:** native");
+				expect(skill).toContain(
+					"**Reviewer:** native (`5x-reviewer` via Task tool)",
+				);
+				expect(skill).not.toContain("**Reviewer:** invoke");
+				expectReceiptPreflightFirst(skill);
+				expect(
+					existsSync(opencodePath(project, "agents", "5x-plan-author.md")),
+				).toBe(false);
+				expect(
+					existsSync(opencodePath(project, "agents", "5x-reviewer.md")),
+				).toBe(true);
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 120000 },
+	);
+});

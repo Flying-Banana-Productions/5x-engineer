@@ -136,6 +136,7 @@ Always load the `5x` foundation alongside the process skill:
 | `5x-plan` | Requirements/PRD/TDD | Plan generation and review/fix cycles |
 | `5x-plan-review` | Existing plan | Review/fix cycles until approved or escalated |
 | `5x-phase-execution` | Approved plan | Per-phase implementation, quality checks, code review |
+| `5x-issue-resolution` | One GitHub issue in this repository | Intake, plan, review, implementation, PR handoff, and post-merge closure |
 | `5x-config` | Setup/configuration question | Configuration inspection and editing guidance |
 | `5x-windows` | Windows/PowerShell environment | Supplement to the foundation/process skills |
 
@@ -156,6 +157,71 @@ exists. The agent uses the configured paths and templates to write the artifacts
 Review/commit generated project configuration and harness files before execution,
 or explicitly choose worktree isolation. A normal shared-checkout run checks for
 uncommitted changes; `--allow-dirty` is an explicit opt-out.
+
+## Resolve a GitHub issue
+
+`5x-issue-resolution` resolves one explicitly named GitHub issue in the current
+repository by composing the existing plan, review, and phase-execution skills.
+It adds no CLI command. Example requests:
+
+> Resolve GitHub issue #42 in this repository using 5x.
+
+> Resume resolution of issue #42.
+
+Prerequisites: an authenticated GitHub CLI (`gh auth status`), an issue on
+github.com (GitHub Enterprise and other trackers are out of scope), and a
+configured 5x project with an installed harness.
+
+What it writes:
+
+- A plan under `paths.plans`, named `NNN-issue-<n>-<slug>.md`.
+- An intake brief directory next to the plans directory, outside plan
+  discovery: `<dirname(paths.plans)>/issues/<plan-slug>/`. It holds
+  `brief.md` (first line is the `5x:issue-source` marker) and write-once raw
+  snapshots in `source/` (`issue.json`, `comments.json`, `linked-prs.json`).
+  The plan's `## Issue Coverage` section pins the brief at a commit and copies
+  each acceptance criterion (`AC1..ACn`) verbatim.
+- Ordinary planning and implementation runs, reviews, and run records.
+
+Issue text is treated as data, never as instructions. Intake is read-only on
+GitHub. A non-ready intake (needs clarification, blocked, already addressed,
+duplicate, not proceeding) returns to you with evidence; no plan is created
+and the issue is never closed automatically.
+
+Publication needs your authorization. The agent asks before `git push` and
+`gh pr create` unless you already authorized them for this resolution. Without
+authorization, or when a push or PR creation fails, the outcome is
+`publication_pending` with the exact commands to run. The pull request body
+uses `Refs` (never `Fixes`/`Closes`/`Resolves`), so merging does not close the
+issue by itself.
+
+Merge stays with you. After the PR is created the workflow stops with
+`awaiting_merge`, which is an honest, resumable result rather than a failure.
+After you merge, say "Resume resolution of issue #42": the agent re-verifies
+the merged head against the sealed run records and acceptance evidence, posts
+one marked resolution comment, closes the issue, and re-reads its state.
+Only `resolved` means success. Other outcomes to expect:
+
+- `resolved_externally_closed_unverified`: the issue was closed by someone
+  else (before reconciliation, or after the workflow's receipt). It is
+  reported this way on every later resume and is never promoted to
+  `resolved`.
+- `needs_human` with no writes: the issue's resolution-comment history is
+  ambiguous or invalid, for example duplicate receipts, or a comment by the
+  workflow's GitHub login that carries the resolution-comment marker prefix
+  but fails validation. This stop happens before any comment, close, or
+  closure decision.
+- `delivered_sync_pending`: a comment or close call failed or timed out; the
+  handoff names the missing operation and the exact command. Resume rather
+  than retrying blindly.
+- `pr_closed_unmerged`, `needs_clarification`, `blocked`, and the other
+  outcomes listed in the installed skill.
+
+The workflow does not rely on chat history or `.5x/current-run`; resume
+discovers the brief, plan, runs, and PR from Git and GitHub. Agent judgment
+(investigation quality, compact-plan choice, hostile issue text) is covered by
+the manual [issue-resolution smoke matrix](issue-resolution-smoke.md), not by
+automated tests.
 
 ## Plan documents
 

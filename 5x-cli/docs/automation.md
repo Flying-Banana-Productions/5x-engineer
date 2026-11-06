@@ -25,7 +25,9 @@ configuration that run execution will use. The config envelope contains
 entry whose resolved value is `data.value`.
 
 Load the installed `5x` foundation with the applicable `5x-plan`,
-`5x-plan-review`, or `5x-phase-execution` skill. Use `5x-config` for setup and
+`5x-plan-review`, `5x-phase-execution`, or `5x-issue-resolution` skill
+(`5x-issue-resolution` composes the other three for one GitHub issue and runs
+them in the orchestrator itself). Use `5x-config` for setup and
 `5x-windows` on Windows/PowerShell. Keep the multi-step workflow in the
 orchestrator; delegate bounded author/reviewer tasks to workers.
 
