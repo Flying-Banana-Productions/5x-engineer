@@ -34,7 +34,6 @@ const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
 /** A backtick fence's info string may not contain backticks (CommonMark). */
 const BACKTICK_FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,})[^`]*$/;
 const COMMENT_OPEN_RE = /^[ \t]{0,3}<!--/;
-const INLINE_CODE_RE = /(`+)(?:(?!\1)[\s\S])*?\1(?!`)/g;
 
 /** The fence a line opens, or null when the line is not a fence opener. */
 function fenceOpener(line: string): string | null {
@@ -44,20 +43,57 @@ function fenceOpener(line: string): string | null {
 	return marker;
 }
 
+/** Length of the backtick run starting at `index`. */
+function backtickRun(text: string, index: number): number {
+	let end = index;
+	while (text[end] === "`") end++;
+	return end - index;
+}
+
 /**
- * Whether text leaves an HTML comment open at its end. Inline code spans
- * are ignored, so a literal `<!--` in backticks does not open a comment.
+ * Comment state after scanning `text` in lexical order, starting inside a
+ * comment when `inComment` is true. Inside a comment only its `-->`
+ * terminator is recognized; backticks there are literal text. Outside a
+ * comment, an inline code span (a backtick run closed by a run of the same
+ * length) is skipped, so a quoted `<!--` opens nothing; an unmatched
+ * backtick run is literal.
  */
-function leavesCommentOpen(text: string): boolean {
-	const visible = text.replace(INLINE_CODE_RE, "");
+function commentOpenAfter(text: string, inComment: boolean): boolean {
+	let comment = inComment;
 	let index = 0;
-	for (;;) {
-		const open = visible.indexOf("<!--", index);
-		if (open === -1) return false;
-		const close = visible.indexOf("-->", open + 4);
-		if (close === -1) return true;
-		index = close + 3;
+	while (index < text.length) {
+		if (comment) {
+			const close = text.indexOf("-->", index);
+			if (close === -1) return true;
+			comment = false;
+			index = close + 3;
+			continue;
+		}
+		if (text[index] === "`") {
+			const length = backtickRun(text, index);
+			let search = index + length;
+			let closed = -1;
+			while (search < text.length) {
+				const next = text.indexOf("`", search);
+				if (next === -1) break;
+				const run = backtickRun(text, next);
+				if (run === length) {
+					closed = next + run;
+					break;
+				}
+				search = next + run;
+			}
+			index = closed === -1 ? index + length : closed;
+			continue;
+		}
+		if (text.startsWith("<!--", index)) {
+			comment = true;
+			index += 4;
+			continue;
+		}
+		index++;
 	}
+	return comment;
 }
 
 /**
@@ -92,8 +128,7 @@ export function literalPlanLines(lines: readonly string[]): boolean[] {
 		}
 		if (comment) {
 			literal.push(true);
-			const close = line.indexOf("-->");
-			if (close !== -1) comment = leavesCommentOpen(line.slice(close + 3));
+			comment = commentOpenAfter(line, true);
 			continue;
 		}
 		const opener = fenceOpener(line);
@@ -104,11 +139,11 @@ export function literalPlanLines(lines: readonly string[]): boolean[] {
 		}
 		if (COMMENT_OPEN_RE.test(line)) {
 			literal.push(true);
-			comment = leavesCommentOpen(line);
+			comment = commentOpenAfter(line, false);
 			continue;
 		}
 		literal.push(false);
-		comment = leavesCommentOpen(line);
+		comment = commentOpenAfter(line, false);
 	}
 	return literal;
 }

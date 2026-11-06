@@ -431,6 +431,56 @@ Explanation <!--
 		expect(expectAligned(mixed).executable).toBe(true);
 	});
 
+	test("a backtick inside a comment is literal and cannot hide its terminator", () => {
+		const raw = `# Plan
+
+## Phase 1: Work
+
+<!-- Ignore this backtick: \` --> \`visible code\`
+
+- [ ] Real requirement
+`;
+		expect(parsePlan(raw).phases[0]?.items.map((item) => item.text)).toEqual([
+			"Real requirement",
+		]);
+		const result = expectAligned(raw);
+		expect(result.executable).toBe(true);
+		expect(result.diagnostics).toEqual([]);
+
+		// Without the task marker the actual list stays available to repair.
+		const plain = raw.replace("- [ ] Real requirement", "- Real requirement");
+		const diagnosed = expectAligned(plain);
+		expect(diagnosed.executable).toBe(false);
+		const issue = diagnosed.diagnostics[0];
+		expect(issue?.repair).toBe("select_lines");
+		expect(
+			issue?.candidates?.map((block) => [block.startLine, block.endLine]),
+		).toEqual([[7, 7]]);
+		const repair = planChecklistRepair({
+			anchorBytes: plain,
+			currentBytes: plain,
+			schema: 0,
+			selection: { lines: [{ start: 7, end: 7 }] },
+		});
+		expect(repair.ok && repair.edits.map((edit) => edit.after)).toEqual([
+			"- [ ] Real requirement",
+		]);
+
+		// The same holds when the comment closes on a later line.
+		const multiline = `# Plan
+
+## Phase 1: Work
+
+Note <!--
+backtick \` --> \`visible code\`
+- [ ] Real requirement
+`;
+		expect(
+			parsePlan(multiline).phases[0]?.items.map((item) => item.text),
+		).toEqual(["Real requirement"]);
+		expect(expectAligned(multiline).executable).toBe(true);
+	});
+
 	test("schema 1 notes and outside-contract examples cannot satisfy executability", () => {
 		const raw = `<!-- 5x:plan-schema:1 -->
 
