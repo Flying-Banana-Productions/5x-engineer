@@ -99,3 +99,53 @@ bun test test/unit/review-governance/plan-approval-finalization.test.ts test/uni
 - [ ] R2: Exact committed non-executable bytes cannot produce a ready finalization; the active source has the existing actionable recovery path.
 - [x] Incident's zero-effort Addresses lifecycle, immutable snapshots, legacy provenance and execution-amendment hash isolation have passing focused tests.
 - [x] Required focused asset acceptance command included in local verification.
+
+## Addendum (2026-11-06) — Close Phase 3 approval findings
+
+**Reviewed:** Authoritative closure range `5da6e5ce1dcbecc02b3f7ecd28a8543cd6e66520..7ca832fb36011dfab346bdcaead5536538ace3dd`, including author correction `b4a09f94711d93ed7f67d6620fff1146ef42b861` and operator-authored quality-performance correction `7ca832fb36011dfab346bdcaead5536538ace3dd`. Review context `230832df-ab18-4a8e-a463-b4e2f4923516`; same bound run, Phase 3/W3. This is closure of R1/R2 and review of revision-caused changes, not another exhaustive review.
+
+### What's addressed (✅)
+
+- **R1 — addressed: Preserve the existing final-correction effort allowance.** Re-anchored to `src/review-governance/implementation-state.ts` (`finalCorrectionBudget`, `terminalRoute`, `recordedFinalization`, and finalization preparation) and `src/review-governance/plan-approval-finalization.ts:179–327`. Recorded admitted findings now retain their effort evidence and effective ceiling. A work-item effort increase must be funded by a newly added admitted finding in its Addresses; funding is spent once, total added effort is bounded by the same `FINAL_CORRECTION_EFFORT_LIMIT` used by routing, and the effective ceiling is enforced. The record persists `correctionBudget`/`effortCorrections`, and source consumption re-proves them against the route and ledger. The positive one-point integration lifecycle completes and binds with one reviewer; negative tests reject zero-effort funding, unattributed or excessive increases, decreases, reused funding, over-ceiling changes and forged correction budgets. Original reviewer ledger immutability and execution-amendment exact-hash protections remain covered.
+
+- **R2 — addressed: Validate executability of the exact committed finalization blob.** Re-anchored to `src/review-governance/implementation-state.ts:2703–2722, 2817–2878` and completion's `committed_plan_executability` output. The shared validator now inspects the actual committed bytes before approval preparation. Missing phase structure, duplicate phase IDs and a checklist replaced by author-required prose return `PLAN_REPAIR_REQUIRED` before any finalization/completion record or seal; the run stays active with same-run recovery. Tests distinguish committed-invalid/working-valid from committed-valid/working-invalid and demonstrate successful completion after restoring the committed structure.
+
+### R2 contract reconciliation — mechanical repair remains supported
+
+The correction intentionally does **not** turn every empty checklist into a pre-seal refusal. For a mechanical or explicitly line-selected checklist repair, it validates the committed blob, returns its anchored diagnostics and concrete run-form repair command, and preserves completed-source repair before binding. I accept this as addressing R2 rather than partial completion: Design Decision 2, Phase 1 and the issue-workflow handoff explicitly support repair on a completed approval source. Design Decisions 3/4 require shared committed-byte validation and actionable recovery, not elimination of that approved repair path. The initial review's blanket wording that no non-executable bytes may produce a ready finalization was broader than necessary; its reproduced author-required structural failure is now blocked correctly.
+
+This is not an invented exception or a new approval. The finalized ledger/raw blob remains the source anchor, a repair receipt changes only authorized prefixes through the existing proof, and implementation author delegation still requires executable structure. The passing existing integration case “repairs a completed source before binding; the binding keeps its approval” exercises completion, source repair, evidence carry and unchanged binding approval identity with no extra reviewer. The new committed-blob unit case explicitly verifies the mechanical diagnostic and repair command. Requiring another approval or forcing source reopening here would contradict the approved low-friction recovery behavior.
+
+### Revision and operator quality fix
+
+The operator-authored performance work is preserved and reviewed as such, consistent with the supplied `author:operator-quality-fix` Phase 3 iteration 3 endpoint. The delta parallelizes test files with `--parallel=2`, pins Bun 1.4.4 in CI/release workflows, and reuses isolated copied Git/scaffold/DB fixtures instead of repeated initialization. Assertions and recovery paths are retained; the per-test timeout remains 15 seconds and the configured 300-second quality timeout was not increased. No product behavior, approval boundary or plan contract change is introduced by those test-runner/fixture changes. No revision-caused material blocker was found.
+
+The supplied independent current-endpoint quality result reports lint, the full suite in **176,297 ms** (below the unchanged 300-second limit), and checklist success after the operator-authorized retry. That is distinct from reviewer-local verification below; the two earlier quality timeouts are not represented as successful tests or attributed to an automated author's work.
+
+### Local verification
+
+From `5x-cli/`, ran:
+
+```sh
+bun test --concurrent --parallel=2 --timeout 15000 test/unit/review-governance/plan-approval-finalization.test.ts test/unit/review-governance/implementation-state.test.ts test/unit/review-governance/implementation-amendment-registration.test.ts test/integration/commands/plan-approval-finalization.test.ts test/integration/commands/plan-repair-checklists.test.ts test/integration/commands/implementation-completion.test.ts test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts
+# 142 pass, 0 fail; 1,617 assertions; 37.49 seconds
+
+bun test --concurrent --parallel=2 --timeout 15000 test/integration/commands/prompt-queue.test.ts test/integration/commands/prompt.test.ts test/integration/commands/run-control-plane-bootstrap.test.ts test/integration/records/progress-resolution.test.ts
+# 88 pass, 0 fail; 573 assertions; 15.93 seconds
+
+bun run typecheck
+# passed
+```
+
+Total reviewer-local focused verification: **230 tests passed, 0 failed, 2,190 assertions**, plus typecheck. Tests use isolated fixtures; no live sealed source or external project was mutated. The focused upgrade/skill acceptance suites were rerun. Skeletons, shipped prompts, runtime prompt builders and skills are unchanged in this correction range; their previously identified W4/W5 obligations remain later-phase work. No installer/override/synchronization mechanism change is needed for this correction.
+
+### Remaining concerns
+
+No remaining actionable R1/R2 issue and no new material blocker caused by this revision. No human policy decision is required. Ordinary previously missed issues were not reopened, and this addendum does not approve or execute later phases.
+
+### Updated readiness
+
+- [x] **R1 addressed:** An attributable, already-admitted one-point correction completes and binds without another reviewer; unauthorized effort remains rejected.
+- [x] **R2 addressed:** Exact committed bytes are diagnosed; author-required structural failures remain active and recoverable, while approved mechanical completed-source repair remains available.
+- **Phase 3/W3 completion:** ✅ Ready.
+- **Ready for next phase:** ✅ No remaining material blocker in this closure scope.
