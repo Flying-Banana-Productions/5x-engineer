@@ -1,6 +1,6 @@
 <!-- 5x:plan-schema:1 -->
 
-**Version:** 1.0
+**Version:** 1.1
 **Created:** November 6, 2026
 **Status:** Draft — pending review
 
@@ -39,6 +39,8 @@ The initial implementation review and quality successes are recorded facts, not 
 Build on the integrated implementations behind [plan 215](./215-implementation-plan-amendment-plan.md) and [plan 216](./216-plan-schema-contracts-and-migration-plan.md). Reuse the canonical effective-plan lineage, expected-schema readers, paired RecordStore append, Git blob verification, and existing gate/decision machinery. Code pointers above describe the inspected tree; re-anchor them during implementation.
 
 In scope: checklist diagnostics and repair; exact final-corrections approval consistency; truthful plan-defect review context; actionable gate routing; workflow guidance; replay and end-to-end regression coverage. The affected external project is evidence, not an implementation target.
+
+**Integration baseline.** This plan is integrated against main `6982a024`, which includes the issue-resolution merge `3387c4cc`. That merge adds an affected consumer, not a new dependency or policy: the `5x-issue-resolution` skill seals a planning run (Step 2), binds a separate implementation run with `--source-run $PLAN_RUN` (Step 3), and derives delivery identity from the binding's `approvedPlanCommit`, sealed `FINAL`, and settled review/correction evidence through its `accepted-intervals` and `classify-delivery` recipes (Step 5). Issue plans may use compact mode and carry a governing `## Issue Coverage` section pinned to a `Source brief` commit. The repair and finalization behavior in this plan must work through those handoffs and preserve that contract; it does not redesign issue intake, delivery, or GitHub closure policy.
 
 ## Design Decisions
 
@@ -109,6 +111,12 @@ Keep the existing `plan_defect` class and `plan-structure` boundary; do not add 
 
 Both native template rendering and invoke use the same context. Continued and fresh sessions receive the same plan authority. Keep plan-only changes out of code-diff freshness and code evidence; do not broaden the code review range simply to make a plan hunk available. A mechanical repair may start directly from operator intent or a structural diagnostic without first obtaining a reviewer finding. Real semantic plan defects retain the existing scoped amendment process.
 
+### 7. Issue-resolution consumers see repairs as evidence, not new approvals
+
+The `plan-checklist-repair` and `plan-approval-finalization` records, and their plan/record-only commits, are evidence for the issue workflow's delivery recipes, not reviewed endpoints. A repair receipt does not replace a settled review observation or an exact proof-bound correction, does not change the binding's `approvedPlanCommit` used as delivery `BASE`, and is not phase acceptance, acceptance-criterion evidence, or authority to publish or close an issue. Finalization feeds the binding through the existing explicit `--source-run` handoff. Source repairs before binding happen on the completed planning run; repairs after binding happen on the implementation run; neither reopens the sealed planning run or moves a binding back to it. Already-given operator authorization and settled evidence carry across that handoff without another issue-level approval, intake, association, or review.
+
+Repair and executability checks keep the issue-plan contract intact. A valid compact plan (one phase, prose completion gate, executable checklist, stable `W1`, valid budget) passes as written, with no filler phases, timeline, or full-skeleton expansion. The prefix proof already protects unrelated governing bytes. Acceptance makes the issue-specific invariants explicit: the `Source brief` line, verbatim `ACn` rows and their mappings, carried assumptions, and the brief's `source/` snapshots survive repair and finalization, and `ACn` IDs never enter `Addresses`. No Issue Coverage parser or runtime gate is added. Change the delivery recipes only if the regressions below expose a concrete incompatibility, and never widen accepted ranges or evidence exclusions to make a repair pass.
+
 ## Delivery Budget
 
 - Estimate confidence: medium
@@ -119,17 +127,17 @@ Both native template rendering and invoke use the same context. Continued and fr
 | W2 | Shared executability diagnostics and repair-first boundary integration | 3 | 1 | - | - | One shared validation result across parser/authority, CLI inspection, review, admission and completion callers; includes compatibility and false-positive tests. |
 | W3 | Final committed approval/ledger reconciliation | 5 | 1 | - | - | One finalization record extending existing completion/binding provenance, including sealed-source compatibility, final-corrections lifecycle and exact-blob tests. |
 | W4 | Actionable gate invariant and truthful plan-defect evidence | 3 | 0 | - | - | Repairs existing routing/composition/projection and review context; preserves current finding taxonomy and includes historical-recovery and native/invoke parity tests. |
-| W5 | Effective workflow assets and integrated low-friction acceptance | 3 | 0 | - | - | Updates shipped/configured skeletons, prompt variants and skills, then verifies installation/override behavior and the complete incident lifecycle; tests are included here and in W1–W4, not scored separately. |
+| W5 | Effective workflow assets and integrated low-friction acceptance | 5 | 0 | - | R1, R2 | Updates shipped/configured skeletons, prompt variants and skills, then verifies installation/override behavior and the complete incident lifecycle; tests are included here and in W1–W4, not scored separately. Effort rises 3 → 5 for the post-merge integration only: +1 (R1) corrects the asset inventory to the real revision and continued plan-review prompts plus the issue-resolution skill's Steps 2/3 handoff, with compact-plan and Issue Coverage preservation acceptance; +1 (R2) adds issue delivery-recipe and closure regressions for the new receipts. Architecture stays 0: no new boundary, record kind, parser, gate, or recipe redesign. |
 
 No debt credit is claimed. The new durable kinds are deliberately limited to mechanical repair and final approval provenance; they reuse the existing journal and index boundaries.
 
 ### Surface Snapshot
 
 - Subsystems: 5
-- Production files: 38
+- Production files: 40
 - Persistent/external boundaries: 2
 
-The subsystems are plan parsing/authority, CLI boundaries, review/approval governance, record projection, and workflow assets. The boundaries are the existing Git object/history boundary and RecordStore JSONL persistence with its derived SQLite index. The production inventory below counts 25 existing TypeScript modules, 3 proposed focused modules, and 10 shipped Markdown prompt/skill assets; the configured repository skeleton and tests are additional. No external service, new SQLite table, parallel workflow engine, or generic override framework is planned.
+The subsystems are plan parsing/authority, CLI boundaries, review/approval governance, record projection, and workflow assets (which include the issue-resolution skill). The boundaries are the existing Git object/history boundary and RecordStore JSONL persistence with its derived SQLite index; the issue workflow's GitHub publication path is exercised only through its existing stub-`gh` tests and is not changed. The production inventory below counts 25 existing TypeScript modules, 3 proposed focused modules, and 12 shipped Markdown prompt/skill assets (8 prompts, 4 skills). The integration revision removed the nonexistent `author-revise-plan.md` and added `author-process-plan-review.md`, `reviewer-plan-continued.md`, and `5x-issue-resolution/SKILL.tmpl.md`, a net change of +2. The configured repository skeleton and tests are additional. No external service, new SQLite table, parallel workflow engine, or generic override framework is planned.
 
 ## Phase 1: Operator-authorized mechanical repair (W1)
 
@@ -177,10 +185,14 @@ The subsystems are plan parsing/authority, CLI boundaries, review/approval gover
 
 ## Phase 5: Workflow assets and low-friction lifecycle acceptance (W5)
 
-**Completion gate:** Installed workflows can honor “fix the checklist and continue,” with one operator authorization, the same run, no unnecessary reviewer/quality loop and truthful remaining-work reporting.
+**Completion gate:** Installed workflows, including the issue-resolution workflow, can honor “fix the checklist and continue,” with one operator authorization, the same run, no unnecessary reviewer/quality loop and truthful remaining-work reporting. Mechanical repair and finalization records preserve the issue-plan contract and issue delivery identity without becoming approvals.
 
-- [ ] Update bundled and configured skeleton guidance, author generation/revision prompts and reviewer initial/continued prompts to use executable checklists, early repair and correctly scoped plan/code evidence rules.
+- [ ] Update bundled and configured skeleton guidance, `author-generate-plan.md`, the revision/final-corrections prompt `author-process-plan-review.md`, and the plan reviewer prompts `reviewer-plan.md` and `reviewer-plan-continued.md`, plus the implementation prompts in the asset matrix, to use executable checklists, early repair and correctly scoped plan/code evidence rules. Make only the guidance changes these surfaces need; record any surface left unchanged as unaffected, with the reason.
 - [ ] Update planning/review/execution skills for author-side draft repair and operator-authorized approved repair. Fix completion queries to `.data.phases[] | select(.id == ...)`; treat a missing selection as a diagnostic rather than proof of completion.
+- [ ] Assess `5x-issue-resolution` Steps 2 and 3. Add guidance only where the delegated `5x-plan`/`5x-plan-review`/`5x-phase-execution` behavior does not already carry repair through. Exercise finalization or source repair on the completed `$PLAN_RUN`, followed by an explicit `bind --source-run $PLAN_RUN`, and an active execution repair on the same `$IMPL_RUN`. Reuse the already-given authorization and evidence. Do not repeat planning, intake, or association, reopen the sealed planning run, move the binding, or add an issue-level approval.
+- [ ] Add compact issue-plan acceptance using `test/fixtures/issue-resolution/compact-plan.md` unchanged and effective renders of the generation and revision prompts. Executability accepts the fixture's one phase, prose gate and executable items without filler phases, a timeline, or skeleton expansion. If the fixture's task markers are removed, the existing draft repair still applies. Repair and finalization preserve the pinned `Source brief` line, verbatim `ACn` rows and mappings, carried assumptions and `source/` snapshots, and keep review-finding IDs alone in `Addresses`.
+- [ ] Add issue delivery-identity regressions in `test/integration/issue-resolution-recipes.test.ts`, extending `test/helpers/issue-delivery-fixtures.ts` only as needed. Run the shipped `accepted-intervals` and `classify-delivery` recipes over codec-valid `plan-checklist-repair` and `plan-approval-finalization` records and their plan/record-only commits. Cover three cases: an ordinary settled review carried across a mechanical repair, an exact proof-bound correction carried across a repair, and finalization-to-binding provenance where `BASE` is the binding's `approvedPlanCommit`. Assert that the original accepted code endpoints are unchanged, receipt commits classify as evidence only, no extra reviewer/quality invocation or replacement run occurs, and `delivery: ok` proceeds to the existing stub-`gh` reconciliation path.
+- [ ] Add a negative companion in the same suite. Unsettled or uncovered code beside a valid repair receipt still fails delivery and produces no success comment or close. Existing pre-admission, inter-phase, revert, prepared-only, malformed, missing-endpoint and divergent-ancestry rejections still pass. Change recipe text only if these cases expose a concrete incompatibility, and never widen ranges or exclusions or add a receipt-based approval or closure rule.
 - [ ] Carry an already-explicit operator repair instruction into the command; ask only when scope is genuinely ambiguous or expands. After successful repair, resume the interrupted checkpoint rather than requesting the same permission again.
 - [ ] Implement the asset-impact matrix below across native/invoke, fresh/continued sessions and configured template overrides. Inspect effective installed/rendered content and run the required upgrade/skill acceptance suite.
 - [ ] Add an isolated end-to-end fixture modeled on plan 568: approved malformed plan, existing ready code review/quality, one repair instruction, preserved evidence, checklist verification, phase completion and remaining-phase continuation. Assert run/source/budget continuity and reviewer/quality invocation counts.
@@ -192,10 +204,12 @@ The subsystems are plan parsing/authority, CLI boundaries, review/approval gover
 | Surface | Required change / acceptance |
 |---|---|
 | `src/templates/default-artifacts.ts` and configured repository plan skeleton | Require parser-recognized items in each phase; retain prose gate support. A custom skeleton's cosmetic differences are not grounds for refusal. |
-| `author-generate-plan.md`, `author-revise-plan.md`, `author-next-phase.md`, `author-process-impl-review.md` | Author owns draft repair; approved structural repairs use the operator-authorized command. Existing evidence can discharge unchanged requirements. |
-| `reviewer-plan.md`, `reviewer-commit.md`, `reviewer-commit-continued.md` | Executability preflight is deterministic; plan defects do not require fictitious code hunks. No invented findings to obtain repair authority. |
+| `author-generate-plan.md`, `author-process-plan-review.md`, `author-next-phase.md`, `author-process-impl-review.md` | Author owns draft repair; approved structural repairs use the operator-authorized command. Existing evidence can discharge unchanged requirements. `author-process-plan-review.md` is the revision and final-corrections consumer for W3. Generation and revision keep compact mode and preserve the existing Issue Coverage instructions: the pinned `Source brief`, verbatim `ACn` text and mappings, assumptions, untouched `source/` snapshots, and no `ACn` in `Addresses`. |
+| `reviewer-plan.md`, `reviewer-plan-continued.md`, `reviewer-commit.md`, `reviewer-commit-continued.md` | Executability preflight is deterministic; plan defects do not require fictitious code hunks. No invented findings to obtain repair authority. The initial and continued plan-review variants keep their pinned-brief Issue Coverage check unchanged and do not treat a mechanical repair as a coverage gap. |
 | Runtime-appended context | Shared native/invoke data supplies authoritative plan anchors, diagnostics and supported recovery commands even with older local prompt overrides. |
 | `src/skills/base/5x-plan/`, `5x-plan-review/`, `5x-phase-execution/` | Repair-before-refuse, one-pass finalization, exact CLI envelope fields, same-run recovery and no duplicate operator confirmations across relevant delegation modes. |
+| `src/skills/base/5x-issue-resolution/` | Steps 2/3: finalization or source repair on the sealed planning source, then an explicit `--source-run` bind and repair on the same implementation run, without repeated planning, intake, association or approval. Step 5 delivery recipes treat repair/finalization receipts as evidence only and keep `BASE`, accepted intervals and closure preconditions unchanged unless a regression shows a concrete incompatibility. Change only the guidance not already delegated to the planning, review and execution skills, and record any unaffected step. |
+| `author-issue-intake.md`, `author-fix-quality.md`; `5x`, `5x-config`, `5x-plan-migration`, `5x-windows` skills | Unaffected: intake, identity markers, discovery, quality-fix and schema-migration flows do not create, validate or repair phase checklists. Confirm this during the asset check rather than editing them. |
 | Installation, override resolution, upgrade, harness sync | Reuse existing asset ownership/freshness behavior. Preserve local edits, report stale assets, and test effective rendered behavior. Change installer mechanics only if focused acceptance exposes a concrete incompatibility. No new mandatory sync gate. |
 
 ## Files Touched
@@ -215,10 +229,11 @@ Paths below are relative to `5x-cli/` except the explicitly named repository ske
 | `src/review-governance/implementation.ts`, `routing.ts`, `store.ts`, `src/commands/implementation-review-context.ts`, `review-decision.handler.ts` | Gate invariant and historical corrective-review entry path. |
 | `src/review-governance/context.ts`, `code-diff.ts` | Runtime plan evidence alongside, rather than inside, code-hunk evidence. |
 | `src/templates/default-artifacts.ts`; repository `docs/_implementation_plan_template.md` | Executable and repair-friendly plan skeletons. |
-| `src/templates/author-generate-plan.md`, `author-revise-plan.md`, `author-next-phase.md`, `author-process-impl-review.md`, `reviewer-plan.md`, `reviewer-commit.md`, `reviewer-commit-continued.md` | Initial/continued author/reviewer guidance; these are 7 prompt assets. |
-| `src/skills/base/5x-plan/SKILL.tmpl.md`, `5x-plan-review/SKILL.tmpl.md`, `5x-phase-execution/SKILL.tmpl.md` | Planning, review and execution recovery; these are 3 skill assets. |
-| `test/unit/parsers/`, `test/unit/review-governance/`, `test/unit/commands/` | Pure proof/validation, admission/finalization/gate replay and command-handler regressions. |
+| `src/templates/author-generate-plan.md`, `author-process-plan-review.md`, `author-next-phase.md`, `author-process-impl-review.md`, `reviewer-plan.md`, `reviewer-plan-continued.md`, `reviewer-commit.md`, `reviewer-commit-continued.md` | Initial/continued author/reviewer guidance, including final corrections and Issue Coverage preservation; these are 8 prompt assets. |
+| `src/skills/base/5x-plan/SKILL.tmpl.md`, `5x-plan-review/SKILL.tmpl.md`, `5x-phase-execution/SKILL.tmpl.md`, `5x-issue-resolution/SKILL.tmpl.md` | Planning, review, execution and issue-handoff recovery; these are 4 skill assets. Change the issue skill only where its delegated behavior is not already enough. |
+| `test/unit/parsers/` (including `issue-plan-fixture.test.ts`), `test/unit/review-governance/`, `test/unit/commands/` | Pure proof/validation, compact issue-plan executability and preservation, admission/finalization/gate replay and command-handler regressions. `test/fixtures/issue-resolution/compact-plan.md` is used unchanged. |
 | `test/integration/commands/`, `test/unit/skills/implementation-review-governance.test.ts` | CLI lifecycle and effective workflow acceptance. |
+| `test/integration/issue-resolution-recipes.test.ts`, `test/helpers/issue-delivery-fixtures.ts` | Receipt and finalization delivery-identity, evidence-carry, negative-delivery and reconciliation regressions against the shipped recipes. |
 
 ## Tests and Acceptance
 
@@ -231,11 +246,19 @@ Paths below are relative to `5x-cli/` except the explicitly named repository ske
 | Unit/integration — W4 | Structural plan defect accepted without code hunk; empty negative response repair; enforced route implies discoverable actionable gate; replay/index parity. |
 | Installed/rendered assets — W5 | Configured and bundled skeletons, overrides, initial/continued prompts, native/invoke, corrected JSON examples and one-authorization orchestration. |
 | End-to-end — W5 | The original failure lifecycle becomes a bounded detour: diagnose, authorize repair once, preserve valid evidence, verify checklist, resume and complete. Count actual additional reviewer/quality invocations. |
+| Issue-plan contract — W5 | The compact fixture passes executability unchanged. Effective generation/revision and initial/continued plan-review renders keep compact and Issue Coverage guidance. Repair and finalization preserve the `Source brief`, verbatim `ACn` rows/mappings, assumptions and `source/` snapshots, with no `ACn` in `Addresses`. Issue skill Steps 2/3 take the source through finalization or repair, then an explicit bind, then same-run execution repair. |
+| Issue delivery identity — W5 | The shipped `accepted-intervals` and `classify-delivery` recipes carry settled review and proof-bound correction evidence across repair and finalization receipts. `BASE` and the accepted code endpoints stay unchanged, receipt commits are evidence only, and `delivery: ok` reaches the existing reconciliation path. Unsettled or uncovered code still fails delivery, with no success publication or close. |
 
 Required focused asset command (from `5x-cli/`):
 
 ```bash
 bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts
+```
+
+Required focused issue-consumer command (from `5x-cli/`):
+
+```bash
+bun test test/integration/issue-resolution-recipes.test.ts test/unit/parsers/issue-plan-fixture.test.ts
 ```
 
 Final implementation checks from the same directory: `bun run lint`, `bun run typecheck`, and `bun run test`. Follow `AGENTS.md` test-tier, Git fixture, subprocess environment and timeout conventions. Validation of this planning document requires schema/phase/budget parsing; it does not require running unrelated product tests.
@@ -253,6 +276,8 @@ Final implementation checks from the same directory: `bun run lint`, `bun run ty
 | Correction exceeds admitted scope | Same-run review/amendment with concrete delta, not an unusable sealed approval. |
 | Empty unexplained negative verdict | Correct the structured response using existing retry limits; do not create a human gate. |
 | Historical gate-less observation | Inspect despite the inconsistency, repair drift directly if needed, then record a truthful corrective review on the same run. |
+| Issue workflow reaches a repairable checklist defect at the planning/binding handoff | Repair or finalize the completed planning source, bind explicitly from it, and continue on the same implementation run; no repeated planning, intake or approval. |
+| Issue delivery reports a repair receipt beside unsettled or uncovered code | Delivery fails as it does today; settle the code through the ordinary review path. The receipt neither blocks a settled chain nor substitutes for one. |
 
 ## Issue Traceability
 
@@ -268,6 +293,7 @@ Final implementation checks from the same directory: `bun run lint`, `bun run ty
 | T8: preflight and honest recovery | W2/W5 / Phases 2 and 5, including the discovered CLI-envelope example bug. |
 | Operator can say “fix it and move on” | W1 is implemented first; Phase 5 verifies one authorization, no artificial review/gate prerequisite, no run restart and preserved valid work. |
 | Avoid new tripwires | Recovery must ship with each enforcing boundary; inspection remains available; cosmetics remain nonblocking; invocation counts are acceptance assertions. |
+| Integrated issue-resolution consumer (review R1, R2) | W5 / Phase 5: corrected prompt/skill inventory, issue-skill planning-to-binding handoff, compact and Issue Coverage preservation, and delivery-identity and closure regressions for repair/finalization receipts. |
 
 ## Not In Scope
 
@@ -275,6 +301,7 @@ Final implementation checks from the same directory: `bun run lint`, `bun run ty
 - Reopening the sealed Player Desk execution, changing its v1.2 fresh-execution decision, or modifying its application code, records or configuration.
 - General Markdown reformatting, phase renumbering, automatic semantic equivalence judgments, or broadening mechanical repair to real requirement/budget changes.
 - New provider integrations, external services, SQLite tables, lock implementations or mandatory asset-update approval flows.
+- Redesigning issue intake, association, delivery recipes, or GitHub closure policy; adding an Issue Coverage parser or gate; or requiring new review merely because a mechanical receipt exists.
 
 ## Estimated Timeline
 
@@ -284,7 +311,7 @@ Final implementation checks from the same directory: `bun run lint`, `bun run ty
 | 2 — Executability diagnostics and integration | 1–2 days |
 | 3 — Final-corrections approval consistency | 2–3 days |
 | 4 — Routing and plan evidence | 1–2 days |
-| 5 — Workflow assets and lifecycle acceptance | 1–2 days |
+| 5 — Workflow assets, issue-consumer and lifecycle acceptance | 2–3 days |
 
 ## Provenance
 
@@ -293,3 +320,10 @@ Source postmortem: `~/dev/player_desk/.5x/worktrees/568-impl-booking-modal-membe
 The operator reviewed the proposed scope on November 6, 2026 and emphasized that trivial workflow defects must be repairable at their direction without creating more tripwires. That requirement governs the repair-first ordering, direct operator authority, evidence preservation and invocation-count acceptance criteria above.
 
 <!-- 5x:contract:end -->
+
+## Revision History
+
+| Version | Date | Change |
+|---|---|---|
+| 1.0 | November 6, 2026 | Initial plan. |
+| 1.1 | November 6, 2026 | Focused post-merge integration revision for the review addendum “Integrated issue-resolution consumer”. Records the integration baseline as main `6982a024`, which includes issue merge `3387c4cc`, and adds Design Decision 7. **R1:** the asset inventory now names the real `author-process-plan-review.md` and `reviewer-plan-continued.md` in place of the nonexistent `author-revise-plan.md`, and adds the `5x-issue-resolution` Steps 2/3 handoff, compact-plan and Issue Coverage preservation acceptance, and unaffected-surface notes. **R2:** adds delivery-identity, evidence-carry, negative-delivery and reconciliation regressions for repair/finalization receipts against the shipped recipes. W5 effort changes 3 → 5 (+1 per finding, architecture 0), W5 `Addresses` is R1, R2, and production files change 38 → 40. W1–W5 IDs, phase order and the repair-first operator-authority requirements are unchanged. The orchestrator reported that the existing focused integrated tests passed 192/192 after a frozen-lockfile install. Those are baseline results, not evidence for the future repair implementation. |
