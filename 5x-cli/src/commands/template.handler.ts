@@ -21,6 +21,11 @@ import {
 	readAuthoritativeBudget,
 } from "../plan-schema/authority.js";
 import {
+	type ExecutabilityRepairSubject,
+	implementationPhaseExecutabilityGate,
+	planReviewExecutabilityGate,
+} from "../review-budget/plan-repair.js";
+import {
 	CodeDiffError,
 	readHeadCommit,
 	workdirCodeDiffGit,
@@ -418,6 +423,28 @@ export async function templateRender(
 				}
 			}
 		}
+		// The target phase must be executable before delegation. Recovery is
+		// the mechanical repair on this run (or file); the run is preserved.
+		const checkAuthorPhaseExecutable = (
+			planMarkdown: string | null,
+			subject: ExecutabilityRepairSubject,
+		) => {
+			if (planMarkdown === null) return;
+			const phase = canonicalPhaseId(
+				explicitVars.phase_number ?? mergedVars.phase_number ?? "",
+			);
+			if (!phase || phase === "plan") return;
+			const gate = implementationPhaseExecutabilityGate({
+				planMarkdown,
+				phase,
+				subject,
+			});
+			if (gate.status === "error") {
+				outputError(gate.code, gate.message, gate.detail);
+			}
+			if (gate.warning) warn(gate.warning);
+		};
+		let authorExecutabilityChecked = false;
 		if (renderBudgetContext) {
 			const admission = await ensureImplementationAdmission({
 				store: renderBudgetContext.store,
@@ -436,6 +463,13 @@ export async function templateRender(
 			) {
 				outputError(admission.code, admission.message, admission.detail);
 			}
+			authorExecutabilityChecked = true;
+			checkAuthorPhaseExecutable(
+				markdown,
+				admission.status === "bound"
+					? { kind: "run", runId: params.run }
+					: { kind: "file", planPath: resolvedPlanPath },
+			);
 			if (admission.status === "bound") {
 				const phase = canonicalPhaseId(
 					explicitVars.phase_number ?? mergedVars.phase_number ?? "",
@@ -471,6 +505,12 @@ export async function templateRender(
 				boundSourceRunId = admission.binding.sourceRunId;
 				boundMode = admission.binding.mode;
 			}
+		}
+		if (!authorExecutabilityChecked) {
+			checkAuthorPhaseExecutable(markdown, {
+				kind: "file",
+				planPath: resolvedPlanPath,
+			});
 		}
 	}
 
@@ -542,6 +582,33 @@ export async function templateRender(
 		});
 		if (ensured.status === "error") {
 			outputError(ensured.code, ensured.message, ensured.detail);
+		}
+	}
+	// A non-executable draft goes back to the author before any reviewer
+	// runs, in every review-budget mode (budget modes already checked it
+	// before capture above). No review or iteration is recorded.
+	if (
+		resolved.selectedTemplateName.replace(/-continued$/, "") ===
+			"reviewer-plan" &&
+		resolvedPlanPath
+	) {
+		const reviewPlanPath =
+			renderBudgetContext?.executionContext.effectivePlanPath ??
+			resolvedPlanPath;
+		let reviewMarkdown: string | null = null;
+		try {
+			reviewMarkdown = (
+				deps?.readPlan ?? ((path: string) => readFileSync(path, "utf-8"))
+			)(reviewPlanPath);
+		} catch {
+			reviewMarkdown = null;
+		}
+		if (reviewMarkdown !== null) {
+			const gate = planReviewExecutabilityGate({
+				planMarkdown: reviewMarkdown,
+				planPath: reviewPlanPath,
+			});
+			if (gate) outputError(gate.code, gate.message, gate.detail);
 		}
 	}
 	let prompt = resolved.prompt;

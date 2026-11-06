@@ -43,8 +43,10 @@ export function registerPlan(parent: Command) {
 		.command("phases")
 		.summary("Parse a plan and return its phases")
 		.description(
-			"Read an implementation plan file and extract its phase structure. Returns an\n" +
-				"array of phases with their names, descriptions, and step counts. If the plan\n" +
+			"Read an implementation plan file and extract its phase structure. Returns\n" +
+				".data.phases[] with id, title, done, checklist_total, checklist_done and\n" +
+				"executable, plus .data.executability diagnostics and repair commands. A phase\n" +
+				"with no executable checklist items is reported, not an error. If the plan\n" +
 				"has a mapped worktree copy, 5x prefers that file when it exists.",
 		)
 		.argument("<path>", "Path to implementation plan")
@@ -62,7 +64,9 @@ export function registerPlan(parent: Command) {
 			"after",
 			"\nExamples:\n" +
 				"  $ 5x plan phases docs/development/015-test-separation.md\n" +
-				"  $ 5x plan phases ./plan.md | jq '.data.phases[].name'\n" +
+				"  $ 5x plan phases ./plan.md | jq '.data.phases[] | {id, title, done}'\n" +
+				"  $ 5x plan phases ./plan.md | jq '.data.phases[] | select(.id == \"2\") | .done'\n" +
+				"  $ 5x plan phases ./plan.md | jq '.data.executability'\n" +
 				"  $ 5x plan phases ./plan.md --fetch\n" +
 				"  PS> $j = 5x plan phases .\\plan.md | ConvertFrom-Json\n" +
 				"  PS> $j.data.phases\n\n" +

@@ -31,7 +31,10 @@ import {
 	type EnsurePlanReviewBaselineResult,
 	ensurePlanReviewBaseline,
 } from "../review-budget/ensure-baseline.js";
-import { planReviewRepairGate } from "../review-budget/plan-repair.js";
+import {
+	planReviewExecutabilityGate,
+	planReviewRepairGate,
+} from "../review-budget/plan-repair.js";
 import {
 	encodeBudgetSnapshotPayload,
 	snapshotIdempotencyKey,
@@ -246,6 +249,16 @@ export async function composePlanReviewerRecord(input: {
 		const repair = planReviewRepairGate(input.planMarkdown);
 		if (repair) return repair;
 	}
+	const executability = planReviewExecutabilityGate({
+		planMarkdown: input.planMarkdown,
+		planPath: input.ctx.executionContext.effectivePlanPath,
+	});
+	if (executability) {
+		return {
+			...executability,
+			message: `${executability.message} If this occurred while recording, re-review the repaired plan before recording a verdict.`,
+		};
+	}
 	const snapshotsBefore = baseline
 		? input.ctx.store.listSnapshots(input.runId)
 		: [];
@@ -388,6 +401,12 @@ export function ensurePlanReviewBaselineForContext(input: {
 		const repair = planReviewRepairGate(input.planMarkdown);
 		if (repair) return repair;
 	}
+	// Before any capture: a non-executable draft returns to the author.
+	const executability = planReviewExecutabilityGate({
+		planMarkdown: input.planMarkdown,
+		planPath: input.ctx.executionContext.effectivePlanPath,
+	});
+	if (executability) return executability;
 	if (input.capture === false && !input.optIn) {
 		return { status: "skipped", reason: baseline ? "already" : "v1_compat" };
 	}

@@ -76,7 +76,11 @@ const budgetPlan = `## Delivery Budget
 ### Surface Snapshot
 - Subsystems: 1
 - Production files: 1
-- Persistent/external boundaries: 0`;
+- Persistent/external boundaries: 0
+
+## Phase 1: Work
+
+- [ ] Do the work`;
 
 function cleanupDir(dir: string): void {
 	try {

@@ -10,6 +10,7 @@
 
 import { createHash } from "node:crypto";
 import {
+	literalPlanLines,
 	type PhaseSectionRange,
 	parsePlan,
 	phaseSectionRanges,
@@ -27,7 +28,6 @@ const LIST_ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(\S.*)$/;
 const TASK_ITEM =
 	/^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)\[([ xX])\]([ \t]+)(\S.*)$/;
 const TASK_PREFIX = /^\[[ xX]\]/;
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const COMPLETION_GATE = /^\*\*Completion gate:\*\*/;
 const GATE_LABEL =
 	/^(?:completion gate|completion criteria|exit criteria|checklist|tasks?|task list|deliverables|work items?|steps|implementation steps|acceptance criteria|acceptance|definition of done|done when|to ?do)\b/i;
@@ -273,25 +273,12 @@ function lineInfo(document: LoadedPlanDocument): {
 	const ranges = phaseSectionRanges(document.authorityMarkdown);
 	const authority = splitLinesWithEndings(document.authorityMarkdown);
 	const info: LineInfo[] = [];
-	let fence: string | null = null;
+	// Same fence/comment rule as the phase parser, so list scope and item
+	// counts cannot disagree.
+	const literal = literalPlanLines(authority.map((line) => line.text));
 	for (let index = 0; index < lines.length; index++) {
 		const lineNumber = index + 1;
-		const text = authority[index]?.text ?? "";
-		const opener = text.match(FENCE)?.[1] ?? null;
-		let inFence = fence !== null;
-		if (fence !== null) {
-			if (
-				opener &&
-				opener[0] === fence[0] &&
-				opener.length >= fence.length &&
-				text.trim() === opener
-			) {
-				fence = null;
-			}
-		} else if (opener) {
-			fence = opener;
-			inFence = true;
-		}
+		const inFence = literal[index] ?? false;
 		const range = ranges.find(
 			(entry) => lineNumber > entry.startLine && lineNumber <= entry.endLine,
 		);
@@ -1188,4 +1175,192 @@ export function mapSpanThroughChecklistRepair(input: {
 	const mapped = Buffer.from(input.afterBytes, "utf8").subarray(start, end);
 	if (!original.equals(mapped)) return failure;
 	return { ok: true, start, end };
+}
+
+// ---------------------------------------------------------------------------
+// Executability diagnostics
+// ---------------------------------------------------------------------------
+
+export type PlanExecutabilityCode =
+	| "PLAN_NO_PHASES"
+	| "PLAN_PHASE_ID_DUPLICATE"
+	| "PLAN_PHASE_NO_CHECKLIST"
+	| "PLAN_PHASE_PLAIN_GATE_ITEMS";
+
+/**
+ * How a diagnostic is repaired. `mechanical`: the deterministic candidate
+ * converts the phase's gate list. `select_lines`: a candidate list exists but
+ * must be selected once with `--phase`/`--lines`. `author`: requirements,
+ * phase headings or ids need author work (or a scoped amendment once approved).
+ */
+export type PlanExecutabilityRepair = "mechanical" | "select_lines" | "author";
+
+export interface PlanExecutabilityDiagnostic {
+	code: PlanExecutabilityCode;
+	/** `error` makes the plan non-executable; `warning` never blocks. */
+	severity: "error" | "warning";
+	phase: string | null;
+	/** 1-based raw line of the phase heading, when one applies. */
+	line: number | null;
+	message: string;
+	repair: PlanExecutabilityRepair;
+	/** Candidate lists for a `select_lines` repair. */
+	candidates?: ChecklistCandidateBlock[];
+}
+
+export interface PlanPhaseExecutability {
+	id: string;
+	line: number;
+	items: number;
+	checked: number;
+	executable: boolean;
+	/** Zero items with a `COMPLETE` heading: displayed done, not executable. */
+	markedCompleteWithoutItems: boolean;
+}
+
+export interface PlanExecutability {
+	executable: boolean;
+	schema: PlanSchema;
+	phases: PlanPhaseExecutability[];
+	diagnostics: PlanExecutabilityDiagnostic[];
+}
+
+/** Top-level task markers the phase parser does not count (`*`, `+`, `1)`). */
+const UNRECOGNIZED_TASK = /^(?:[*+]|\d{1,9}\))[ \t]+\[[ xX]\]/;
+
+/**
+ * Shared executability result over the authoritative phase parse. Reads
+ * only governing content under `expected`: schema 1 notes and text outside
+ * the contract are masked, and fenced or commented examples are skipped by
+ * the same rule the parser uses, so counts here equal `parsePlan` counts.
+ * Errors: no phases, duplicate phase ids, phases with zero executable items
+ * (a `COMPLETE` heading does not make zero items executable). Warnings: a
+ * gate list that mixes task and plain top-level items. Ordinary explanatory
+ * bullets and prose completion gates produce nothing.
+ */
+export function diagnosePlanExecutability(
+	raw: string,
+	expected: ExpectedPlanSchema,
+):
+	| { ok: true; result: PlanExecutability }
+	| {
+			ok: false;
+			code: "PLAN_SCHEMA_INVALID" | "PLAN_SCHEMA_UNSUPPORTED";
+			message: string;
+	  } {
+	const loaded = loadForRepair(raw, expected);
+	if (!loaded.ok) return loaded;
+	return { ok: true, result: executabilityOfDocument(loaded.document) };
+}
+
+function executabilityOfDocument(
+	document: LoadedPlanDocument,
+): PlanExecutability {
+	const plan = parsePlan(document.authorityMarkdown);
+	const ranges = phaseSectionRanges(document.authorityMarkdown);
+	const authority = splitLinesWithEndings(document.authorityMarkdown);
+	const candidate = planChecklistRepair({
+		anchorBytes: document.raw,
+		currentBytes: document.raw,
+		schema: document.schema,
+	});
+	const edits = candidate.ok ? candidate.edits : [];
+	const unresolved = candidate.ok ? candidate.unresolved : [];
+	const diagnostics: PlanExecutabilityDiagnostic[] = [];
+	if (plan.phases.length === 0) {
+		diagnostics.push({
+			code: "PLAN_NO_PHASES",
+			severity: "error",
+			phase: null,
+			line: null,
+			message:
+				"The plan has no governing `## Phase N:` heading, so no phase can be executed. Adding phases is author work, not a mechanical repair.",
+			repair: "author",
+		});
+	}
+	const seen = new Map<string, number>();
+	const phases: PlanPhaseExecutability[] = [];
+	for (let position = 0; position < plan.phases.length; position++) {
+		const phase = plan.phases[position];
+		if (!phase) continue;
+		const id = phase.number;
+		const occurrences = (seen.get(id) ?? 0) + 1;
+		seen.set(id, occurrences);
+		if (occurrences === 2) {
+			diagnostics.push({
+				code: "PLAN_PHASE_ID_DUPLICATE",
+				severity: "error",
+				phase: id,
+				line: phase.line,
+				message: `Phase id ${id} is repeated (line ${phase.line}), so the phase cannot be selected unambiguously. Renumbering phases is author work.`,
+				repair: "author",
+			});
+		}
+		const items = phase.items.length;
+		const phaseEdits = edits.filter((edit) => edit.phase === id);
+		if (items === 0) {
+			const issue = unresolved.find((entry) => entry.phase === id);
+			const repair: PlanExecutabilityRepair =
+				phaseEdits.length > 0 && occurrences === 1
+					? "mechanical"
+					: issue && issue.kind !== "needs_author"
+						? "select_lines"
+						: "author";
+			const range = ranges[position];
+			const unrecognized =
+				range !== undefined &&
+				authority
+					.slice(range.startLine, range.endLine)
+					.some((line) => UNRECOGNIZED_TASK.test(line.text));
+			const heading = phase.isComplete
+				? " Its heading says COMPLETE, but zero items are not executable."
+				: "";
+			const how =
+				repair === "mechanical"
+					? `A deterministic mechanical repair converts ${phaseEdits.length} plain gate-list item(s) to unchecked task markers.`
+					: repair === "select_lines"
+						? `${issue?.message ?? "Select the gate list once with --phase and --lines."}`
+						: unrecognized
+							? "Its task markers use a form the parser does not count (use `- [ ]` or `1. [ ]`); that needs author work."
+							: (issue?.message ??
+								"There is no list to convert; missing requirements need author work.");
+			diagnostics.push({
+				code: "PLAN_PHASE_NO_CHECKLIST",
+				severity: "error",
+				phase: id,
+				line: phase.line,
+				message: `Phase ${id} has no executable checklist items.${heading} ${how}`,
+				repair,
+				...(repair === "select_lines" && issue
+					? { candidates: issue.candidates }
+					: {}),
+			});
+		} else if (phaseEdits.length > 0) {
+			diagnostics.push({
+				code: "PLAN_PHASE_PLAIN_GATE_ITEMS",
+				severity: "warning",
+				phase: id,
+				line: phase.line,
+				message: `Phase ${id} has a completion-gate list mixing task items with ${phaseEdits.length} plain item(s) the parser does not count. A mechanical repair can add unchecked markers; this does not block.`,
+				repair: "mechanical",
+			});
+		}
+		phases.push({
+			id,
+			line: phase.line,
+			items,
+			checked: phase.items.filter((item) => item.checked).length,
+			executable: items > 0,
+			markedCompleteWithoutItems: items === 0 && phase.isComplete,
+		});
+	}
+	for (const entry of phases) {
+		if ((seen.get(entry.id) ?? 0) > 1) entry.executable = false;
+	}
+	return {
+		executable: !diagnostics.some((entry) => entry.severity === "error"),
+		schema: document.schema,
+		phases,
+		diagnostics,
+	};
 }

@@ -30,6 +30,57 @@ const SUBHEADING_ITEM_RE = /^#{3,}\s+(.+?)\s*\[([xX ])\]\s*$/;
 const METADATA_RE = /^\*\*(\w[\w\s]*):\*\*\s*(.+)$/;
 const COMPLETION_GATE_RE = /^\*\*Completion gate:\*\*\s*(.+)$/;
 const COMPLETE_SUFFIX_RE = /\s*[-–—]\s*COMPLETE\s*$/i;
+const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+const COMMENT_OPEN_RE = /^[ \t]{0,3}<!--/;
+
+/**
+ * Lines that are literal example or commentary text rather than plan
+ * structure: fenced code blocks (delimiters included) and HTML comment
+ * blocks that start a line. Phase headings, completion gates and checklist
+ * items on these lines do not count. {@link parsePlan},
+ * {@link phaseSectionRanges} and executability diagnostics share this one
+ * rule so their counts cannot disagree. Indexes are 0-based line positions
+ * of `markdown.split(/\r\n|\n|\r/)`.
+ */
+export function literalPlanLines(lines: readonly string[]): boolean[] {
+	const literal: boolean[] = [];
+	let fence: string | null = null;
+	let comment = false;
+	for (const line of lines) {
+		if (fence !== null) {
+			literal.push(true);
+			const marker = line.match(FENCE_RE)?.[1] ?? null;
+			if (
+				marker !== null &&
+				marker[0] === fence[0] &&
+				marker.length >= fence.length &&
+				line.slice(line.indexOf(marker) + marker.length).trim().length === 0
+			) {
+				fence = null;
+			}
+			continue;
+		}
+		if (comment) {
+			literal.push(true);
+			if (line.includes("-->")) comment = false;
+			continue;
+		}
+		const opener = line.match(FENCE_RE)?.[1] ?? null;
+		if (opener !== null) {
+			fence = opener;
+			literal.push(true);
+			continue;
+		}
+		if (COMMENT_OPEN_RE.test(line)) {
+			literal.push(true);
+			const rest = line.slice(line.indexOf("<!--") + 4);
+			if (!rest.includes("-->")) comment = true;
+			continue;
+		}
+		literal.push(false);
+	}
+	return literal;
+}
 
 export function parsePlan(markdown: string): ParsedPlan {
 	const lines = markdown.split(/\r\n|\n|\r/);
@@ -61,8 +112,10 @@ export function parsePlan(markdown: string): ParsedPlan {
 	// Parse phases
 	const phases: Phase[] = [];
 	let currentPhaseIdx = -1;
+	const literal = literalPlanLines(lines);
 
 	for (let i = 0; i < lines.length; i++) {
+		if (literal[i]) continue;
 		const line = lines[i] ?? "";
 		const lineNum = i + 1;
 
@@ -186,7 +239,9 @@ export function phaseSectionRanges(markdown: string): PhaseSectionRange[] {
 	const lines = markdown.split(/\r\n|\n|\r/);
 	const ranges: PhaseSectionRange[] = [];
 	let open: PhaseSectionRange | null = null;
+	const literal = literalPlanLines(lines);
 	for (let i = 0; i < lines.length; i++) {
+		if (literal[i]) continue;
 		const line = lines[i] ?? "";
 		const lineNum = i + 1;
 		const phaseMatch = line.match(PHASE_HEADING_RE);

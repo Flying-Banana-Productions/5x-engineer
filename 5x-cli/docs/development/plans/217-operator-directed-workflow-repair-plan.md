@@ -154,12 +154,12 @@ The subsystems are plan parsing/authority, CLI boundaries, review/approval gover
 
 **Completion gate:** The zero-checklist plan is detected before review/delegation, but inspection and its repair remain usable and ordinary valid prose/list formatting is accepted.
 
-- [ ] Add shared executability diagnostics over authoritative phase parsing, including no phases, duplicate IDs and zero-item phases, with precise locations and deterministic-repair availability.
-- [ ] Ensure fences, notes, comments and outside-contract examples cannot satisfy executability; keep parser counts and validation aligned and preserve currently supported executable marker forms.
-- [ ] Add nonblocking validity/repair information to `plan phases` and correct its help example's field names. Do not break inspection or historical progress reporting simply because a phase has zero items.
-- [ ] Integrate repair-first checks before plan reviewer preparation/recording and implementation author admission/resume, and reuse them at finalization/completion. Cover enforced, advisory, off and non-budgeted flows without making recovery depend on budget mode.
-- [ ] Automatically route deterministic unapproved-draft repairs to the author without a human gate or consumed reviewer iteration. For approved plans, return the exact Phase 1 repair command and preserve the active run.
-- [ ] Test the original three-phase fixture, a zero-item COMPLETE heading, nested-only items, ordinary explanatory bullets, prose completion gates, valid checkboxes, and schema 0/1 authority. Every new blocking diagnostic has a tested successful recovery path.
+- [x] Add shared executability diagnostics over authoritative phase parsing, including no phases, duplicate IDs and zero-item phases, with precise locations and deterministic-repair availability.
+- [x] Ensure fences, notes, comments and outside-contract examples cannot satisfy executability; keep parser counts and validation aligned and preserve currently supported executable marker forms.
+- [x] Add nonblocking validity/repair information to `plan phases` and correct its help example's field names. Do not break inspection or historical progress reporting simply because a phase has zero items.
+- [x] Integrate repair-first checks before plan reviewer preparation/recording and implementation author admission/resume, and reuse them at finalization/completion. Cover enforced, advisory, off and non-budgeted flows without making recovery depend on budget mode.
+- [x] Automatically route deterministic unapproved-draft repairs to the author without a human gate or consumed reviewer iteration. For approved plans, return the exact Phase 1 repair command and preserve the active run.
+- [x] Test the original three-phase fixture, a zero-item COMPLETE heading, nested-only items, ordinary explanatory bullets, prose completion gates, valid checkboxes, and schema 0/1 authority. Every new blocking diagnostic has a tested successful recovery path.
 
 ## Phase 3: Consistent final-corrections approval (W3)
 

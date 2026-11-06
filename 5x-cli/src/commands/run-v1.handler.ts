@@ -122,6 +122,7 @@ import {
 	readAuthoritativeBudget,
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
+import { diagnosePlanExecutability } from "../plan-schema/checklist-repair.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
@@ -137,6 +138,7 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
+import { executabilityRepairCommands } from "../review-budget/plan-repair.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationCorrectionAttemptPayload,
@@ -4419,6 +4421,7 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		);
 	}
 
+	let planExecutability: Record<string, unknown> | null = null;
 	if (status === "completed") {
 		try {
 			const budgetStore = createReviewBudgetStore(recordCtx.recordStore);
@@ -4462,6 +4465,11 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 					controlPlane,
 					recordStore: recordCtx.recordStore,
 				});
+			} else if (!hasBinding) {
+				planExecutability = planRunExecutability(
+					recordCtx.executionContext.effectivePlanPath,
+					runId,
+				);
 			}
 		} catch (err) {
 			if (err instanceof RecordError) {
@@ -4574,7 +4582,36 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		...(restrictions.length > 0
 			? { operating_restrictions: restrictions }
 			: {}),
+		// Nonblocking: a completed approval source is repaired on this run
+		// before binding, without reopening it or a new review.
+		...(planExecutability ? { plan_executability: planExecutability } : {}),
 	});
+}
+
+/**
+ * Finalization check for a plan run with no implementation binding. Never
+ * blocks completion: the completed source is repairable with the run form.
+ */
+function planRunExecutability(
+	planPath: string,
+	runId: string,
+): Record<string, unknown> | null {
+	let markdown: string;
+	try {
+		markdown = readFileSync(planPath, "utf-8");
+	} catch {
+		return null;
+	}
+	const diagnosed = diagnosePlanExecutability(markdown, "file");
+	if (!diagnosed.ok || diagnosed.result.executable) return null;
+	const errors = diagnosed.result.diagnostics.filter(
+		(entry) => entry.severity === "error",
+	);
+	return {
+		executable: false,
+		diagnostics: errors,
+		next: executabilityRepairCommands(errors, { kind: "run", runId }),
+	};
 }
 
 export async function runV1Reopen(params: RunReopenParams): Promise<void> {

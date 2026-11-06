@@ -62,6 +62,11 @@ import type {
 	RunResult,
 } from "../providers/types.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import {
+	type ExecutabilityRepairSubject,
+	implementationPhaseExecutabilityGate,
+	planReviewExecutabilityGate,
+} from "../review-budget/plan-repair.js";
 import type { ImplementationCreditReconciliationPayload } from "../review-budget/record-lines.js";
 import {
 	CodeDiffError,
@@ -595,6 +600,28 @@ export async function invokeAgent(
 				}
 			}
 		}
+		// The target phase must be executable before delegation. Recovery is
+		// the mechanical repair on this run (or file); the run is preserved.
+		const checkAuthorPhaseExecutable = (
+			planMarkdown: string | null,
+			subject: ExecutabilityRepairSubject,
+		) => {
+			if (planMarkdown === null) return;
+			const phase = canonicalPhaseId(
+				params.phase ?? mergedVars.phase_number ?? "",
+			);
+			if (!phase || phase === "plan") return;
+			const gate = implementationPhaseExecutabilityGate({
+				planMarkdown,
+				phase,
+				subject,
+			});
+			if (gate.status === "error") {
+				outputError(gate.code, gate.message, gate.detail);
+			}
+			if (gate.warning) warn(gate.warning);
+		};
+		let authorExecutabilityChecked = false;
 		if (budgetContext) {
 			const admission = await ensureImplementationAdmission({
 				store: budgetContext.store,
@@ -613,6 +640,13 @@ export async function invokeAgent(
 			) {
 				outputError(admission.code, admission.message, admission.detail);
 			}
+			authorExecutabilityChecked = true;
+			checkAuthorPhaseExecutable(
+				markdown,
+				admission.status === "bound"
+					? { kind: "run", runId: params.run }
+					: { kind: "file", planPath: resolvedPlanPath },
+			);
 			if (admission.status === "bound") {
 				const phase = canonicalPhaseId(
 					params.phase ?? mergedVars.phase_number ?? "",
@@ -695,6 +729,12 @@ export async function invokeAgent(
 				}
 			}
 		}
+		if (!authorExecutabilityChecked) {
+			checkAuthorPhaseExecutable(markdown, {
+				kind: "file",
+				planPath: resolvedPlanPath,
+			});
+		}
 	}
 	const roleConfig = config[role] as Record<string, unknown>;
 	const providerName =
@@ -753,6 +793,18 @@ export async function invokeAgent(
 				: ({ status: "skipped", reason: "off" } as const);
 		if (ensured.status === "error") {
 			outputError(ensured.code, ensured.message, ensured.detail);
+		}
+		// A non-executable draft goes back to the author before the reviewer
+		// is invoked, in every review-budget mode. No iteration is consumed.
+		if (
+			resolved.selectedTemplateName.replace(/-continued$/, "") ===
+			"reviewer-plan"
+		) {
+			const gate = planReviewExecutabilityGate({
+				planMarkdown,
+				planPath: budgetContext.executionContext.effectivePlanPath,
+			});
+			if (gate) outputError(gate.code, gate.message, gate.detail);
 		}
 		optInCapturedBeforeInvoke =
 			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";

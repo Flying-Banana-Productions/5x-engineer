@@ -168,28 +168,50 @@ async function startRun(dir: string, planPath: string): Promise<string> {
 	return String(init.data?.run_id);
 }
 
-async function approveAndComplete(dir: string, runId: string): Promise<void> {
-	ok(
-		await cli(
-			dir,
-			[
-				"protocol",
-				"validate",
-				"reviewer",
-				"--run",
-				runId,
-				"--record",
-				"--step",
-				"reviewer:plan",
-				"--phase",
-				"plan",
-				"--iteration",
-				"0",
-			],
-			READY,
-		),
+/**
+ * A legacy approval of the incident shape. Current CLIs refuse to record a
+ * verdict on a non-executable plan, so the verdict is recorded against an
+ * executable working copy while the committed plan, which the completed
+ * run seals as its approval anchor, keeps the malformed bytes. This is the
+ * historical state the run-form repair recovers.
+ */
+async function approveAndComplete(
+	dir: string,
+	runId: string,
+): Promise<Envelope> {
+	const planPath = join(dir, "docs", "development", "plans", "preview.md");
+	const committed = readFileSync(planPath, "utf8");
+	const phases = committed.indexOf("## Phase 1");
+	writeFileSync(
+		planPath,
+		committed.slice(0, phases) +
+			committed.slice(phases).replace(/^- (?!\[)/gm, "- [ ] "),
 	);
-	ok(
+	try {
+		ok(
+			await cli(
+				dir,
+				[
+					"protocol",
+					"validate",
+					"reviewer",
+					"--run",
+					runId,
+					"--record",
+					"--step",
+					"reviewer:plan",
+					"--phase",
+					"plan",
+					"--iteration",
+					"0",
+				],
+				READY,
+			),
+		);
+	} finally {
+		writeFileSync(planPath, committed);
+	}
+	return ok(
 		await cli(dir, [
 			"run",
 			"complete",
@@ -488,6 +510,103 @@ describe("5x plan repair-checklists", () => {
 				if (again.exitCode !== 0) {
 					throw new Error(`${again.stdout}\n${again.stderr}`);
 				}
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 90000 },
+	);
+
+	test.serial(
+		"approved author delegation names the run repair; repair and resume on the same run",
+		async () => {
+			const { dir, planPath } = await initRepo();
+			try {
+				const sourceId = await startRun(dir, planPath);
+				const completed = await approveAndComplete(dir, sourceId);
+				// Finalization reports the defect without blocking completion.
+				expect(completed.data?.plan_executability).toMatchObject({
+					executable: false,
+					next: [`5x plan repair-checklists --run ${sourceId} --dry-run`],
+				});
+
+				const executionId = await startRun(dir, planPath);
+				const bound = await author(dir, executionId, "1");
+				if (bound.exitCode !== 0) {
+					throw new Error(`${bound.stdout}\n${bound.stderr}`);
+				}
+				const render = () =>
+					cli(dir, [
+						"template",
+						"render",
+						"author-next-phase",
+						"--run",
+						executionId,
+						"--var",
+						`plan_path=${planPath}`,
+						"--var",
+						"phase_number=1",
+						"--var",
+						"user_notes=continue",
+					]);
+				const blocked = await render();
+				expect(blocked.exitCode).not.toBe(0);
+				const refusal = envelope(blocked);
+				expect(refusal.error?.code).toBe("PLAN_CHECKLIST_REPAIR_REQUIRED");
+				expect(refusal.error?.detail?.next).toEqual([
+					`5x plan repair-checklists --run ${executionId} --dry-run`,
+				]);
+				expect(refusal.error?.detail?.runPreserved).toBe(true);
+				const stepsBefore = stepNames(dir, executionId);
+
+				// `plan phases` stays usable and points at the same run.
+				const phases = ok(await cli(dir, ["plan", "phases", planPath]));
+				expect(
+					((phases.data?.phases ?? []) as Array<{ executable: boolean }>).map(
+						(phase) => phase.executable,
+					),
+				).toEqual([false, false]);
+				expect(
+					((phases.data?.executability ?? { next: [] }) as { next: string[] })
+						.next,
+				).toEqual([`5x plan repair-checklists --run ${executionId} --dry-run`]);
+
+				const preview = ok(
+					await cli(dir, [
+						"plan",
+						"repair-checklists",
+						"--run",
+						executionId,
+						"--dry-run",
+					]),
+				);
+				ok(
+					await cli(dir, [
+						"plan",
+						"repair-checklists",
+						"--run",
+						executionId,
+						"--apply",
+						"--intent",
+						String(preview.data?.intentDigest),
+						"--reason",
+						REASON,
+					]),
+				);
+				const resumed = await render();
+				if (resumed.exitCode !== 0) {
+					throw new Error(`${resumed.stdout}\n${resumed.stderr}`);
+				}
+				expect(envelope(resumed).ok).toBe(true);
+				const stepsAfter = stepNames(dir, executionId);
+				expect(stepsAfter.slice(0, stepsBefore.length)).toEqual(stepsBefore);
+				expect(stepsAfter.some((name) => name.startsWith("reviewer:"))).toBe(
+					false,
+				);
+				const state = ok(
+					await cli(dir, ["run", "state", "--run", executionId]),
+				);
+				expect(JSON.stringify(state.data)).toContain('"active"');
 			} finally {
 				rmSync(dir, { recursive: true, force: true });
 			}

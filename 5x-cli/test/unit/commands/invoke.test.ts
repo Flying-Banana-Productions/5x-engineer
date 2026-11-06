@@ -177,7 +177,11 @@ describe("invoke reviewer — plan read state", () => {
 ### Surface Snapshot
 - Subsystems: 1
 - Production files: 1
-- Persistent/external boundaries: 0`;
+- Persistent/external boundaries: 0
+
+## Phase 1: Work
+
+- [ ] Do the work`;
 
 	async function setupBudgetInvoke(dir: string, humanGate = false) {
 		copyInitializedRepo(dir);
