@@ -108,3 +108,65 @@ The orchestrator separately reports passing lint/full tests/checklist finish, an
 - [x] Focused installed/rendered asset acceptance passes.
 
 **Ready for next phase:** No — address the four mechanical W2 findings and re-review the corrected range. No operator decision or scope expansion is requested.
+
+## Addendum (November 6, 2026) — Phase 2 findings closure
+
+**Reviewed:** `8f4483abdd9cd3d4e1e6284d8e483a1efcb57f68..a740407bbf427e4337109ab8d4f0e5d091bd4bae`, using the complete authoritative delta and its supplied exclusions.  
+**Review context:** `b8e7190c-f925-4417-b6b5-90a7803d19e6`  
+**Scope:** Closure of R1–R4 and regressions introduced by their fixes, not a second exhaustive pass. Binding, approved W2 scope and plan authority are unchanged.
+
+### Prior-finding outcomes
+
+| ID | Outcome | Re-anchored evidence |
+|---|---|---|
+| R1 | **Addressed** | Both implementation-author closures accept `expected` and both bound-admission branches pass `expectedSchemaForStore`. The resolver includes effective recorded-schema lineage; unbound files keep file inference. New native and invoke caller tests exercise a schema-0 binding with schema-1-looking markers and a real item after the apparent contract end. |
+| R2 | **Partially addressed** | `fenceOpener` now rejects backtick info strings containing backticks, and comments opened after prose are tracked. The originally reported examples and repair-eligibility assertions pass. However, new `leavesCommentOpen` strips inline-code spans before looking for comment boundaries, introducing the concrete false-empty regression below. |
+| R3 | **Addressed — original defect rationale withdrawn** | `invokeAgent` already calls `requireAmbientRunId` and assigns `params.run` before reaching the former preflight block. This is unchanged code, not a fix supplied by this revision. Omitting explicit `--run` did not establish a truly runless provider path: a run is resolved or invocation fails first. The original review overlooked that assignment, so its claimed bypass and native/invoke divergence were not substantiated. The moved check is acceptable, and the new initial/continued ambient-run tests verify refusal before provider/session creation and successful continuation after checklist repair, but they do not demonstrate an old-code failure. No additional runless invocation support or new gate is required. |
+| R4 | **Addressed** | `evaluatePhaseChecklist` rejects zero items independently of `isComplete`, while retaining the historical display flag. Protocol and phase-finish tests cover a repairable COMPLETE gate list, refusal before author recording, completion after verification, and author guidance when no list exists. |
+
+### Remaining concern — R2 (P1): comment terminators must remain authoritative inside comments
+
+The new helper at `src/parsers/plan.ts:53–63` removes backtick spans from the entire line before scanning HTML comments. Backticks inside an HTML comment are literal comment text, not Markdown code delimiters. Pairing a backtick inside a comment with one after its closing `-->` can remove the actual terminator, leaving the filter incorrectly inside a comment and hiding subsequent executable requirements.
+
+Concrete valid input:
+
+````markdown
+# Plan
+
+## Phase 1: Work
+
+<!-- Ignore this backtick: ` --> `visible code`
+
+- [ ] Real requirement
+````
+
+The HTML comment ends at `-->`; the following `visible code` span and real checklist are outside it. An isolated in-memory comparison imported the previous parser directly from the recorded base Git blob: **previous parser: 1 item; revised parser: 0 items**. The revised plan-review gate returns `PLAN_REPAIR_REQUIRED`, claims requirements are missing, and supplies no mechanical repair command. This is introduced by the R2 fix, not an unrelated missed initial finding.
+
+**Required mechanical correction:** Scan comment and inline-code states in lexical order. Once inside an HTML comment, recognize its terminator without interpreting backticks as code; only ignore comment-open syntax inside actual code spans outside comments. Keep the one shared filter and preserve the already-fixed inline-span, prose-opened-comment and quoted-opener cases. Add a regression proving this input remains executable and its actual list remains available to repair when the task marker is removed. This is remaining W2 work, with no new dependency, schema, subsystem, plan change or human policy choice.
+
+### Local verification
+
+Reviewer-run from `5x-cli/`:
+
+```sh
+bun test test/unit/commands/invoke.test.ts test/unit/commands/phase-finish.test.ts test/unit/commands/protocol-validate.test.ts test/unit/plan-schema/executability.test.ts test/integration/commands/plan-executability.test.ts test/integration/commands/plan-repair-checklists.test.ts
+```
+
+Result: **191 pass, 0 fail, 541 expectations**. A separate read-only `bun -e` probe compared previous/current parser behavior using the previous Git blob transpiled and imported in memory, and reproduced the remaining R2 gate failure without writing a fixture or touching product files.
+
+Required focused asset acceptance rerun:
+
+```sh
+bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts
+```
+
+Result: **48 pass, 0 fail, 826 expectations**. No skeleton, prompt, skill, runtime-appended governance-context format, installer, override-resolution or harness-sync asset changed in this delta; the existing W5 asset allocation remains applicable. The runtime preflight movement preserves explicit/ambient identity and does not add an approval or synchronization requirement.
+
+The orchestrator independently reports successful phase-finish quality/checklist; the author reports lint/typecheck and 4310 full-suite tests. Those remain supplied evidence, not reviewer-run checks.
+
+### Updated readiness
+
+- **R1, R3, R4:** Closed. R3 is explicitly corrected as an unsupported original bypass claim, not credited as a demonstrated defect fix.
+- **R2:** Partial; the original examples are fixed, but the revision introduces a false structural refusal on a valid comment/code combination. Retain R2 once in the structured items with only this remaining work.
+- **New finding IDs:** None. The remaining issue is causally within R2's revised literal-filter implementation.
+- **Ready for next phase:** No — finish the small shared-filter correction and its regression coverage. Existing repair authority, evidence preservation and no-new-tripwires requirements remain unchanged; no operator decision or scope expansion is requested.
