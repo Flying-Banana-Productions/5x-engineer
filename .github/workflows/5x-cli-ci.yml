@@ -25,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Lint
@@ -41,11 +43,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Test
         # Same flags as `bun run test` without --dots, so a stuck file is named in the log.
-        run: bun test --concurrent --timeout 15000
+        run: bun test --concurrent --parallel=2 --timeout 15000
 
   package:
     runs-on: ubuntu-latest
@@ -55,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Build binary

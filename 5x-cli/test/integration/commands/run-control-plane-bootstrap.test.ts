@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { copyInitializedRepo } from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -27,20 +28,7 @@ function fixture(git = true) {
 	writeFileSync(join(plans, "plan.md"), "# Plan\n\n## Phase 1\n\n- [ ] Task\n");
 	if (git) {
 		// Aborting a run commits its sealed records; do not rely on host identity.
-		for (const args of [
-			["init", root],
-			["config", "user.email", "test@test.com"],
-			["config", "user.name", "Test"],
-		]) {
-			const result = Bun.spawnSync(["git", ...args], {
-				cwd: root,
-				env: cleanGitEnv(),
-				stdin: "ignore",
-				stdout: "pipe",
-				stderr: "pipe",
-			});
-			if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-		}
+		copyInitializedRepo(root);
 	}
 	return { root, app, plans };
 }

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -10,9 +11,19 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { commitAll } from "../../helpers/git-fixture.js";
+import { createScaffoldedProjectSeed } from "../../helpers/scaffold-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 const REASON = "Operator authorized checklist-format repair and continuation";
+
+let scaffoldSeed: string;
+beforeAll(async () => {
+	scaffoldSeed = await createScaffoldedProjectSeed();
+}, 15000);
+afterAll(() => {
+	if (scaffoldSeed) rmSync(scaffoldSeed, { recursive: true, force: true });
+});
 
 function git(cwd: string, ...args: string[]): string {
 	const result = Bun.spawnSync(["git", ...args], {
@@ -146,20 +157,13 @@ function stepNames(dir: string, runId: string): string[] {
 
 async function initRepo(): Promise<{ dir: string; planPath: string }> {
 	const dir = mkdtempSync(join(tmpdir(), "5x-repair-checklists-"));
-	git(dir, "init", "-b", "main");
-	git(dir, "config", "user.email", "test@test.com");
-	git(dir, "config", "user.name", "Test");
-	const initialized = await cli(dir, ["init"]);
-	if (initialized.exitCode !== 0) {
-		throw new Error(`${initialized.stdout}\n${initialized.stderr}`);
-	}
+	cpSync(scaffoldSeed, dir, { recursive: true });
 	writeFileSync(join(dir, "5x.toml"), '[reviewBudget]\nmode = "advisory"\n');
 	const planDir = join(dir, "docs", "development", "plans");
 	mkdirSync(planDir, { recursive: true });
 	const planPath = join(planDir, "preview.md");
 	writeFileSync(planPath, malformedPlan());
-	git(dir, "add", "-A");
-	git(dir, "commit", "-m", "fixture");
+	await commitAll(dir, "fixture");
 	return { dir, planPath };
 }
 

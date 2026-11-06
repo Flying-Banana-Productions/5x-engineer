@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -11,8 +12,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { commitAll } from "../../helpers/git-fixture.js";
+import { createScaffoldedProjectSeed } from "../../helpers/scaffold-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
+
+let scaffoldSeed: string;
+beforeAll(async () => {
+	scaffoldSeed = await createScaffoldedProjectSeed();
+}, 15000);
+afterAll(() => {
+	if (scaffoldSeed) rmSync(scaffoldSeed, { recursive: true, force: true });
+});
 
 function git(cwd: string, ...args: string[]): string {
 	const result = Bun.spawnSync(["git", ...args], {
@@ -78,11 +89,7 @@ async function initRepo(
 	options?: { plan?: string; qualityGate?: string },
 ) {
 	const dir = mkdtempSync(join(tmpdir(), "5x-impl-complete-"));
-	git(dir, "init");
-	git(dir, "config", "user.email", "test@test.com");
-	git(dir, "config", "user.name", "Test");
-	const initialized = await cli(dir, ["init"]);
-	if (initialized.exitCode !== 0) throw new Error(initialized.stderr);
+	cpSync(scaffoldSeed, dir, { recursive: true });
 	const gates = options?.qualityGate
 		? `qualityGates = ["${options.qualityGate}"]\n`
 		: "";
@@ -94,8 +101,7 @@ async function initRepo(
 	mkdirSync(planDir, { recursive: true });
 	const planPath = join(planDir, "governance.md");
 	writeFileSync(planPath, options?.plan ?? planMarkdown());
-	git(dir, "add", "-A");
-	git(dir, "commit", "-m", "fixture");
+	await commitAll(dir, "fixture");
 	return { dir, planPath };
 }
 

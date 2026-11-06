@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createSqlitePromptStore } from "../../../src/control-plane/index.js";
 import { completeRun, createRunV1 } from "../../../src/db/operations-v1.js";
-import { runMigrations } from "../../../src/db/schema.js";
 import { generateRunId } from "../../../src/run-id.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { copyCommittedProject } from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -49,37 +49,14 @@ function cleanupDir(dir: string): void {
 	} catch {}
 }
 
-function git(args: string[], cwd: string): void {
-	const result = Bun.spawnSync(["git", ...args], {
-		cwd,
-		env: cleanGitEnv(),
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	if (result.exitCode !== 0) {
-		throw new Error(
-			`git ${args.join(" ")} failed: ${result.stderr.toString()}`,
-		);
-	}
-}
-
 function setupProject(dir: string): void {
-	git(["init"], dir);
-	git(["config", "user.email", "test@test.com"], dir);
-	git(["config", "user.name", "Test"], dir);
-	mkdirSync(join(dir, ".5x"), { recursive: true });
-	mkdirSync(join(dir, "docs", "development"), { recursive: true });
-	writeFileSync(
-		join(dir, "docs", "development", "test-plan.md"),
-		"# Plan\n\n## Phase 1\n\n- [ ] Task\n",
-	);
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n");
-	git(["add", "-A"], dir);
-	git(["commit", "-m", "init"], dir);
-	const db = new Database(join(dir, ".5x", "5x.db"));
-	runMigrations(db);
-	db.close();
+	copyCommittedProject(dir, {
+		files: {
+			".gitignore": ".5x/\n",
+			"docs/development/test-plan.md": "# Plan\n\n## Phase 1\n\n- [ ] Task\n",
+		},
+		migrateDb: true,
+	});
 }
 
 function dbPath(dir: string): string {
