@@ -111,3 +111,32 @@ Result: 101 pass, 0 fail, 1,136 assertions, six files. Additional `bun -e` repro
 - [ ] R2: Do not record post-hook edits outside the authorized preview; return truthful refreshed scope/remaining work.
 
 Both corrections are derivable inside approved W1. The operator-directed same-run repair remains the acceptance criterion; no new finding prerequisite, human gate, redundant quality cycle or replacement run is requested.
+
+## Addendum (2026-11-06) — Closure of Phase 1 repair findings
+
+**Reviewed:** `7039ed14ac69db385acfc34a41c16a1dd9dea7e3..70a977ba33aa38a1e5b719864a767b13bead4e84`  
+**Review kind:** Closure, W1 only; context `61187930-5372-46c8-8d8b-4900d383a63d`; same run and pinned binding. Inspected the complete mandated authoritative delta, excluding plan/review/run artifacts, using the requested fixed endpoints—not the prior review-document commit. This addendum supersedes the initial readiness and outstanding checklist above without changing that historical review.
+
+### What's addressed (✅)
+
+- **R1 — Addressed.** `verifyAuthorTextAmendment` now carries an unconsumed guard through the verified intervening checklist-repair chain. `rebaseTextAmendmentGuard` retains the original guard identity and immutable recorded observation, maps UTF-8 spans onto byte-identical text, rechecks unique heading-scoped occurrence, and prepares the consumption guard against the effective repaired anchor. The existing effective fold verifies repair lineage; non-repair intervening lineage cannot bridge the guard to the target. Schema 0/1 regressions prove unchanged repaired bytes are not stale and the original authorized correction is consumable once, with the repaired parent/hash/commit. Negative cases retain protection against out-of-span edits, substantive intervening changes, repaired-prefix overlap and a missing lineage parent. This closes the redundant-review failure without widening text-correction authority.
+- **R2 — Addressed.** The post-hook path now calls `scopeCommittedChecklistRepair` against the presented candidate. Committed prefix edits must be a subset of the previewed edits, keyed by anchor line and exact before/after text; checkbox-state changes must match the preview, including refusal of reverted previewed toggles. A scope expansion keeps the commit/user bytes but appends neither receipt nor step and returns the refreshed candidate and recovery command. Phase-scoped and line-scoped hook regressions reproduce and reject the original failure, reject retry with the old digest, and permit an explicitly accepted refreshed candidate with idempotent subsequent retry. A checkbox-state hook regression also refuses new authority. Narrowed results now return actual committed edits and phase counts, plus explicit `notApplied` edits, rather than the original misleading preview.
+
+### Local verification
+
+Independently executed from `5x-cli/`:
+
+```sh
+bun test test/unit/commands/plan-checklist-repair.test.ts test/unit/plan-schema/checklist-repair.test.ts test/unit/review-governance/implementation-state.test.ts test/unit/review-governance/plan-amendment.test.ts test/integration/commands/plan-repair-checklists.test.ts
+```
+
+**Result:** 84 passed, 0 failed, 525 assertions across five files. This includes both targeted closure regressions and existing guarded-amendment/CLI repair behavior. No live completed run was changed. The author reports 4,278 full-suite tests and lint/typecheck success; the orchestrator independently reports passing phase-finish quality and checklist validation at the corrected commit. Those remain attributed evidence, not my own full-suite execution.
+
+### Remaining concerns
+
+No remaining R1/R2 defects or material blockers introduced by this correction delta were identified. No ordinary missed/preexisting observation is promoted into a new closure blocker. The initial asset-impact assessment remains applicable: this delta changes proof/guard/handler internals and focused tests, not skeletons, prompt variants, runtime prompt composition, skills, installation, override resolution, upgrade or harness-sync mechanics. Later-phase work remains outside this closure review.
+
+### Updated readiness
+
+- **Phase 1 / W1 completion:** ✅ — R1 and R2 addressed within approved boundaries.
+- **Ready for next phase:** ✅ — **Ready**, with no actionable correction items. The same-run, operator-directed repair requires no artificial finding, new gate, replacement run or redundant review/quality cycle for unchanged obligations.
