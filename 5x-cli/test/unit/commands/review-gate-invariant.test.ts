@@ -570,6 +570,15 @@ describe("historical gate-less observations", () => {
 					"5x template render reviewer-commit --run run1 --var phase_number=1",
 				);
 				expect(shown.inconsistency.next.join("\n")).toContain("--iteration 2");
+				// Both delegation paths carry the recorded context's reviewed end.
+				const delegations = shown.inconsistency.next.filter(
+					(command) =>
+						command.startsWith("5x template render ") ||
+						command.startsWith("5x invoke "),
+				);
+				expect(delegations).toHaveLength(2);
+				for (const command of delegations)
+					expect(command).toContain(`--var commit_hash=${diff.reviewedCommit}`);
 				expect(promptStore.listOpenPrompts(RUN)).toHaveLength(0);
 			});
 

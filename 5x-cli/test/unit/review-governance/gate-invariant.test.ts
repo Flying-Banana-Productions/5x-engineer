@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import {
+	parseVars,
+	resolveAndRenderTemplate,
+} from "../../../src/commands/template-vars.js";
+import type { FiveXConfig } from "../../../src/config.js";
 import type { ReviewerVerdict, VerdictItem } from "../../../src/protocol.js";
 import type { CodeDiffContext } from "../../../src/review-governance/code-diff.js";
 import { parseCodePatch } from "../../../src/review-governance/code-diff.js";
@@ -156,6 +161,87 @@ describe("unexplained negative verdicts", () => {
 	});
 });
 
+/** Split a generated shell command, honoring the single quotes `shellArg` emits. */
+function shellWords(command: string): string[] {
+	const words: string[] = [];
+	let current = "";
+	let quoted = false;
+	let started = false;
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i] as string;
+		if (quoted) {
+			if (char === "'") quoted = false;
+			else current += char;
+		} else if (char === "'") {
+			quoted = true;
+			started = true;
+		} else if (char === "\\" && command[i + 1] === "'") {
+			current += "'";
+			i++;
+		} else if (/\s/u.test(char)) {
+			if (started) words.push(current);
+			current = "";
+			started = false;
+		} else {
+			current += char;
+			started = true;
+		}
+	}
+	if (started) words.push(current);
+	return words;
+}
+
+const RENDER_CONFIG: Pick<FiveXConfig, "paths"> = {
+	paths: {
+		plans: "/project/docs/development",
+		reviews: "/project/docs/development/reviews",
+		archive: "/project/docs/archive",
+		records: "/project/docs/development/runs",
+		templates: {
+			plan: "/project/docs/_implementation_plan_template.md",
+			review: "/project/docs/development/reviews/_review_template.md",
+		},
+	},
+};
+
+/**
+ * Resolve a generated `5x template render` or `5x invoke` command through the
+ * same shared template resolution both handlers use, with the CLI-derived
+ * run, plan and path context. Throws when a required variable is missing.
+ */
+async function resolveGeneratedCommand(command: string) {
+	const words = shellWords(command);
+	const native = words[1] === "template" && words[2] === "render";
+	const invoke = words[1] === "invoke";
+	if (!native && !invoke) throw new Error(`not a delegation: ${command}`);
+	const templateName = words[3] as string;
+	const vars: string[] = [];
+	let run: string | undefined;
+	let phase: string | undefined;
+	let newSession = false;
+	for (let i = 4; i < words.length; i++) {
+		const word = words[i];
+		if (word === "--var") vars.push(words[++i] as string);
+		else if (word === "--run") run = words[++i];
+		else if (word === "--phase") phase = words[++i];
+		else if (word === "--new-session") newSession = true;
+		else if (word === "--session") throw new Error("unexpected --session");
+	}
+	const explicitVars = await parseVars(vars);
+	return resolveAndRenderTemplate({
+		templateName,
+		newSession,
+		explicitVars,
+		resolvedPlanPath: "/project/docs/development/plan.md",
+		config: RENDER_CONFIG,
+		projectRoot: "/project",
+		runId: run,
+		phase: native
+			? explicitVars.phase_number
+			: (phase ?? explicitVars.phase_number),
+	});
+}
+
 describe("enforced gate invariant", () => {
 	test("an enforced human_gate needs a cause; advisory and off are unchecked", () => {
 		expect(
@@ -227,6 +313,48 @@ describe("enforced gate invariant", () => {
 			"5x template render reviewer-plan --run run1",
 		);
 		expect(clean.next.join("\n")).not.toContain("repair-checklists");
+	});
+	test("generated implementation recovery commands resolve the real reviewer template in native and invoke modes", async () => {
+		const report = gatelessHumanGateReport({
+			domain: "implementation",
+			runId: "run1",
+			phase: "1",
+			recordId: "obs-1",
+			nextAction: "human_gate",
+			planDrifted: false,
+			stepName: "reviewer:commit",
+			nextIteration: 2,
+			reviewedCommit: END,
+			contextId: "ctx-1",
+		});
+		const native = report.next.find((command) =>
+			command.startsWith("5x template render "),
+		);
+		const invoke = report.next.find((command) =>
+			command.startsWith("5x invoke "),
+		);
+		if (!native || !invoke) throw new Error("expected both delegation paths");
+		for (const command of [native, invoke]) {
+			const resolved = await resolveGeneratedCommand(command);
+			expect(resolved.selectedTemplateName).toBe("reviewer-commit");
+			expect(resolved.variables).toMatchObject({
+				commit_hash: END,
+				phase_number: "1",
+				run_id: "run1",
+				review_path: "/project/docs/development/reviews/run1-phase-1-review.md",
+			});
+			expect(resolved.prompt).toContain(`Commit to review: ${END}`);
+			expect(resolved.stepName).toBe("reviewer:commit");
+		}
+		expect(invoke).toContain(
+			"--record-step reviewer:commit --phase 1 --iteration 2",
+		);
+
+		// The same resolution rejects a delegation without the durable commit,
+		// so the check above exercises the template's required inputs.
+		await expect(
+			resolveGeneratedCommand(native.replace(` --var commit_hash=${END}`, "")),
+		).rejects.toThrow("missing required variables: commit_hash");
 	});
 });
 

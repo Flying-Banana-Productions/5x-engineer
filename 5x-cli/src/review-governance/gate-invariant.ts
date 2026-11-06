@@ -19,6 +19,8 @@ import {
 	baselineIdempotencyKey,
 	decodeBudgetBaselinePayload,
 	decodeBudgetSnapshotPayload,
+	decodeImplementationReviewContextPayload,
+	implementationReviewContextKey,
 } from "../review-budget/record-lines.js";
 import { deriveGatelessImplementationObservation } from "./store.js";
 
@@ -147,6 +149,14 @@ export function gatelessHumanGateReport(input: {
 	planDrifted: boolean;
 	stepName?: string | null;
 	nextIteration?: number | null;
+	/**
+	 * Implementation only: the reviewed end of the observation's recorded
+	 * review context. `reviewer-commit` requires `commit_hash`; the prepared
+	 * governance context stays the authority for the reviewed range.
+	 */
+	reviewedCommit?: string | null;
+	/** Implementation only: names the context when its commit is unreadable. */
+	contextId?: string | null;
 }): GatelessHumanGateReport {
 	const run = shellArg(input.runId);
 	const phase = shellArg(input.phase);
@@ -158,12 +168,16 @@ export function gatelessHumanGateReport(input: {
 		: [];
 	const iteration =
 		input.nextIteration != null ? ` --iteration ${input.nextIteration}` : "";
+	const commitHash = shellArg(
+		input.reviewedCommit ??
+			`<reviewed commit of review context ${input.contextId ?? "unknown"}>`,
+	);
 	const review =
 		input.domain === "implementation"
 			? [
-					`5x template render reviewer-commit --run ${run} --var phase_number=${phase} --new-session`,
+					`5x template render reviewer-commit --run ${run} --var phase_number=${phase} --var commit_hash=${commitHash} --new-session`,
 					`5x protocol validate reviewer --record --run ${run} --step ${shellArg(input.stepName ?? "reviewer:commit")} --phase ${phase}${iteration} --review-context <review_context_id from the render>`,
-					`5x invoke reviewer reviewer-commit --run ${run} --var phase_number=${phase} --record --record-step ${shellArg(input.stepName ?? "reviewer:commit")} --phase ${phase}${iteration}`,
+					`5x invoke reviewer reviewer-commit --run ${run} --var phase_number=${phase} --var commit_hash=${commitHash} --record --record-step ${shellArg(input.stepName ?? "reviewer:commit")} --phase ${phase}${iteration}`,
 				]
 			: [
 					`5x template render reviewer-plan --run ${run} --new-session`,
@@ -209,6 +223,26 @@ function nextStepIteration(
 	return max + 1;
 }
 
+/** Reviewed end of the observation's durable review context, or null. */
+function recordedReviewedCommit(
+	recordStore: RecordStore,
+	runId: string,
+	contextId: string,
+): string | null {
+	const line = recordStore.getLine(
+		runId,
+		"budget",
+		implementationReviewContextKey(contextId),
+	);
+	if (!line) return null;
+	try {
+		return decodeImplementationReviewContextPayload(line.payload)
+			.reviewedCommit;
+	} catch {
+		return null;
+	}
+}
+
 /** Readback report for an enforced implementation phase, or null. */
 export function implementationGatelessReport(input: {
 	recordStore: RecordStore;
@@ -230,6 +264,12 @@ export function implementationGatelessReport(input: {
 		nextAction: observation.nextAction,
 		planDrifted: input.planDrifted,
 		stepName: observation.stepKey.stepName,
+		reviewedCommit: recordedReviewedCommit(
+			input.recordStore,
+			input.runId,
+			observation.contextId,
+		),
+		contextId: observation.contextId,
 		nextIteration: nextStepIteration(
 			input.recordStore,
 			input.runId,
