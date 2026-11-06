@@ -170,3 +170,38 @@ The orchestrator independently reports successful phase-finish quality/checklist
 - **R2:** Partial; the original examples are fixed, but the revision introduces a false structural refusal on a valid comment/code combination. Retain R2 once in the structured items with only this remaining work.
 - **New finding IDs:** None. The remaining issue is causally within R2's revised literal-filter implementation.
 - **Ready for next phase:** No — finish the small shared-filter correction and its regression coverage. Existing repair authority, evidence preservation and no-new-tripwires requirements remain unchanged; no operator decision or scope expansion is requested.
+
+## Addendum (November 6, 2026) — Close Phase 2 lexical correction
+
+**Reviewed:** `a740407bbf427e4337109ab8d4f0e5d091bd4bae..efdc2dc6fbd8c231d1f5fb150d9a699467d9c9f6`, using the complete authoritative delta and supplied exclusions.  
+**Review context:** `9b00c45e-b050-4361-a220-1cd027e19d44`  
+**Scope:** Closure of the sole required prior finding R2 and material regressions caused by this correction; no renewed exhaustive review or reopening of previously closed findings.
+
+### Prior-finding outcome
+
+**R2 — Addressed.** `src/parsers/plan.ts` replaces whole-line inline-code stripping with `commentOpenAfter`, which scans in lexical order. While inside a comment it recognizes the actual `-->` terminator without interpreting backticks; outside comments it skips code spans closed by a backtick run of the same length and treats unmatched runs as literal. Both new comments and continuation lines use this shared scanner, retaining the earlier fence correction and a single filter for parser, ranges, diagnostics and repair eligibility.
+
+The exact previously failing input is now a regression test in `test/unit/plan-schema/executability.test.ts`. It verifies the real checklist item and executable result, plus a variant whose task marker is absent: that actual list remains selectable at line 7 and converts to an unchecked item through the existing selected-line proof. A multiline-comment variant verifies the same terminator precedence. The existing quoted-opener, prose-opened-comment and inline-fence regressions remain in the exercised suite.
+
+### Local verification
+
+Reviewer-run from `5x-cli/`:
+
+```sh
+bun test test/unit/plan-schema/executability.test.ts test/unit/parsers/ test/integration/commands/plan-executability.test.ts test/integration/commands/plan-repair-checklists.test.ts test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts
+```
+
+Result: **136 pass, 0 fail, 1427 expectations across 9 files**. This includes the required installed/rendered asset acceptance suite and the same-run repair integrations.
+
+A separate read-only, in-memory probe imported the previous parser from the authoritative base Git blob and compared the exact R2 reproduction: **previous items: 0; current items: 1; current plan-review repair gate: null**. No workspace fixture or product file was changed.
+
+The orchestrator independently reports successful full phase finish; the author reports lint/typecheck and 4311 full-suite tests. Those are supplied evidence, not reviewer-run results.
+
+### Asset impact and remaining scope
+
+This delta changes only the shared lexical filter and its regression test. It adds no schema, dependency, subsystem, approval mechanism or bypass. Skeletons, initial/continued prompts, runtime-appended governance context, skills, installation/override resolution, upgrade and harness synchronization remain unchanged; W5 still owns their planned guidance changes. Focused effective-asset acceptance passed in the reviewer command above. No new material blocker was found in this correction range, and no additional nonblocking follow-up is requested.
+
+### Updated readiness
+
+- **R2:** Closed; no actionable items remain in this closure review.
+- **Phase 2 / W2:** Ready to proceed to the next planned phase. The correction restores valid executable content without weakening genuine comment exclusion or repair authority, and requires no additional operator approval or replacement run.
