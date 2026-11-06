@@ -1675,6 +1675,20 @@ describe("workflow repair assets (plan 217 phase 5)", () => {
 			expect(prompt).toContain(
 				"An unchanged requirement needs no new work, review, or quality run just because its marker changed.",
 			);
+			// Newly performed work is checked before its first review; only a
+			// check-off from carried historical evidence needs recorded results.
+			expect(prompt).toContain(
+				"implement, test, and check off newly performed work as usual, including repaired boxes in phases not yet implemented",
+			);
+			expect(prompt).toContain(
+				"check those boxes before returning `complete`, since their first review follows your result.",
+			);
+			expect(prompt).toContain(
+				"Recorded review and quality results are required only to check a box solely from carried historical evidence, for work already implemented before the repair.",
+			);
+			expect(prompt).not.toContain(
+				"check a newly introduced box only when it matches work already implemented and evidenced by recorded review and quality results",
+			);
 		}
 	});
 
@@ -1694,6 +1708,24 @@ describe("workflow repair assets (plan 217 phase 5)", () => {
 				"5x plan repair-checklists --run $FIVEX_RUN --dry-run",
 			);
 			expect(content).toContain('--reason "<operator instruction>"');
+			// A scoped preview's selectors survive apply and retry.
+			const recovery = content.slice(
+				content.indexOf("### Operator-authorized checklist repair"),
+				content.indexOf("### Context loss (compaction)"),
+			);
+			expect(recovery).toContain(
+				"Apply with the command the preview returned in `.data.next[0]`",
+			);
+			expect(recovery).toContain(
+				"It keeps any `--phase`/`--lines` selection, which the intent\n   depends on.",
+			);
+			expect(recovery).toContain(
+				"every apply, re-preview, and retry repeats the same\n   selectors",
+			);
+			expect(recovery).toContain("re-preview\n   with the same selectors");
+			expect(recovery).toContain(
+				"continue with the remaining phases normally: the author implements, tests,\n   and checks their repaired boxes before their first review.",
+			);
 			expect(content).toContain("is the authorization. Do not\n   ask again.");
 			expect(content).toContain("`PLAN_CHECKLIST_REPAIR_STALE`");
 			expect(content).toContain("Resume the interrupted checkpoint");

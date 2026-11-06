@@ -834,17 +834,25 @@ that names `5x plan repair-checklists`, a phase with `executable: false` in
    ask again. Otherwise ask once with the preview. Ask again only when the
    preview needs a `--phase`/`--lines` selection, reports disallowed changes,
    or covers more than the operator authorized.
-3. Apply, recording that instruction verbatim:
-   `5x plan repair-checklists --run $FIVEX_RUN --apply --intent "$(echo "$PREVIEW" | jq -r '.data.intentDigest')" --reason "<operator instruction>"`.
-   `PLAN_CHECKLIST_REPAIR_STALE` means the file changed: re-preview and, if
-   the proposed edits are unchanged in scope, apply the new intent without
-   asking again. An identical retry returns the stored receipt.
+3. Apply with the command the preview returned in `.data.next[0]`, replacing
+   only its `"<operator repair instruction>"` reason with that instruction
+   verbatim. It keeps any `--phase`/`--lines` selection, which the intent
+   depends on. Unscoped, it is
+   `5x plan repair-checklists --run $FIVEX_RUN --apply --intent "$(echo "$PREVIEW" | jq -r '.data.intentDigest')" --reason "<operator instruction>"`;
+   a scoped preview adds its exact `--phase`/`--lines` flags. Never drop or
+   change them: every apply, re-preview, and retry repeats the same
+   selectors, or the CLI computes a different candidate and refuses it as
+   stale. `PLAN_CHECKLIST_REPAIR_STALE` means the file changed: re-preview
+   with the same selectors and, if the proposed edits are unchanged in scope,
+   apply the new `.data.next[0]` without asking again. An identical retry
+   returns the stored receipt.
 4. Resume the interrupted checkpoint: repeat the step that failed. Existing
    review, quality, and debt evidence for unchanged requirements stays valid.
    If the phase was already reviewed with passing quality, delegate the author
    only to check new boxes that match that recorded evidence, verify Step 6,
    and record `phase:complete` without another review or quality run. Then
-   continue with the remaining phases.
+   continue with the remaining phases normally: the author implements, tests,
+   and checks their repaired boxes before their first review.
 5. `CHECKLIST_REPAIR_DISALLOWED`, or a phase whose repair is `author`
    (missing requirements), is a real plan change: use the scoped semantic
    amendment in Step 5b. Do not describe it as a formatting repair.

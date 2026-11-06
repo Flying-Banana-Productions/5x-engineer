@@ -21,6 +21,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { renderSkillByName } from "../../../src/skills/loader.js";
+import { createRenderContext } from "../../../src/skills/renderer.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 import { commitAll } from "../../helpers/git-fixture.js";
 import { createScaffoldedProjectSeed } from "../../helpers/scaffold-fixture.js";
@@ -600,6 +602,18 @@ describe("operator-directed workflow repair, end to end (plan 568 lifecycle)", (
 				);
 				expect(next.data?.binding_id).toBe(binding[0]?.id);
 				expect(next.data?.source_run_id).toBe(sourceId);
+				// The effective prompt lets new work be checked before its first
+				// review; recorded results gate only historical check-off.
+				const nextPrompt = String(next.data?.prompt);
+				expect(nextPrompt).toContain(
+					"implement, test, and check off newly performed work as usual, including repaired boxes in phases not yet implemented",
+				);
+				expect(nextPrompt).toContain(
+					"check those boxes before returning `complete`, since their first review follows your result.",
+				);
+				expect(nextPrompt).toContain(
+					"only to check a box solely from carried historical evidence",
+				);
 
 				// Restart: rebuild the derived index and re-read state.
 				ok(await cli(fx.dir, ["records", "index"]));
@@ -625,8 +639,295 @@ describe("operator-directed workflow repair, end to end (plan 568 lifecycle)", (
 				).toHaveLength(1);
 				expect(qualityRuns(fx.counter)).toBe(1);
 				expect(ofKind(fx.dir, runId, "plan-checklist-repair")).toHaveLength(1);
+
+				// Phase 2 is ordinary new work under repaired boxes: the author
+				// implements it and checks its boxes, and the complete result is
+				// accepted before any review of phase 2 exists.
+				writeFileSync(
+					join(fx.dir, "src", "modal.ts"),
+					"export const closeOn = 'Escape';\n",
+				);
+				writeFileSync(
+					fx.planPath,
+					readFileSync(fx.planPath, "utf8")
+						.replace("- [ ] Render the modal", "- [x] Render the modal")
+						.replace("- [ ] Close on escape", "- [x] Close on escape"),
+				);
+				const phase2Code = String(
+					ok(
+						await cli(fx.dir, [
+							"commit",
+							"--run",
+							runId,
+							"--phase",
+							"2",
+							"-m",
+							"feat: preview modal",
+							"--all-files",
+						]),
+					).data?.hash,
+				);
+				const implemented = ok(
+					await cli(
+						fx.dir,
+						[
+							"protocol",
+							"validate",
+							"author",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"author:implement",
+							"--phase",
+							"2",
+							"--iteration",
+							"0",
+						],
+						{ result: "complete", commit: phase2Code },
+					),
+				);
+				expect(implemented.ok).toBe(true);
+				expect(
+					stepNames(fx.dir, runId).filter((name) =>
+						name.startsWith("reviewer:"),
+					),
+				).toEqual(["reviewer:commit"]);
+				expect((await phaseStatus(fx, "2")).phase).toMatchObject({
+					done: true,
+					executable: true,
+					checklist_total: 2,
+				});
+				// Its first review and quality run then follow normally.
+				ok(
+					await cli(fx.dir, [
+						"quality",
+						"run",
+						"--record",
+						"--run",
+						runId,
+						"--phase",
+						"2",
+					]),
+				);
+				const context2 = String(
+					ok(
+						await cli(fx.dir, [
+							"template",
+							"render",
+							"reviewer-commit",
+							"--run",
+							runId,
+							"--var",
+							"phase_number=2",
+							"--var",
+							`commit_hash=${phase2Code}`,
+							"--var",
+							`plan_path=${fx.planPath}`,
+						]),
+					).data?.review_context_id,
+				);
+				const reviewed2 = ok(
+					await cli(
+						fx.dir,
+						[
+							"protocol",
+							"validate",
+							"reviewer",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"reviewer:commit",
+							"--phase",
+							"2",
+							"--iteration",
+							"0",
+							"--review-context",
+							context2,
+						],
+						{ readiness: "ready", items: [] },
+					),
+				);
+				expect(
+					(
+						reviewed2.data?.result as
+							| { governance?: { route?: string } }
+							| undefined
+					)?.governance?.route,
+				).toBe("complete");
+				ok(
+					await cli(fx.dir, [
+						"run",
+						"record",
+						"phase:complete",
+						"--run",
+						runId,
+						"--phase",
+						"2",
+						"--result",
+						'{"phase":"2"}',
+					]),
+				);
+				expect(qualityRuns(fx.counter)).toBe(2);
+				expect(ofKind(fx.dir, runId, "plan-checklist-repair")).toHaveLength(1);
+				expect(ofKind(fx.dir, runId, "implementation-binding")).toEqual(
+					binding,
+				);
 				const runs = ok(await cli(fx.dir, ["run", "list"]));
 				expect(JSON.stringify(runs.data)).toContain(runId);
+			} finally {
+				rmSync(fx.dir, { recursive: true, force: true });
+				rmSync(join(fx.counter, ".."), { recursive: true, force: true });
+			}
+		},
+		{ timeout: 120000 },
+	);
+
+	test.serial(
+		"a scoped repair applies through the preview's selector-preserving command and retries identically",
+		async () => {
+			// The effective execution recipe applies `.data.next[0]` and keeps
+			// the selection on every apply, re-preview and retry.
+			const recipe = renderSkillByName(
+				"5x-phase-execution",
+				createRenderContext(true),
+			).content;
+			expect(recipe).toContain(
+				"Apply with the command the preview returned in `.data.next[0]`",
+			);
+			expect(recipe).toContain(
+				"every apply, re-preview, and retry repeats the same\n   selectors",
+			);
+			const placeholder = '"<operator repair instruction>"';
+			const applyArgs = (command: string): string[] => {
+				const [head, tail] = command.split(placeholder);
+				expect(tail).toBe("");
+				const words = String(head).trim().split(/\s+/);
+				expect(words[0]).toBe("5x");
+				return [...words.slice(1), INSTRUCTION];
+			};
+
+			const fx = await initRepo();
+			try {
+				await legacyApproval(fx);
+				const runId = String(
+					ok(await cli(fx.dir, ["run", "init", "--plan", fx.planPath])).data
+						?.run_id,
+				);
+				mkdirSync(join(fx.dir, "src"), { recursive: true });
+				writeFileSync(
+					join(fx.dir, "src", "preview.ts"),
+					"export type Preview = { tier: string };\n",
+				);
+				const code = String(
+					ok(
+						await cli(fx.dir, [
+							"commit",
+							"--run",
+							runId,
+							"--phase",
+							"1",
+							"-m",
+							"feat: preview model",
+							"--all-files",
+						]),
+					).data?.hash,
+				);
+				ok(
+					await cli(
+						fx.dir,
+						[
+							"protocol",
+							"validate",
+							"author",
+							"--run",
+							runId,
+							"--record",
+							"--step",
+							"author:implement",
+							"--phase",
+							"1",
+							"--iteration",
+							"0",
+							"--no-phase-checklist-validate",
+						],
+						{ result: "complete", commit: code },
+					),
+				);
+
+				// The operator authorizes phase 1 only.
+				const preview = ok(
+					await cli(fx.dir, [
+						"plan",
+						"repair-checklists",
+						"--run",
+						runId,
+						"--phase",
+						"1",
+						"--dry-run",
+					]),
+				);
+				expect(
+					((preview.data?.edits ?? []) as Array<{ after: string }>).map(
+						(edit) => edit.after,
+					),
+				).toEqual(["- [ ] Add the preview type", "- [ ] Map API fields"]);
+				const command = String(
+					(preview.data?.next as string[] | undefined)?.[0],
+				);
+				expect(command).toBe(
+					`5x plan repair-checklists --run ${runId} --phase 1 --apply --intent ${String(preview.data?.intentDigest)} --reason ${placeholder}`,
+				);
+
+				// Dropping the selector recomputes the unscoped candidate: refused
+				// as stale with nothing written or recorded.
+				const planBefore = readFileSync(fx.planPath, "utf8");
+				const head = git(fx.dir, "rev-parse", "HEAD");
+				const dropped = await cli(fx.dir, [
+					"plan",
+					"repair-checklists",
+					"--run",
+					runId,
+					"--apply",
+					"--intent",
+					String(preview.data?.intentDigest),
+					"--reason",
+					INSTRUCTION,
+				]);
+				expect(dropped.exitCode).not.toBe(0);
+				expect(envelope(dropped).error?.code).toBe(
+					"PLAN_CHECKLIST_REPAIR_STALE",
+				);
+				expect(readFileSync(fx.planPath, "utf8")).toBe(planBefore);
+				expect(git(fx.dir, "rev-parse", "HEAD")).toBe(head);
+				expect(ofKind(fx.dir, runId, "plan-checklist-repair")).toHaveLength(0);
+
+				// The returned command applies the authorized scope unchanged.
+				const applied = ok(await cli(fx.dir, applyArgs(command)));
+				expect(applied.data?.created).toBe(true);
+				const receipts = ofKind(fx.dir, runId, "plan-checklist-repair");
+				expect(receipts).toHaveLength(1);
+				expect(receipts[0]?.reason).toBe(INSTRUCTION);
+				expect(receipts[0]?.intentDigest).toBe(preview.data?.intentDigest);
+				const repaired = readFileSync(fx.planPath, "utf8");
+				expect(repaired).toContain("- [ ] Add the preview type");
+				expect(repaired).toContain("- [ ] Map API fields");
+				expect(repaired).toContain("\n- Render the modal\n");
+				expect(repaired).toContain("\n- Final copy review\n");
+				expect((await phaseStatus(fx, "1")).phase).toMatchObject({
+					executable: true,
+					checklist_total: 2,
+				});
+
+				// An identical retry with the same selectors returns the stored
+				// receipt; nothing new is written or recorded.
+				const afterApply = git(fx.dir, "rev-parse", "HEAD");
+				const retried = ok(await cli(fx.dir, applyArgs(command)));
+				expect(retried.data?.created).toBe(false);
+				expect(retried.data?.recorded).toBe(true);
+				expect(git(fx.dir, "rev-parse", "HEAD")).toBe(afterApply);
+				expect(ofKind(fx.dir, runId, "plan-checklist-repair")).toHaveLength(1);
 			} finally {
 				rmSync(fx.dir, { recursive: true, force: true });
 				rmSync(join(fx.counter, ".."), { recursive: true, force: true });
