@@ -102,6 +102,10 @@ import {
 	readImplementationBinding,
 	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
+import {
+	type PlanOnlyDiff,
+	readPlanOnlyDiff,
+} from "../review-governance/plan-evidence.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
@@ -141,6 +145,7 @@ import {
 	formatCodeReviewDiff,
 	hasStdinVarFlag,
 	implementationExcludedPaths,
+	implementationPlanRepoPath,
 	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
@@ -500,6 +505,8 @@ export async function invokeAgent(
 		reviewedCommit: string;
 		excludedPaths: string[];
 	} | null = null;
+	let planRepoPath: string | null = null;
+	let planOnlyDiff: PlanOnlyDiff | null = null;
 	let preAuthorCommit: string | null = null;
 	let boundId: string | undefined;
 	let boundSourceRunId: string | undefined;
@@ -925,6 +932,17 @@ export async function invokeAgent(
 			}
 			implementationReviewContextId = prepared.context.id;
 			preparedReviewContext = prepared.context;
+			planRepoPath = implementationPlanRepoPath({
+				repoRoot: rootResult.stdout.trim(),
+				controlPlaneRoot: budgetContext.executionContext.controlPlaneRoot,
+				planPath: resolvedPlanPath,
+			});
+			planOnlyDiff = await readPlanOnlyDiff({
+				git,
+				baseCommit: prepared.diff.baseCommit,
+				reviewedCommit: prepared.diff.reviewedCommit,
+				planRepoPath,
+			});
 			boundId = binding.id;
 			boundSourceRunId = binding.sourceRunId;
 			boundMode = binding.mode;
@@ -951,6 +969,8 @@ export async function invokeAgent(
 				store: budgetContext.store,
 				recordStore: budgetContext.recordStore,
 				reviewContext: preparedReviewContext,
+				planRepoPath,
+				planOnlyDiff,
 				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
 				sessionId: params.newSession ? "new" : params.session,
 			});

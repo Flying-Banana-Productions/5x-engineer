@@ -52,6 +52,10 @@ import {
 	prepareImplementationReviewContext,
 	readImplementationBinding,
 } from "../review-governance/implementation-state.js";
+import {
+	type PlanOnlyDiff,
+	readPlanOnlyDiff,
+} from "../review-governance/plan-evidence.js";
 import { validateRunId } from "../run-id.js";
 import {
 	getTemplateSource,
@@ -78,6 +82,7 @@ import { validateSessionContinuity } from "./session-check.js";
 import {
 	formatCodeReviewDiff,
 	implementationExcludedPaths,
+	implementationPlanRepoPath,
 	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
@@ -679,6 +684,8 @@ export async function templateRender(
 	let preparedReviewContext: ReturnType<
 		ReviewBudgetCommandContext["store"]["getImplementationReviewContext"]
 	> = null;
+	let planRepoPath: string | null = null;
+	let planOnlyDiff: PlanOnlyDiff | null = null;
 	let codeDiffAppend = "";
 	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
 		try {
@@ -730,6 +737,17 @@ export async function templateRender(
 			}
 			reviewContextId = prepared.context.id;
 			preparedReviewContext = prepared.context;
+			planRepoPath = implementationPlanRepoPath({
+				repoRoot: rootResult.stdout.trim(),
+				controlPlaneRoot: renderBudgetContext.executionContext.controlPlaneRoot,
+				planPath: resolvedPlanPath,
+			});
+			planOnlyDiff = await readPlanOnlyDiff({
+				git,
+				baseCommit: prepared.diff.baseCommit,
+				reviewedCommit: prepared.diff.reviewedCommit,
+				planRepoPath,
+			});
 			boundId = binding.id;
 			boundSourceRunId = binding.sourceRunId;
 			boundMode = binding.mode;
@@ -761,6 +779,8 @@ export async function templateRender(
 				store: renderBudgetContext.store,
 				recordStore: renderBudgetContext.recordStore,
 				reviewContext: preparedReviewContext,
+				planRepoPath,
+				planOnlyDiff,
 				workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
 				sessionId: params.newSession ? "new" : params.session,
 			});

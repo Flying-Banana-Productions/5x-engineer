@@ -56,6 +56,12 @@ import {
 	listImplementationDecisions,
 } from "../review-governance/decisions.js";
 import {
+	enforcedGateInvariantViolation,
+	isUnexplainedNegativeVerdict,
+	REVIEW_GATE_INVARIANT,
+	unexplainedNegativeVerdictError,
+} from "../review-governance/gate-invariant.js";
+import {
 	canonicalPhaseId,
 	readImplementationCodeClosure,
 	validateImplementationReview,
@@ -871,6 +877,29 @@ export async function composeImplementationReviewerRecord(input: {
 		route = "human_gate";
 		nextAction = "human_gate";
 	}
+	// An enforced human gate needs a durable cause the operator can decide.
+	// An empty negative verdict is a reviewer response repair, not a gate.
+	const gateViolation = enforcedGateInvariantViolation({
+		domain: "implementation",
+		mode: binding.mode,
+		route,
+		causeCount: gateCauses.length,
+	});
+	if (gateViolation) {
+		if (isUnexplainedNegativeVerdict(input.verdict)) {
+			return unexplainedNegativeVerdictError("implementation");
+		}
+		return {
+			status: "error",
+			code: REVIEW_GATE_INVARIANT,
+			message: `${gateViolation} Next: ask the reviewer to restate each blocking item with its scope class and action, then validate and record the corrected response with the same --review-context.`,
+			detail: {
+				diagnostics: reviewed.governance.diagnostics,
+				recorded: false,
+				runPreserved: true,
+			},
+		};
+	}
 	const observationId = createReviewBudgetId();
 	const pending: PendingImplementationObservation = {
 		kind: "implementation-review",
@@ -1022,6 +1051,18 @@ export async function recordImplementationReviewerStepWithObservation(
 		};
 	}
 
+	const persistedViolation = enforcedGateInvariantViolation({
+		domain: "implementation",
+		mode: ctx.store.getImplementationBinding(prepared.runId)?.mode,
+		route: pending.route,
+		causeCount: pending.gateCauses.length,
+	});
+	if (persistedViolation) {
+		throw new RecordError(REVIEW_GATE_INVARIANT, persistedViolation, {
+			recorded: false,
+			runPreserved: true,
+		});
+	}
 	const written = await finalizeAndWritePreparedStep(
 		prepared,
 		{

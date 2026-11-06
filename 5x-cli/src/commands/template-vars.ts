@@ -189,6 +189,20 @@ function workflowEvidenceRepoPath(
 	return planRepoPath(path, controlPlaneRoot);
 }
 
+/** Repository-relative plan path for plan-only evidence, or null. */
+export function implementationPlanRepoPath(input: {
+	repoRoot: string;
+	controlPlaneRoot?: string;
+	planPath: string | null;
+}): string | null {
+	if (!input.planPath) return null;
+	return workflowEvidenceRepoPath(
+		input.planPath,
+		input.repoRoot,
+		input.controlPlaneRoot,
+	);
+}
+
 /**
  * Paths that are workflow evidence, not implementation changes: run records,
  * registered review artifacts, and the exact plan file.

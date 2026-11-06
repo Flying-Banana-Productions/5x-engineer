@@ -10,6 +10,12 @@ import type {
 	GoverningReviewState,
 	ReviewDecisionPayload,
 } from "./decisions.js";
+import {
+	enforcedGateInvariantViolation,
+	isUnexplainedNegativeVerdict,
+	REVIEW_GATE_INVARIANT,
+	unexplainedNegativeVerdictError,
+} from "./gate-invariant.js";
 import type { PlanDiffFailure } from "./plan-diff.js";
 import { derivePlanReviewGovernance } from "./routing.js";
 import type {
@@ -116,6 +122,38 @@ export function applyPlanReviewGovernance(input: {
 		},
 		...(input.amendmentReassessment ? { amendmentReassessment: true } : {}),
 	});
+	const effectiveCauses = governance.gateCauses.filter(
+		(cause) => cause.resolvedBy === undefined,
+	);
+	// Enforced: an empty negative verdict with no independent cause is a
+	// reviewer response repair, never a silent approval or an empty gate.
+	if (
+		input.mode === "enforced" &&
+		effectiveCauses.length === 0 &&
+		isUnexplainedNegativeVerdict(input.verdict)
+	) {
+		const repair = unexplainedNegativeVerdictError("plan");
+		return {
+			status: "error",
+			code: repair.code,
+			message: repair.message,
+			diagnostics: repair.detail.diagnostics,
+		};
+	}
+	const gateViolation = enforcedGateInvariantViolation({
+		domain: "plan",
+		mode: input.mode,
+		route: governance.route,
+		causeCount: effectiveCauses.length,
+	});
+	if (gateViolation) {
+		return {
+			status: "error",
+			code: REVIEW_GATE_INVARIANT,
+			message: gateViolation,
+			diagnostics: governance.diagnostics,
+		};
+	}
 	const decoratedPending: PendingBudgetSnapshot = {
 		...pending,
 		mode: input.mode,

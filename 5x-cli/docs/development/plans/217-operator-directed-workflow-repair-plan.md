@@ -176,12 +176,12 @@ The subsystems are plan parsing/authority, CLI boundaries, review/approval gover
 
 **Completion gate:** A structural plan defect can be stated truthfully, and no enforced `human_gate` response leaves the operator without an actual gate and supported decision.
 
-- [ ] Validate route/cause/gate consistency at composition, paired persistence and readback in plan and implementation review. Keep store and SQLite projection behavior aligned, including successor decisions and restart.
-- [ ] Treat empty unexplained negative verdicts as correctable structured-output failures, not implementation failure or fictional human decisions. Supply actionable reviewer retry guidance and test that no empty gate/approval observation is appended.
-- [ ] Detect historical gate-less observations in state/gate display and expose a same-run corrective-review path, accessible without a nonexistent decision and after the direct mechanical repair when drift also exists.
-- [ ] Append anchored governing plan sections/diagnostics and optional plan-only diffs to implementation review context, using the same runtime builder for native/invoke and initial/continued sessions.
-- [ ] Preserve acceptance of structural `plan_defect` findings without code hunks; test unchanged-approved-plan defects, plan-only changes, incorrect anchors, existing finding formats and ordinary code blockers that still need code evidence.
-- [ ] Exercise every enforced human route through `review gate show`, an eligible decision, returned next action and journal replay; verify advisory/off routing does not gain mandatory durable approvals.
+- [x] Validate route/cause/gate consistency at composition, paired persistence and readback in plan and implementation review. Keep store and SQLite projection behavior aligned, including successor decisions and restart.
+- [x] Treat empty unexplained negative verdicts as correctable structured-output failures, not implementation failure or fictional human decisions. Supply actionable reviewer retry guidance and test that no empty gate/approval observation is appended.
+- [x] Detect historical gate-less observations in state/gate display and expose a same-run corrective-review path, accessible without a nonexistent decision and after the direct mechanical repair when drift also exists.
+- [x] Append anchored governing plan sections/diagnostics and optional plan-only diffs to implementation review context, using the same runtime builder for native/invoke and initial/continued sessions.
+- [x] Preserve acceptance of structural `plan_defect` findings without code hunks; test unchanged-approved-plan defects, plan-only changes, incorrect anchors, existing finding formats and ordinary code blockers that still need code evidence.
+- [x] Exercise every enforced human route through `review gate show`, an eligible decision, returned next action and journal replay; verify advisory/off routing does not gain mandatory durable approvals.
 
 ## Phase 5: Workflow assets and low-friction lifecycle acceptance (W5)
 

@@ -41,6 +41,10 @@ import {
 } from "../review-budget/record-lines.js";
 import { applyPlanReviewGovernance } from "../review-governance/apply.js";
 import { validateClosureReview } from "../review-governance/closure.js";
+import {
+	enforcedGateInvariantViolation,
+	REVIEW_GATE_INVARIANT,
+} from "../review-governance/gate-invariant.js";
 import { planBytesDifferFromEffectiveRevision } from "../review-governance/implementation-amendment.js";
 import {
 	buildPlanReviewDiffContext,
@@ -445,6 +449,18 @@ function projectStepLine(
 	});
 }
 
+function recordedPlanRoute(result: string): string | null {
+	try {
+		const parsed = JSON.parse(result) as {
+			governance?: { route?: unknown };
+		} | null;
+		const route = parsed?.governance?.route;
+		return typeof route === "string" ? route : null;
+	} catch {
+		return null;
+	}
+}
+
 export async function recordPlanReviewerStepWithSnapshot(
 	params: RunRecordParams & { run: string; stepName: string; result: string },
 	pending: PendingBudgetSnapshot,
@@ -503,6 +519,18 @@ export async function recordPlanReviewerStepWithSnapshot(
 		};
 	}
 
+	const persistedViolation = enforcedGateInvariantViolation({
+		domain: "plan",
+		mode: pending.mode,
+		route: recordedPlanRoute(params.result),
+		causeCount: pending.effectiveGateCauses?.length ?? 0,
+	});
+	if (persistedViolation) {
+		throw new RecordError(REVIEW_GATE_INVARIANT, persistedViolation, {
+			recorded: false,
+			runPreserved: true,
+		});
+	}
 	const written = await finalizeAndWritePreparedStep(
 		prepared,
 		{

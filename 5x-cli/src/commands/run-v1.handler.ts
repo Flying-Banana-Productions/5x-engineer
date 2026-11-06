@@ -164,6 +164,11 @@ import {
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
+import {
+	type GatelessHumanGateReport,
+	implementationGatelessReport,
+	planGatelessReport,
+} from "../review-governance/gate-invariant.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	foldEffectiveExecution,
@@ -1060,6 +1065,8 @@ export interface ReviewGovernanceState {
 		created_at: string;
 	}>;
 	diagnostics: string[];
+	/** A recorded enforced `human_gate` with no gate, with same-run recovery. */
+	gate_inconsistency?: GatelessHumanGateReport;
 }
 
 /** Build the dashboard/CLI read model strictly from authoritative records. */
@@ -1139,6 +1146,13 @@ export function buildReviewGovernanceState(input: {
 			);
 		}
 	}
+	const gateInconsistency = activeGate
+		? null
+		: planGatelessReport({
+				recordStore: input.recordStore,
+				runId: input.runId,
+			});
+	if (gateInconsistency) readDiagnostics.push(gateInconsistency.message);
 	const diagnostics = [
 		...listed.diagnostics,
 		...governing.auditOnly.map(
@@ -1181,6 +1195,7 @@ export function buildReviewGovernanceState(input: {
 			created_at: decision.createdAt,
 		})),
 		diagnostics,
+		...(gateInconsistency ? { gate_inconsistency: gateInconsistency } : {}),
 	};
 }
 
@@ -1288,6 +1303,12 @@ export interface ImplementationGovernanceState
 	 * the caller did not supply a record store. Never implementation completion.
 	 */
 	revision?: RevisionProvenance | RevisionProvenanceFailure;
+	/**
+	 * A recorded enforced `human_gate` with no gate (historical records only).
+	 * Carries the same-run repair and corrective-review commands. Absent when
+	 * consistent or when the caller did not supply a record store.
+	 */
+	gatelessHumanGate?: GatelessHumanGateReport;
 }
 
 function phaseOrdinal(
@@ -1537,7 +1558,28 @@ export function presentImplementationGovernance(input: {
 					}),
 				}
 			: {}),
+		...gatelessGovernanceField(input),
 	};
+}
+
+function gatelessGovernanceField(input: {
+	readiness: ImplementationGovernanceReadiness;
+	binding: ImplementationBindingPayload | null;
+	recordStore?: RecordStore;
+	runId?: string;
+}): { gatelessHumanGate?: GatelessHumanGateReport } {
+	if (!input.binding || !input.recordStore || !input.runId) return {};
+	if (input.binding.mode !== "enforced") return {};
+	for (const phase of input.binding.phaseMap) {
+		const report = implementationGatelessReport({
+			recordStore: input.recordStore,
+			runId: input.runId,
+			phase: phase.id,
+			planDrifted: input.readiness.planDrifted,
+		});
+		if (report) return { gatelessHumanGate: report };
+	}
+	return {};
 }
 
 function openImplementationGate(

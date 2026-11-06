@@ -545,17 +545,20 @@ function implementationObservations(
 	});
 }
 
-export function deriveOpenImplementationGate(
+/**
+ * The phase's latest observation that still governs routing. Invalidated
+ * observations are skipped. A bound journal that cannot be folded has no
+ * certifying observation; an unbound fixture keeps the pre-revision view.
+ */
+function latestGoverningImplementationObservation(
 	recordStore: RecordStore,
 	runId: string,
 	phase: string,
-): DerivedImplementationGate | null {
+): ImplementationReviewObservationPayload | null {
 	const folded = foldEffectiveExecution({ recordStore, runId });
 	const unbound =
 		!folded.ok &&
 		folded.diagnostic.message.includes("No implementation binding is recorded");
-	// A bound journal that cannot be folded has no certifying gate. An
-	// unbound observation fixture keeps the pre-revision projection.
 	if (!folded.ok && !unbound) return null;
 	const invalidated = folded.ok
 		? new Set(folded.invalidatedObservationIds)
@@ -565,7 +568,40 @@ export function deriveOpenImplementationGate(
 			observation.phase === phase &&
 			(invalidated === null || !invalidated.has(observation.id)),
 	);
-	const latest = observations.at(-1);
+	return observations.at(-1) ?? null;
+}
+
+/**
+ * A historical enforced observation that routes to `human_gate` with no
+ * gate cause. No gate is derived for it here or in the SQLite index; callers
+ * report it with a same-run corrective-review path instead of a decision.
+ */
+export function deriveGatelessImplementationObservation(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+): ImplementationReviewObservationPayload | null {
+	const latest = latestGoverningImplementationObservation(
+		recordStore,
+		runId,
+		phase,
+	);
+	if (latest?.route !== "human_gate" || latest.gateCauses.length > 0)
+		return null;
+	const mode = bindingFingerprint(recordStore, runId, latest.bindingId).mode;
+	return mode === "enforced" ? latest : null;
+}
+
+export function deriveOpenImplementationGate(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+): DerivedImplementationGate | null {
+	const latest = latestGoverningImplementationObservation(
+		recordStore,
+		runId,
+		phase,
+	);
 	if (!latest || latest.gateCauses.length === 0) return null;
 	const fingerprint = bindingFingerprint(recordStore, runId, latest.bindingId);
 	// Advisory bindings keep v1 routing; their gate causes are informational.

@@ -1157,6 +1157,16 @@ describe("implementation handler prompt parity", () => {
 						"Effective inherited alerts: (none)",
 					);
 					expect(slice(nativePrompt)).toContain("Pinned mode: advisory");
+					if (reviewer) {
+						// Runtime plan evidence rides the same shared builder.
+						expect(slice(nativePrompt)).toContain("### Plan evidence");
+						expect(slice(nativePrompt)).toContain(
+							`Effective approved plan hash: ${hashPlanBytes(plan)}`,
+						);
+						expect(slice(nativePrompt)).toContain("needs no code hunk");
+					} else {
+						expect(slice(nativePrompt)).not.toContain("### Plan evidence");
+					}
 					const invokeEnvelope = JSON.parse(
 						logs.filter((line) => line.includes('"binding_id"')).at(-1) ?? "{}",
 					) as {

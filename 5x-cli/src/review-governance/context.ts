@@ -34,6 +34,12 @@ import {
 	readImplementationBinding,
 } from "./implementation-state.js";
 import {
+	buildImplementationPlanEvidence,
+	formatImplementationPlanEvidence,
+	type ImplementationPlanEvidence,
+	type PlanOnlyDiff,
+} from "./plan-evidence.js";
+import {
 	type OperatingRestriction,
 	operatingRestrictionsFrom,
 } from "./restrictions.js";
@@ -245,6 +251,8 @@ export interface ImplementationReviewPromptContext {
 		id: string;
 		spans: Array<{ heading: string; staleText: string }>;
 	} | null;
+	/** Runtime-owned plan evidence beside the code range (reviewer context). */
+	planEvidence?: ImplementationPlanEvidence;
 }
 
 function findingTitle(
@@ -367,6 +375,10 @@ export function buildImplementationReviewPromptContext(input: {
 	> | null;
 	workdir?: string;
 	sessionId?: string;
+	/** Repository-relative plan path, for plan-only diff retrieval. */
+	planRepoPath?: string | null;
+	/** Plan-only changes in the prepared range, from {@link readPlanOnlyDiff}. */
+	planOnlyDiff?: PlanOnlyDiff | null;
 }): ImplementationReviewPromptContext | null {
 	void input.sessionId;
 	const binding = readImplementationBinding(input.store, input.runId);
@@ -642,6 +654,26 @@ export function buildImplementationReviewPromptContext(input: {
 					})),
 				}
 			: null,
+		planEvidence: buildImplementationPlanEvidence({
+			runId: input.runId,
+			phaseId,
+			approvedPlanBytes: execution.approvedPlanBytes,
+			approvedPlanHash: execution.approvedPlanHash,
+			revisionId: execution.currentRevisionId,
+			schema: execution.planSchema,
+			...(execution.governingHash
+				? { governingHash: execution.governingHash }
+				: {}),
+			planRepoPath: input.planRepoPath ?? null,
+			planOnlyDiff: input.planOnlyDiff ?? null,
+			reviewRange: input.reviewContext
+				? {
+						baseCommit: input.reviewContext.baseCommit,
+						reviewedCommit: input.reviewContext.reviewedCommit,
+					}
+				: null,
+			...(input.workdir ? { workdir: input.workdir } : {}),
+		}),
 	};
 }
 
@@ -662,7 +694,7 @@ Review kind closure is a closure review even when this session uses the initial 
 
 Give exactly one \`priorFindings\` outcome for every id in Required prior-finding outcome IDs: \`addressed\`, \`partially_addressed\`, or \`still_open\`. Emit each outcome with \`--prior-finding\`. Partial and open outcomes remain exactly once in \`items[]\`. Addressed outcomes leave \`items[]\`.
 
-A new ordinary blocker needs exact file-qualified hunk evidence (\`introducedBy\`: \`commitRange\`, \`diffHunk\` with the \`diff --git\` line plus the complete \`@@\` hunk, and \`explanation\`) from the supplied range. Critical late safety (\`lateDiscovery: "critical_safety"\` plus \`lateDiscoveryEvidence\`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred or restricted finding needs the same \`priorDecisionId\` and materially new \`newEvidence\`.`;
+A new ordinary implementation-defect blocker needs exact file-qualified hunk evidence (\`introducedBy\`: \`commitRange\`, \`diffHunk\` with the \`diff --git\` line plus the complete \`@@\` hunk, and \`explanation\`) from the supplied range. Critical late safety (\`lateDiscovery: "critical_safety"\` plus \`lateDiscoveryEvidence\`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred or restricted finding needs the same \`priorDecisionId\` and materially new \`newEvidence\`. A structural \`plan_defect\` needs no code hunk; anchor it to the plan evidence below.`;
 
 function skippedFinding(entry: ImplementationRiskContext): string {
 	const title = entry.title === entry.findingId ? "" : `${entry.title}, `;
@@ -732,7 +764,10 @@ export function formatImplementationReviewerContext(
 		: "- (none)";
 	const closure =
 		context.reviewKind === "closure" ? `\n\n${CLOSURE_RULES}` : "";
-	return `## Implementation-review governance context\n\n${sharedImplementationLines(context)}\n\nAssess due claims against the effective approved post-state, including human waivers and reductions. Do not create new credit.\n\n### Due claims\n\n${claims}\n\n### Deferred or accepted-risk decisions\n\n${risks}\n\n### Operating restrictions\n\nThe operator accepted these findings under a condition that applies outside the code (for example release ordering). Do not re-raise a restricted finding unless the restriction no longer holds or material new evidence shows the condition is insufficient. Do not report the restriction itself as a defect.\n\n${restrictionLines(context)}\n\n### Debt waivers and reductions\n\n${waivers}${closure}`;
+	const planEvidence = context.planEvidence
+		? `\n\n${formatImplementationPlanEvidence(context.planEvidence)}`
+		: "";
+	return `## Implementation-review governance context\n\n${sharedImplementationLines(context)}\n\nAssess due claims against the effective approved post-state, including human waivers and reductions. Do not create new credit.\n\n### Due claims\n\n${claims}\n\n### Deferred or accepted-risk decisions\n\n${risks}\n\n### Operating restrictions\n\nThe operator accepted these findings under a condition that applies outside the code (for example release ordering). Do not re-raise a restricted finding unless the restriction no longer holds or material new evidence shows the condition is insufficient. Do not report the restriction itself as a defect.\n\n${restrictionLines(context)}\n\n### Debt waivers and reductions\n\n${waivers}${closure}${planEvidence}`;
 }
 
 export function formatImplementationAuthorContext(

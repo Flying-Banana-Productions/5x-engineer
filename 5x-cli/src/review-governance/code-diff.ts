@@ -751,10 +751,11 @@ export function formatCodeReviewDiff(
 			...(input.workdir ? { workdir: input.workdir } : {}),
 		})}\`\n\n` +
 		"Pass this review context id back as `--review-context` when recording the verdict. " +
-		"Ordinary continued blockers need one exact file-qualified hunk from this range: " +
+		"Ordinary continued implementation-defect blockers need one exact file-qualified hunk from this range: " +
 		"the `diff --git` line plus the complete `@@` hunk, including every added and removed line. " +
 		"Extended headers between them (`index`, `---`, `+++`, mode, similarity, and rename lines) may be copied from this diff or omitted. " +
-		"A missing final newline is accepted. Every other character, including spaces and line endings, must match.\n"
+		"A missing final newline is accepted. Every other character, including spaces and line endings, must match. " +
+		"This hunk rule applies to implementation defects; a structural plan defect cites the plan evidence in the governance context instead.\n"
 	);
 }
 
