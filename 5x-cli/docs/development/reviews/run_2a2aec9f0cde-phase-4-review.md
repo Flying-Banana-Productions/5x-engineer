@@ -75,3 +75,34 @@ Result: **72 pass, 0 fail, 1011 assertions**. The orchestrator's separately repo
 - [ ] R1: Generated historical implementation recovery commands satisfy the real reviewer template's required inputs in native and invoke modes, with durable reviewed identity and same-run iteration continuity.
 
 **Ready for next phase:** No — correct R1 and verify the recovery entry points before considering W4 complete.
+
+## Addendum (November 6, 2026) — Close recovery command finding
+
+**Reviewed:** `303c5546011323dd2462bcb2a8863cc5f19201a3`; exact closure range `7d45073e5ee37192faeb4f574b6cf286cd494442..303c5546011323dd2462bcb2a8863cc5f19201a3`, with the supplied plan/review/run exclusions.  
+**Governance:** Enforced closure, context `b6392b66-0a38-4298-997b-d91288f8c41c`; binding and W4 scope unchanged. Required prior outcome: R1 only.
+
+### What's addressed
+
+- **R1 — Addressed.** `implementationGatelessReport` now looks up the historical observation's durable review context using the same run/budget key and decoder as the existing store. Its `reviewedCommit` flows to both native-render and invoke recovery commands as `--var commit_hash=...`. Run, phase and next-iteration selectors remain intact. No HEAD inference or code-range broadening was introduced.
+- The command-handler test verifies that gate display publishes the recorded context's endpoint in both delegation paths. The new regression extracts the generated native/invoke arguments and passes them through real `parseVars` and `resolveAndRenderTemplate`, checking the required commit, phase, run, generated review path, rendered commit text and step identity. Its negative control removes `commit_hash` and reproduces the original missing-variable error.
+
+### Verification
+
+Executed from `5x-cli/`:
+
+```sh
+bun test test/unit/commands/review-gate-invariant.test.ts test/unit/review-governance/gate-invariant.test.ts
+```
+
+Result: **25 pass, 0 fail, 182 assertions** (243 ms). Read the complete supplied revision diff and checked the durable lookup against the existing context storage/read implementation. The separately reported current-commit quality/checklist pass and author full-suite/lint/typecheck results were not independently rerun in this bounded closure review.
+
+### Remaining concerns / nonblocking follow-ups
+
+- No remaining R1 work and no new revision-caused material blocker found.
+- If the referenced context is absent or undecodable, the fallback names that context in a shell-quoted placeholder rather than inventing a hash or using HEAD. That is an explicit unresolved input, not a claim that a verified endpoint was recovered. The normal durable-context recovery path is the one verified above; no speculative additional recovery subsystem is required to close R1.
+- W5 static assets and integrated lifecycle acceptance remain the next phase's work, as noted in the initial review.
+
+### Updated readiness
+
+- **Phase 4 completion:** Ready — R1 is addressed; no actionable review items remain.
+- **Ready for next phase:** Yes — proceed to the approved W5 scope. This addendum does not itself record phase completion or approve later-phase work.
