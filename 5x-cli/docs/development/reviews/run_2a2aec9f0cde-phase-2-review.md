@@ -1,0 +1,110 @@
+# Review: Phase 2 executable-plan diagnostics (W2)
+
+**Review type:** Commit `8f4483abdd9cd3d4e1e6284d8e483a1efcb57f68`  
+**Scope:** Initial exhaustive material review of `4e51a81e13fc1e510996dcc3b409c0ead6120963..8f4483abdd9cd3d4e1e6284d8e483a1efcb57f68`, with the authoritative exclusions supplied by the orchestrator.  
+**Reviewer:** Staff engineer — correctness, authority, recovery, compatibility and verification  
+**Implementation plan:** `5x-cli/docs/development/plans/217-operator-directed-workflow-repair-plan.md`, Phase 2 / W2; binding `ff84f50f-2b92-4847-ae70-8768167de44d`, approved commit `36ec99ddc06d9adcf4797819d8f8fcea283dec9f`.  
+**Review context:** `1b6b03c5-f930-4eaf-a900-b6166717b091`
+
+## Summary
+
+The implementation adds a useful shared diagnostic result, nonblocking inspection, and same-run repair directions. The normal malformed-list recovery works, including budget-off paths. Four material W2 corrections remain: delegation must use recorded schema authority, literal filtering must distinguish actual fences/comments from executable content, runless invocation needs the pre-review check, and completion must not accept a zero-item COMPLETE heading as executable evidence.
+
+**Readiness:** Not ready — mechanical P1 corrections are required within approved W2; no amendment or operator policy decision is needed.
+
+## What shipped
+
+- Shared executability diagnostics and repair classification, including per-phase item counts, duplicate IDs and zero-item COMPLETE reporting.
+- Additive `plan phases` diagnostics and runnable repair previews, preserving ordinary inspection and historical display.
+- Native/invoke author preflights, plan-review preparation/recording checks, and informational plan-run completion diagnostics.
+- Regression coverage for ordinary malformed drafts, approved-run repair/resume, compact plans and schema authority at the pure-helper level.
+
+## Strengths
+
+- Recovery uses the existing Phase 1 proof/receipt mechanism rather than granting blanket drift authority.
+- The primary integration tests demonstrate that deterministic repairs preserve the run and do not consume reviewer observations or decisions.
+- Ordinary prose gates and the compact issue-plan fixture remain accepted without expanding the plan skeleton.
+- Author-only approved-plan gaps warn and name scoped amendment rather than inventing an unrepairable mandatory formatting gate. This is a reasonable repair-first distinction; it must not turn into successful completion without executable items (R4).
+
+## Production readiness blockers
+
+No P0 finding.
+
+## High priority (P1)
+
+### R1 — Use the recorded schema in implementation delegation diagnostics
+
+The new calls in `src/commands/template.handler.ts:437–441` and `src/commands/invoke.handler.ts:614–618` omit `expected`, so the helper defaults to `file` even after admission resolved a bound execution. The repair command, inspection and completion readers use the recorded schema instead. This can falsely refuse a valid schema-0 bound plan containing schema-1-looking markers: its existing task after the apparent contract end remains authoritative under schema 0, but the new preflight masks it and demands a new unchecked marker.
+
+**Verification:** An in-memory reproduction produced schema-0 `executable: true`, the omitted-schema delegation result `PLAN_CHECKLIST_REPAIR_REQUIRED` with schema 1, and `status: ok` when passed `expected: 0` for identical bytes.
+
+**Required correction:** Thread the effective recorded schema from the run context into both native and invoke checks, falling back to `file` only for an ungoverned file. Test the actual caller paths, not only the pure helper. Keep the existing schema/drift admission checks intact.
+
+### R2 — Correct shared literal filtering for inline code and multiline comments
+
+`src/parsers/plan.ts:33–82` treats every line beginning with three backticks as a fence opener, even when the same line is a valid triple-backtick inline code span, and recognizes HTML comment starts only at the beginning of a line. Both mistakes now affect the phase parser and the enforcement result.
+
+**Verification:** A phase containing a standalone inline span, ` ```literal example``` ` (without the surrounding spaces), followed by `- [ ] Real requirement` is reported as having zero items and needing missing requirements. Conversely, `Explanation <!--` followed by `- [x] Commented example, not a requirement` and `-->` is reported executable and 100% complete. The latter item's entire line is inside a valid multiline HTML comment.
+
+**Required correction:** Keep the single shared filter, but recognize actual fence openers (in particular, reject backticks in a backtick fence's info string) and track multiline HTML comments that open after visible prose. Add tests for both failure directions through parsing, diagnostics and repair eligibility. Do not introduce a separate parser or dependency.
+
+### R3 — Apply the invoke pre-review check without requiring a run
+
+The new invoke preflight at `src/commands/invoke.handler.ts:797–808` is nested inside the `params.run`-guarded block beginning at line 745. A supported invocation with an explicit plan and no run therefore reaches the provider without checking executability. Native template rendering puts its equivalent check outside the run guard (`src/commands/template.handler.ts:593–619`), so the two delegation modes disagree.
+
+**Failure:** An unapproved, nonbudgeted draft with only plain gate bullets can spend a reviewer invocation via the runless invoke path instead of returning directly to its author. The boundary is supposed to precede provider/session creation, not depend on durable review-budget machinery.
+
+**Required correction:** Perform the shared reviewer-plan preflight for any resolved plan before provider/session creation, using the effective run path when available and the resolved file otherwise. Cover initial/continued templates with a fake provider and assert zero session starts on refusal, then successful invocation after repair. Do not force run creation or add a new approval gate.
+
+### R4 — Enforce nonempty executability at completion, not just display it
+
+The completion integration in `src/commands/protocol.handler.ts:370–402` invokes the new shared check only inside `phase.items.length === 0 && !phase.isComplete`. A zero-item phase whose heading ends in COMPLETE never enters it; the later completion test also accepts the display sentinel. This leaves the W2 completion integration incomplete even though diagnostics correctly call that same phase non-executable.
+
+**Verification:** In a separate process with only an in-memory virtual-file mock, `diagnosePlanExecutability` returned `executable: false` and `markedCompleteWithoutItems: true` for `## Phase 1: Work - COMPLETE` followed by prose only. `evaluatePhaseChecklist` returned `{ ok: true }` for those identical bytes. This helper is used by protocol validation and phase finish, including nonbudgeted compatibility paths.
+
+**Required correction:** Reject zero executable items independently of the historical `isComplete` display flag. Preserve that flag in inspection. Return the existing mechanical repair path when available, or author/scoped-amendment guidance when requirements are absent; do not fabricate completion evidence or require a new execution run. Add completion-boundary tests, including COMPLETE with an actual repairable gate list and COMPLETE with no list.
+
+All four findings are `implementation_defect`, linked to W2, with architecture delta 0 and no boundary changes beyond the approved plan. Their fixes are uniquely derivable from the governing contract and existing helpers. Exact file-qualified reviewed-range hunks are included in the structured verdict.
+
+## Medium priority (P2)
+
+No additional actionable P2 findings.
+
+## Verification
+
+Reviewer-run command, from `5x-cli/`:
+
+```sh
+bun test test/unit/plan-schema/executability.test.ts test/integration/commands/plan-executability.test.ts test/integration/commands/plan-repair-checklists.test.ts test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts
+```
+
+Result: **74 pass, 0 fail, 1011 expectations**. This includes the required focused asset acceptance suite. Additional read-only, in-memory `bun -e` probes reproduced R1, both R2 cases, and R4; the R4 probe used a virtual-file mock, not a workspace file. R3 is established by control-flow inspection; no live provider was invoked.
+
+The orchestrator separately reports passing lint/full tests/checklist finish, and the author reports 4301 tests/typecheck plus 258 focused tests. Those are supplied evidence, not reviewer-run verification.
+
+## Workflow asset-impact check
+
+| Surface | Phase 2 assessment |
+|---|---|
+| `src/templates/default-artifacts.ts` | Unchanged; skeleton wording is W5. The current diagnostic work must preserve valid compact/prose forms. |
+| Initial/continued agent prompt assets | Unchanged; W5 owns guidance edits. Runtime initial/continued preflight selection was inspected; runless native/invoke divergence is R3. |
+| Runtime-appended context / native-invoke parity | New refusal diagnostics are runtime-owned rather than prompt overrides. Both implementation caller paths need recorded schema (R1); pre-review parity needs R3. Anchored plan evidence is later W4. |
+| Base workflow skills and delegation modes | Unchanged; W5 owns skill examples and repair orchestration. CLI help field-name corrections shipped now. |
+| Installation, overrides, upgrade, harness sync | No installer or ownership changes. Reviewer ran the upgrade and implementation-review-governance acceptance tests successfully, exercising effective installed/rendered assets rather than just source wording. No new mandatory sync gate is appropriate. |
+
+## Nonblocking follow-ups and scope notes
+
+- Plan-run completion currently reports invalid structure without blocking. For a deterministically repairable legacy approval, Phase 1 provides the intended completed-source run repair, so this alone is not an additional W2 finding. Exact committed-blob approval reconciliation, unsupported final-correction deltas and finalization provenance belong to W3; this review does not demand their early delivery.
+- The modified legacy fixture deliberately records a verdict against an executable working copy, restores malformed committed bytes, then completes. It is useful for constructing a legacy repair subject but is not evidence that current approval validates the final committed blob. Preserve that distinction when W3 replaces the finalization seam.
+- Broader installed skill guidance, issue delivery recipes, empty-negative-verdict routing and truthful plan-only review evidence remain W3–W5 work, not missing W2 deliverables.
+
+## Readiness checklist
+
+- [ ] R1: Native/invoke diagnostics use effective recorded schema authority.
+- [ ] R2: Literal masking preserves valid inline code and excludes multiline comments opened after prose.
+- [ ] R3: Runless invoke preflights a draft before provider/session creation.
+- [ ] R4: Completion refuses zero executable items despite a COMPLETE display heading and provides the proper recovery action.
+- [x] Normal deterministic repair preserves the run, inspection and review iteration budget in the exercised integration tests.
+- [x] Focused installed/rendered asset acceptance passes.
+
+**Ready for next phase:** No — address the four mechanical W2 findings and re-review the corrected range. No operator decision or scope expansion is requested.
