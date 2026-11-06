@@ -156,6 +156,8 @@ Omit this subsection when every work-item architecture delta is non-negative.
 
 > For large plans, include a completion gate per phase:
 > **Completion gate:** {Unambiguous definition of done for this phase.}
+>
+> **Every phase needs at least one executable checklist item** (`- [ ]`). A prose completion gate is fine, but plain `-` bullets are not tracked, so a phase without task markers cannot be checked off. Keep each item's wording stable across revisions; execution changes only its checkbox state. Before committing the plan, `5x plan phases <plan> | jq '.data.executability'` reports any phase with no executable items; for a draft, `5x plan repair-checklists --plan <plan> --dry-run` previews the mechanical marker fix.
 
 #### 1.1 {Component/file} — {brief description}
 
@@ -179,6 +181,8 @@ Omit this subsection when every work-item architecture delta is non-negative.
 ### Phase 2: {Title}
 
 {Continue pattern.}
+
+- [ ] {Checklist item}
 
 ---
 

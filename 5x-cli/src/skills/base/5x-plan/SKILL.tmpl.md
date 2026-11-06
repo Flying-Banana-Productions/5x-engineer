@@ -45,6 +45,12 @@ timeout handling.
   invariant violation; re-invoke without `--session`
 {{/if}}
 - Read `maxReviewIterations` from `5x config show` for the review loop limit
+- Every phase needs at least one executable checklist item (`- [ ]`); prose
+  completion gates are fine. A draft that lacks them is returned to the author
+  before review with `PLAN_REPAIR_REQUIRED` (no reviewer runs, no review is
+  recorded, no iteration or gate is consumed). Re-delegate the author with the
+  error's `.error.detail.next` commands in `user_notes`; it repairs the draft
+  with `5x plan repair-checklists --plan`, commits, and the same review runs
 - Once review budgeting is active, its mode is pinned to the run baseline.
   Enforced review routing comes only from the recorded
   `.data.result.governance.route`; never recompute thresholds or infer a route
@@ -224,6 +230,10 @@ Report to the human: plan is ready at $PLAN_PATH.
 - After author generates the plan, the plan file must exist at $PLAN_PATH.
 - The plan must parse successfully (`5x plan phases $PLAN_PATH` returns phases).
 - The plan must have at least one phase.
+- Every phase is executable: `5x plan phases $PLAN_PATH | jq '.data.executability.executable'`
+  is `true`. Approved plans are repaired with the operator-authorized
+  `5x plan repair-checklists --run` form (see `5x-plan-review` Step 5), never
+  by a new run or a manufactured review finding.
 - The plan must include the Delivery Budget table. Its `Wn` / `DCn` IDs stay
   stable across review revisions, and every negative architecture row has a
   matching complete Debt Claims block.

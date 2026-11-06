@@ -17,8 +17,10 @@ import {
 	makeStubBin,
 	makeTempRoot,
 	rec,
+	receipt,
 	runRecipe,
 	type StubComment,
+	writePlanningRecords,
 	writeRunRecords,
 } from "../helpers/issue-delivery-fixtures.js";
 
@@ -1953,6 +1955,519 @@ describe("prepare-pr recipe", () => {
 					"outcome: needs_human",
 				]);
 				expect(r.log).toEqual([]);
+			});
+		},
+		TIMEOUT,
+	);
+});
+
+// ---------------------------------------------------------------------------
+// Plan 217 phase 5: repair and finalization receipts are evidence, not approval
+// ---------------------------------------------------------------------------
+
+type Reconciled = {
+	delivery: DeliveryRun;
+	publish: PublishRun | null;
+	stub: ReturnType<typeof makeStubBin>;
+};
+
+/**
+ * Reconciliation order step 2: publication runs only after the shipped
+ * delivery recipes report `delivery: ok`. Anything else publishes nothing.
+ */
+async function deliverThenReconcile(
+	root: string,
+	repo: FixtureRepo,
+	input: Parameters<typeof classify>[2],
+): Promise<Reconciled> {
+	const delivery = await classify(root, repo, input);
+	const stub = makeStubBin(root, {});
+	const publish = delivery.ok ? await publishWith(root, stub) : null;
+	return { delivery, publish, stub };
+}
+
+function budgetPayloads(budget: string[]): Array<Record<string, unknown>> {
+	return budget.map(
+		(l) => (JSON.parse(l) as { payload: Record<string, unknown> }).payload,
+	);
+}
+
+/** One binding and one review observation per phase: no replacement run or extra review. */
+function expectNoExtraInvocations(budget: string[]): void {
+	const payloads = budgetPayloads(budget);
+	expect(
+		payloads.filter((p) => p.kind === "implementation-binding"),
+	).toHaveLength(1);
+	const observations = payloads.filter(
+		(p) => p.kind === "implementation-review",
+	);
+	const phases = observations.map((p) => p.phase);
+	expect(new Set(phases).size).toBe(phases.length);
+}
+
+function expectResolved(r: Reconciled): void {
+	expect(r.delivery.ok).toBe(true);
+	expect(r.publish).not.toBeNull();
+	const publish = r.publish as PublishRun;
+	expect(publish.invalid).toEqual([]);
+	expect(publish.lines.at(-1)).toBe("outcome: resolved");
+	expect(publish.markedComments).toBe(1);
+	expect(publish.bodies[0]?.split("\n")[0]).toBe(
+		`${RMARK} closure=workflow -->`,
+	);
+	expect(publish.closed).toBe(true);
+}
+
+function expectNothingPublished(r: Reconciled): void {
+	expect(r.delivery.ok).toBe(false);
+	expect(r.delivery.lines.at(-1)).toBe("delivery: needs_human");
+	expect(r.publish).toBeNull();
+	const state = r.stub.read();
+	expect(state.log).toEqual([]);
+	expect(state.comments).toEqual([]);
+	expect(state.issue.state).toBe("OPEN");
+}
+
+const REPAIRED_PLAN = "plan\n- [ ] done\n";
+
+describe("repair and finalization receipts (plan 217 phase 5)", () => {
+	test(
+		"an ordinary settled review carries across a mechanical repair receipt",
+		async () => {
+			await withRoot("receipt-ordinary", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const p = await repo.commit("plan", { [PLAN]: "plan\n- done\n" });
+				const a1 = await repo.commit("feat", { "src/a.ts": "a\n" });
+				const review = await repo.commit("review: phase 1", {
+					"docs/development/reviews/run_impl-phase-1-review.md": "ready\n",
+				});
+				// Plan-only mechanical repair commit plus its run-record checkpoint.
+				const repair = await repo.commit("5x: mechanical checklist repair", {
+					[PLAN]: REPAIRED_PLAN,
+				});
+				const records = await repo.commit("5x: checkpoint run records", {
+					"docs/development/runs/218/run_impl/budget.jsonl": "{}\n",
+				});
+				const checkbox = await repo.commit("plan: check phase 1", {
+					[PLAN]: "plan\n- [x] done\n",
+				});
+				const seal = await repo.commit("5x: seal run", {
+					"docs/development/runs/218/run_impl/run.json": "{}\n",
+				});
+				const settled = [
+					rec.binding("b1", p),
+					rec.context("c1", "b1", "1", p, a1),
+					rec.observation({
+						id: "o1",
+						bindingId: "b1",
+						contextId: "c1",
+						phase: "1",
+						route: "complete",
+						completionAuthorized: true,
+					}),
+				];
+				const withReceipt = [
+					...settled,
+					receipt.checklistRepair({
+						id: "repair-1",
+						runId: "run_impl",
+						bindingId: "b1",
+						beforeCommit: p,
+						afterCommit: repair,
+					}),
+				];
+				const input = {
+					steps: [rec.preAuthor("b1", "1", p)],
+					base: p,
+					final: checkbox,
+					prHead: seal,
+				};
+				const without = await classify(root, repo, {
+					...input,
+					budget: settled,
+				});
+				const r = await deliverThenReconcile(root, repo, {
+					...input,
+					budget: withReceipt,
+				});
+				// The receipt neither adds nor moves an accepted interval.
+				expect(r.delivery.intervals).toEqual(without.intervals);
+				expect(r.delivery.intervals).toEqual([`interval 1 ${p} ${a1} ${p}`]);
+				expect(r.delivery.lines).toEqual(without.lines);
+				expect(r.delivery.lines).toEqual([
+					`reviewed ${a1}`,
+					`evidence ${review}`,
+					`evidence ${repair}`,
+					`evidence ${records}`,
+					`evidence ${checkbox}`,
+					`evidence ${seal}`,
+					"delivery: ok",
+				]);
+				expectNoExtraInvocations(withReceipt);
+				expectResolved(r);
+			});
+		},
+		TIMEOUT,
+	);
+
+	for (const route of ["final_corrections", "author_revision"] as const) {
+		test(
+			`an exact proof-bound ${route} correction carries across a repair receipt`,
+			async () => {
+				await withRoot(`receipt-${route}`, async (root) => {
+					const repo = FixtureRepo.create(root);
+					const p = await repo.commit("plan", { [PLAN]: "plan\n- done\n" });
+					const a1 = await repo.commit("feat", { "src/a.ts": "a\n" });
+					const review = await repo.commit("review", {
+						"docs/development/reviews/p1.md": "corrections\n",
+					});
+					const repair = await repo.commit("5x: mechanical checklist repair", {
+						[PLAN]: REPAIRED_PLAN,
+					});
+					const k = await repo.commit("correction", { "src/a.ts": "a2\n" });
+					const proven = [
+						rec.binding("b1", p),
+						rec.context("c1", "b1", "1", p, a1),
+						rec.observation({
+							id: "o1",
+							bindingId: "b1",
+							contextId: "c1",
+							phase: "1",
+							route,
+							completionAuthorized: false,
+						}),
+						rec.correction({
+							observationId: "o1",
+							bindingId: "b1",
+							phase: "1",
+							commit: k,
+						}),
+					];
+					const withReceipt = [
+						...proven,
+						receipt.checklistRepair({
+							id: "repair-1",
+							runId: "run_impl",
+							bindingId: "b1",
+							beforeCommit: a1,
+							afterCommit: repair,
+						}),
+					];
+					const input = {
+						steps: [rec.preAuthor("b1", "1", p)],
+						base: p,
+						final: k,
+						prHead: k,
+					};
+					const without = await classify(root, repo, {
+						...input,
+						budget: proven,
+					});
+					const r = await deliverThenReconcile(root, repo, {
+						...input,
+						budget: withReceipt,
+					});
+					expect(r.delivery.intervals).toEqual(without.intervals);
+					expect(r.delivery.intervals).toEqual([
+						`interval 1 ${p} ${a1} ${p}`,
+						`correction 1 ${k}`,
+					]);
+					expect(r.delivery.lines).toEqual([
+						`reviewed ${a1}`,
+						`evidence ${review}`,
+						`evidence ${repair}`,
+						`correction ${k}`,
+						"delivery: ok",
+					]);
+					expectNoExtraInvocations(withReceipt);
+					expectResolved(r);
+				});
+			},
+			TIMEOUT,
+		);
+	}
+
+	test(
+		"finalization feeds the binding: BASE is the binding's approvedPlanCommit",
+		async () => {
+			await withRoot("receipt-finalization", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const reviewed = await repo.commit("plan", {
+					[PLAN]: "plan\n- done\n",
+				});
+				// Planning-run final corrections (plan-only), then a source repair.
+				const final = await repo.commit("plan: final corrections", {
+					[PLAN]: "plan v2\n- done\n",
+				});
+				const sourceRepair = await repo.commit(
+					"5x: mechanical checklist repair",
+					{ [PLAN]: "plan v2\n- [ ] done\n" },
+				);
+				const planningSeal = await repo.commit("5x: seal run run_plan", {
+					"docs/development/runs/218/run_plan/run.json": "{}\n",
+				});
+				const a1 = await repo.commit("feat", { "src/a.ts": "a\n" });
+				const tail = await evidenceTail(repo);
+
+				const planning = [
+					receipt.approvalFinalization({
+						id: "fin-1",
+						runId: "run_plan",
+						reviewedCommit: reviewed,
+						finalCommit: final,
+					}),
+					receipt.checklistRepair({
+						id: "source-repair-1",
+						runId: "run_plan",
+						bindingId: null,
+						beforeCommit: final,
+						afterCommit: sourceRepair,
+					}),
+				];
+				const planningDir = writePlanningRecords(root, planning);
+				const finalization = budgetPayloads(planning).find(
+					(p) => p.kind === "plan-approval-finalization",
+				);
+				expect(finalization?.finalCommit).toBe(final);
+
+				const budget = [
+					rec.binding("b1", final),
+					receipt.checklistRepair({
+						id: "carried-1",
+						runId: "run_impl",
+						bindingId: "b1",
+						beforeCommit: final,
+						afterCommit: sourceRepair,
+						carriedFrom: { runId: "run_plan", repairId: "source-repair-1" },
+					}),
+					rec.context("c1", "b1", "1", planningSeal, a1),
+					rec.observation({
+						id: "o1",
+						bindingId: "b1",
+						contextId: "c1",
+						phase: "1",
+						route: "complete",
+						completionAuthorized: true,
+					}),
+				];
+				const rd = writeRunRecords(root, {
+					budget,
+					steps: [rec.preAuthor("b1", "1", planningSeal)],
+					finalHead: tail.final,
+				});
+				// The skill's documented BASE derivation, run over the sealed records.
+				const derived = Bun.spawnSync(
+					[
+						"jq",
+						"-r",
+						'select(.payload.kind=="implementation-binding") | .payload.approvedPlanCommit',
+						join(rd, "budget.jsonl"),
+					],
+					{ stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+				);
+				expect(derived.exitCode).toBe(0);
+				const base = derived.stdout.toString().trim().split("\n").at(-1);
+				expect(base).toBe(final);
+				expect(base).toBe(String(finalization?.finalCommit));
+				expect(
+					readFileSync(join(planningDir, "budget.jsonl"), "utf8"),
+				).toContain('"kind":"plan-approval-finalization"');
+
+				const r = await deliverThenReconcile(root, repo, {
+					budget,
+					steps: [rec.preAuthor("b1", "1", planningSeal)],
+					base: String(base),
+					final: tail.final,
+					prHead: tail.seal,
+				});
+				expect(r.delivery.intervals).toEqual([
+					`interval 1 ${planningSeal} ${a1} ${planningSeal}`,
+				]);
+				// Receipt and finalization commits sit at or before BASE, or are evidence.
+				expect(r.delivery.lines).toEqual([
+					`evidence ${sourceRepair}`,
+					`evidence ${planningSeal}`,
+					`reviewed ${a1}`,
+					`evidence ${tail.review}`,
+					`evidence ${tail.checkbox}`,
+					`evidence ${tail.seal}`,
+					"delivery: ok",
+				]);
+				expect(r.delivery.lines.join("\n")).not.toContain(reviewed);
+				expect(r.delivery.lines.join("\n")).not.toContain(final);
+				expectNoExtraInvocations(budget);
+				expectResolved(r);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"unsettled or uncovered code beside a valid repair receipt fails delivery and publishes nothing",
+		async () => {
+			await withRoot("receipt-negative", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const p = await repo.commit("plan", { [PLAN]: "plan\n- done\n" });
+				const a1 = await repo.commit("feat", { "src/a.ts": "a\n" });
+				const repair = await repo.commit("5x: mechanical checklist repair", {
+					[PLAN]: REPAIRED_PLAN,
+				});
+				const repairLine = receipt.checklistRepair({
+					id: "repair-1",
+					runId: "run_impl",
+					bindingId: "b1",
+					beforeCommit: p,
+					afterCommit: repair,
+				});
+
+				// Unsettled: the latest observation is a gate, not approval.
+				const gated = await deliverThenReconcile(root, repo, {
+					budget: [
+						rec.binding("b1", p),
+						rec.context("c1", "b1", "1", p, a1),
+						rec.observation({
+							id: "o1",
+							bindingId: "b1",
+							contextId: "c1",
+							phase: "1",
+							route: "human_gate",
+							completionAuthorized: false,
+						}),
+						repairLine,
+					],
+					steps: [rec.preAuthor("b1", "1", p)],
+					base: p,
+					final: repair,
+					prHead: repair,
+				});
+				expect(gated.delivery.intervals).toEqual(["unsettled 1"]);
+				expect(gated.delivery.lines).toContain("records unsettled 1");
+				expect(gated.delivery.lines).toContain(`uncovered ${a1}`);
+				expect(gated.delivery.lines).toContain(`evidence ${repair}`);
+				expectNothingPublished(gated);
+			});
+			await withRoot("receipt-negative-prepared", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const p = await repo.commit("plan", { [PLAN]: "plan\n- done\n" });
+				const a1 = await repo.commit("feat", { "src/a.ts": "a\n" });
+				const repair = await repo.commit("5x: mechanical checklist repair", {
+					[PLAN]: REPAIRED_PLAN,
+				});
+				// Prepared-only context: a receipt does not substitute for a review.
+				const prepared = await deliverThenReconcile(root, repo, {
+					budget: [
+						rec.binding("b1", p),
+						rec.context("c1", "b1", "1", p, a1),
+						receipt.checklistRepair({
+							id: "repair-1",
+							runId: "run_impl",
+							bindingId: "b1",
+							beforeCommit: p,
+							afterCommit: repair,
+						}),
+					],
+					steps: [rec.preAuthor("b1", "1", p)],
+					base: p,
+					final: repair,
+					prHead: repair,
+				});
+				expect(prepared.delivery.intervals).toEqual([]);
+				expect(prepared.delivery.lines).toEqual([
+					"records no-accepted-interval",
+					`uncovered ${a1}`,
+					`evidence ${repair}`,
+					"delivery: needs_human",
+				]);
+				expectNothingPublished(prepared);
+			});
+			await withRoot("receipt-negative-uncovered", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const p = await repo.commit("plan", { [PLAN]: "plan\n- done\n" });
+				const a1 = await repo.commit("feat", { "src/a.ts": "a\n" });
+				// The repair commit also smuggles code: it is not evidence-only.
+				const mixed = await repo.commit("5x: mechanical checklist repair", {
+					[PLAN]: REPAIRED_PLAN,
+					"src/x.ts": "x\n",
+				});
+				const uncovered = await deliverThenReconcile(root, repo, {
+					budget: [
+						rec.binding("b1", p),
+						rec.context("c1", "b1", "1", p, a1),
+						rec.observation({
+							id: "o1",
+							bindingId: "b1",
+							contextId: "c1",
+							phase: "1",
+							route: "complete",
+							completionAuthorized: true,
+						}),
+						receipt.checklistRepair({
+							id: "repair-1",
+							runId: "run_impl",
+							bindingId: "b1",
+							beforeCommit: p,
+							afterCommit: mixed,
+						}),
+					],
+					steps: [rec.preAuthor("b1", "1", p)],
+					base: p,
+					final: mixed,
+					prHead: mixed,
+				});
+				expect(uncovered.delivery.lines).toEqual([
+					`reviewed ${a1}`,
+					`uncovered ${mixed}`,
+					"delivery: needs_human",
+				]);
+				expectNothingPublished(uncovered);
+			});
+		},
+		TIMEOUT,
+	);
+
+	test(
+		"pre-admission code stays uncovered when a repair receipt is present",
+		async () => {
+			await withRoot("receipt-pre-admission", async (root) => {
+				const repo = FixtureRepo.create(root);
+				const p = await repo.commit("plan", { [PLAN]: "plan\n- done\n" });
+				const u = await repo.commit("unreviewed", { "src/u.ts": "u\n" });
+				const repair = await repo.commit("5x: mechanical checklist repair", {
+					[PLAN]: REPAIRED_PLAN,
+				});
+				const a = await repo.commit("feat", { "src/a.ts": "a\n" });
+				const r = await deliverThenReconcile(root, repo, {
+					budget: [
+						rec.binding("b1", p),
+						receipt.checklistRepair({
+							id: "repair-1",
+							runId: "run_impl",
+							bindingId: "b1",
+							beforeCommit: p,
+							afterCommit: repair,
+						}),
+						rec.context("c1", "b1", "1", u, a),
+						rec.observation({
+							id: "o1",
+							bindingId: "b1",
+							contextId: "c1",
+							phase: "1",
+							route: "complete",
+							completionAuthorized: true,
+						}),
+					],
+					steps: [rec.preAuthor("b1", "1", u)],
+					base: p,
+					final: a,
+					prHead: a,
+				});
+				expect(r.delivery.lines).toEqual([
+					`uncovered ${u}`,
+					`evidence ${repair}`,
+					`reviewed ${a}`,
+					"delivery: needs_human",
+				]);
+				expectNothingPublished(r);
 			});
 		},
 		TIMEOUT,

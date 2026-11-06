@@ -6,6 +6,7 @@ import { loadConfig } from "../../../src/config.js";
 import { parseDeliveryBudget } from "../../../src/parsers/delivery-budget.js";
 import { parsePlan } from "../../../src/parsers/plan.js";
 import { parseReviewSummary } from "../../../src/parsers/review.js";
+import { diagnosePlanExecutability } from "../../../src/plan-schema/checklist-repair.js";
 import {
 	loadPlanDocument,
 	PLAN_SCHEMA_AUTHORITY_INSTRUCTION,
@@ -176,6 +177,35 @@ describe("schema 1 plan skeletons", () => {
 			);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("bundled and configured repository skeletons give every phase executable items (plan 217 phase 5)", () => {
+		const repo = readFileSync(
+			resolve(
+				import.meta.dir,
+				"../../../../docs/_implementation_plan_template.md",
+			),
+			"utf-8",
+		);
+		for (const skeleton of [DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE, repo]) {
+			const diagnosed = diagnosePlanExecutability(skeleton, "file");
+			if (!diagnosed.ok) throw new Error("skeleton failed to parse");
+			expect(diagnosed.result.executable).toBe(true);
+			expect(diagnosed.result.diagnostics).toEqual([]);
+			expect(diagnosed.result.phases.map((phase) => phase.id)).toEqual([
+				"1",
+				"2",
+			]);
+			// Guidance names the executable-item rule, keeps prose gates, and
+			// points at the draft repair rather than a refusal.
+			expect(skeleton).toContain("Completion gate:");
+			expect(skeleton).toMatch(/Every phase needs at least one executable/);
+			expect(skeleton).toContain(
+				"5x plan repair-checklists --plan <plan> --dry-run",
+			);
+			// The 5x-internal asset-impact checklist stays out of the generic skeleton.
+			expect(skeleton).not.toContain("asset-impact");
 		}
 	});
 

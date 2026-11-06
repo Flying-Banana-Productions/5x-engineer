@@ -417,6 +417,16 @@ After approval:
 
 The planning run is sealed. Do not reuse it for implementation.
 
+Completion finalizes the committed plan, including a final-corrections pass,
+as `5x-plan-review` Step 5 describes. When its envelope reports
+`.data.plan_executability.executable == false`, repair the approved source
+before Step 3 binds it: `5x plan repair-checklists --run $PLAN_RUN --dry-run`,
+then its `--apply` command with `--reason` recording the operator's
+instruction. An explicit instruction already given for this resolution covers
+the repair; do not ask again. The repair appends only a receipt and a
+plan-only commit. It does not reopen the planning run or repeat planning,
+intake, association, or plan review, and it is not a new approval.
+
 ### Step 3: Implementation run
 
 ```bash
@@ -431,6 +441,12 @@ bind the approved plan-review run (normally `$PLAN_RUN`):
 ```bash
 5x review implementation bind --run $IMPL_RUN --source-run $PLAN_RUN
 ```
+
+Binding consumes the planning run's finalization and carries any source
+repair onto `$IMPL_RUN`. After binding, repair checklists only on `$IMPL_RUN`
+(`5x-phase-execution` **Operator-authorized checklist repair**);
+`PLAN_CHECKLIST_REPAIR_BOUND` from `--run $PLAN_RUN` means the binding owns
+the plan now. Never move the binding or bind again to pick up a repair.
 
 Execute `5x-phase-execution` yourself through every phase with its existing
 quality and review gates, passing `--run $IMPL_RUN` at each handoff. While
@@ -670,6 +686,10 @@ FINAL=$(jq -r '.final_head_commit' $RD/run.json)
 
 `BASE` is the binding's `approvedPlanCommit`; `FINAL` is the sealed branch
 head before the seal commit; `PR_HEAD` is the pull request's `headRefOid`.
+`plan-checklist-repair` and `plan-approval-finalization` records are evidence
+only: they do not change `BASE`, their plan/record-only commits classify as
+evidence, and they never settle code, satisfy an `ACn`, or authorize
+publication or closure.
 The `reviewedRange` from `5x run state` is only the latest observation and is
 a cross-check, never the delivery range. A prepared review context is not
 approval.
@@ -1160,7 +1180,10 @@ To continue: "Resume resolution of issue #42."
 - Every retry inspects remote state first. A timeout equals an unknown
   outcome.
 - No success claim is published before reconciliation checks 1-4 pass.
-- Sealed runs are never reopened, amended, or appended to.
+- Sealed runs are never reopened, amended, or appended to, except that an
+  operator-authorized checklist repair receipt may be appended to the
+  completed planning run before binding (Step 2). That receipt is evidence,
+  not approval.
 
 ## Recovery
 
