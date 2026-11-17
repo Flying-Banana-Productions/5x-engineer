@@ -23,6 +23,10 @@ import {
 	readInvocationLogSummary,
 } from "../providers/log-writer.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import {
+	implementationPhaseExecutabilityGate,
+	planReviewExecutabilityGate,
+} from "../review-budget/plan-repair.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationCreditReconciliationPayload,
@@ -40,6 +44,7 @@ import {
 	describeBindingReadError,
 	effectivePlanSchema,
 	expectedSchemaForStore,
+	readImplementationBinding,
 	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
 import { validateRunId } from "../run-id.js";
@@ -303,6 +308,7 @@ export async function evaluatePhaseChecklist(
 	}
 
 	let expected: "file" | 0 | 1 = "file";
+	let bound = false;
 	if (params.run) {
 		try {
 			const contextFactory =
@@ -312,6 +318,8 @@ export async function evaluatePhaseChecklist(
 				() => {},
 			);
 			expected = expectedSchemaForStore(budgetContext.store, params.run);
+			bound =
+				readImplementationBinding(budgetContext.store, params.run) !== null;
 		} catch (error) {
 			if (error instanceof RecordContextError) {
 				expected = "file";
@@ -356,6 +364,35 @@ export async function evaluatePhaseChecklist(
 			ok: false,
 			code: "PHASE_NOT_FOUND",
 			message: `Phase '${params.phase}' not found in plan: ${planPath}`,
+		};
+	}
+
+	// A phase with no parser-recognized items can never be checked off, even
+	// when its heading says COMPLETE: that suffix is historical display, not
+	// executable evidence. Point at the mechanical repair instead of asking
+	// for impossible [x]. Same shared executability result as delegation,
+	// with the same repair.
+	if (phase.items.length === 0) {
+		const gate = implementationPhaseExecutabilityGate({
+			planMarkdown: planContent,
+			phase: phase.number,
+			expected,
+			subject:
+				params.run && bound
+					? { kind: "run", runId: params.run }
+					: { kind: "file", planPath },
+		});
+		const how =
+			gate.status === "error"
+				? `Preview the mechanical repair with \`${gate.detail.next.join("` or `")}\` (an approved plan uses the --run form under the operator's repair instruction; no reviewer finding, gate, or new run is needed).`
+				: (gate.warning ?? "Missing requirements still need author work.");
+		const heading = phase.isComplete
+			? " Its COMPLETE heading is not executable evidence."
+			: "";
+		return {
+			ok: false,
+			code: "PHASE_CHECKLIST_INCOMPLETE",
+			message: `Phase ${params.phase} has no executable checklist items, so it cannot be checked off.${heading} ${how}`,
 		};
 	}
 
@@ -826,6 +863,33 @@ export async function protocolValidate(
 			const pinnedMode =
 				baseline?.mode ?? budgetContext.config.reviewBudget.mode;
 			if (pinnedMode === "off") {
+				// Budget modes check executability during composition; off
+				// mode still needs an executable plan to record a verdict.
+				if (params.record) {
+					let recordedPlan: string | null = null;
+					try {
+						recordedPlan = readFileSync(
+							budgetContext.executionContext.effectivePlanPath,
+							"utf-8",
+						);
+					} catch {
+						recordedPlan = null;
+					}
+					const gate =
+						recordedPlan === null
+							? null
+							: planReviewExecutabilityGate({
+									planMarkdown: recordedPlan,
+									planPath: budgetContext.executionContext.effectivePlanPath,
+								});
+					if (gate) {
+						outputError(
+							gate.code,
+							`${gate.message} If this occurred while recording, re-review the repaired plan before recording a verdict.`,
+							gate.detail,
+						);
+					}
+				}
 				budgetContext = undefined;
 			} else {
 				let admissionEligible = true;

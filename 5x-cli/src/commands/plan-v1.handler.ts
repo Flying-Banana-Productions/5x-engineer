@@ -18,11 +18,13 @@ import {
 } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import type { FiveXConfig } from "../config.js";
+import { createWorkingTreeRecordStore } from "../control-plane/record-fs.js";
 import { parseRunJson } from "../control-plane/record-layout.js";
 import type {
 	RecordOrigin,
 	RecordRecorder,
 } from "../control-plane/record-types.js";
+import { createReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { getDb } from "../db/connection.js";
 import { type PlanRow, upsertPlan } from "../db/operations.js";
 import {
@@ -47,6 +49,7 @@ import {
 	planSchemaCommandMessage,
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
+import { diagnosePlanExecutability } from "../plan-schema/checklist-repair.js";
 import type { ExpectedPlanSchema } from "../plan-schema/document.js";
 import {
 	envelopeAttribution,
@@ -61,8 +64,13 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import {
+	type ExecutabilityRepairSubject,
+	executabilityRepairCommands,
+} from "../review-budget/plan-repair.js";
+import {
 	describeBindingReadError,
 	expectedSchemaForStore,
+	planFileGoverningRun,
 	planPathsIdentifySamePlan,
 } from "../review-governance/implementation-state.js";
 import { type DbContext, resolveDbContext } from "./context.js";
@@ -142,11 +150,12 @@ function formatPhasesText(data: Record<string, unknown>): void {
 	}
 
 	const phases = data.phases as Array<{
-		id: number;
+		id: string;
 		title: string;
 		done: boolean;
 		checklist_total: number;
 		checklist_done: number;
+		executable?: boolean;
 	}>;
 
 	if (!phases || phases.length === 0) {
@@ -157,9 +166,27 @@ function formatPhasesText(data: Record<string, unknown>): void {
 	console.log("Phases:");
 	for (const phase of phases) {
 		const check = phase.done ? "x" : " ";
+		const note =
+			phase.executable === false ? " — no executable checklist items" : "";
 		console.log(
-			`  [${check}] Phase ${phase.id}: ${phase.title} (${phase.checklist_done}/${phase.checklist_total})`,
+			`  [${check}] Phase ${phase.id}: ${phase.title} (${phase.checklist_done}/${phase.checklist_total})${note}`,
 		);
+	}
+	const executability = data.executability as
+		| {
+				executable: boolean;
+				diagnostics: Array<{ severity: string; message: string }>;
+				next: string[];
+		  }
+		| undefined;
+	if (executability && executability.diagnostics.length > 0) {
+		console.log("Diagnostics:");
+		for (const entry of executability.diagnostics) {
+			console.log(`  ${entry.severity}: ${entry.message}`);
+		}
+		for (const command of executability.next) {
+			console.log(`  repair: ${command}`);
+		}
 	}
 }
 
@@ -387,6 +414,41 @@ async function expectedSchemaForPlanFile(input: {
 	return expectedSchemaForStore(budgetContext.store, active.id);
 }
 
+/**
+ * Repair selector for inspection output: the governing execution or
+ * completed approval run when one exists, else the editable plan file.
+ * Best effort; the file form redirects to the run form itself.
+ */
+function repairSubjectForPlan(input: {
+	dbContext: DbContext;
+	planPath: string;
+	editablePath: string;
+}): ExecutabilityRepairSubject {
+	try {
+		const root =
+			input.dbContext.controlPlane?.controlPlaneRoot ??
+			input.dbContext.projectRoot;
+		const records = resolveRecordsRoot({
+			recordsConfigAbs: input.dbContext.config.paths.records,
+			controlPlaneRoot: root,
+			effectiveWorkdir: root,
+		});
+		const recordStore = createWorkingTreeRecordStore({
+			recordsRoot: records.recordsAbsPath,
+			controlPlaneRoot: root,
+		});
+		const governing = planFileGoverningRun({
+			recordStore,
+			store: createReviewBudgetStore(recordStore),
+			planPath: canonicalizePlanPath(input.planPath),
+		});
+		if (governing) return { kind: "run", runId: governing.runId };
+	} catch {
+		// Fall back to the file form, which redirects when a run governs it.
+	}
+	return { kind: "file", planPath: input.editablePath };
+}
+
 export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	validateProgressSelection(params);
 	const dbContext = await resolveDbContext({
@@ -459,6 +521,13 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 	}
 	const plan = read.plan;
 	const progress = envelopeFromProgress(resolved);
+	// Additive and nonblocking: inspection and historical progress still
+	// report a phase with zero items; the diagnostics point at the repair.
+	const diagnosed = diagnosePlanExecutability(markdown, expected);
+	const executability = diagnosed.ok ? diagnosed.result : null;
+	const executableById = new Map(
+		(executability?.phases ?? []).map((entry) => [entry.id, entry.executable]),
+	);
 
 	const result: Record<string, unknown> = {
 		phases: plan.phases.map((p) => ({
@@ -467,7 +536,26 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 			done: p.isComplete,
 			checklist_total: p.items.length,
 			checklist_done: p.items.filter((i) => i.checked).length,
+			executable: executableById.get(p.number) ?? p.items.length > 0,
 		})),
+		...(executability
+			? {
+					executability: {
+						executable: executability.executable,
+						diagnostics: executability.diagnostics,
+						next: executabilityRepairCommands(
+							executability.diagnostics,
+							executability.diagnostics.length > 0
+								? repairSubjectForPlan({
+										dbContext,
+										planPath,
+										editablePath: worktreePlanPath ?? planPath,
+									})
+								: { kind: "file", planPath },
+						),
+					},
+				}
+			: {}),
 		filePaths: worktreePlanPath
 			? { root: planPath, worktree: worktreePlanPath }
 			: { root: planPath },

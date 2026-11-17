@@ -30,7 +30,12 @@ timeout handling.
 ## Gotchas
 
 - NEVER record `phase:complete` if checklist shows `done: false` —
-  record `phase:checklist_mismatch` and escalate instead
+  record `phase:checklist_mismatch` and escalate instead. A phase with no
+  executable items is a checklist-format defect, not unfinished work: use
+  **Operator-authorized checklist repair** (Recovery) on this same run
+- A missing or prefix-only checklist never needs a new run, a reviewer
+  finding, an open gate, or a repeated review/quality cycle. One operator
+  instruction authorizes the mechanical repair; reuse it, do not ask again
 - `5x plan phases` is the authoritative signal for phase completion,
   not step records
 - After author fix, re-run quality gates (Step 2), don't skip to
@@ -242,7 +247,10 @@ phase with one review-fix cycle burns roughly 10–12 steps. If
 step budget may be tight and suggest increasing `maxStepsPerRun` in
 `5x.toml` before proceeding.
 
-Get the phase list: `5x plan phases $PLAN_PATH`
+Get the phase list: `5x plan phases $PLAN_PATH`. Phases are under
+`.data.phases[]` keyed by `.id`; `.data.executability` reports phases with
+no executable checklist items and the repair command to preview. A
+non-executable phase is repaired before it is delegated, not skipped.
 
 **`plan phases` is the authoritative signal for phase completion** — it
 reports `done: true` when all checklist items are checked. Step records
@@ -294,6 +302,11 @@ COMMIT=$(echo "$RESULT" | jq -r '.data.result.commit // empty')
 SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
+
+If the render/invoke fails with `PLAN_CHECKLIST_REPAIR_REQUIRED`, or with
+plan drift whose message names `5x plan repair-checklists`, nothing was
+delegated and the run is preserved: follow **Operator-authorized checklist
+repair** (Recovery), then repeat this same Step 1 command.
 
 Check the result:
 - `result: "complete"` with a commit hash (from `5x commit`) — continue to Step 2.
@@ -715,8 +728,18 @@ Before recording phase completion, verify the checklist was updated:
 
 ```bash
 # Verify checklist completion via the authoritative source
-PHASE_STATUS=$(5x plan phases $PLAN_PATH | jq -r ".phases[] | select(.number == $PHASE_NUMBER) | .done")
+PHASES=$(5x plan phases $PLAN_PATH)
+PHASE_JSON=$(echo "$PHASES" | jq -c --arg id "$PHASE" '.data.phases[] | select(.id == $id)')
+PHASE_STATUS=$(echo "$PHASE_JSON" | jq -r '.done // empty')
 ```
+
+If `PHASE_JSON` is empty, the phase id was not found. That is a diagnostic,
+never proof of completion: compare `$PHASE` with `.data.phases[].id`, read
+`.data.executability`, and stop without recording `phase:complete`.
+
+If `PHASE_JSON` shows `"executable": false` (zero checklist items), the
+phase has a checklist-format defect rather than unfinished work. Follow
+**Operator-authorized checklist repair** (Recovery), then repeat this gate.
 
 If `PHASE_STATUS` is not `true`:
 1. Record the mismatch: `5x run record "phase:checklist_mismatch" --run $RUN --phase $PHASE --result '{"phase":"$PHASE","reason":"checklist_not_updated"}'`
@@ -776,7 +799,7 @@ Report to the human: all phases implemented and reviewed.
 
 ### Phase boundary:
 - `5x plan phases` is a checklist report. Checked boxes alone are not enough for enforced implementation advancement. Read `implementation_governance` from `5x run state`; it is ready only when the phase is reviewed, due claims are reconciled, and no material gate is open.
-- BEFORE recording `phase:complete`, run `5x plan phases $PLAN_PATH` and confirm current phase shows `done: true`
+- BEFORE recording `phase:complete`, run `5x plan phases $PLAN_PATH` and confirm `.data.phases[] | select(.id == "$PHASE") | .done` is `true`; a missing selection is a diagnostic, not completion
 - If checklist is not updated, record `phase:checklist_mismatch` and escalate to human — do NOT record `phase:complete`
 - Phase count should not have changed since the run started
 
@@ -794,6 +817,51 @@ Report to the human: all phases implemented and reviewed.
 4. Wait for human guidance — do NOT auto-reinvoke the author
 
 This is an explicit failure mode. The audit trail must show `phase:checklist_mismatch` rather than a misleading `phase:complete`.
+
+### Operator-authorized checklist repair
+
+**Symptom:** `PLAN_CHECKLIST_REPAIR_REQUIRED` from render/invoke, plan drift
+that names `5x plan repair-checklists`, a phase with `executable: false` in
+`5x plan phases`, or the operator saying to fix the checklist and continue.
+
+**Response (same run; no reviewer, gate, new run, or re-bind):**
+1. Preview with the exact command the CLI supplied (`.error.detail.next` or
+   `.data.executability.next`), normally
+   `5x plan repair-checklists --run $FIVEX_RUN --dry-run`. Show the operator
+   `.data.edits`, `.data.resetChecked`, and `.data.remainingWork`.
+2. Authority: an explicit operator instruction already given for this repair
+   (for example "fix the checklist and move on") is the authorization. Do not
+   ask again. Otherwise ask once with the preview. Ask again only when the
+   preview needs a `--phase`/`--lines` selection, reports disallowed changes,
+   or covers more than the operator authorized.
+3. Apply with the command the preview returned in `.data.next[0]`, replacing
+   only its `"<operator repair instruction>"` reason with that instruction
+   verbatim. It keeps any `--phase`/`--lines` selection, which the intent
+   depends on. Unscoped, it is
+   `5x plan repair-checklists --run $FIVEX_RUN --apply --intent "$(echo "$PREVIEW" | jq -r '.data.intentDigest')" --reason "<operator instruction>"`;
+   a scoped preview adds its exact `--phase`/`--lines` flags. Never drop or
+   change them: every apply, re-preview, and retry repeats the same
+   selectors, or the CLI computes a different candidate and refuses it as
+   stale. `PLAN_CHECKLIST_REPAIR_STALE` means the file changed: re-preview
+   with the same selectors and, if the proposed edits are unchanged in scope,
+   apply the new `.data.next[0]` without asking again. An identical retry
+   returns the stored receipt.
+4. Resume the interrupted checkpoint: repeat the step that failed. Existing
+   review, quality, and debt evidence for unchanged requirements stays valid.
+   If the phase was already reviewed with passing quality, delegate the author
+   only to check new boxes that match that recorded evidence, verify Step 6,
+   and record `phase:complete` without another review or quality run. Then
+   continue with the remaining phases normally: the author implements, tests,
+   and checks their repaired boxes before their first review.
+5. `CHECKLIST_REPAIR_DISALLOWED`, or a phase whose repair is `author`
+   (missing requirements), is a real plan change: use the scoped semantic
+   amendment in Step 5b. Do not describe it as a formatting repair.
+
+A historical enforced `human_gate` with no gate (`GATELESS_HUMAN_GATE` from
+`5x review gate show`, or `implementation_governance.gatelessHumanGate` in
+`5x run state`) is recovered on the same run: run its `next` commands in
+order (checklist repair first when drift is present, then a fresh reviewer
+context and a corrected review). Do not try to decide the absent gate.
 
 ### Context loss (compaction)
 

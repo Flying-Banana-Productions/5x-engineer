@@ -973,7 +973,7 @@ async function checkpointMigrationRecords(
 }
 
 /** Stage one path and commit only it. A path with no change is a no-op. */
-async function commitOnly(
+export async function commitOnly(
 	workdir: string,
 	path: string,
 	message: string,

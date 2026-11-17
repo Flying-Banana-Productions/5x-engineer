@@ -18,6 +18,7 @@ import {
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
 import type { AmendmentScope, ReviewerVerdict } from "../protocol.js";
+import type { BindingApprovalFinalization } from "../review-budget/record-lines.js";
 import type { DerivedBudgetResult } from "../review-budget/types.js";
 import {
 	assertCleanCodeWorktree,
@@ -46,6 +47,12 @@ import {
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
 import { fingerprintVerdictItem } from "../review-governance/fingerprint.js";
+import {
+	GATELESS_HUMAN_GATE,
+	type GatelessHumanGateReport,
+	implementationGatelessReport,
+	planGatelessReport,
+} from "../review-governance/gate-invariant.js";
 import { unsettledAuthorFindingIds } from "../review-governance/implementation.js";
 import {
 	type EffectiveExecution,
@@ -54,6 +61,8 @@ import {
 	registerImplementationAmendment,
 } from "../review-governance/implementation-amendment.js";
 import {
+	detectPlanDrift,
+	effectivePlanSchema,
 	ensureImplementationAdmission,
 	listRecordedImplementationReviews,
 	planRepoPath,
@@ -171,7 +180,16 @@ export async function showPlanReviewGate(
 	const governance = createReviewGovernanceStore(ctx.recordStore, promptStore);
 	repairReviewGatePrompts(ctx.recordStore, promptStore, runId);
 	const gate = governance.deriveOpenGate(runId);
-	if (!gate) return { open: false as const };
+	if (!gate) {
+		const inconsistency = planGatelessReport({
+			recordStore: ctx.recordStore,
+			runId,
+		});
+		return {
+			open: false as const,
+			...(inconsistency ? { inconsistency } : {}),
+		};
+	}
 	const state = governance.deriveGoverningState(runId, baseline.b0);
 	const eligibleFindings = [
 		...eligibleFindingMap(ctx, runId, gate.snapshotId, gate.causes).values(),
@@ -674,6 +692,13 @@ export async function submitPlanReviewDecision(
 		if (deps.onOpenGateMiss) await deps.onOpenGateMiss();
 		const raced = readDecision();
 		if (raced) return acceptStoredWinner(raced);
+		const gateless = gate
+			? null
+			: planGatelessReport({
+					recordStore: ctx.recordStore,
+					runId: input.runId,
+				});
+		if (gateless) failGateless(gateless, input.gateId);
 		fail(
 			"REVIEW_GATE_NOT_OPEN",
 			`Review gate ${input.gateId} is not the current open gate`,
@@ -913,6 +938,8 @@ export async function bindApprovedImplementation(
 	mode: "advisory" | "enforced";
 	b0: number;
 	governingB: number;
+	/** How the approved ledger was finalized. Null for an unchanged snapshot ledger. */
+	approvalFinalization: BindingApprovalFinalization | null;
 }> {
 	const ctx = deps.context;
 	const planPath = ctx.executionContext.run.plan_path;
@@ -946,6 +973,7 @@ export async function bindApprovedImplementation(
 			mode: result.binding.mode,
 			b0: result.binding.b0,
 			governingB: result.binding.governingB,
+			approvalFinalization: result.binding.approvalFinalization ?? null,
 		};
 	}
 	if (result.status === "approval_required" || result.status === "error") {
@@ -1077,15 +1105,84 @@ export async function submitReviewDecision(
 		input.phase,
 	);
 	if (!gate) {
+		const binding = ctx.store.getImplementationBinding(input.runId);
 		// Advisory implementation gates are never open; say so instead of
 		// falling through to the plan path's missing-baseline error.
-		if (ctx.store.getImplementationBinding(input.runId)?.mode === "advisory")
+		if (binding?.mode === "advisory")
 			fail("REVIEW_GATE_ADVISORY", advisoryDecisionMessage(input.runId));
+		// A recorded human_gate with no gate cannot be decided. Return the
+		// same-run recovery rather than a decision on an absent gate.
+		const gateless =
+			binding?.mode === "enforced"
+				? gatelessReportForDecision(ctx, input.runId, input.phase)
+				: null;
+		if (gateless) failGateless(gateless, input.gateId);
 		return submitPlanReviewDecision(input, { ...deps, context: ctx });
 	}
 	return submitImplementationReviewDecision(
 		{ ...input, phase: gate.phase },
 		{ ...deps, context: ctx },
+	);
+}
+
+/**
+ * Whether the current plan differs from the effective approved bytes. Read
+ * only to order recovery commands; an unreadable plan counts as drifted so
+ * the direct repair preview is offered first.
+ */
+function currentPlanDrifted(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+): boolean {
+	const folded = ctx.store.readEffectiveImplementationRevision(runId);
+	if (!folded?.ok) return false;
+	let current: string;
+	try {
+		current = readFileSync(ctx.executionContext.effectivePlanPath, "utf-8");
+	} catch {
+		return true;
+	}
+	return detectPlanDrift({
+		approvedPlanBytes: folded.approvedPlanBytes,
+		approvedPlanHash: folded.approvedPlanHash,
+		amendments: [],
+		currentPlanBytes: current,
+		...effectivePlanSchema(folded),
+	}).drifted;
+}
+
+function gatelessReportForDecision(
+	ctx: ReviewBudgetCommandContext,
+	runId: string,
+	phase: string | undefined,
+): GatelessHumanGateReport | null {
+	const phases = phase
+		? [phase]
+		: [
+				...new Set(
+					ctx.store
+						.listImplementationReviews(runId)
+						.map((observation) => observation.phase),
+				),
+			];
+	const drifted = currentPlanDrifted(ctx, runId);
+	for (const candidate of phases) {
+		const report = implementationGatelessReport({
+			recordStore: ctx.recordStore,
+			runId,
+			phase: candidate,
+			planDrifted: drifted,
+		});
+		if (report) return report;
+	}
+	return null;
+}
+
+function failGateless(report: GatelessHumanGateReport, gateId: string): never {
+	fail(
+		GATELESS_HUMAN_GATE,
+		`Review gate ${gateId} is not open. ${report.message} ${report.remediation} Next: ${report.next.join(" ; ")}`,
+		report,
 	);
 }
 
@@ -1120,8 +1217,20 @@ async function showImplementationReviewGate(
 	}
 	repairReviewGatePrompts(ctx.recordStore, promptStore, runId);
 	const gate = deriveOpenImplementationGate(ctx.recordStore, runId, phase);
-	if (!gate)
-		return { open: false as const, domain: "implementation" as const, phase };
+	if (!gate) {
+		const inconsistency = implementationGatelessReport({
+			recordStore: ctx.recordStore,
+			runId,
+			phase,
+			planDrifted: currentPlanDrifted(ctx, runId),
+		});
+		return {
+			open: false as const,
+			domain: "implementation" as const,
+			phase,
+			...(inconsistency ? { inconsistency } : {}),
+		};
+	}
 	const prompt = ensureImplementationGatePrompt({
 		promptStore,
 		gate,

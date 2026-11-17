@@ -30,6 +30,123 @@ const SUBHEADING_ITEM_RE = /^#{3,}\s+(.+?)\s*\[([xX ])\]\s*$/;
 const METADATA_RE = /^\*\*(\w[\w\s]*):\*\*\s*(.+)$/;
 const COMPLETION_GATE_RE = /^\*\*Completion gate:\*\*\s*(.+)$/;
 const COMPLETE_SUFFIX_RE = /\s*[-–—]\s*COMPLETE\s*$/i;
+const FENCE_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
+/** A backtick fence's info string may not contain backticks (CommonMark). */
+const BACKTICK_FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,})[^`]*$/;
+const COMMENT_OPEN_RE = /^[ \t]{0,3}<!--/;
+
+/** The fence a line opens, or null when the line is not a fence opener. */
+function fenceOpener(line: string): string | null {
+	const marker = line.match(FENCE_RE)?.[1] ?? null;
+	if (marker === null) return null;
+	if (marker[0] === "`" && !BACKTICK_FENCE_OPEN_RE.test(line)) return null;
+	return marker;
+}
+
+/** Length of the backtick run starting at `index`. */
+function backtickRun(text: string, index: number): number {
+	let end = index;
+	while (text[end] === "`") end++;
+	return end - index;
+}
+
+/**
+ * Comment state after scanning `text` in lexical order, starting inside a
+ * comment when `inComment` is true. Inside a comment only its `-->`
+ * terminator is recognized; backticks there are literal text. Outside a
+ * comment, an inline code span (a backtick run closed by a run of the same
+ * length) is skipped, so a quoted `<!--` opens nothing; an unmatched
+ * backtick run is literal.
+ */
+function commentOpenAfter(text: string, inComment: boolean): boolean {
+	let comment = inComment;
+	let index = 0;
+	while (index < text.length) {
+		if (comment) {
+			const close = text.indexOf("-->", index);
+			if (close === -1) return true;
+			comment = false;
+			index = close + 3;
+			continue;
+		}
+		if (text[index] === "`") {
+			const length = backtickRun(text, index);
+			let search = index + length;
+			let closed = -1;
+			while (search < text.length) {
+				const next = text.indexOf("`", search);
+				if (next === -1) break;
+				const run = backtickRun(text, next);
+				if (run === length) {
+					closed = next + run;
+					break;
+				}
+				search = next + run;
+			}
+			index = closed === -1 ? index + length : closed;
+			continue;
+		}
+		if (text.startsWith("<!--", index)) {
+			comment = true;
+			index += 4;
+			continue;
+		}
+		index++;
+	}
+	return comment;
+}
+
+/**
+ * Lines that are literal example or commentary text rather than plan
+ * structure: fenced code blocks (delimiters included) and HTML comments.
+ * A comment that starts a line is literal on that line; a comment opened
+ * after visible prose leaves that line visible and makes the following
+ * lines literal until it closes. A line that only looks like a fence (for
+ * example a triple-backtick inline code span) is not a fence. Phase
+ * headings, completion gates and checklist items on literal lines do not
+ * count. {@link parsePlan}, {@link phaseSectionRanges} and executability
+ * diagnostics share this one rule so their counts cannot disagree. Indexes
+ * are 0-based line positions of `markdown.split(/\r\n|\n|\r/)`.
+ */
+export function literalPlanLines(lines: readonly string[]): boolean[] {
+	const literal: boolean[] = [];
+	let fence: string | null = null;
+	let comment = false;
+	for (const line of lines) {
+		if (fence !== null) {
+			literal.push(true);
+			const marker = line.match(FENCE_RE)?.[1] ?? null;
+			if (
+				marker !== null &&
+				marker[0] === fence[0] &&
+				marker.length >= fence.length &&
+				line.slice(line.indexOf(marker) + marker.length).trim().length === 0
+			) {
+				fence = null;
+			}
+			continue;
+		}
+		if (comment) {
+			literal.push(true);
+			comment = commentOpenAfter(line, true);
+			continue;
+		}
+		const opener = fenceOpener(line);
+		if (opener !== null) {
+			fence = opener;
+			literal.push(true);
+			continue;
+		}
+		if (COMMENT_OPEN_RE.test(line)) {
+			literal.push(true);
+			comment = commentOpenAfter(line, false);
+			continue;
+		}
+		literal.push(false);
+		comment = commentOpenAfter(line, false);
+	}
+	return literal;
+}
 
 export function parsePlan(markdown: string): ParsedPlan {
 	const lines = markdown.split(/\r\n|\n|\r/);
@@ -61,8 +178,10 @@ export function parsePlan(markdown: string): ParsedPlan {
 	// Parse phases
 	const phases: Phase[] = [];
 	let currentPhaseIdx = -1;
+	const literal = literalPlanLines(lines);
 
 	for (let i = 0; i < lines.length; i++) {
+		if (literal[i]) continue;
 		const line = lines[i] ?? "";
 		const lineNum = i + 1;
 
@@ -164,6 +283,56 @@ export function parsePlan(markdown: string): ParsedPlan {
 		currentPhase,
 		completionPercentage,
 	};
+}
+
+/** One phase section as {@link parsePlan} scopes it. Lines are 1-based. */
+export interface PhaseSectionRange {
+	number: string;
+	heading: string;
+	/** Line of the phase heading. */
+	startLine: number;
+	/** Last line still attributed to this phase. */
+	endLine: number;
+}
+
+/**
+ * Phase section bounds using the same heading and closing rules as
+ * {@link parsePlan}. A phase ends before the next phase heading or the next
+ * non-phase `#`/`##` heading. Callers that edit list prefixes use this so
+ * their scope cannot disagree with the parser's item attribution.
+ */
+export function phaseSectionRanges(markdown: string): PhaseSectionRange[] {
+	const lines = markdown.split(/\r\n|\n|\r/);
+	const ranges: PhaseSectionRange[] = [];
+	let open: PhaseSectionRange | null = null;
+	const literal = literalPlanLines(lines);
+	for (let i = 0; i < lines.length; i++) {
+		if (literal[i]) continue;
+		const line = lines[i] ?? "";
+		const lineNum = i + 1;
+		const phaseMatch = line.match(PHASE_HEADING_RE);
+		if (phaseMatch) {
+			if (open) open.endLine = lineNum - 1;
+			open = {
+				number: phaseMatch[2]?.trim() ?? "?",
+				heading: line,
+				startLine: lineNum,
+				endLine: lines.length,
+			};
+			ranges.push(open);
+			continue;
+		}
+		if (open && /^#{1,2}\s+[^#]/.test(line)) {
+			open.endLine = lineNum - 1;
+			open = null;
+		}
+	}
+	// A trailing newline yields one empty pseudo-line; keep it out of range.
+	const last = ranges.at(-1);
+	if (last && open === last && lines.at(-1) === "" && lines.length > 1) {
+		last.endLine = lines.length - 1;
+	}
+	return ranges;
 }
 
 /**

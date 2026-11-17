@@ -328,6 +328,13 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 ```
 {{/if}}
 
+If the render or invoke fails with `PLAN_REPAIR_REQUIRED`, no reviewer ran
+and nothing was recorded: the draft has a phase with no executable checklist
+item. Go to Step 3 as an ordinary author revision, passing the error's
+`.error.detail.next` repair commands in `user_notes`, without incrementing
+`$ITERATION`, then repeat this Step 1. Never ask the reviewer for a finding to
+obtain repair authority.
+
 For an active budget, verify the reviewer follows the rendered prompt:
 
 - The first review emits one independent `baselineAssessment` (`I`) and a
@@ -540,6 +547,22 @@ Present the situation and your per-item recommendations to the human:
 
     5x run complete
 
+Completion finalizes the committed plan. It reconciles a final-corrections
+pass against the admitted corrections (adding admitted finding IDs to
+`Addresses` needs no second review) and records the approval anchor that
+implementation binding consumes.
+
+- `PLAN_APPROVAL_FINALIZATION_DELTA`: the committed plan changed more than the
+  admitted corrections allow. The run stays open; follow the error's same-run
+  next action (a review of the exact committed plan). Do not start a new run.
+- `.data.plan_executability.executable == false`: the approved plan still has
+  a phase with no executable items. With the operator's instruction, preview
+  and apply the reported `5x plan repair-checklists --run $FIVEX_RUN` command
+  on this completed run before any implementation run binds it. An explicit
+  instruction already given covers this repair; do not ask again. The repair
+  records a receipt and a plan-only commit; it does not reopen the run,
+  re-review the plan, or replace the approval.
+
 Report to the human: plan review is complete. Verdict: approved
 (or overridden). Review document is at the auto-generated review path
 (`$REVIEW_PATH`).
@@ -558,7 +581,11 @@ Report to the human: plan review is complete. Verdict: approved
   Likely the author made no changes (disagreed with the review). Check
   the diff. If the plan is genuinely unchanged, present both the review
   items and the author's notes to the human for judgment.
-- **Reviewer produces empty items with not_ready**: The reviewer flagged
+- **Reviewer produces empty items with not_ready**: In enforced mode the
+  CLI rejects this as `INVALID_STRUCTURED_OUTPUT`
+  (`UNEXPLAINED_NEGATIVE_VERDICT`) and records nothing; it is an output
+  correction under the existing retry limit, not a review iteration or a human
+  gate. Otherwise the reviewer flagged
   a concern but couldn't articulate specific items. Re-invoke the reviewer
 {{#if reviewer_native}}
   with a fresh subagent (omit `[[NATIVE_CONTINUE_PARAM]]`) and explicit instructions to provide

@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit
 description: Review implementation commits
-version: 10
+version: 11
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -58,7 +58,7 @@ If `{{review_path}}` does not exist, create a new review document. Look for a re
 Classify every structured item with exactly one `scopeClass`. Source-of-correction precedence wins over the symptom: a code bug that requires changed approved behavior is `plan_defect`.
 
 - **`implementation_defect`**: ordinary defect inside approved work. Link every item to approved `planWorkItemIds`. New blockers need exact file-qualified hunk evidence (`introducedBy`: the `diff --git` line plus the complete `@@` hunk) and a causal explanation.
-- **`plan_defect`**: the approved plan text, design, or budget is wrong. `planImpact` is an object, never a string: `{ "kind": "text_only" | "design" | "budget", "locations": [{ "heading": "...", "staleText": "..." }] }`. `text_only` locations must be nonempty. Each `staleText` must occur exactly once under its unique heading in the supplied approved text. Missing or ambiguous matches route to a human; do not guess a replacement. `design` and `budget` may use `"locations": []` and always route to a human.
+- **`plan_defect`**: the approved plan text, design, or budget is wrong. `planImpact` is an object, never a string: `{ "kind": "text_only" | "design" | "budget", "locations": [{ "heading": "...", "staleText": "..." }] }`. `text_only` locations must be nonempty. Each `staleText` must occur exactly once under its unique heading in the supplied approved text. Missing or ambiguous matches route to a human; do not guess a replacement. `design` and `budget` may use `"locations": []` and always route to a human. A structural `plan_defect`, such as a phase with no executable checklist item, needs no code hunk and need not have been introduced by the reviewed commits: cite its `planImpact` locations from the runtime-appended `Plan evidence` (governing phase text, executability diagnostics, and any plan-only diff), which is separate from the code range. A mechanical checklist repair needs no reviewer finding; report the supplied `5x plan repair-checklists` command instead of inventing a defect. Never return `not_ready` without at least one item.
 - **`scope_expansion`**: new API, schema, dependency, subsystem, or structural plan change. Never automatic, even when `action` is `auto_fix`.
 - **`pre_existing`**: ordinary pre-existing notes belong in the Markdown **Nonblocking follow-ups** section, not `items[]`. Critical pre-existing safety stays in `items[]` with `lateDiscovery: "critical_safety"` and `lateDiscoveryEvidence`, and routes to a human. That safety exception bypasses the hunk requirement.
 

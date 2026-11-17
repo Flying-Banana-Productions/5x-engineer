@@ -20,6 +20,7 @@ import {
 } from "../../../src/commands/implementation-review-context.js";
 import { invokeAgent } from "../../../src/commands/invoke.handler.js";
 import {
+	evaluatePhaseChecklist,
 	isNumericPhaseRef,
 	protocolValidate,
 } from "../../../src/commands/protocol.handler.js";
@@ -76,7 +77,11 @@ const budgetPlan = `## Delivery Budget
 ### Surface Snapshot
 - Subsystems: 1
 - Production files: 1
-- Persistent/external boundaries: 0`;
+- Persistent/external boundaries: 0
+
+## Phase 1: Work
+
+- [ ] Do the work`;
 
 function cleanupDir(dir: string): void {
 	try {
@@ -1644,6 +1649,105 @@ describe("protocol validate author — checklist gate (unit)", () => {
 				input: inputPath,
 				plan: planPath,
 				phase: "review-2026",
+			});
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+});
+
+// ===========================================================================
+// Completion refuses zero executable items despite a COMPLETE heading
+// ===========================================================================
+
+describe("protocol validate author — zero items with a COMPLETE heading", () => {
+	const repairable = `# Plan
+
+## Phase 1: Work - COMPLETE
+
+**Completion gate:** The work is done.
+
+- Do the work
+- Verify the work
+`;
+	const proseOnly = `# Plan
+
+## Phase 1: Work - COMPLETE
+
+The work was described in prose only.
+`;
+
+	async function complete(dir: string, planPath: string) {
+		return protocolValidate({
+			role: "author",
+			input: writeInput(dir, { result: "complete", commit: "abc123" }),
+			plan: planPath,
+			phase: "1",
+			// Isolated from any ambient run in the invoking checkout.
+			startDir: dir,
+			env: {},
+		});
+	}
+
+	test("a repairable gate list is refused with the mechanical repair, then completes once repaired and checked", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = join(dir, "plan.md");
+			writeFileSync(planPath, repairable);
+			const checklist = await evaluatePhaseChecklist({
+				role: "author",
+				plan: planPath,
+				phase: "1",
+				startDir: dir,
+				env: {},
+			});
+			expect(checklist).toMatchObject({
+				ok: false,
+				code: "PHASE_CHECKLIST_INCOMPLETE",
+			});
+			const message = checklist.ok ? "" : checklist.message;
+			expect(message).toContain("COMPLETE heading is not executable evidence");
+			expect(message).toContain(
+				`5x plan repair-checklists --plan ${planPath} --dry-run`,
+			);
+			await expect(complete(dir, planPath)).rejects.toMatchObject({
+				code: "PHASE_CHECKLIST_INCOMPLETE",
+			});
+
+			// The COMPLETE display flag still shows in inspection after repair.
+			writeFileSync(
+				planPath,
+				repairable
+					.replace("- Do the work", "- [x] Do the work")
+					.replace("- Verify the work", "- [x] Verify the work"),
+			);
+			await complete(dir, planPath);
+		} finally {
+			cleanupDir(dir);
+		}
+	});
+
+	test("no list at all is refused with author guidance, not a fabricated repair", async () => {
+		const dir = makeTmpDir();
+		try {
+			const planPath = join(dir, "plan.md");
+			writeFileSync(planPath, proseOnly);
+			const checklist = await evaluatePhaseChecklist({
+				role: "author",
+				plan: planPath,
+				phase: "1",
+				startDir: dir,
+				env: {},
+			});
+			expect(checklist).toMatchObject({
+				ok: false,
+				code: "PHASE_CHECKLIST_INCOMPLETE",
+			});
+			const message = checklist.ok ? "" : checklist.message;
+			expect(message).toContain("an author revision");
+			expect(message).not.toContain("repair-checklists");
+			await expect(complete(dir, planPath)).rejects.toMatchObject({
+				code: "PHASE_CHECKLIST_INCOMPLETE",
 			});
 		} finally {
 			cleanupDir(dir);

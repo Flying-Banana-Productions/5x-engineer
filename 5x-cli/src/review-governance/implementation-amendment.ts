@@ -25,6 +25,7 @@ import { CliError } from "../output.js";
 import { parseDeliveryBudget } from "../parsers/delivery-budget.js";
 import type { ParsedPlan, Phase } from "../parsers/plan.js";
 import { readAuthoritativePlan } from "../plan-schema/authority.js";
+import { verifyRecordedChecklistRepair } from "../plan-schema/checklist-repair.js";
 import {
 	governingLinesInLineRange,
 	type LoadedPlanDocument,
@@ -51,6 +52,7 @@ import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
+	decodePlanChecklistRepairPayload,
 	decodePlanSchemaMigrationPayload,
 	type ImplementationBindingPayload,
 	type ImplementationCorrectionAttemptPayload,
@@ -262,6 +264,7 @@ interface OpenBoundary {
 const LINEAGE_KINDS = new Set([
 	"implementation-text-amendment",
 	"plan-schema-migration",
+	"plan-checklist-repair",
 	"implementation-plan-recovery",
 	"implementation-plan-amendment",
 ]);
@@ -520,6 +523,135 @@ export function formatAmendmentReviewPromptContext(input: {
 		diff.length > 0 ? diff : "(no plan diff)",
 		"",
 	].join("\n");
+}
+
+export interface PendingAmendmentReview {
+	authorizationId: string;
+	predecessorRevisionId: string;
+	/** The bytes registration compares the amended plan against. */
+	predecessorPlanBytes: string;
+}
+
+export type PendingAmendmentReviewResult =
+	| { ok: true; pending: PendingAmendmentReview | null }
+	| { ok: false; message: string };
+
+/**
+ * Plan bytes that registration reads as the predecessor plan. A migration
+ * inside the predecessor revision leaves schema 0 revision bytes, so the
+ * migrated prefix bytes stand in for them.
+ */
+function predecessorPlanBytesFor(input: {
+	recordStore: RecordStore;
+	runId: string;
+	folded: EffectiveExecution;
+	baseline: EffectiveRevision;
+}):
+	| { ok: true; prefix: EffectiveExecution; bytes: string }
+	| {
+			ok: false;
+			message: string;
+	  } {
+	const prefix =
+		input.baseline.id === input.folded.selectedRevisionId
+			? input.folded
+			: foldEffectiveExecution({
+					recordStore: input.recordStore,
+					runId: input.runId,
+					revisionId: input.baseline.id,
+				});
+	if (!prefix.ok) return { ok: false, message: prefix.diagnostic.message };
+	const bytes =
+		prefix.planSchema === 1 &&
+		!loadPlanDocument(input.baseline.approvedPlanBytes, 1).ok
+			? prefix.approvedPlanBytes
+			: input.baseline.approvedPlanBytes;
+	return { ok: true, prefix, bytes };
+}
+
+/**
+ * The accepted, scoped `authorize_amendment` on this run's binding that has
+ * not been registered yet, with the predecessor bytes registration will use.
+ * Render and invoke derive the trusted amendment review context from this.
+ */
+export function readPendingAmendmentReview(input: {
+	recordStore: RecordStore;
+	runId: string;
+}): PendingAmendmentReviewResult {
+	const { recordStore, runId } = input;
+	// Legacy runs without record files have no implementation binding.
+	try {
+		if (recordStore.getRun(runId) === null) return { ok: true, pending: null };
+	} catch {
+		return { ok: true, pending: null };
+	}
+	const bindingLine = recordStore.getLine(
+		runId,
+		"budget",
+		implementationBindingKey(runId),
+	);
+	if (!bindingLine) return { ok: true, pending: null };
+	const binding = decodeImplementationBindingPayload(bindingLine.payload);
+	const listed = listImplementationDecisions(recordStore, runId);
+	const steps = recordStore.listLines(runId, "steps");
+	const budget = recordStore.listLines(runId, "budget");
+	const superseded = new Set(
+		listed.decisions.flatMap((decision) =>
+			decision.supersedesDecisionId ? [decision.supersedesDecisionId] : [],
+		),
+	);
+	const pending = listed.decisions.filter(
+		(decision) =>
+			decision.choice === "authorize_amendment" &&
+			decision.amendmentScope !== undefined &&
+			decision.bindingId === binding.id &&
+			!superseded.has(decision.decisionId) &&
+			recordStore.getLine(
+				runId,
+				"budget",
+				implementationSemanticAmendmentKey(
+					binding.id,
+					decision.amendmentScope.predecessorRevisionId,
+				),
+			) === null &&
+			classifyDecisionAcceptance({ decision, steps, budget }).accepted,
+	);
+	const authorization = pending.at(-1);
+	if (!authorization?.amendmentScope) return { ok: true, pending: null };
+	if (listed.diagnostics.length > 0) {
+		return {
+			ok: false,
+			message: `Implementation decision history is unreadable: ${listed.diagnostics.join("; ")}`,
+		};
+	}
+	const predecessorRevisionId =
+		authorization.amendmentScope.predecessorRevisionId;
+	const folded = foldEffectiveExecution({ recordStore, runId });
+	if (!folded.ok) return { ok: false, message: folded.diagnostic.message };
+	const baseline = folded.revisions.find(
+		(revision) => revision.id === predecessorRevisionId,
+	);
+	if (!baseline) {
+		return {
+			ok: false,
+			message: `Authorization predecessor ${predecessorRevisionId} is not in the revision chain.`,
+		};
+	}
+	const predecessor = predecessorPlanBytesFor({
+		recordStore,
+		runId,
+		folded,
+		baseline,
+	});
+	if (!predecessor.ok) return predecessor;
+	return {
+		ok: true,
+		pending: {
+			authorizationId: authorization.decisionId,
+			predecessorRevisionId,
+			predecessorPlanBytes: predecessor.bytes,
+		},
+	};
 }
 
 export function verifyAmendmentAssessment(input: {
@@ -980,6 +1112,56 @@ export function foldEffectiveExecution(input: {
 				governingHash = migration.governingHash;
 				governingAnchorBytes = migration.authorizedPlanBytes;
 			}
+			rememberAuthorized();
+			continue;
+		}
+
+		if (kind === "plan-checklist-repair") {
+			let repair: ReturnType<typeof decodePlanChecklistRepairPayload>;
+			try {
+				repair = decodePlanChecklistRepairPayload(line.payload);
+			} catch (error) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			// A source-run repair with no binding is not execution lineage.
+			if (repair.bindingId === null) continue;
+			if (repair.bindingId !== binding.id) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`${repair.id} names a different binding.`,
+				);
+			}
+			const afterHash = hashPlanBytes(repair.authorizedPlanBytes);
+			const proof = verifyRecordedChecklistRepair({
+				beforeBytes: authorizedBytes,
+				afterBytes: repair.authorizedPlanBytes,
+				schema: planSchema,
+				edits: repair.edits,
+			});
+			if (
+				repair.parentLineageId !== parent ||
+				repair.beforeBlobHash !== authorizedHash ||
+				repair.afterBlobHash !== afterHash ||
+				repair.planSchema !== planSchema ||
+				!proof.ok
+			) {
+				return fail(
+					"budget",
+					line.idempotencyKey,
+					`Checklist repair ${repair.id} has a wrong parent, plan hash, or schema, or fails its mechanical proof${proof.ok ? "" : `: ${proof.message}`}.`,
+					repair.id,
+				);
+			}
+			// Mechanical repair moves only the authorized anchor. Evidence,
+			// revisions, findings and completed phases are untouched.
+			authorizedBytes = repair.authorizedPlanBytes;
+			authorizedHash = afterHash;
+			parent = repair.id;
 			rememberAuthorized();
 			continue;
 		}
@@ -2345,6 +2527,12 @@ function lineageTail(
 				parentId = migration.id;
 				beforeCommit = migration.afterCommit;
 				beforeHash = migration.afterBlobHash;
+			} else if (kind === "plan-checklist-repair") {
+				const repair = decodePlanChecklistRepairPayload(line.payload);
+				if (repair.bindingId !== binding.id) continue;
+				parentId = repair.id;
+				beforeCommit = repair.afterCommit;
+				beforeHash = repair.afterBlobHash;
 			} else if (kind === "implementation-plan-amendment") {
 				const amendment = decodeImplementationSemanticAmendmentPayload(
 					line.payload,
@@ -2877,22 +3065,14 @@ export async function registerImplementationAmendment(
 			"--from-phase must equal the assessment's earliest affected phase.",
 		);
 	}
-	const prefix =
-		baseline.id === folded.selectedRevisionId
-			? folded
-			: foldEffectiveExecution({
-					recordStore,
-					runId: input.runId,
-					revisionId: baseline.id,
-				});
-	if (!prefix.ok) rejectAmendment(prefix.diagnostic.message);
-	// A migration inside the predecessor revision leaves schema 0 revision
-	// bytes. Compare against the migrated prefix bytes instead.
-	const predecessorBytes =
-		prefix.planSchema === 1 &&
-		!loadPlanDocument(baseline.approvedPlanBytes, 1).ok
-			? prefix.approvedPlanBytes
-			: baseline.approvedPlanBytes;
+	const predecessor = predecessorPlanBytesFor({
+		recordStore,
+		runId: input.runId,
+		folded,
+		baseline,
+	});
+	if (!predecessor.ok) rejectAmendment(predecessor.message);
+	const { prefix, bytes: predecessorBytes } = predecessor;
 	const predecessorRead = readLineagePlan(predecessorBytes, prefix.planSchema);
 	if (!predecessorRead.ok) {
 		rejectAmendment(

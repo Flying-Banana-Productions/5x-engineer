@@ -13,6 +13,8 @@ import {
 	decodeImplementationReviewObservationPayload,
 	decodeImplementationSemanticAmendmentPayload,
 	decodeImplementationTextAmendmentPayload,
+	decodePlanApprovalFinalizationPayload,
+	decodePlanChecklistRepairPayload,
 	decodePlanSchemaMigrationPayload,
 	encodeBudgetBaselinePayload,
 	encodeBudgetSnapshotPayload,
@@ -39,6 +41,8 @@ import {
 	implementationReviewContextKey,
 	implementationReviewObservationKey,
 	implementationTextAmendmentKey,
+	type PlanApprovalFinalizationPayload,
+	type PlanChecklistRepairPayload,
 	type PlanSchemaMigrationPayload,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
@@ -155,6 +159,12 @@ export interface ReviewBudgetStore {
 	): ImplementationLineagePayload[];
 	/** Schema migrations on this run, in journal order. Unknown budget kinds stay omitted. */
 	listPlanSchemaMigrations(runId: string): PlanSchemaMigrationPayload[];
+	/** Checklist repairs on this run (source and execution), in journal order. */
+	listPlanChecklistRepairs(runId: string): PlanChecklistRepairPayload[];
+	/** Final committed plan approvals on a plan-review run, in journal order. */
+	listPlanApprovalFinalizations(
+		runId: string,
+	): PlanApprovalFinalizationPayload[];
 	/** Semantic amendment receipts in journal order. Not plan snapshots. */
 	listImplementationSemanticAmendments(
 		runId: string,
@@ -504,6 +514,11 @@ export function createReviewBudgetStore(
 					if (decoded.bindingId === bindingId) amendments.push(decoded);
 					continue;
 				}
+				if (kind === "plan-checklist-repair") {
+					const decoded = decodePlanChecklistRepairPayload(line.payload);
+					if (decoded.bindingId === bindingId) amendments.push(decoded);
+					continue;
+				}
 				if (kind !== "implementation-text-amendment") continue;
 				const decoded = decodeImplementationTextAmendmentPayload(line.payload);
 				if (decoded.bindingId === bindingId) amendments.push(decoded);
@@ -523,6 +538,34 @@ export function createReviewBudgetStore(
 				migrations.push(decodePlanSchemaMigrationPayload(line.payload));
 			}
 			return migrations;
+		},
+
+		listPlanChecklistRepairs(runId) {
+			const repairs: PlanChecklistRepairPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					(line.payload as { kind?: unknown } | null)?.kind !==
+					"plan-checklist-repair"
+				) {
+					continue;
+				}
+				repairs.push(decodePlanChecklistRepairPayload(line.payload));
+			}
+			return repairs;
+		},
+
+		listPlanApprovalFinalizations(runId) {
+			const records: PlanApprovalFinalizationPayload[] = [];
+			for (const line of budgetLines(runId)) {
+				if (
+					(line.payload as { kind?: unknown } | null)?.kind !==
+					"plan-approval-finalization"
+				) {
+					continue;
+				}
+				records.push(decodePlanApprovalFinalizationPayload(line.payload));
+			}
+			return records;
 		},
 
 		listImplementationSemanticAmendments(runId, bindingId) {

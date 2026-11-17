@@ -20,6 +20,12 @@ import {
 	planSchemaCommandMessage,
 	readAuthoritativeBudget,
 } from "../plan-schema/authority.js";
+import type { ExpectedPlanSchema } from "../plan-schema/document.js";
+import {
+	type ExecutabilityRepairSubject,
+	implementationPhaseExecutabilityGate,
+	planReviewExecutabilityGate,
+} from "../review-budget/plan-repair.js";
 import {
 	CodeDiffError,
 	readHeadCommit,
@@ -40,11 +46,16 @@ import { evaluateStoredImplementationBoundary } from "../review-governance/imple
 import {
 	capturePhaseAuthorAdmission,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	isImplementationAuthorTemplate,
 	PRE_AUTHOR_STEP_NAME,
 	prepareImplementationReviewContext,
 	readImplementationBinding,
 } from "../review-governance/implementation-state.js";
+import {
+	type PlanOnlyDiff,
+	readPlanOnlyDiff,
+} from "../review-governance/plan-evidence.js";
 import { validateRunId } from "../run-id.js";
 import {
 	getTemplateSource,
@@ -52,6 +63,7 @@ import {
 	loadTemplate,
 	setTemplateOverrideDir,
 } from "../templates/loader.js";
+import { resolveAmendmentReviewContext } from "./amendment-review-context.js";
 import {
 	controlPlaneDbPath,
 	resolveControlPlaneRoot,
@@ -70,6 +82,7 @@ import { validateSessionContinuity } from "./session-check.js";
 import {
 	formatCodeReviewDiff,
 	implementationExcludedPaths,
+	implementationPlanRepoPath,
 	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
@@ -417,6 +430,30 @@ export async function templateRender(
 				}
 			}
 		}
+		// The target phase must be executable before delegation. Recovery is
+		// the mechanical repair on this run (or file); the run is preserved.
+		const checkAuthorPhaseExecutable = (
+			planMarkdown: string | null,
+			subject: ExecutabilityRepairSubject,
+			expected: ExpectedPlanSchema = "file",
+		) => {
+			if (planMarkdown === null) return;
+			const phase = canonicalPhaseId(
+				explicitVars.phase_number ?? mergedVars.phase_number ?? "",
+			);
+			if (!phase || phase === "plan") return;
+			const gate = implementationPhaseExecutabilityGate({
+				planMarkdown,
+				phase,
+				subject,
+				expected,
+			});
+			if (gate.status === "error") {
+				outputError(gate.code, gate.message, gate.detail);
+			}
+			if (gate.warning) warn(gate.warning);
+		};
+		let authorExecutabilityChecked = false;
 		if (renderBudgetContext) {
 			const admission = await ensureImplementationAdmission({
 				store: renderBudgetContext.store,
@@ -434,6 +471,22 @@ export async function templateRender(
 				admission.status === "error"
 			) {
 				outputError(admission.code, admission.message, admission.detail);
+			}
+			authorExecutabilityChecked = true;
+			// A bound execution reads the plan under its recorded schema,
+			// exactly as repair, inspection and completion do; only an
+			// ungoverned file infers its schema from file markers.
+			if (admission.status === "bound") {
+				checkAuthorPhaseExecutable(
+					markdown,
+					{ kind: "run", runId: params.run },
+					expectedSchemaForStore(renderBudgetContext.store, params.run),
+				);
+			} else {
+				checkAuthorPhaseExecutable(markdown, {
+					kind: "file",
+					planPath: resolvedPlanPath,
+				});
 			}
 			if (admission.status === "bound") {
 				const phase = canonicalPhaseId(
@@ -470,6 +523,12 @@ export async function templateRender(
 				boundSourceRunId = admission.binding.sourceRunId;
 				boundMode = admission.binding.mode;
 			}
+		}
+		if (!authorExecutabilityChecked) {
+			checkAuthorPhaseExecutable(markdown, {
+				kind: "file",
+				planPath: resolvedPlanPath,
+			});
 		}
 	}
 
@@ -543,6 +602,33 @@ export async function templateRender(
 			outputError(ensured.code, ensured.message, ensured.detail);
 		}
 	}
+	// A non-executable draft goes back to the author before any reviewer
+	// runs, in every review-budget mode (budget modes already checked it
+	// before capture above). No review or iteration is recorded.
+	if (
+		resolved.selectedTemplateName.replace(/-continued$/, "") ===
+			"reviewer-plan" &&
+		resolvedPlanPath
+	) {
+		const reviewPlanPath =
+			renderBudgetContext?.executionContext.effectivePlanPath ??
+			resolvedPlanPath;
+		let reviewMarkdown: string | null = null;
+		try {
+			reviewMarkdown = (
+				deps?.readPlan ?? ((path: string) => readFileSync(path, "utf-8"))
+			)(reviewPlanPath);
+		} catch {
+			reviewMarkdown = null;
+		}
+		if (reviewMarkdown !== null) {
+			const gate = planReviewExecutabilityGate({
+				planMarkdown: reviewMarkdown,
+				planPath: reviewPlanPath,
+			});
+			if (gate) outputError(gate.code, gate.message, gate.detail);
+		}
+	}
 	let prompt = resolved.prompt;
 	let governanceAppend: string | null = null;
 	if (params.run && isPlanReviewTemplate(resolved.selectedTemplateName)) {
@@ -570,6 +656,25 @@ export async function templateRender(
 			if (!(err instanceof RecordContextError)) throw err;
 		}
 	}
+	// Implementation-run amendment reviews get the trusted predecessor, exact
+	// committed hash, and plan diff. Fail closed: a pending authorization
+	// without trusted context must not render an ordinary plan review.
+	let amendmentAppend: string | null = null;
+	if (
+		params.run &&
+		renderBudgetContext &&
+		resolved.selectedTemplateName.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		const amendment = await resolveAmendmentReviewContext({
+			ctx: renderBudgetContext,
+			runId: params.run,
+			warn,
+		});
+		if (amendment.status === "error") {
+			outputError(amendment.code, amendment.message);
+		}
+		if (amendment.status === "ready") amendmentAppend = amendment.append;
+	}
 
 	// -----------------------------------------------------------------------
 	// Post-render: append the review diff block (continued plan reviews only),
@@ -579,6 +684,8 @@ export async function templateRender(
 	let preparedReviewContext: ReturnType<
 		ReviewBudgetCommandContext["store"]["getImplementationReviewContext"]
 	> = null;
+	let planRepoPath: string | null = null;
+	let planOnlyDiff: PlanOnlyDiff | null = null;
 	let codeDiffAppend = "";
 	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
 		try {
@@ -630,6 +737,17 @@ export async function templateRender(
 			}
 			reviewContextId = prepared.context.id;
 			preparedReviewContext = prepared.context;
+			planRepoPath = implementationPlanRepoPath({
+				repoRoot: rootResult.stdout.trim(),
+				controlPlaneRoot: renderBudgetContext.executionContext.controlPlaneRoot,
+				planPath: resolvedPlanPath,
+			});
+			planOnlyDiff = await readPlanOnlyDiff({
+				git,
+				baseCommit: prepared.diff.baseCommit,
+				reviewedCommit: prepared.diff.reviewedCommit,
+				planRepoPath,
+			});
 			boundId = binding.id;
 			boundSourceRunId = binding.sourceRunId;
 			boundMode = binding.mode;
@@ -661,6 +779,8 @@ export async function templateRender(
 				store: renderBudgetContext.store,
 				recordStore: renderBudgetContext.recordStore,
 				reviewContext: preparedReviewContext,
+				planRepoPath,
+				planOnlyDiff,
 				workdir: renderBudgetContext.executionContext.effectiveWorkingDirectory,
 				sessionId: params.newSession ? "new" : params.session,
 			});
@@ -686,6 +806,7 @@ export async function templateRender(
 		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
+		amendmentAppend,
 	});
 	if (resolvedWorktreeRoot) {
 		prompt += `\n\n## Context\n\n- Effective working directory: ${resolvedWorktreeRoot}\n`;

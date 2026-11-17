@@ -71,4 +71,7 @@ reviewRoute author_revision and the underlying diagnostic. Have the author repai
 and commit the plan, then render/invoke the same review again. This gate records no
 review and does not reset the baseline. If a plan changes during review, validate
 --record returns the same repair gate; re-review the repaired plan before recording.
+A draft with no executable phase checklist returns the same gate in every review-budget
+mode, with detail.diagnostics and ready-to-run detail.next repair previews
+(5x plan repair-checklists --plan <path> --dry-run).
 `;

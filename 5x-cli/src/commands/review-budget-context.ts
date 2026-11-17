@@ -31,13 +31,20 @@ import {
 	type EnsurePlanReviewBaselineResult,
 	ensurePlanReviewBaseline,
 } from "../review-budget/ensure-baseline.js";
-import { planReviewRepairGate } from "../review-budget/plan-repair.js";
+import {
+	planReviewExecutabilityGate,
+	planReviewRepairGate,
+} from "../review-budget/plan-repair.js";
 import {
 	encodeBudgetSnapshotPayload,
 	snapshotIdempotencyKey,
 } from "../review-budget/record-lines.js";
 import { applyPlanReviewGovernance } from "../review-governance/apply.js";
 import { validateClosureReview } from "../review-governance/closure.js";
+import {
+	enforcedGateInvariantViolation,
+	REVIEW_GATE_INVARIANT,
+} from "../review-governance/gate-invariant.js";
 import { planBytesDifferFromEffectiveRevision } from "../review-governance/implementation-amendment.js";
 import {
 	buildPlanReviewDiffContext,
@@ -246,6 +253,16 @@ export async function composePlanReviewerRecord(input: {
 		const repair = planReviewRepairGate(input.planMarkdown);
 		if (repair) return repair;
 	}
+	const executability = planReviewExecutabilityGate({
+		planMarkdown: input.planMarkdown,
+		planPath: input.ctx.executionContext.effectivePlanPath,
+	});
+	if (executability) {
+		return {
+			...executability,
+			message: `${executability.message} If this occurred while recording, re-review the repaired plan before recording a verdict.`,
+		};
+	}
 	const snapshotsBefore = baseline
 		? input.ctx.store.listSnapshots(input.runId)
 		: [];
@@ -388,6 +405,12 @@ export function ensurePlanReviewBaselineForContext(input: {
 		const repair = planReviewRepairGate(input.planMarkdown);
 		if (repair) return repair;
 	}
+	// Before any capture: a non-executable draft returns to the author.
+	const executability = planReviewExecutabilityGate({
+		planMarkdown: input.planMarkdown,
+		planPath: input.ctx.executionContext.effectivePlanPath,
+	});
+	if (executability) return executability;
 	if (input.capture === false && !input.optIn) {
 		return { status: "skipped", reason: baseline ? "already" : "v1_compat" };
 	}
@@ -424,6 +447,18 @@ function projectStepLine(
 		log_path: prepared.logPath,
 		head_commit: payload.head_commit ?? undefined,
 	});
+}
+
+function recordedPlanRoute(result: string): string | null {
+	try {
+		const parsed = JSON.parse(result) as {
+			governance?: { route?: unknown };
+		} | null;
+		const route = parsed?.governance?.route;
+		return typeof route === "string" ? route : null;
+	} catch {
+		return null;
+	}
 }
 
 export async function recordPlanReviewerStepWithSnapshot(
@@ -484,6 +519,18 @@ export async function recordPlanReviewerStepWithSnapshot(
 		};
 	}
 
+	const persistedViolation = enforcedGateInvariantViolation({
+		domain: "plan",
+		mode: pending.mode,
+		route: recordedPlanRoute(params.result),
+		causeCount: pending.effectiveGateCauses?.length ?? 0,
+	});
+	if (persistedViolation) {
+		throw new RecordError(REVIEW_GATE_INVARIANT, persistedViolation, {
+			recorded: false,
+			runPreserved: true,
+		});
+	}
 	const written = await finalizeAndWritePreparedStep(
 		prepared,
 		{

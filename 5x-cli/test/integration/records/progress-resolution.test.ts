@@ -20,6 +20,7 @@ import {
 	resolvePlanProgress,
 } from "../../../src/records/resolve.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
+import { copyCommittedProject } from "../../helpers/git-fixture.js";
 
 const BIN = resolve(import.meta.dir, "../../../src/bin.ts");
 
@@ -57,15 +58,10 @@ function git(args: string[], cwd: string): string {
 }
 
 function initRepo(dir: string): void {
-	mkdirSync(dir, { recursive: true });
-	git(["init"], dir);
-	git(["config", "user.email", "test@test.com"], dir);
-	git(["config", "user.name", "Test"], dir);
+	copyCommittedProject(dir, {
+		files: { ".gitignore": ".5x/\n5x.toml.local\n" },
+	});
 	mkdirSync(join(dir, ".5x"), { recursive: true });
-	writeFileSync(join(dir, ".gitignore"), ".5x/\n5x.toml.local\n");
-	git(["add", "-A"], dir);
-	git(["commit", "-m", "init"], dir);
-	git(["branch", "-M", "main"], dir);
 }
 
 function planMarkdown(title: string, phaseDone: boolean[]): string {

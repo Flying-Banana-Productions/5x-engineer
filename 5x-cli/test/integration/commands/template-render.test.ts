@@ -93,7 +93,7 @@ function setupProject(dir: string): void {
 	mkdirSync(planDir, { recursive: true });
 	writeFileSync(
 		join(planDir, "test-plan.md"),
-		"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
+		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 	);
 
 	commitAllSync(dir, "init");
@@ -159,7 +159,7 @@ function setupProjectWithSessionEnforcement(dir: string): void {
 	mkdirSync(planDir, { recursive: true });
 	writeFileSync(
 		join(planDir, "test-plan.md"),
-		"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
+		"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 	);
 
 	commitAllSync(dir, "init");
@@ -885,7 +885,7 @@ describe("5x template render", () => {
 				mkdirSync(planDir, { recursive: true });
 				writeFileSync(
 					join(planDir, "test-plan.md"),
-					"# Test Plan\n\n## Phase 1\n\n- [ ] Do thing\n",
+					"# Test Plan\n\n## Phase 1: Setup\n\n- [ ] Do thing\n",
 				);
 
 				const planPath = join(planDir, "test-plan.md");
@@ -1661,7 +1661,7 @@ describe("5x template render", () => {
 - Production files: 1
 - Persistent/external boundaries: 0
 
-## Phase 1
+## Phase 1: Setup
 - [ ] Do thing
 `,
 				);

@@ -1157,6 +1157,16 @@ describe("implementation handler prompt parity", () => {
 						"Effective inherited alerts: (none)",
 					);
 					expect(slice(nativePrompt)).toContain("Pinned mode: advisory");
+					if (reviewer) {
+						// Runtime plan evidence rides the same shared builder.
+						expect(slice(nativePrompt)).toContain("### Plan evidence");
+						expect(slice(nativePrompt)).toContain(
+							`Effective approved plan hash: ${hashPlanBytes(plan)}`,
+						);
+						expect(slice(nativePrompt)).toContain("needs no code hunk");
+					} else {
+						expect(slice(nativePrompt)).not.toContain("### Plan evidence");
+					}
 					const invokeEnvelope = JSON.parse(
 						logs.filter((line) => line.includes('"binding_id"')).at(-1) ?? "{}",
 					) as {
@@ -1170,6 +1180,92 @@ describe("implementation handler prompt parity", () => {
 					expect(invokeEnvelope.data?.binding_id).toBe("binding-1");
 					expect(invokeEnvelope.data?.source_run_id).toBe("source-run");
 					expect(invokeEnvelope.data?.pinned_mode).toBe("advisory");
+				}
+
+				// An older local prompt override (plan 217 phase 5) still receives
+				// the runtime plan evidence and structural-defect rules through the
+				// shared native/invoke builder; only the static body is stale.
+				const overrideDir = join(dir, ".5x", "templates", "prompts");
+				mkdirSync(overrideDir, { recursive: true });
+				writeFileSync(
+					join(overrideDir, "reviewer-commit.md"),
+					[
+						"---",
+						"name: reviewer-commit",
+						"description: Older local override",
+						"version: 1",
+						"variables: [commit_hash, review_path, plan_path, review_template_path, run_id]",
+						'step_name: "reviewer:commit"',
+						"variable_defaults:",
+						'  run_id: ""',
+						"---",
+						"LEGACY OVERRIDE {{commit_hash}} {{review_path}} {{plan_path}} {{review_template_path}}",
+					].join("\n"),
+				);
+				const originalError = console.error;
+				console.error = () => {};
+				try {
+					let nativePrompt = "";
+					let invokePrompt = "";
+					const vars = ["phase_number=1", `commit_hash=${head}`];
+					await templateRender(
+						{
+							template: "reviewer-commit",
+							run: "run1",
+							workdir: dir,
+							vars,
+							newSession: true,
+						},
+						{
+							db,
+							createReviewBudgetContext: async () => ctx,
+							onRenderedPrompt: (prompt) => {
+								nativePrompt = prompt;
+							},
+						},
+					);
+					await invokeAgent(
+						"reviewer",
+						{
+							template: "reviewer-commit",
+							run: "run1",
+							workdir: dir,
+							vars,
+							phase: "1",
+							quiet: true,
+							newSession: true,
+						},
+						{
+							db,
+							createReviewBudgetContext: async () => ctx,
+							createProvider: async () =>
+								structuredProvider({
+									readiness: "ready",
+									items: [],
+									creditRealizations: [],
+								}),
+							onRenderedPrompt: (prompt) => {
+								invokePrompt = prompt;
+							},
+						},
+					);
+					for (const prompt of [nativePrompt, invokePrompt]) {
+						expect(prompt).toContain("LEGACY OVERRIDE");
+						expect(prompt).not.toContain(
+							"report the supplied `5x plan repair-checklists` command",
+						);
+						expect(prompt).toContain("### Plan evidence");
+						expect(prompt).toContain("#### Executability diagnostics");
+						expect(prompt).toContain("needs no code hunk");
+						expect(prompt).toContain(
+							"A mechanical checklist repair needs no reviewer finding",
+						);
+					}
+					const marker = "## Implementation-review governance context";
+					const tail = (prompt: string) => prompt.slice(prompt.indexOf(marker));
+					expect(tail(invokePrompt)).toBe(tail(nativePrompt));
+				} finally {
+					console.error = originalError;
 				}
 			} finally {
 				console.log = originalLog;
@@ -1439,4 +1535,279 @@ describe("issue-resolution prompt guidance (plan 217 phase 2)", () => {
 		},
 		{ timeout: 30000 },
 	);
+});
+
+describe("workflow repair assets (plan 217 phase 5)", () => {
+	const REVIEW_VARS = {
+		commit_hash: "abc",
+		review_path: "review.md",
+		plan_path: "plan.md",
+		review_template_path: "template.md",
+	};
+
+	test("plan author prompts require executable checklists and own draft repair", () => {
+		const generate = renderTemplate("author-generate-plan", {
+			prd_path: "docs/brief.md",
+			plan_path: "docs/development/plans/001-thing.md",
+			plan_template_path: "docs/_implementation_plan_template.md",
+		}).prompt;
+		expect(generate).toContain(
+			"Every phase needs at least one executable checklist item; a prose completion gate is fine",
+		);
+		expect(generate).toContain(
+			"5x plan phases docs/development/plans/001-thing.md | jq '.data.executability'",
+		);
+		expect(generate).toContain(
+			"5x plan repair-checklists --plan docs/development/plans/001-thing.md --dry-run",
+		);
+		expect(generate).toContain(
+			"This is draft authoring, not an operator approval.",
+		);
+		// Compact mode and Issue Coverage guidance are unchanged.
+		expect(generate).toContain("Prefer compact mode");
+		expect(generate).toContain("add no filler phases");
+		expect(generate).toContain(
+			"Source brief: <repo-relative brief path> at <40-hex commit>",
+		);
+		expect(generate).toContain(
+			"Do not put acceptance criteria in the Delivery Budget `Addresses` column",
+		);
+
+		const revise = renderTemplate("author-process-plan-review", {
+			review_path: "review.md",
+			plan_path: "plan.md",
+			user_notes: "",
+		}).prompt;
+		expect(revise).toContain("`PLAN_REPAIR_REQUIRED`");
+		expect(revise).toContain(
+			"5x plan repair-checklists --plan plan.md --dry-run",
+		);
+		expect(revise).toContain("a marker repair is not a scope change");
+		expect(revise).toContain("On a final-corrections pass");
+		expect(revise).toContain("no second plan review");
+		expect(revise).toContain("same-run review instead of an unusable approval");
+		expect(revise).toContain("preserve its `Source brief` line");
+		expect(revise).toContain("never `ACn` IDs");
+		expect(revise).toContain(
+			"A checklist-marker repair leaves this section byte-identical.",
+		);
+		expect(revise).toContain(
+			"Do not edit the issue brief or its `source/` snapshots",
+		);
+	});
+
+	test("plan reviewer variants share the deterministic preflight rule and keep Issue Coverage", () => {
+		const rule = (raw: string) => {
+			const lines = raw
+				.split("\n")
+				.filter((line) =>
+					line.startsWith(
+						"Plan executability is a deterministic CLI preflight",
+					),
+				);
+			expect(lines).toHaveLength(1);
+			return lines[0] as string;
+		};
+		const initial = getDefaultTemplateRaw("reviewer-plan");
+		const continued = getDefaultTemplateRaw("reviewer-plan-continued");
+		expect(rule(continued)).toBe(rule(initial));
+		const text = rule(initial);
+		expect(text).toContain("`PLAN_REPAIR_REQUIRED`");
+		expect(text).toContain("operator-authorized `5x plan repair-checklists`");
+		expect(text).toContain("never invent a finding to obtain repair authority");
+		expect(text).toContain("Issue Coverage gap");
+		expect(text).toContain("remains an ordinary plan-review item");
+		// The rule follows the unchanged Issue Coverage clause.
+		for (const raw of [initial, continued]) {
+			const clause = raw.indexOf(
+				"- **Issue coverage (issue-brief plans only)**:",
+			);
+			expect(clause).toBeGreaterThan(-1);
+			expect(raw.indexOf(text)).toBeGreaterThan(clause);
+		}
+	});
+
+	test("implementation reviewer variants scope the hunk rule to implementation defects", () => {
+		const initial = renderTemplate("reviewer-commit", REVIEW_VARS).prompt;
+		const continued = renderTemplate("reviewer-commit-continued", {
+			...REVIEW_VARS,
+			previous_review_commit: "old",
+			current_commit: "new",
+		}).prompt;
+		const sentence =
+			"A structural `plan_defect`, such as a phase with no executable checklist item, needs no code hunk and need not have been introduced by the reviewed commits";
+		for (const prompt of [initial, continued]) {
+			expect(countOccurrences(prompt, sentence)).toBe(1);
+			expect(prompt).toContain("runtime-appended `Plan evidence`");
+			expect(prompt).toContain(
+				"report the supplied `5x plan repair-checklists` command instead of inventing a defect",
+			);
+			expect(prompt).toContain(
+				"Never return `not_ready` without at least one item.",
+			);
+		}
+		expect(continued).toContain(
+			"A new ordinary `implementation_defect` blocker needs exact file-qualified hunk evidence",
+		);
+		expect(continued).toContain(
+			"the hunk requirement applies to implementation defects only",
+		);
+		expect(continued).not.toContain("A new ordinary blocker needs");
+	});
+
+	test("implementation author prompts route approved structural repair to the operator command", () => {
+		const bullet =
+			"On an approved plan, do not add task markers or convert plain bullets yourself; that is drift.";
+		for (const [name, vars] of [
+			[
+				"author-next-phase",
+				{ plan_path: "plan.md", phase_number: "1", user_notes: "" },
+			],
+			[
+				"author-process-impl-review",
+				{ review_path: "r.md", plan_path: "plan.md", user_notes: "" },
+			],
+		] as const) {
+			const prompt = renderTemplate(name, vars).prompt;
+			expect(countOccurrences(prompt, bullet)).toBe(1);
+			expect(prompt).toContain("return `needs_human` with that command");
+			expect(prompt).toContain("on this same run");
+			expect(prompt).toContain(
+				"An unchanged requirement needs no new work, review, or quality run just because its marker changed.",
+			);
+			// Newly performed work is checked before its first review; only a
+			// check-off from carried historical evidence needs recorded results.
+			expect(prompt).toContain(
+				"implement, test, and check off newly performed work as usual, including repaired boxes in phases not yet implemented",
+			);
+			expect(prompt).toContain(
+				"check those boxes before returning `complete`, since their first review follows your result.",
+			);
+			expect(prompt).toContain(
+				"Recorded review and quality results are required only to check a box solely from carried historical evidence, for work already implemented before the repair.",
+			);
+			expect(prompt).not.toContain(
+				"check a newly introduced box only when it matches work already implemented and evidenced by recorded review and quality results",
+			);
+		}
+	});
+
+	test("execution skill uses the real phases envelope and repairs on the same run in every mode", () => {
+		for (const { context } of roleCases) {
+			const content = renderSkillByName("5x-phase-execution", context).content;
+			expect(content).toContain(
+				"jq -c --arg id \"$PHASE\" '.data.phases[] | select(.id == $id)'",
+			);
+			expect(content).not.toMatch(/\.phases\[\] \| select\(\.number/);
+			expect(content).toContain(
+				"That is a diagnostic,\nnever proof of completion",
+			);
+			expect(content).toContain("### Operator-authorized checklist repair");
+			expect(content).toContain("`PLAN_CHECKLIST_REPAIR_REQUIRED`");
+			expect(content).toContain(
+				"5x plan repair-checklists --run $FIVEX_RUN --dry-run",
+			);
+			expect(content).toContain('--reason "<operator instruction>"');
+			// A scoped preview's selectors survive apply and retry.
+			const recovery = content.slice(
+				content.indexOf("### Operator-authorized checklist repair"),
+				content.indexOf("### Context loss (compaction)"),
+			);
+			expect(recovery).toContain(
+				"Apply with the command the preview returned in `.data.next[0]`",
+			);
+			expect(recovery).toContain(
+				"It keeps any `--phase`/`--lines` selection, which the intent\n   depends on.",
+			);
+			expect(recovery).toContain(
+				"every apply, re-preview, and retry repeats the same\n   selectors",
+			);
+			expect(recovery).toContain("re-preview\n   with the same selectors");
+			expect(recovery).toContain(
+				"continue with the remaining phases normally: the author implements, tests,\n   and checks their repaired boxes before their first review.",
+			);
+			expect(content).toContain("is the authorization. Do not\n   ask again.");
+			expect(content).toContain("`PLAN_CHECKLIST_REPAIR_STALE`");
+			expect(content).toContain("Resume the interrupted checkpoint");
+			expect(content).toContain("without another review or quality run");
+			expect(content).toContain("`CHECKLIST_REPAIR_DISALLOWED`");
+			expect(content).toContain("`GATELESS_HUMAN_GATE`");
+			expect(content).toContain("Do not try to decide the absent gate.");
+		}
+	});
+
+	test("plan and plan-review skills route draft repair to the author and finalize in place", () => {
+		for (const { context } of roleCases) {
+			const plan = renderSkillByName("5x-plan", context).content;
+			expect(plan).toContain("`PLAN_REPAIR_REQUIRED`");
+			expect(plan).toContain("5x plan repair-checklists --plan");
+			expect(plan).toContain("jq '.data.executability.executable'");
+			const review = renderSkillByName("5x-plan-review", context).content;
+			expect(review).toContain(
+				"If the render or invoke fails with `PLAN_REPAIR_REQUIRED`, no reviewer ran",
+			);
+			expect(review).toContain("without incrementing\n`$ITERATION`");
+			expect(review).toContain("Never ask the reviewer for a finding");
+			expect(review).toContain("`PLAN_APPROVAL_FINALIZATION_DELTA`");
+			expect(review).toContain("Do not start a new run.");
+			expect(review).toContain(
+				"`.data.plan_executability.executable == false`",
+			);
+			expect(review).toContain("5x plan repair-checklists --run $FIVEX_RUN");
+			expect(review).toContain("`UNEXPLAINED_NEGATIVE_VERDICT`");
+			for (const content of [plan, review]) {
+				expect(content).not.toMatch(/\.phases\[\] \| select\(\.number/);
+			}
+		}
+	});
+
+	test("issue-resolution skill carries repair through the planning-to-binding handoff", () => {
+		for (const { context } of roleCases) {
+			const content = renderSkillByName("5x-issue-resolution", context).content;
+			const step2 = content.slice(
+				content.indexOf("### Step 2: Plan and review"),
+				content.indexOf("### Step 3: Implementation run"),
+			);
+			expect(step2).toContain(
+				"5x plan repair-checklists --run $PLAN_RUN --dry-run",
+			);
+			expect(step2).toContain("do not ask again");
+			expect(step2).toContain(
+				"It does not reopen the planning run or repeat planning,\nintake, association, or plan review",
+			);
+			const step3 = content.slice(
+				content.indexOf("### Step 3: Implementation run"),
+				content.indexOf("### Step 4: Prepare the pull request"),
+			);
+			expect(step3).toContain(
+				"5x review implementation bind --run $IMPL_RUN --source-run $PLAN_RUN",
+			);
+			expect(step3).toContain("repair checklists only on `$IMPL_RUN`");
+			expect(step3).toContain("`PLAN_CHECKLIST_REPAIR_BOUND`");
+			expect(step3).toContain("Never move the binding or bind again");
+			expect(content).toContain(
+				"records are evidence\nonly: they do not change `BASE`",
+			);
+			expect(content).toContain("That receipt is evidence,\n  not approval.");
+			expect(content).not.toMatch(/\.phases\[\] \| select\(\.number/);
+		}
+	});
+
+	test("unaffected assets carry no checklist-repair guidance", () => {
+		for (const name of ["author-issue-intake", "author-fix-quality"]) {
+			expect(getDefaultTemplateRaw(name)).not.toContain("repair-checklists");
+		}
+		for (const name of [
+			"5x",
+			"5x-config",
+			"5x-plan-migration",
+			"5x-windows",
+		] as const) {
+			const content = renderSkillByName(
+				name,
+				createRenderContext(true),
+			).content;
+			expect(content).not.toContain("repair-checklists");
+		}
+	});
 });

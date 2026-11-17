@@ -108,6 +108,10 @@ const planMarkdown = `# Plan
 - Subsystems: 1
 - Production files: 1
 - Persistent/external boundaries: 0
+
+## Phase 1: Work
+
+- [ ] Do the work
 `;
 
 const validInitialVerdict = {

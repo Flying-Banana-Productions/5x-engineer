@@ -17,6 +17,10 @@ import {
 	readAuthoritativeBudget,
 	readAuthoritativePlan,
 } from "../../../src/plan-schema/authority.js";
+import {
+	checklistRepairDigest,
+	planChecklistRepair,
+} from "../../../src/plan-schema/checklist-repair.js";
 import { loadPlanDocument } from "../../../src/plan-schema/document.js";
 import { deriveBudget } from "../../../src/review-budget/arithmetic.js";
 import {
@@ -24,10 +28,12 @@ import {
 	decodeImplementationBindingPayload,
 	encodeImplementationBindingPayload,
 	encodeImplementationReviewObservationPayload,
+	encodePlanChecklistRepairPayload,
 	type ImplementationBindingPayload,
 	type ImplementationReviewObservationPayload,
 	implementationBindingKey,
 	implementationReviewObservationKey,
+	planChecklistRepairKey,
 } from "../../../src/review-budget/record-lines.js";
 import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
 import { deriveInheritedBudgetGovernance } from "../../../src/review-governance/architecture-approval.js";
@@ -45,8 +51,10 @@ import {
 	mapDebtTargetToPhaseId,
 	PLAN_DRIFT_RECOVERY_HELP,
 	PLAN_SCHEMA1_DRIFT_RECOVERY_HELP,
+	planApprovalFinalizationOp,
 	planDriftRecoveryHelp,
 	planRepoPath,
+	prepareSourceApprovalFinalization,
 	recordVerifiedTextAmendment,
 	verifyAuthorTextAmendment,
 } from "../../../src/review-governance/implementation-state.js";
@@ -54,6 +62,7 @@ import {
 	prepareTextAmendmentGuard,
 	structuralSignature,
 } from "../../../src/review-governance/plan-amendment.js";
+import { sameRunFinalizationNext } from "../../../src/review-governance/plan-approval-finalization.js";
 import { reindexReviewGovernance } from "../../../src/review-governance/sqlite-index.js";
 import type { ReviewGateCause } from "../../../src/review-governance/types.js";
 import {
@@ -1678,3 +1687,1195 @@ function schema1Observation(
 		createdAt: "2026-09-23 00:00:01",
 	};
 }
+
+const R1_STALE = "Follow the old plan sentence.";
+const R1_PLAN = `# Plan
+
+## Delivery Budget
+
+- Estimate confidence: high
+
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+|---|---|---:|---:|---|---|---|
+| W1 | Bind | 2 | 0 | - | - | Required |
+
+### Surface Snapshot
+
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Bind
+
+**Completion gate:** bound
+
+- Bind execution
+- Record the binding
+
+## Phase 2: Follow
+
+**Completion gate:** followed
+
+${R1_STALE}
+
+- [ ] Follow up
+`;
+/** Schema 1: Phase 2 loses its markers, so the repair is after the span. */
+const R1_SCHEMA1_PLAN = SCHEMA1_AUTHORITY_PLAN.replace(
+	"- [ ] Third item",
+	"- Third item",
+);
+
+function guardedRepairFixture(input: {
+	markdown: string;
+	schema: 0 | 1;
+	heading: string;
+	staleText: string;
+}) {
+	const recordStore = createMemoryRecordStore();
+	putRun(recordStore, "exec");
+	const store = createReviewBudgetStore(recordStore);
+	let anchorText = input.markdown;
+	let governingHash: string | undefined;
+	if (input.schema === 1) {
+		const loaded = loadPlanDocument(input.markdown, 1);
+		if (!loaded.ok) throw new Error(loaded.message);
+		anchorText = loaded.document.authorityMarkdown;
+		governingHash = hashPlanBytes(loaded.document.comparisonBytes);
+	}
+	const binding = store.saveImplementationBinding(
+		{
+			...bindingPayload(input.markdown),
+			...(input.schema === 1 ? { planSchema: 1 as const, governingHash } : {}),
+		},
+		ORIGIN,
+	).payload;
+	const resolved = resolvePlanImpactSpans({
+		anchorText,
+		...(input.schema === 1 ? { byteSource: input.markdown } : {}),
+		locations: [
+			{ itemId: "R1", heading: input.heading, staleText: input.staleText },
+		],
+	});
+	if (resolved.status !== "resolved") throw new Error(resolved.message);
+	const prepared = prepareTextAmendmentGuard({
+		id: "guard-1",
+		anchorBytes: input.markdown,
+		anchorCommit: "a".repeat(40),
+		parentLineageId: null,
+		allowedSpans: resolved.spans,
+		recordedSchema: input.schema,
+	});
+	if (!prepared.ok) throw new Error(prepared.message);
+	const observation = schema1Observation(binding, prepared.guard);
+	recordStore.append({
+		runId: "exec",
+		stream: "budget",
+		idempotencyKey: implementationReviewObservationKey(
+			"exec",
+			observation.stepKey,
+		),
+		payload: encodeImplementationReviewObservationPayload(observation),
+		createdAt: observation.createdAt,
+		...recordedEnvelope(ORIGIN),
+	});
+	const repair = (current: string, id = "checklist-repair:1") => {
+		const folded = store.readEffectiveImplementationRevision("exec");
+		if (!folded?.ok) throw new Error("fold failed before repair");
+		const planned = planChecklistRepair({
+			anchorBytes: folded.approvedPlanBytes,
+			currentBytes: current,
+			schema: input.schema,
+		});
+		if (!planned.ok) throw new Error(planned.message);
+		expect(planned.edits.length).toBeGreaterThan(0);
+		const beforeBlobHash = folded.approvedPlanHash;
+		const afterBlobHash = hashPlanBytes(planned.targetBytes);
+		const intentDigest = checklistRepairDigest({
+			scope: `execution:exec:${binding.id}`,
+			beforeBlobHash,
+			afterBlobHash,
+			parentLineageId: folded.lineageParentId,
+			edits: planned.edits,
+		});
+		recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: planChecklistRepairKey("exec", intentDigest),
+			payload: encodePlanChecklistRepairPayload({
+				kind: "plan-checklist-repair",
+				version: 1,
+				id,
+				runId: "exec",
+				subject: "execution",
+				bindingId: binding.id,
+				parentLineageId: folded.lineageParentId,
+				beforeCommit: "a".repeat(40),
+				afterCommit: "b".repeat(40),
+				beforeBlobHash,
+				afterBlobHash,
+				authorizedPlanBytes: planned.targetBytes,
+				planSchema: input.schema,
+				edits: planned.edits,
+				resetCheckedLines: [],
+				reason: "Operator authorized checklist-format repair",
+				intentDigest,
+				createdAt: "2026-11-06T00:00:00.000Z",
+			}),
+			createdAt: "2026-11-06T00:00:00.000Z",
+			...recordedEnvelope(ORIGIN),
+		});
+		return planned.targetBytes;
+	};
+	const verify = (bytes: string, afterCommit = "c".repeat(40)) => {
+		const buffer = Buffer.from(bytes, "utf8");
+		return verifyAuthorTextAmendment({
+			store,
+			binding,
+			origin: ORIGIN,
+			phase: "1",
+			committedPlanBytes: buffer,
+			worktreePlanBytes: buffer,
+			afterCommit,
+		});
+	};
+	return { recordStore, store, binding, guard: prepared.guard, repair, verify };
+}
+
+describe("text guard across a mechanical checklist repair", () => {
+	for (const schema of [0, 1] as const) {
+		test(`schema ${schema}: review, repair elsewhere, then consume the original guard`, () => {
+			const markdown = schema === 0 ? R1_PLAN : R1_SCHEMA1_PLAN;
+			const staleText = schema === 0 ? R1_STALE : SCHEMA1_STALE_TEXT;
+			const heading = schema === 0 ? "Phase 2: Follow" : "Phase 1: Bind";
+			const ctx = guardedRepairFixture({
+				markdown,
+				schema,
+				heading,
+				staleText,
+			});
+			// Schema 1 also carries a non-governing status edit, which shifts
+			// every guarded byte offset through the repair.
+			const current =
+				schema === 0 ? markdown : withSchema1Status(markdown, "Approved");
+			const repaired = ctx.repair(current);
+			expect(repaired).not.toBe(markdown);
+			const repairedSpanStart = Buffer.from(repaired, "utf8").indexOf(
+				staleText,
+			);
+			expect(repairedSpanStart).not.toBe(ctx.guard.allowedSpans[0]?.start);
+
+			// Unchanged repaired bytes are not stale.
+			expect(ctx.verify(repaired)).toEqual({ status: "unchanged" });
+
+			const corrected = repaired.replace(
+				staleText,
+				"Follow the approved plan.",
+			);
+			const verified = ctx.verify(corrected);
+			expect(verified.status).toBe("verified");
+			if (verified.status !== "verified") return;
+			expect(verified.amendment.guardId).toBe("guard-1");
+			expect(verified.amendment.sourceObservationId).toBe("obs-1");
+			expect(verified.amendment.parentLineageId).toBe("checklist-repair:1");
+			expect(verified.amendment.beforeBlobHash).toBe(hashPlanBytes(repaired));
+			expect(verified.amendment.beforeCommit).toBe("b".repeat(40));
+			expect(verified.amendment.authorizedPlanBytes).toBe(corrected);
+
+			// The recorded review guard is immutable; the fold accepts the result.
+			const observation = ctx.store
+				.listImplementationReviews("exec")
+				.find((entry) => entry.id === "obs-1");
+			expect(observation?.textGuard).toEqual(ctx.guard);
+			const folded = ctx.store.readEffectiveImplementationRevision("exec");
+			if (!folded?.ok) throw new Error("fold failed");
+			expect(folded.approvedPlanBytes).toBe(corrected);
+			expect(folded.invalidatedObservationIds).not.toContain("obs-1");
+			// Consumed once: a second verification is not applicable.
+			expect(ctx.verify(corrected).status).toBe("not_applicable");
+		});
+
+		test(`schema ${schema}: the rebased guard still refuses edits outside its span`, () => {
+			const markdown = schema === 0 ? R1_PLAN : R1_SCHEMA1_PLAN;
+			const staleText = schema === 0 ? R1_STALE : SCHEMA1_STALE_TEXT;
+			const heading = schema === 0 ? "Phase 2: Follow" : "Phase 1: Bind";
+			const ctx = guardedRepairFixture({
+				markdown,
+				schema,
+				heading,
+				staleText,
+			});
+			const repaired = ctx.repair(markdown);
+			const outside = repaired
+				.replace(staleText, "Follow the approved plan.")
+				.replace(
+					schema === 0
+						? "**Completion gate:** bound"
+						: "Keep the approved ledger.",
+					schema === 0 ? "**Completion gate:** done" : "Keep a new ledger.",
+				);
+			const result = ctx.verify(outside);
+			expect(result.status).toBe("failed");
+			if (result.status !== "failed") return;
+			expect(result.code).not.toBe("PLAN_AMENDMENT_STALE");
+			expect(result.blocking).toBe(true);
+			expect(
+				ctx.store.listImplementationTextAmendments("exec", ctx.binding.id),
+			).toHaveLength(1);
+		});
+	}
+
+	test("a substantive change after the repair keeps the guard stale", () => {
+		const ctx = guardedRepairFixture({
+			markdown: R1_PLAN,
+			schema: 0,
+			heading: "Phase 2: Follow",
+			staleText: R1_STALE,
+		});
+		const repaired = ctx.repair(R1_PLAN);
+		const other = recordVerifiedTextAmendment({
+			store: ctx.store,
+			binding: ctx.binding,
+			origin: ORIGIN,
+			guardId: "guard-other",
+			sourceObservationId: "obs-other",
+			beforeCommit: "b".repeat(40),
+			afterCommit: "d".repeat(40),
+			authorizedPlanBytes: repaired.replace(
+				"**Completion gate:** followed",
+				"**Completion gate:** followed fully",
+			),
+		});
+		expect(other.status).toBe("ok");
+		const result = ctx.verify(repaired.replace(R1_STALE, "Follow the plan."));
+		expect(result).toMatchObject({
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			blocking: true,
+		});
+	});
+
+	test("a repair that rewrites the guarded text's list prefix keeps the guard stale", () => {
+		const ctx = guardedRepairFixture({
+			markdown: R1_PLAN,
+			schema: 0,
+			heading: "Phase 1: Bind",
+			staleText: "- Bind execution",
+		});
+		const repaired = ctx.repair(R1_PLAN);
+		expect(repaired).toContain("- [ ] Bind execution");
+		const result = ctx.verify(
+			repaired.replace("- [ ] Bind execution", "- [ ] Bind the execution"),
+		);
+		expect(result).toMatchObject({
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			blocking: true,
+		});
+		expect(
+			ctx.store.listImplementationTextAmendments("exec", ctx.binding.id),
+		).toHaveLength(1);
+	});
+
+	test("a lineage parent that only claims to be a repair is not trusted", () => {
+		const ctx = guardedRepairFixture({
+			markdown: R1_PLAN,
+			schema: 0,
+			heading: "Phase 2: Follow",
+			staleText: R1_STALE,
+		});
+		const repaired = ctx.repair(R1_PLAN);
+		// A guard whose parent is not continued by the recorded repair chain
+		// cannot be rebased onto the repaired anchor.
+		const forged = { ...ctx.guard, parentLineageId: "missing-parent" };
+		const observation = schema1Observation(ctx.binding, forged);
+		ctx.recordStore.append({
+			runId: "exec",
+			stream: "budget",
+			idempotencyKey: implementationReviewObservationKey("exec", {
+				...observation.stepKey,
+				iteration: 1,
+			}),
+			payload: encodeImplementationReviewObservationPayload({
+				...observation,
+				id: "obs-2",
+				stepKey: { ...observation.stepKey, iteration: 1 },
+			}),
+			createdAt: observation.createdAt,
+			...recordedEnvelope(ORIGIN),
+		});
+		const result = ctx.verify(repaired.replace(R1_STALE, "Follow the plan."));
+		expect(result).toMatchObject({
+			status: "failed",
+			code: "PLAN_AMENDMENT_STALE",
+			blocking: true,
+		});
+	});
+});
+
+const CORRECTION_ITEM = {
+	id: "P1.1",
+	title: "Record the bind failure path",
+	action: "auto_fix",
+	reason: "W1 omits the failure path.",
+	scopeClass: "acceptance_required",
+	effortDelta: 0,
+	architectureDelta: 0,
+};
+const REVIEWER_HEAD = "a".repeat(40);
+const AUTHOR_HEAD = "b".repeat(40);
+const W1_ROW = "| W1 | Bind | 2 | 0 | - | - | Required |";
+
+function corrected(markdown: string, addresses = "P1.1", effort = 2): string {
+	return markdown.replace(
+		W1_ROW,
+		`| W1 | Bind | ${effort} | 0 | - | ${addresses} | Required |`,
+	);
+}
+
+/** Initial ready_with_corrections review plus the recorded author correction. */
+function finalCorrectionsSource(ctx: ReturnType<typeof setup>, runId: string) {
+	return approveSource(ctx, runId, plan(), {
+		route: "final_corrections",
+		head: REVIEWER_HEAD,
+		authorAfter: { head: AUTHOR_HEAD },
+		items: [CORRECTION_ITEM],
+		unsealed: true,
+	});
+}
+
+/** `run complete`: pair the finalization with `run:complete`, then seal. */
+async function completeSource(
+	ctx: ReturnType<typeof setup>,
+	runId: string,
+	finalCommit: string,
+	readPlanAtCommit: (commit: string) => Promise<string | null>,
+	options?: { iteration?: number; seal?: boolean },
+) {
+	const prepared = await prepareSourceApprovalFinalization({
+		store: ctx.store,
+		recordStore: ctx.recordStore,
+		runId,
+		finalCommit,
+		readPlanAtCommit,
+	});
+	if (prepared.status !== "ready") return prepared;
+	const iteration = options?.iteration ?? 1;
+	ctx.recordStore.atomicAppend([
+		{
+			runId,
+			stream: "steps",
+			idempotencyKey: `step:${runId}:run:complete:plan:${iteration}`,
+			payload: {
+				step_name: "run:complete",
+				phase: "plan",
+				iteration,
+				result_json: { status: "completed", reason: null },
+				head_commit: finalCommit,
+				patch_id: null,
+				diff_summary: null,
+				duration_ms: null,
+				tokens_in: null,
+				tokens_out: null,
+				cost_usd: null,
+				model: null,
+			},
+			...recordedEnvelope(ORIGIN),
+		},
+		...(prepared.existing
+			? []
+			: [
+					{
+						runId,
+						...planApprovalFinalizationOp({
+							payload: prepared.payload,
+							completionIteration: iteration,
+							completionHead: finalCommit,
+						}),
+						...recordedEnvelope(ORIGIN),
+					},
+				]),
+	]);
+	if (options?.seal !== false) {
+		const summary = ctx.recordStore.getRun(runId);
+		if (!summary) throw new Error(`missing ${runId}`);
+		ctx.recordStore.putRun({
+			...summary,
+			status: "completed",
+			sealed_at: "2026-11-06T00:00:02.000Z",
+			final_head_commit: finalCommit,
+			sealer: ORIGIN.recorder,
+		});
+	}
+	return prepared;
+}
+
+describe("final committed plan approval", () => {
+	test("the incident's Addresses correction binds from the completed approval without another review", async () => {
+		const ctx = setup();
+		const { snapshot } = finalCorrectionsSource(ctx, "source");
+		const fixed = corrected(plan());
+		const prepared = await completeSource(
+			ctx,
+			"source",
+			AUTHOR_HEAD,
+			async (commit) => (commit === AUTHOR_HEAD ? fixed : plan()),
+		);
+		expect(prepared).toMatchObject({
+			status: "ready",
+			existing: false,
+			payload: {
+				route: "final_corrections",
+				admittedFindingIds: ["P1.1"],
+				addressAdditions: [{ workItemId: "W1", findingIds: ["P1.1"] }],
+				authorCorrection: { commit: AUTHOR_HEAD },
+				finalBlobHash: hashPlanBytes(fixed),
+			},
+		});
+		const [record] = ctx.store.listPlanApprovalFinalizations("source");
+		expect(record?.completion).toEqual({
+			stepName: "run:complete",
+			iteration: 1,
+		});
+		putRun(ctx.recordStore, "exec");
+		const bound = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: fixed,
+			read: async (commit) => (commit === AUTHOR_HEAD ? fixed : null),
+		});
+		if (bound.status !== "bound") throw new Error(JSON.stringify(bound));
+		expect(bound.binding).toMatchObject({
+			sourceSnapshotId: snapshot.id,
+			approvedPlanCommit: AUTHOR_HEAD,
+			approvedPlanHash: hashPlanBytes(fixed),
+			approvalFinalization: {
+				derivation: "recorded",
+				finalizationId: record?.id,
+				addressAdditions: [{ workItemId: "W1", findingIds: ["P1.1"] }],
+			},
+		});
+		expect(bound.binding.ledger.workItems[0]?.addresses).toEqual(["P1.1"]);
+		// The original reviewer snapshot is untouched and no reviewer ran again.
+		expect(
+			ctx.store.latestSnapshot("source")?.currentLedger.workItems[0]?.addresses,
+		).toEqual([]);
+		expect(
+			ctx.recordStore
+				.listLines("source", "steps")
+				.filter((line) =>
+					String((line.payload as { step_name?: string }).step_name).startsWith(
+						"reviewer:",
+					),
+				),
+		).toHaveLength(1);
+		// Restart: a fresh store over the same journal still binds identically.
+		const restarted = createReviewBudgetStore(ctx.recordStore);
+		expect(restarted.getImplementationBinding("exec")).toEqual(bound.binding);
+		expect(
+			decodeImplementationBindingPayload(
+				encodeImplementationBindingPayload(bound.binding),
+			),
+		).toEqual(bound.binding);
+	});
+
+	test("an identical retry reuses the record; a moved HEAD gets its own paired record", async () => {
+		const ctx = setup();
+		finalCorrectionsSource(ctx, "source");
+		const fixed = corrected(plan());
+		const status = fixed.replace(
+			"# Plan\n",
+			"# Plan\n\n**Status:** Approved\n",
+		);
+		const read = async (commit: string) =>
+			commit === AUTHOR_HEAD
+				? fixed
+				: commit === "c".repeat(40)
+					? status
+					: null;
+		const first = await completeSource(ctx, "source", AUTHOR_HEAD, read, {
+			seal: false,
+		});
+		const again = await prepareSourceApprovalFinalization({
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+			runId: "source",
+			finalCommit: AUTHOR_HEAD,
+			readPlanAtCommit: read,
+		});
+		expect(again).toMatchObject({ status: "ready", existing: true });
+		if (first.status === "ready" && again.status === "ready") {
+			expect(again.payload.id).toBe(first.payload.id);
+		}
+		// A status edit committed before the retry is nonidentity: the retry
+		// finalizes that exact commit with a new paired record.
+		await completeSource(ctx, "source", "c".repeat(40), read, { iteration: 2 });
+		expect(
+			ctx.store
+				.listPlanApprovalFinalizations("source")
+				.map((entry) => [entry.finalCommit, entry.completion.iteration]),
+		).toEqual([
+			[AUTHOR_HEAD, 1],
+			["c".repeat(40), 2],
+		]);
+		putRun(ctx.recordStore, "exec");
+		const bound = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: status,
+			read,
+		});
+		expect(bound).toMatchObject({
+			status: "bound",
+			binding: {
+				approvedPlanCommit: "c".repeat(40),
+				approvedPlanBytes: status,
+				approvalFinalization: { finalCommit: "c".repeat(40) },
+			},
+		});
+	});
+
+	test("the committed blob is the anchor: working-tree, hook-rewritten and later HEAD bytes do not substitute", async () => {
+		const fixed = corrected(plan());
+		// Hook-rewritten committed bytes are what finalization records.
+		const hooked = `${fixed}\n<!-- formatted by hook -->\n`;
+		const ctx = setup();
+		finalCorrectionsSource(ctx, "source");
+		await completeSource(ctx, "source", AUTHOR_HEAD, async (commit) =>
+			commit === AUTHOR_HEAD ? hooked : null,
+		);
+		expect(ctx.store.listPlanApprovalFinalizations("source")[0]).toMatchObject({
+			finalBlobHash: hashPlanBytes(hooked),
+		});
+		putRun(ctx.recordStore, "exec");
+		// The working-tree candidate (pre-hook) is not the recorded blob.
+		const mismatch = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: fixed,
+			read: async () => fixed,
+		});
+		expect(mismatch).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_SOURCE_INVALID",
+		});
+		if (mismatch.status === "error") {
+			expect(mismatch.message).toContain("finalization blob");
+		}
+		expect(ctx.store.getImplementationBinding("exec")).toBeNull();
+
+		// A sealed HEAD that the record does not name is refused.
+		const later = setup();
+		finalCorrectionsSource(later, "source");
+		await completeSource(later, "source", AUTHOR_HEAD, async () => fixed, {
+			seal: false,
+		});
+		const summary = later.recordStore.getRun("source");
+		if (!summary) throw new Error("missing source");
+		later.recordStore.putRun({
+			...summary,
+			status: "completed",
+			sealed_at: "2026-11-06T00:00:02.000Z",
+			final_head_commit: "d".repeat(40),
+			sealer: ORIGIN.recorder,
+		});
+		putRun(later.recordStore, "exec");
+		const refused = await admit(later, {
+			executionRunId: "exec",
+			markdown: fixed,
+			sourceRunId: "source",
+			read: async () => fixed,
+		});
+		expect(refused).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+	});
+
+	test("unsupported substantive corrections are refused before sealing, with the same-run remedy", async () => {
+		for (const [label, bytes, field] of [
+			["effort", corrected(plan(), "P1.1", 3), "effort"],
+			["unadmitted id", corrected(plan(), "P9.9"), "addresses"],
+		] as const) {
+			const ctx = setup();
+			finalCorrectionsSource(ctx, "source");
+			const before = ctx.recordStore.listLines("source", "budget").length;
+			const refused = await prepareSourceApprovalFinalization({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				runId: "source",
+				finalCommit: AUTHOR_HEAD,
+				readPlanAtCommit: async () => bytes,
+			});
+			expect({ label, status: refused.status }).toEqual({
+				label,
+				status: "error",
+			});
+			if (refused.status === "error") {
+				expect(refused.code).toBe("PLAN_APPROVAL_FINALIZATION_DELTA");
+				expect(refused.detail).toMatchObject({
+					changes: [{ field, workItemId: "W1" }],
+					next: [
+						"5x template render reviewer-plan --run source",
+						expect.stringContaining("--record"),
+						"5x run complete --run source",
+					],
+				});
+			}
+			expect(ctx.recordStore.listLines("source", "budget")).toHaveLength(
+				before,
+			);
+		}
+		// Unapproved routes and runs without a review baseline keep the old path.
+		const open = setup();
+		approveSource(open, "source", plan(), {
+			route: "author_revision",
+			unsealed: true,
+		});
+		expect(
+			await prepareSourceApprovalFinalization({
+				store: open.store,
+				recordStore: open.recordStore,
+				runId: "source",
+				finalCommit: AUTHOR_HEAD,
+				readPlanAtCommit: async () => plan(),
+			}),
+		).toEqual({ status: "not_applicable" });
+		const bare = setup();
+		putRun(bare.recordStore, "plain");
+		expect(
+			await prepareSourceApprovalFinalization({
+				store: bare.store,
+				recordStore: bare.recordStore,
+				runId: "plain",
+				finalCommit: AUTHOR_HEAD,
+				readPlanAtCommit: async () => plan(),
+			}),
+		).toEqual({ status: "not_applicable" });
+	});
+
+	test("a finalization record whose ledger exceeds the admitted bookkeeping is not consumed", async () => {
+		const widened = corrected(plan(), "P1.1, P9.9");
+		// A source admitting both IDs yields an internally consistent ledger hash.
+		const donor = setup();
+		approveSource(donor, "source", plan(), {
+			route: "final_corrections",
+			head: REVIEWER_HEAD,
+			authorAfter: { head: AUTHOR_HEAD },
+			items: [CORRECTION_ITEM, { ...CORRECTION_ITEM, id: "P9.9" }],
+			unsealed: true,
+		});
+		const donated = await prepareSourceApprovalFinalization({
+			store: donor.store,
+			recordStore: donor.recordStore,
+			runId: "source",
+			finalCommit: AUTHOR_HEAD,
+			readPlanAtCommit: async () => widened,
+		});
+		const ctx = setup();
+		finalCorrectionsSource(ctx, "source");
+		const honest = await prepareSourceApprovalFinalization({
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+			runId: "source",
+			finalCommit: AUTHOR_HEAD,
+			readPlanAtCommit: async () => corrected(plan()),
+		});
+		if (donated.status !== "ready" || honest.status !== "ready") {
+			throw new Error("fixture not ready");
+		}
+		const forged = {
+			...honest.payload,
+			finalBlobHash: hashPlanBytes(widened),
+			ledger: donated.payload.ledger,
+			ledgerHash: donated.payload.ledgerHash,
+			addressAdditions: donated.payload.addressAdditions,
+		};
+		await completeSource(ctx, "source", AUTHOR_HEAD, async () => null, {
+			seal: false,
+		});
+		expect(ctx.store.listPlanApprovalFinalizations("source")).toEqual([]);
+		ctx.recordStore.atomicAppend([
+			{
+				runId: "source",
+				...planApprovalFinalizationOp({
+					payload: forged,
+					completionIteration: 1,
+					completionHead: AUTHOR_HEAD,
+				}),
+				...recordedEnvelope(ORIGIN),
+			},
+		]);
+		appendStep(
+			ctx.recordStore,
+			"source",
+			"run:complete",
+			"plan",
+			1,
+			{ status: "completed", reason: null },
+			AUTHOR_HEAD,
+		);
+		const summary = ctx.recordStore.getRun("source");
+		if (!summary) throw new Error("missing source");
+		ctx.recordStore.putRun({
+			...summary,
+			status: "completed",
+			sealed_at: "2026-11-06T00:00:02.000Z",
+			final_head_commit: AUTHOR_HEAD,
+			sealer: ORIGIN.recorder,
+		});
+		putRun(ctx.recordStore, "exec");
+		const refused = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: widened,
+			sourceRunId: "source",
+			read: async () => widened,
+		});
+		expect(refused).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+		if (refused.status === "error") {
+			expect(refused.message).toContain(
+				"plan-approval finalization ledger is not admitted correction bookkeeping",
+			);
+		}
+	});
+
+	test("legacy sources: consistent ones bind unchanged; stale Addresses derives from sealed evidence; other deltas get a re-review path", async () => {
+		// Consistent legacy source: old path, no provenance.
+		const consistent = setup();
+		approveSource(consistent, "source", plan());
+		putRun(consistent.recordStore, "exec");
+		const unchanged = await admit(consistent, {
+			executionRunId: "exec",
+			markdown: plan(),
+		});
+		expect(unchanged.status).toBe("bound");
+		if (unchanged.status === "bound") {
+			expect(unchanged.binding.approvalFinalization).toBeUndefined();
+		}
+
+		// The documented stale-Addresses case: sealed before this CLI.
+		const fixed = corrected(plan());
+		const legacy = setup();
+		const { snapshot } = approveSource(legacy, "source", plan(), {
+			route: "final_corrections",
+			head: REVIEWER_HEAD,
+			authorAfter: { head: AUTHOR_HEAD },
+			items: [CORRECTION_ITEM],
+		});
+		const journal = () =>
+			["steps", "budget", "decisions"].map((stream) =>
+				JSON.stringify(
+					legacy.recordStore.listLines(
+						"source",
+						stream as "steps" | "budget" | "decisions",
+					),
+				),
+			);
+		const sealedJournal = journal();
+		putRun(legacy.recordStore, "exec");
+		const derived = await admit(legacy, {
+			executionRunId: "exec",
+			markdown: fixed,
+			read: async () => fixed,
+		});
+		if (derived.status !== "bound") throw new Error(JSON.stringify(derived));
+		expect(derived.binding).toMatchObject({
+			sourceSnapshotId: snapshot.id,
+			approvedPlanCommit: AUTHOR_HEAD,
+			approvalFinalization: {
+				derivation: "legacy_stale_addresses",
+				finalCommit: AUTHOR_HEAD,
+				finalBlobHash: hashPlanBytes(fixed),
+				admittedFindingIds: ["P1.1"],
+				addressAdditions: [{ workItemId: "W1", findingIds: ["P1.1"] }],
+				authorCommit: AUTHOR_HEAD,
+			},
+		});
+		expect(derived.binding.approvalFinalization).not.toHaveProperty(
+			"finalizationId",
+		);
+		expect(derived.binding.ledger.workItems[0]?.addresses).toEqual(["P1.1"]);
+		// The sealed source journal is not rewritten.
+		expect(journal()).toEqual(sealedJournal);
+		expect(legacy.store.listPlanApprovalFinalizations("source")).toEqual([]);
+
+		// Unsupported historical deltas are not silently accepted.
+		const unsupported: Array<
+			[string, Parameters<typeof approveSource>[3], string]
+		> = [
+			[
+				"effort change",
+				{
+					route: "final_corrections",
+					authorAfter: { head: AUTHOR_HEAD },
+					items: [CORRECTION_ITEM],
+				},
+				corrected(plan(), "P1.1", 3),
+			],
+			["ready route Addresses", { route: "complete" }, fixed],
+		];
+		for (const [label, options, bytes] of unsupported) {
+			const ctx = setup();
+			approveSource(ctx, "source", plan(), options);
+			putRun(ctx.recordStore, "exec");
+			const refused = await admit(ctx, {
+				executionRunId: "exec",
+				markdown: bytes,
+				sourceRunId: "source",
+				read: async () => bytes,
+			});
+			expect({ label, status: refused.status }).toEqual({
+				label,
+				status: "error",
+			});
+			if (refused.status === "error") {
+				expect(refused.code).toBe("IMPLEMENTATION_SOURCE_INVALID");
+				expect(refused.message).toContain("is not reopened");
+				expect(refused.detail).toMatchObject({
+					next: [
+						`5x run init --plan ${PLAN_PATH}`,
+						expect.stringContaining("reviewer-plan"),
+						expect.stringContaining("--run exec --source-run"),
+					],
+				});
+			}
+			expect(ctx.store.getImplementationBinding("exec")).toBeNull();
+		}
+	});
+});
+
+/** Final-corrections source whose admitted correction records `effortDelta`. */
+function fundedCorrectionsSource(
+	ctx: ReturnType<typeof setup>,
+	runId: string,
+	effortDelta = 1,
+) {
+	return approveSource(ctx, runId, plan(), {
+		route: "final_corrections",
+		head: REVIEWER_HEAD,
+		authorAfter: { head: AUTHOR_HEAD },
+		items: [{ ...CORRECTION_ITEM, effortDelta }],
+		unsealed: true,
+	});
+}
+
+describe("final-correction effort allowance", () => {
+	test("a recorded one-point correction completes and binds without a second reviewer", async () => {
+		const ctx = setup();
+		const { snapshot } = fundedCorrectionsSource(ctx, "source");
+		const fixed = corrected(plan(), "P1.1", 3);
+		const prepared = await completeSource(
+			ctx,
+			"source",
+			AUTHOR_HEAD,
+			async (commit) => (commit === AUTHOR_HEAD ? fixed : plan()),
+		);
+		if (prepared.status !== "ready") throw new Error(JSON.stringify(prepared));
+		expect(prepared.payload).toMatchObject({
+			route: "final_corrections",
+			admittedFindingIds: ["P1.1"],
+			addressAdditions: [{ workItemId: "W1", findingIds: ["P1.1"] }],
+			correctionBudget: {
+				corrections: [{ findingId: "P1.1", effortDelta: 1 }],
+			},
+			effortCorrections: [
+				{ workItemId: "W1", before: 2, after: 3, findingIds: ["P1.1"] },
+			],
+		});
+		expect(
+			prepared.payload.correctionBudget?.effectiveCeiling,
+		).toBeGreaterThanOrEqual(3);
+		putRun(ctx.recordStore, "exec");
+		const bound = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: fixed,
+			read: async (commit) => (commit === AUTHOR_HEAD ? fixed : null),
+		});
+		if (bound.status !== "bound") throw new Error(JSON.stringify(bound));
+		expect(bound.binding).toMatchObject({
+			sourceSnapshotId: snapshot.id,
+			approvedPlanCommit: AUTHOR_HEAD,
+			approvalFinalization: {
+				derivation: "recorded",
+				effortCorrections: [
+					{ workItemId: "W1", before: 2, after: 3, findingIds: ["P1.1"] },
+				],
+			},
+		});
+		expect(bound.binding.ledger.workItems[0]).toMatchObject({
+			effort: 3,
+			addresses: ["P1.1"],
+		});
+		expect(
+			ctx.store.latestSnapshot("source")?.currentLedger.workItems[0],
+		).toMatchObject({ effort: 2, addresses: [] });
+		expect(
+			ctx.recordStore
+				.listLines("source", "steps")
+				.filter((line) =>
+					String((line.payload as { step_name?: string }).step_name).startsWith(
+						"reviewer:",
+					),
+				),
+		).toHaveLength(1);
+		expect(
+			decodeImplementationBindingPayload(
+				encodeImplementationBindingPayload(bound.binding),
+			),
+		).toEqual(bound.binding);
+	});
+
+	test("unauthorized effort changes stay refused before sealing", async () => {
+		for (const [label, effortDelta, bytes, reason] of [
+			[
+				"zero-effort correction",
+				0,
+				corrected(plan(), "P1.1", 3),
+				"without an admitted correction",
+			],
+			[
+				"unattributed increase",
+				1,
+				corrected(plan(), "-", 3),
+				"without an admitted correction",
+			],
+			[
+				"beyond the recorded effort",
+				1,
+				corrected(plan(), "P1.1", 5),
+				"beyond the 1 point(s)",
+			],
+			["decrease", 1, corrected(plan(), "P1.1", 1), "re-score"],
+		] as const) {
+			const ctx = setup();
+			fundedCorrectionsSource(ctx, "source", effortDelta);
+			const before = ctx.recordStore.listLines("source", "budget").length;
+			const refused = await prepareSourceApprovalFinalization({
+				store: ctx.store,
+				recordStore: ctx.recordStore,
+				runId: "source",
+				finalCommit: AUTHOR_HEAD,
+				readPlanAtCommit: async () => bytes,
+			});
+			expect({ label, status: refused.status }).toEqual({
+				label,
+				status: "error",
+			});
+			if (refused.status === "error") {
+				expect(refused.code).toBe("PLAN_APPROVAL_FINALIZATION_DELTA");
+				expect(refused.message).toContain(reason);
+			}
+			expect(ctx.recordStore.listLines("source", "budget")).toHaveLength(
+				before,
+			);
+		}
+	});
+
+	test("a record whose correction budget differs from the recorded route is not consumed", async () => {
+		const fixed = corrected(plan(), "P1.1", 3);
+		// A source whose verdict recorded one point yields an internally
+		// consistent funded ledger and budget.
+		const donor = setup();
+		fundedCorrectionsSource(donor, "source", 1);
+		const donated = await prepareSourceApprovalFinalization({
+			store: donor.store,
+			recordStore: donor.recordStore,
+			runId: "source",
+			finalCommit: AUTHOR_HEAD,
+			readPlanAtCommit: async () => fixed,
+		});
+		// This source's verdict recorded zero correction effort.
+		const ctx = setup();
+		fundedCorrectionsSource(ctx, "source", 0);
+		const honest = await prepareSourceApprovalFinalization({
+			store: ctx.store,
+			recordStore: ctx.recordStore,
+			runId: "source",
+			finalCommit: AUTHOR_HEAD,
+			readPlanAtCommit: async () => corrected(plan()),
+		});
+		if (donated.status !== "ready" || honest.status !== "ready") {
+			throw new Error("fixture not ready");
+		}
+		const forged = {
+			...honest.payload,
+			finalBlobHash: hashPlanBytes(fixed),
+			ledger: donated.payload.ledger,
+			ledgerHash: donated.payload.ledgerHash,
+			addressAdditions: donated.payload.addressAdditions,
+			...(donated.payload.correctionBudget
+				? { correctionBudget: donated.payload.correctionBudget }
+				: {}),
+			...(donated.payload.effortCorrections
+				? { effortCorrections: donated.payload.effortCorrections }
+				: {}),
+		};
+		expect(forged.effortCorrections).toHaveLength(1);
+		ctx.recordStore.atomicAppend([
+			{
+				runId: "source",
+				...planApprovalFinalizationOp({
+					payload: forged,
+					completionIteration: 1,
+					completionHead: AUTHOR_HEAD,
+				}),
+				...recordedEnvelope(ORIGIN),
+			},
+		]);
+		appendStep(
+			ctx.recordStore,
+			"source",
+			"run:complete",
+			"plan",
+			1,
+			{ status: "completed", reason: null },
+			AUTHOR_HEAD,
+		);
+		const summary = ctx.recordStore.getRun("source");
+		if (!summary) throw new Error("missing source");
+		ctx.recordStore.putRun({
+			...summary,
+			status: "completed",
+			sealed_at: "2026-11-06T00:00:02.000Z",
+			final_head_commit: AUTHOR_HEAD,
+			sealer: ORIGIN.recorder,
+		});
+		putRun(ctx.recordStore, "exec");
+		const refused = await admit(ctx, {
+			executionRunId: "exec",
+			markdown: fixed,
+			sourceRunId: "source",
+			read: async () => fixed,
+		});
+		expect(refused).toMatchObject({
+			status: "error",
+			code: "IMPLEMENTATION_PLAN_UNAPPROVED",
+		});
+		if (refused.status === "error") {
+			expect(refused.message).toContain(
+				"does not match the recorded reviewer route",
+			);
+		}
+	});
+});
+
+describe("committed finalization blob executability", () => {
+	const PROSE = corrected(plan()).replace(
+		"- [ ] Bind execution",
+		"Bind execution",
+	);
+	const PLAIN = corrected(plan()).replace(
+		"- [ ] Bind execution",
+		"- Bind execution",
+	);
+	const NO_PHASES = corrected(plan()).replace(
+		"## Phase 1: Bind",
+		"## Work: Bind",
+	);
+	const DUPLICATE = `${corrected(plan())}\n## Phase 1: Again\n\n- [ ] Bind again\n`;
+
+	test("author-required committed defects never produce a ready finalization; the run stays active", async () => {
+		for (const [label, bytes, code] of [
+			["checkbox became prose", PROSE, "PLAN_PHASE_NO_CHECKLIST"],
+			["no phases", NO_PHASES, "PLAN_NO_PHASES"],
+			["duplicate phase ids", DUPLICATE, "PLAN_PHASE_ID_DUPLICATE"],
+		] as const) {
+			const ctx = setup();
+			finalCorrectionsSource(ctx, "source");
+			const before = ctx.recordStore.listLines("source", "budget").length;
+			// The working tree is valid; only the committed blob counts.
+			const prepared = await completeSource(
+				ctx,
+				"source",
+				AUTHOR_HEAD,
+				async (commit) => (commit === AUTHOR_HEAD ? bytes : corrected(plan())),
+			);
+			expect({ label, status: prepared.status }).toEqual({
+				label,
+				status: "error",
+			});
+			if (prepared.status !== "error") continue;
+			expect(prepared.code).toBe("PLAN_REPAIR_REQUIRED");
+			expect(prepared.message).toContain(AUTHOR_HEAD);
+			const detail = prepared.detail as {
+				finalCommit: string;
+				diagnostics: Array<{ code: string; repair: string }>;
+				next: string[];
+				runPreserved: boolean;
+			};
+			expect(detail.finalCommit).toBe(AUTHOR_HEAD);
+			expect(detail.runPreserved).toBe(true);
+			expect({ label, diagnostics: detail.diagnostics }).toMatchObject({
+				label,
+				diagnostics: expect.arrayContaining([
+					expect.objectContaining({ code, repair: "author" }),
+				]),
+			});
+			expect(detail.next).toEqual(sameRunFinalizationNext("source"));
+			// Nothing recorded or sealed.
+			expect(ctx.recordStore.listLines("source", "budget")).toHaveLength(
+				before,
+			);
+			expect(ctx.store.listPlanApprovalFinalizations("source")).toEqual([]);
+			expect(ctx.recordStore.getRun("source")?.status).toBe("active");
+
+			// Existing path: the corrected plan committed at a new HEAD completes.
+			const repairedHead = "e".repeat(40);
+			const recovered = await completeSource(
+				ctx,
+				"source",
+				repairedHead,
+				async (commit) => (commit === repairedHead ? corrected(plan()) : bytes),
+			);
+			expect({ label, status: recovered.status }).toEqual({
+				label,
+				status: "ready",
+			});
+		}
+	});
+
+	test("a committed checklist defect with a deterministic repair keeps the approved run-form path", async () => {
+		const ctx = setup();
+		finalCorrectionsSource(ctx, "source");
+		const prepared = await completeSource(
+			ctx,
+			"source",
+			AUTHOR_HEAD,
+			async (commit) => (commit === AUTHOR_HEAD ? PLAIN : corrected(plan())),
+		);
+		if (prepared.status !== "ready") throw new Error(JSON.stringify(prepared));
+		expect(prepared.executability).toMatchObject({
+			executable: false,
+			finalCommit: AUTHOR_HEAD,
+			diagnostics: [
+				expect.objectContaining({
+					code: "PLAN_PHASE_NO_CHECKLIST",
+					repair: "mechanical",
+				}),
+			],
+			next: ["5x plan repair-checklists --run source --dry-run"],
+		});
+		expect(prepared.payload.finalBlobHash).toBe(hashPlanBytes(PLAIN));
+		// An executable blob carries no repair.
+		const clean = setup();
+		finalCorrectionsSource(clean, "source");
+		const ready = await completeSource(clean, "source", AUTHOR_HEAD, async () =>
+			corrected(plan()),
+		);
+		expect(ready).toMatchObject({ status: "ready" });
+		expect(ready).not.toHaveProperty("executability");
+	});
+
+	test("valid committed bytes finalize regardless of the working tree", async () => {
+		const ctx = setup();
+		finalCorrectionsSource(ctx, "source");
+		// Only the committed blob is read; a broken working copy is irrelevant.
+		const prepared = await completeSource(
+			ctx,
+			"source",
+			AUTHOR_HEAD,
+			async (commit) => (commit === AUTHOR_HEAD ? corrected(plan()) : PROSE),
+		);
+		expect(prepared.status).toBe("ready");
+	});
+});

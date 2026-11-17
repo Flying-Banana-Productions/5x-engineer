@@ -122,6 +122,7 @@ import {
 	readAuthoritativeBudget,
 	readAuthoritativePlan,
 } from "../plan-schema/authority.js";
+import { diagnosePlanExecutability } from "../plan-schema/checklist-repair.js";
 import type { ReviewerVerdict } from "../protocol.js";
 import type { AgentEvent } from "../providers/types.js";
 import {
@@ -137,6 +138,7 @@ import {
 	resolvePlanProgress,
 } from "../records/resolve.js";
 import { deriveBudget, sumEffort } from "../review-budget/arithmetic.js";
+import { executabilityRepairCommands } from "../review-budget/plan-repair.js";
 import type {
 	ImplementationBindingPayload,
 	ImplementationCorrectionAttemptPayload,
@@ -162,6 +164,11 @@ import {
 	listGovernanceDecisions,
 	type ReviewDecisionPayload,
 } from "../review-governance/decisions.js";
+import {
+	type GatelessHumanGateReport,
+	implementationGatelessReport,
+	planGatelessReport,
+} from "../review-governance/gate-invariant.js";
 import { canonicalPhaseId } from "../review-governance/implementation.js";
 import {
 	foldEffectiveExecution,
@@ -179,6 +186,10 @@ import {
 	ensureImplementationAdmission,
 	expectedSchemaForStore,
 	isImplementationAuthorAdmission,
+	planApprovalFinalizationOp,
+	prepareSourceApprovalFinalization,
+	type SourceApprovalFinalization,
+	showPlanAtCommit,
 } from "../review-governance/implementation-state.js";
 import {
 	listOperatingRestrictions,
@@ -388,6 +399,11 @@ export interface RecordStepContext {
 	recordStore?: RecordStore;
 	originFor?: (performer: RecordPerformer) => RecordOrigin;
 	redactedRecorder?: () => RecordRecorder;
+	/** Lines appended atomically with the step (for example a completion record). */
+	extraOps?: (
+		finalized: FinalizedRecordStep,
+		envelope: ReturnType<typeof recordedEnvelope>,
+	) => AppendOp[];
 }
 
 function storeGetLine(
@@ -1049,6 +1065,8 @@ export interface ReviewGovernanceState {
 		created_at: string;
 	}>;
 	diagnostics: string[];
+	/** A recorded enforced `human_gate` with no gate, with same-run recovery. */
+	gate_inconsistency?: GatelessHumanGateReport;
 }
 
 /** Build the dashboard/CLI read model strictly from authoritative records. */
@@ -1128,6 +1146,13 @@ export function buildReviewGovernanceState(input: {
 			);
 		}
 	}
+	const gateInconsistency = activeGate
+		? null
+		: planGatelessReport({
+				recordStore: input.recordStore,
+				runId: input.runId,
+			});
+	if (gateInconsistency) readDiagnostics.push(gateInconsistency.message);
 	const diagnostics = [
 		...listed.diagnostics,
 		...governing.auditOnly.map(
@@ -1170,6 +1195,7 @@ export function buildReviewGovernanceState(input: {
 			created_at: decision.createdAt,
 		})),
 		diagnostics,
+		...(gateInconsistency ? { gate_inconsistency: gateInconsistency } : {}),
 	};
 }
 
@@ -1277,6 +1303,12 @@ export interface ImplementationGovernanceState
 	 * the caller did not supply a record store. Never implementation completion.
 	 */
 	revision?: RevisionProvenance | RevisionProvenanceFailure;
+	/**
+	 * A recorded enforced `human_gate` with no gate (historical records only).
+	 * Carries the same-run repair and corrective-review commands. Absent when
+	 * consistent or when the caller did not supply a record store.
+	 */
+	gatelessHumanGate?: GatelessHumanGateReport;
 }
 
 function phaseOrdinal(
@@ -1526,7 +1558,28 @@ export function presentImplementationGovernance(input: {
 					}),
 				}
 			: {}),
+		...gatelessGovernanceField(input),
 	};
+}
+
+function gatelessGovernanceField(input: {
+	readiness: ImplementationGovernanceReadiness;
+	binding: ImplementationBindingPayload | null;
+	recordStore?: RecordStore;
+	runId?: string;
+}): { gatelessHumanGate?: GatelessHumanGateReport } {
+	if (!input.binding || !input.recordStore || !input.runId) return {};
+	if (input.binding.mode !== "enforced") return {};
+	for (const phase of input.binding.phaseMap) {
+		const report = implementationGatelessReport({
+			recordStore: input.recordStore,
+			runId: input.runId,
+			phase: phase.id,
+			planDrifted: input.readiness.planDrifted,
+		});
+		if (report) return { gatelessHumanGate: report };
+	}
+	return {};
 }
 
 function openImplementationGate(
@@ -4169,31 +4222,33 @@ export async function recordStepInternal(
 			{ db, config, recordStore, originFor, run },
 			{
 				mode: "generic",
-				extraOps: prepared.stepName.startsWith("human:")
-					? (finalized, envelope) => {
-							const stepKey = stepIdempotencyKey({
-								runId: finalized.runId,
-								stepName: finalized.stepName,
-								phase: finalized.phase ?? null,
-								iteration: finalized.iteration,
-							});
-							return [
-								{
+				extraOps: dbContext?.extraOps
+					? dbContext.extraOps
+					: prepared.stepName.startsWith("human:")
+						? (finalized, envelope) => {
+								const stepKey = stepIdempotencyKey({
 									runId: finalized.runId,
-									stream: "decisions",
-									idempotencyKey: `decision:human:${stepKey}`,
-									payload: {
-										kind: "human-step",
-										step_name: finalized.stepName,
-										phase: finalized.phase ?? null,
-										iteration: finalized.iteration,
-										result_json: JSON.parse(finalized.resultJson),
+									stepName: finalized.stepName,
+									phase: finalized.phase ?? null,
+									iteration: finalized.iteration,
+								});
+								return [
+									{
+										runId: finalized.runId,
+										stream: "decisions",
+										idempotencyKey: `decision:human:${stepKey}`,
+										payload: {
+											kind: "human-step",
+											step_name: finalized.stepName,
+											phase: finalized.phase ?? null,
+											iteration: finalized.iteration,
+											result_json: JSON.parse(finalized.resultJson),
+										},
+										...envelope,
 									},
-									...envelope,
-								},
-							];
-						}
-					: undefined,
+								];
+							}
+						: undefined,
 			},
 		);
 		if (written.outcome === "coupled-key-exists") {
@@ -4419,6 +4474,9 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		);
 	}
 
+	let planExecutability: Record<string, unknown> | null = null;
+	let finalization: SourceApprovalFinalization = { status: "not_applicable" };
+	let uncommittedPlanChanges = false;
 	if (status === "completed") {
 		try {
 			const budgetStore = createReviewBudgetStore(recordCtx.recordStore);
@@ -4462,6 +4520,28 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 					controlPlane,
 					recordStore: recordCtx.recordStore,
 				});
+			} else if (!hasBinding) {
+				planExecutability = planRunExecutability(
+					recordCtx.executionContext.effectivePlanPath,
+					runId,
+				);
+				const prepared = await prepareRunCompleteFinalization({
+					recordCtx,
+					budgetStore,
+					runId,
+					planPath: run.plan_path,
+				});
+				finalization = prepared.finalization;
+				uncommittedPlanChanges = prepared.uncommittedPlanChanges;
+				if (finalization.status === "error") {
+					// Leave the run active: sealing would publish an approval
+					// that admission rejects for this known mismatch.
+					outputError(
+						finalization.code,
+						finalization.message,
+						finalization.detail,
+					);
+				}
 			}
 		} catch (err) {
 			if (err instanceof RecordError) {
@@ -4490,6 +4570,27 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 				recordStore: recordCtx.recordStore,
 				originFor: recordCtx.originFor,
 				redactedRecorder: recordCtx.redactedRecorder,
+				...(finalization.status === "ready" && !finalization.existing
+					? {
+							extraOps: (finalized, envelope) => {
+								const ready = finalization as Extract<
+									SourceApprovalFinalization,
+									{ status: "ready" }
+								>;
+								return [
+									{
+										runId,
+										...planApprovalFinalizationOp({
+											payload: ready.payload,
+											completionIteration: finalized.iteration,
+											completionHead: finalized.headCommit ?? null,
+										}),
+										...envelope,
+									},
+								];
+							},
+						}
+					: {}),
 			},
 		);
 	} catch (err) {
@@ -4574,7 +4675,105 @@ export async function runV1Complete(params: RunCompleteParams): Promise<void> {
 		...(restrictions.length > 0
 			? { operating_restrictions: restrictions }
 			: {}),
+		// Nonblocking: a completed approval source is repaired on this run
+		// before binding, without reopening it or a new review.
+		...(planExecutability ? { plan_executability: planExecutability } : {}),
+		...(finalization.status === "ready"
+			? {
+					plan_approval_finalization: {
+						id: finalization.payload.id,
+						route: finalization.payload.route,
+						final_commit: finalization.payload.finalCommit,
+						final_blob_hash: finalization.payload.finalBlobHash,
+						address_additions: finalization.payload.addressAdditions,
+						recorded: !finalization.existing,
+						// Nonblocking: the committed blob's checklist has a
+						// deterministic repair, applied on this completed
+						// source before binding.
+						...(finalization.executability
+							? { committed_plan_executability: finalization.executability }
+							: {}),
+						// The committed blob is the anchor; working-tree edits
+						// are not part of this approval.
+						...(uncommittedPlanChanges
+							? { uncommitted_plan_changes: true }
+							: {}),
+					},
+				}
+			: {}),
 	});
+}
+
+/**
+ * Final committed approval for a plan-review run. Reads the committed blob
+ * at HEAD, never the working tree. Not applicable to unapproved runs.
+ */
+async function prepareRunCompleteFinalization(input: {
+	recordCtx: Awaited<ReturnType<typeof createRecordContext>>;
+	budgetStore: ReturnType<typeof createReviewBudgetStore>;
+	runId: string;
+	planPath: string;
+}): Promise<{
+	finalization: SourceApprovalFinalization;
+	uncommittedPlanChanges: boolean;
+}> {
+	const execution = input.recordCtx.executionContext;
+	const workdir = execution.effectiveWorkingDirectory;
+	let head: string | null = null;
+	try {
+		head = await getLatestCommit(workdir);
+	} catch {
+		head = null;
+	}
+	const readPlanAtCommit = (commit: string) =>
+		showPlanAtCommit(workdir, commit, input.planPath, {
+			repoRoot: execution.controlPlaneRoot,
+		});
+	const finalization = await prepareSourceApprovalFinalization({
+		store: input.budgetStore,
+		recordStore: input.recordCtx.recordStore,
+		runId: input.runId,
+		finalCommit: head,
+		readPlanAtCommit,
+	});
+	let uncommittedPlanChanges = false;
+	if (finalization.status === "ready" && head) {
+		const committed = await readPlanAtCommit(head);
+		let working: string | null = null;
+		try {
+			working = readFileSync(execution.effectivePlanPath, "utf-8");
+		} catch {
+			working = null;
+		}
+		uncommittedPlanChanges = committed !== working;
+	}
+	return { finalization, uncommittedPlanChanges };
+}
+
+/**
+ * Finalization check for a plan run with no implementation binding. Never
+ * blocks completion: the completed source is repairable with the run form.
+ */
+function planRunExecutability(
+	planPath: string,
+	runId: string,
+): Record<string, unknown> | null {
+	let markdown: string;
+	try {
+		markdown = readFileSync(planPath, "utf-8");
+	} catch {
+		return null;
+	}
+	const diagnosed = diagnosePlanExecutability(markdown, "file");
+	if (!diagnosed.ok || diagnosed.result.executable) return null;
+	const errors = diagnosed.result.diagnostics.filter(
+		(entry) => entry.severity === "error",
+	);
+	return {
+		executable: false,
+		diagnostics: errors,
+		next: executabilityRepairCommands(errors, { kind: "run", runId }),
+	};
 }
 
 export async function runV1Reopen(params: RunReopenParams): Promise<void> {

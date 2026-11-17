@@ -44,6 +44,7 @@ import {
 	planSchemaCommandMessage,
 	readAuthoritativeBudget,
 } from "../plan-schema/authority.js";
+import type { ExpectedPlanSchema } from "../plan-schema/document.js";
 import {
 	AuthorStatusSchema,
 	type ReviewerVerdict,
@@ -62,6 +63,11 @@ import type {
 	RunResult,
 } from "../providers/types.js";
 import type { PendingBudgetSnapshot } from "../review-budget/apply.js";
+import {
+	type ExecutabilityRepairSubject,
+	implementationPhaseExecutabilityGate,
+	planReviewExecutabilityGate,
+} from "../review-budget/plan-repair.js";
 import type { ImplementationCreditReconciliationPayload } from "../review-budget/record-lines.js";
 import {
 	CodeDiffError,
@@ -89,15 +95,21 @@ import {
 	capturePhaseAuthorAdmission,
 	effectivePlanSchema,
 	ensureImplementationAdmission,
+	expectedSchemaForStore,
 	isImplementationAuthorTemplate,
 	PRE_AUTHOR_STEP_NAME,
 	prepareImplementationReviewContext,
 	readImplementationBinding,
 	verifyImplementationReviewContext,
 } from "../review-governance/implementation-state.js";
+import {
+	type PlanOnlyDiff,
+	readPlanOnlyDiff,
+} from "../review-governance/plan-evidence.js";
 import { validateRunId } from "../run-id.js";
 import { setTemplateOverrideDir } from "../templates/loader.js";
 import { StreamWriter } from "../utils/stream-writer.js";
+import { resolveAmendmentReviewContext } from "./amendment-review-context.js";
 import {
 	controlPlaneDbPath,
 	controlPlaneStatePath,
@@ -133,6 +145,7 @@ import {
 	formatCodeReviewDiff,
 	hasStdinVarFlag,
 	implementationExcludedPaths,
+	implementationPlanRepoPath,
 	isCommitReviewTemplate,
 	isPlanReviewTemplate,
 	needsReviewDelta,
@@ -492,6 +505,8 @@ export async function invokeAgent(
 		reviewedCommit: string;
 		excludedPaths: string[];
 	} | null = null;
+	let planRepoPath: string | null = null;
+	let planOnlyDiff: PlanOnlyDiff | null = null;
 	let preAuthorCommit: string | null = null;
 	let boundId: string | undefined;
 	let boundSourceRunId: string | undefined;
@@ -594,6 +609,30 @@ export async function invokeAgent(
 				}
 			}
 		}
+		// The target phase must be executable before delegation. Recovery is
+		// the mechanical repair on this run (or file); the run is preserved.
+		const checkAuthorPhaseExecutable = (
+			planMarkdown: string | null,
+			subject: ExecutabilityRepairSubject,
+			expected: ExpectedPlanSchema = "file",
+		) => {
+			if (planMarkdown === null) return;
+			const phase = canonicalPhaseId(
+				params.phase ?? mergedVars.phase_number ?? "",
+			);
+			if (!phase || phase === "plan") return;
+			const gate = implementationPhaseExecutabilityGate({
+				planMarkdown,
+				phase,
+				subject,
+				expected,
+			});
+			if (gate.status === "error") {
+				outputError(gate.code, gate.message, gate.detail);
+			}
+			if (gate.warning) warn(gate.warning);
+		};
+		let authorExecutabilityChecked = false;
 		if (budgetContext) {
 			const admission = await ensureImplementationAdmission({
 				store: budgetContext.store,
@@ -611,6 +650,22 @@ export async function invokeAgent(
 				admission.status === "error"
 			) {
 				outputError(admission.code, admission.message, admission.detail);
+			}
+			authorExecutabilityChecked = true;
+			// A bound execution reads the plan under its recorded schema,
+			// exactly as repair, inspection and completion do; only an
+			// ungoverned file infers its schema from file markers.
+			if (admission.status === "bound") {
+				checkAuthorPhaseExecutable(
+					markdown,
+					{ kind: "run", runId: params.run },
+					expectedSchemaForStore(budgetContext.store, params.run),
+				);
+			} else {
+				checkAuthorPhaseExecutable(markdown, {
+					kind: "file",
+					planPath: resolvedPlanPath,
+				});
 			}
 			if (admission.status === "bound") {
 				const phase = canonicalPhaseId(
@@ -694,6 +749,12 @@ export async function invokeAgent(
 				}
 			}
 		}
+		if (!authorExecutabilityChecked) {
+			checkAuthorPhaseExecutable(markdown, {
+				kind: "file",
+				planPath: resolvedPlanPath,
+			});
+		}
 	}
 	const roleConfig = config[role] as Record<string, unknown>;
 	const providerName =
@@ -756,6 +817,33 @@ export async function invokeAgent(
 		optInCapturedBeforeInvoke =
 			Boolean(params.optInBudgetBaseline) && ensured.status === "captured";
 	}
+	// A non-executable draft goes back to the author before the reviewer is
+	// invoked, in every review-budget mode and with or without a run (the
+	// same boundary as native rendering). Nothing is recorded, no iteration
+	// is consumed and no provider or session is created.
+	if (
+		resolved.selectedTemplateName.replace(/-continued$/, "") ===
+			"reviewer-plan" &&
+		resolvedPlanPath
+	) {
+		const reviewPlanPath =
+			(params.run
+				? budgetContext?.executionContext.effectivePlanPath
+				: undefined) ?? resolvedPlanPath;
+		let reviewMarkdown: string | null = null;
+		try {
+			reviewMarkdown = readFileSync(reviewPlanPath, "utf-8");
+		} catch {
+			reviewMarkdown = null;
+		}
+		if (reviewMarkdown !== null) {
+			const gate = planReviewExecutabilityGate({
+				planMarkdown: reviewMarkdown,
+				planPath: reviewPlanPath,
+			});
+			if (gate) outputError(gate.code, gate.message, gate.detail);
+		}
+	}
 
 	// Append the review diff block (continued plan reviews only). The diff
 	// can't be a template variable (multi-line), so it's added post-render.
@@ -781,6 +869,25 @@ export async function invokeAgent(
 		} catch (err) {
 			if (!(err instanceof RecordContextError)) throw err;
 		}
+	}
+	// Implementation-run amendment reviews get the trusted predecessor, exact
+	// committed hash, and plan diff. Fail closed: a pending authorization
+	// without trusted context must not render an ordinary plan review.
+	let amendmentAppend: string | null = null;
+	if (
+		params.run &&
+		budgetContext &&
+		resolved.selectedTemplateName.replace(/-continued$/, "") === "reviewer-plan"
+	) {
+		const amendment = await resolveAmendmentReviewContext({
+			ctx: budgetContext,
+			runId: params.run,
+			warn,
+		});
+		if (amendment.status === "error") {
+			outputError(amendment.code, amendment.message);
+		}
+		if (amendment.status === "ready") amendmentAppend = amendment.append;
 	}
 	let codeDiffAppend = "";
 	if (params.run && isCommitReviewTemplate(resolved.selectedTemplateName)) {
@@ -825,6 +932,17 @@ export async function invokeAgent(
 			}
 			implementationReviewContextId = prepared.context.id;
 			preparedReviewContext = prepared.context;
+			planRepoPath = implementationPlanRepoPath({
+				repoRoot: rootResult.stdout.trim(),
+				controlPlaneRoot: budgetContext.executionContext.controlPlaneRoot,
+				planPath: resolvedPlanPath,
+			});
+			planOnlyDiff = await readPlanOnlyDiff({
+				git,
+				baseCommit: prepared.diff.baseCommit,
+				reviewedCommit: prepared.diff.reviewedCommit,
+				planRepoPath,
+			});
 			boundId = binding.id;
 			boundSourceRunId = binding.sourceRunId;
 			boundMode = binding.mode;
@@ -851,6 +969,8 @@ export async function invokeAgent(
 				store: budgetContext.store,
 				recordStore: budgetContext.recordStore,
 				reviewContext: preparedReviewContext,
+				planRepoPath,
+				planOnlyDiff,
 				workdir: budgetContext.executionContext.effectiveWorkingDirectory,
 				sessionId: params.newSession ? "new" : params.session,
 			});
@@ -876,6 +996,7 @@ export async function invokeAgent(
 		codeDiffAppend,
 		diffAppend: reviewDiffAppend,
 		governanceAppend,
+		amendmentAppend,
 	});
 	deps?.onRenderedPrompt?.(renderedPrompt);
 

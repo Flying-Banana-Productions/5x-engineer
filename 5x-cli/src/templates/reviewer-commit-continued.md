@@ -1,7 +1,7 @@
 ---
 name: reviewer-commit-continued
 description: Re-review revised implementation commits
-version: 8
+version: 9
 variables: [commit_hash, review_path, plan_path, review_template_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:commit"
 variable_defaults:
@@ -54,12 +54,12 @@ Evaluate the implementation across these dimensions:
 
 Give exactly one `priorFindings` outcome for every id in `Required prior-finding outcome IDs`: `addressed`, `partially_addressed`, or `still_open`. Partial and open outcomes remain exactly once in `items[]`. Addressed outcomes leave `items[]`.
 
-A new ordinary blocker needs exact file-qualified hunk evidence (`introducedBy`) from the supplied range and a causal explanation. Critical late safety (`lateDiscovery: "critical_safety"` plus `lateDiscoveryEvidence`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred or restricted finding needs the same `priorDecisionId` and materially new `newEvidence`.
+A new ordinary `implementation_defect` blocker needs exact file-qualified hunk evidence (`introducedBy`) from the supplied range and a causal explanation; the hunk requirement applies to implementation defects only. Critical late safety (`lateDiscovery: "critical_safety"` plus `lateDiscoveryEvidence`) bypasses only the hunk requirement and routes to a human. Re-raising a deferred or restricted finding needs the same `priorDecisionId` and materially new `newEvidence`.
 
 Use the four classes and source-of-correction precedence from the initial review:
 
 - `implementation_defect` links approved `planWorkItemIds`.
-- `plan_defect` uses `planImpact: { "kind": "text_only" | "design" | "budget", "locations": [{ "heading": "...", "staleText": "..." }] }`. `text_only` locations are nonempty and each `staleText` occurs once under its heading in the approved text. Missing or ambiguous matches route to a human.
+- `plan_defect` uses `planImpact: { "kind": "text_only" | "design" | "budget", "locations": [{ "heading": "...", "staleText": "..." }] }`. `text_only` locations are nonempty and each `staleText` occurs once under its heading in the approved text. Missing or ambiguous matches route to a human. A structural `plan_defect`, such as a phase with no executable checklist item, needs no code hunk and need not have been introduced by the reviewed commits: cite its `planImpact` locations from the runtime-appended `Plan evidence` (governing phase text, executability diagnostics, and any plan-only diff), which is separate from the code range. A mechanical checklist repair needs no reviewer finding; report the supplied `5x plan repair-checklists` command instead of inventing a defect. Never return `not_ready` without at least one item.
 - `scope_expansion` is never automatic.
 - Ordinary `pre_existing` notes stay in **Nonblocking follow-ups**, not `items[]`.
 

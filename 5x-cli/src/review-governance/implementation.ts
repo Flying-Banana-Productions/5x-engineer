@@ -374,6 +374,60 @@ function textOnlyLocations(verdict: ReviewerVerdict): Array<{
 	return locations;
 }
 
+/**
+ * Design and budget plan defects need no code hunk. When they cite plan
+ * locations, check them against the effective approved governing text. A
+ * mismatch is reported, not rejected: the finding still routes to the plan
+ * amendment gate. Empty locations stay valid; no new field is required.
+ */
+function planEvidenceAnchorDiagnostics(
+	input: ImplementationValidationInput,
+): ImplementationDiagnostic[] {
+	if (input.approvedPlanBytes === undefined) return [];
+	const cited = input.verdict.items.filter(
+		(item) =>
+			item.scopeClass === "plan_defect" &&
+			item.planImpact !== undefined &&
+			item.planImpact.kind !== "text_only" &&
+			item.planImpact.locations.length > 0,
+	);
+	if (cited.length === 0) return [];
+	let anchorText = input.approvedPlanBytes;
+	if ((input.recordedSchema ?? 0) === 1) {
+		const loaded = loadPlanDocument(input.approvedPlanBytes, 1);
+		if (!loaded.ok) return [];
+		anchorText = loaded.document.authorityMarkdown;
+	}
+	const headings = planHeadingSpans(anchorText);
+	const found: ImplementationDiagnostic[] = [];
+	for (const item of cited) {
+		for (const location of item.planImpact?.locations ?? []) {
+			const sections = headings.filter(
+				(heading) => heading.text === location.heading,
+			);
+			const matched = sections.some(
+				(section) =>
+					occurrences(
+						anchorText.slice(section.lineStart, section.sectionEnd),
+						location.staleText,
+					).length > 0,
+			);
+			if (matched) continue;
+			found.push(
+				diagnostic(
+					"PLAN_EVIDENCE_ANCHOR_MISMATCH",
+					sections.length === 0
+						? `Finding '${item.id}' cites heading '${location.heading}', which is not in the effective approved plan. The finding is kept and still routes to the plan amendment gate; anchor it to the supplied plan evidence.`
+						: `Finding '${item.id}' cites staleText under '${location.heading}' that does not occur there in the effective approved plan. The finding is kept and still routes to the plan amendment gate; anchor it to the supplied plan evidence.`,
+					"error",
+					item.id,
+				),
+			);
+		}
+	}
+	return found;
+}
+
 function implementationFindingIdentities(
 	items: readonly VerdictItem[],
 	phase: string,
@@ -1129,6 +1183,7 @@ export function validateImplementationReview(
 			}
 		}
 	}
+	diagnostics.push(...planEvidenceAnchorDiagnostics(input));
 	const reviewRound = implementationReviewRound(
 		input.priorReviewCount ?? 0,
 		input.sessionId,

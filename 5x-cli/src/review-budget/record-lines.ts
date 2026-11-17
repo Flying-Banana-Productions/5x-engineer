@@ -36,6 +36,8 @@ export type BudgetRecordKind =
 	| "implementation-text-amendment"
 	| "implementation-plan-recovery"
 	| "plan-schema-migration"
+	| "plan-checklist-repair"
+	| "plan-approval-finalization"
 	| "implementation-plan-amendment"
 	| "implementation-review-context"
 	| "implementation-review"
@@ -316,6 +318,35 @@ export interface ImplementationBindingPayload {
 	governingHash?: string;
 	schemaMigrationId?: string;
 	predecessorPlanCommit?: string;
+	/**
+	 * How the approved ledger was finalized from the committed plan. Absent
+	 * when the source snapshot ledger was bound unchanged without a record.
+	 * The source snapshot stays the original reviewer snapshot either way.
+	 */
+	approvalFinalization?: BindingApprovalFinalization;
+}
+
+/** Binding provenance for a finalized approval ledger. */
+export interface BindingApprovalFinalization {
+	/**
+	 * `recorded`: the source's paired `plan-approval-finalization` record.
+	 * `legacy_stale_addresses`: derived at bind time from a sealed legacy
+	 * source's final-corrections evidence; the source journal is unchanged.
+	 */
+	derivation: "recorded" | "legacy_stale_addresses";
+	/** The consumed record. Absent on a legacy derivation. */
+	finalizationId?: string;
+	sourceRunId: string;
+	sourceSnapshotId: string;
+	finalCommit: string;
+	finalBlobHash: string;
+	snapshotLedgerHash: string;
+	admittedFindingIds: string[];
+	addressAdditions: Array<{ workItemId: string; findingIds: string[] }>;
+	/** Work-item effort funded by admitted corrections. Absent when none. */
+	effortCorrections?: PlanApprovalEffortCorrection[];
+	/** Final-corrections author commit, when that route admitted the delta. */
+	authorCommit: string | null;
 }
 
 export interface ImplementationCompatibilityPayload {
@@ -447,9 +478,535 @@ export interface PlanSchemaMigrationPayload {
 	createdAt: string;
 }
 
+/** One proven list-prefix edit. Lines are 1-based. */
+export interface PlanChecklistRepairEdit {
+	line: number;
+	anchorLine: number;
+	phase: string;
+	before: string;
+	after: string;
+	topLevel: boolean;
+}
+
+/**
+ * Operator-authorized mechanical checklist repair. Moves the authorized plan
+ * anchor only: no reviewer snapshot, text guard, semantic assessment, new
+ * revision, evidence invalidation, phase completion or finding resolution.
+ * Source lines (`bindingId: null`) sit on a completed plan-review run and are
+ * carried onto an execution binding when it is created.
+ */
+export interface PlanChecklistRepairPayload {
+	kind: "plan-checklist-repair";
+	version: 1;
+	id: string;
+	/** Run whose journal holds this line. */
+	runId: string;
+	subject: "execution" | "source";
+	bindingId: string | null;
+	/** Present on a binding's copy of a source-run repair. */
+	carriedFrom?: { runId: string; repairId: string };
+	parentLineageId: string | null;
+	beforeCommit: string;
+	afterCommit: string;
+	beforeBlobHash: string;
+	afterBlobHash: string;
+	authorizedPlanBytes: string;
+	planSchema: 0 | 1;
+	edits: PlanChecklistRepairEdit[];
+	/** Lines whose proposed checked marker was recorded as unchecked. */
+	resetCheckedLines: number[];
+	/** The operator instruction this repair records. Not a reviewer verdict. */
+	reason: string;
+	intentDigest: string;
+	createdAt: string;
+}
+
 export type ImplementationLineagePayload =
 	| ImplementationPlanAmendmentPayload
-	| PlanSchemaMigrationPayload;
+	| PlanSchemaMigrationPayload
+	| PlanChecklistRepairPayload;
+
+export function planChecklistRepairKey(
+	runId: string,
+	intentDigest: string,
+): string {
+	return `budget:plan-checklist-repair:${runId}:${intentDigest}`;
+}
+
+export function planChecklistRepairStepKey(
+	runId: string,
+	intentDigest: string,
+): string {
+	return `step:${runId}:checklist-repair::0:${intentDigest}`;
+}
+
+const CHECKLIST_REPAIR_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"subject",
+	"bindingId",
+	"carriedFrom",
+	"parentLineageId",
+	"beforeCommit",
+	"afterCommit",
+	"beforeBlobHash",
+	"afterBlobHash",
+	"authorizedPlanBytes",
+	"planSchema",
+	"edits",
+	"resetCheckedLines",
+	"reason",
+	"intentDigest",
+	"createdAt",
+]);
+
+const CHECKLIST_REPAIR_EDIT_KEYS = new Set([
+	"line",
+	"anchorLine",
+	"phase",
+	"before",
+	"after",
+	"topLevel",
+]);
+
+export function encodePlanChecklistRepairPayload(
+	payload: PlanChecklistRepairPayload,
+): unknown {
+	const encoded = structuredClone(payload);
+	if (encoded.carriedFrom === undefined) delete encoded.carriedFrom;
+	return encoded;
+}
+
+export function decodePlanChecklistRepairPayload(
+	raw: unknown,
+): PlanChecklistRepairPayload {
+	const value = object(raw, "plan checklist repair payload");
+	if (value.kind !== "plan-checklist-repair") {
+		throw new TypeError("invalid plan checklist repair kind");
+	}
+	if (value.version !== 1) {
+		throw new TypeError(
+			`unsupported plan checklist repair version ${String(value.version)}`,
+		);
+	}
+	rejectUnknownKeys(value, CHECKLIST_REPAIR_KEYS, "plan checklist repair");
+	if (value.subject !== "execution" && value.subject !== "source") {
+		throw new TypeError("subject must be execution or source");
+	}
+	const bindingId =
+		value.bindingId === null ? null : stringField(value.bindingId, "bindingId");
+	if ((value.subject === "source") !== (bindingId === null)) {
+		throw new TypeError(
+			"a source repair has no binding; an execution repair names one",
+		);
+	}
+	if (value.planSchema !== 0 && value.planSchema !== 1) {
+		throw new TypeError("planSchema must be 0 or 1");
+	}
+	if (!Array.isArray(value.edits) || value.edits.length === 0) {
+		throw new TypeError("edits must be a non-empty array");
+	}
+	const edits = value.edits.map((entry, index) => {
+		const edit = object(entry, `edits[${index}]`);
+		rejectUnknownKeys(edit, CHECKLIST_REPAIR_EDIT_KEYS, `edits[${index}]`);
+		if (typeof edit.topLevel !== "boolean") {
+			throw new TypeError(`edits[${index}].topLevel must be a boolean`);
+		}
+		return {
+			line: lineNumberField(edit.line, `edits[${index}].line`),
+			anchorLine: lineNumberField(
+				edit.anchorLine,
+				`edits[${index}].anchorLine`,
+			),
+			phase: stringField(edit.phase, `edits[${index}].phase`),
+			before: stringField(edit.before, `edits[${index}].before`),
+			after: stringField(edit.after, `edits[${index}].after`),
+			topLevel: edit.topLevel,
+		};
+	});
+	if (!Array.isArray(value.resetCheckedLines)) {
+		throw new TypeError("resetCheckedLines must be an array");
+	}
+	const resetCheckedLines = value.resetCheckedLines.map((line, index) =>
+		lineNumberField(line, `resetCheckedLines[${index}]`),
+	);
+	let carriedFrom: PlanChecklistRepairPayload["carriedFrom"];
+	if (value.carriedFrom !== undefined) {
+		const carried = object(value.carriedFrom, "carriedFrom");
+		rejectUnknownKeys(carried, new Set(["runId", "repairId"]), "carriedFrom");
+		carriedFrom = {
+			runId: stringField(carried.runId, "carriedFrom.runId"),
+			repairId: stringField(carried.repairId, "carriedFrom.repairId"),
+		};
+	}
+	return {
+		kind: "plan-checklist-repair",
+		version: 1,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		subject: value.subject,
+		bindingId,
+		...(carriedFrom ? { carriedFrom } : {}),
+		parentLineageId:
+			value.parentLineageId === null
+				? null
+				: stringField(value.parentLineageId, "parentLineageId"),
+		beforeCommit: stringField(value.beforeCommit, "beforeCommit"),
+		afterCommit: stringField(value.afterCommit, "afterCommit"),
+		beforeBlobHash: stringField(value.beforeBlobHash, "beforeBlobHash"),
+		afterBlobHash: stringField(value.afterBlobHash, "afterBlobHash"),
+		authorizedPlanBytes: stringField(
+			value.authorizedPlanBytes,
+			"authorizedPlanBytes",
+			true,
+		),
+		planSchema: value.planSchema,
+		edits,
+		resetCheckedLines,
+		reason: stringField(value.reason, "reason"),
+		intentDigest: stringField(value.intentDigest, "intentDigest"),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
+
+/** Plan-review step identity named by a finalization record. */
+export interface PlanApprovalStepRef {
+	stepName: string;
+	iteration: number;
+	/** The step's recorded commit. Null when a reviewer step recorded none. */
+	commit: string | null;
+}
+
+/**
+ * Final committed plan approval, appended atomically with the plan-review
+ * run's `run:complete` step. Binds the approving reviewer snapshot, the
+ * recorded final-corrections author commit, the decisions, the committed
+ * plan blob and the effective ledger. Mechanical bookkeeping, not a reviewer
+ * verdict: the source snapshot is unchanged and binding consumes this anchor.
+ */
+export interface PlanApprovalFinalizationPayload {
+	kind: "plan-approval-finalization";
+	version: 1;
+	id: string;
+	/** The plan-review run being completed. */
+	runId: string;
+	sourceSnapshotId: string;
+	sourceBaselineId: string;
+	route: "complete" | "final_corrections";
+	reviewer: PlanApprovalStepRef;
+	/** The recorded final-corrections author step. Null on a ready approval. */
+	authorCorrection: PlanApprovalStepRef | null;
+	/** Findings the recorded route admitted as one-pass corrections. */
+	admittedFindingIds: string[];
+	decisionsHash: string;
+	/** The paired completion step. */
+	completion: { stepName: "run:complete"; iteration: number };
+	finalCommit: string;
+	/** sha256 of the raw plan blob at `finalCommit`. */
+	finalBlobHash: string;
+	planSchema: 0 | 1;
+	/** Schema 1 governing comparison hash. */
+	governingHash?: string;
+	snapshotLedgerHash: string;
+	ledger: ParsedDeliveryBudget;
+	ledgerHash: string;
+	addressAdditions: Array<{ workItemId: string; findingIds: string[] }>;
+	/**
+	 * The final-corrections route's effort evidence: each admitted
+	 * correction's recorded effort and the effective ceiling. Present on a
+	 * final_corrections finalization; absent on a ready approval.
+	 */
+	correctionBudget?: PlanApprovalCorrectionBudget;
+	/** Work-item effort changes funded by admitted corrections. Absent when none. */
+	effortCorrections?: PlanApprovalEffortCorrection[];
+	createdAt: string;
+}
+
+export interface PlanApprovalCorrectionBudget {
+	corrections: Array<{ findingId: string; effortDelta: number }>;
+	effectiveCeiling: number;
+}
+
+export interface PlanApprovalEffortCorrection {
+	workItemId: string;
+	before: number;
+	after: number;
+	findingIds: string[];
+}
+
+/** One record per committed final plan blob; a retry at the same commit is idempotent. */
+export function planApprovalFinalizationKey(
+	runId: string,
+	finalCommit: string,
+): string {
+	return `budget:plan-approval-finalization:${runId}:${finalCommit}`;
+}
+
+const APPROVAL_FINALIZATION_KEYS = new Set([
+	"kind",
+	"version",
+	"id",
+	"runId",
+	"sourceSnapshotId",
+	"sourceBaselineId",
+	"route",
+	"reviewer",
+	"authorCorrection",
+	"admittedFindingIds",
+	"decisionsHash",
+	"completion",
+	"finalCommit",
+	"finalBlobHash",
+	"planSchema",
+	"governingHash",
+	"snapshotLedgerHash",
+	"ledger",
+	"ledgerHash",
+	"addressAdditions",
+	"correctionBudget",
+	"effortCorrections",
+	"createdAt",
+]);
+
+function approvalStepRef(raw: unknown, field: string): PlanApprovalStepRef {
+	const value = object(raw, field);
+	rejectUnknownKeys(value, new Set(["stepName", "iteration", "commit"]), field);
+	return {
+		stepName: stringField(value.stepName, `${field}.stepName`),
+		iteration: nonNegativeInteger(value.iteration, `${field}.iteration`),
+		commit:
+			value.commit === null
+				? null
+				: stringField(value.commit, `${field}.commit`),
+	};
+}
+
+function addressAdditionsField(
+	raw: unknown,
+	field: string,
+): Array<{ workItemId: string; findingIds: string[] }> {
+	if (!Array.isArray(raw)) throw new TypeError(`${field} must be an array`);
+	return raw.map((entry, index) => {
+		const value = object(entry, `${field}[${index}]`);
+		rejectUnknownKeys(
+			value,
+			new Set(["workItemId", "findingIds"]),
+			`${field}[${index}]`,
+		);
+		if (!Array.isArray(value.findingIds) || value.findingIds.length === 0) {
+			throw new TypeError(`${field}[${index}].findingIds must be non-empty`);
+		}
+		return {
+			workItemId: stringField(
+				value.workItemId,
+				`${field}[${index}].workItemId`,
+			),
+			findingIds: value.findingIds.map((id) =>
+				stringField(id, `${field}[${index}].findingIds`),
+			),
+		};
+	});
+}
+
+function finiteNumber(raw: unknown, field: string): number {
+	if (typeof raw !== "number" || !Number.isFinite(raw)) {
+		throw new TypeError(`${field} must be a finite number`);
+	}
+	return raw;
+}
+
+function correctionBudgetField(
+	raw: unknown,
+	field: string,
+): PlanApprovalCorrectionBudget {
+	const value = object(raw, field);
+	rejectUnknownKeys(value, new Set(["corrections", "effectiveCeiling"]), field);
+	if (!Array.isArray(value.corrections)) {
+		throw new TypeError(`${field}.corrections must be an array`);
+	}
+	return {
+		corrections: value.corrections.map((entry, index) => {
+			const item = object(entry, `${field}.corrections[${index}]`);
+			rejectUnknownKeys(
+				item,
+				new Set(["findingId", "effortDelta"]),
+				`${field}.corrections[${index}]`,
+			);
+			return {
+				findingId: stringField(
+					item.findingId,
+					`${field}.corrections[${index}].findingId`,
+				),
+				effortDelta: finiteNumber(
+					item.effortDelta,
+					`${field}.corrections[${index}].effortDelta`,
+				),
+			};
+		}),
+		effectiveCeiling: finiteNumber(
+			value.effectiveCeiling,
+			`${field}.effectiveCeiling`,
+		),
+	};
+}
+
+function effortCorrectionsField(
+	raw: unknown,
+	field: string,
+): PlanApprovalEffortCorrection[] {
+	if (!Array.isArray(raw) || raw.length === 0) {
+		throw new TypeError(`${field} must be a non-empty array when present`);
+	}
+	return raw.map((entry, index) => {
+		const value = object(entry, `${field}[${index}]`);
+		rejectUnknownKeys(
+			value,
+			new Set(["workItemId", "before", "after", "findingIds"]),
+			`${field}[${index}]`,
+		);
+		if (!Array.isArray(value.findingIds) || value.findingIds.length === 0) {
+			throw new TypeError(`${field}[${index}].findingIds must be non-empty`);
+		}
+		return {
+			workItemId: stringField(
+				value.workItemId,
+				`${field}[${index}].workItemId`,
+			),
+			before: finiteNumber(value.before, `${field}[${index}].before`),
+			after: finiteNumber(value.after, `${field}[${index}].after`),
+			findingIds: value.findingIds.map((id) =>
+				stringField(id, `${field}[${index}].findingIds`),
+			),
+		};
+	});
+}
+
+function findingIdsField(raw: unknown, field: string): string[] {
+	if (!Array.isArray(raw)) throw new TypeError(`${field} must be an array`);
+	return raw.map((id) => stringField(id, field));
+}
+
+export function encodePlanApprovalFinalizationPayload(
+	payload: PlanApprovalFinalizationPayload,
+): unknown {
+	const encoded = structuredClone(payload);
+	if (encoded.governingHash === undefined) delete encoded.governingHash;
+	if (encoded.correctionBudget === undefined) delete encoded.correctionBudget;
+	if (encoded.effortCorrections === undefined) delete encoded.effortCorrections;
+	return encoded;
+}
+
+export function decodePlanApprovalFinalizationPayload(
+	raw: unknown,
+): PlanApprovalFinalizationPayload {
+	const value = object(raw, "plan approval finalization payload");
+	if (value.kind !== "plan-approval-finalization") {
+		throw new TypeError("invalid plan approval finalization kind");
+	}
+	if (value.version !== 1) {
+		throw new TypeError(
+			`unsupported plan approval finalization version ${String(value.version)}`,
+		);
+	}
+	rejectUnknownKeys(
+		value,
+		APPROVAL_FINALIZATION_KEYS,
+		"plan approval finalization",
+	);
+	if (value.route !== "complete" && value.route !== "final_corrections") {
+		throw new TypeError("route must be complete or final_corrections");
+	}
+	if (value.planSchema !== 0 && value.planSchema !== 1) {
+		throw new TypeError("planSchema must be 0 or 1");
+	}
+	const authorCorrection =
+		value.authorCorrection === null
+			? null
+			: approvalStepRef(value.authorCorrection, "authorCorrection");
+	if ((value.route === "final_corrections") !== (authorCorrection !== null)) {
+		throw new TypeError(
+			"a final_corrections finalization names its author correction; a ready approval has none",
+		);
+	}
+	const completion = object(value.completion, "completion");
+	rejectUnknownKeys(
+		completion,
+		new Set(["stepName", "iteration"]),
+		"completion",
+	);
+	if (completion.stepName !== "run:complete") {
+		throw new TypeError("completion.stepName must be run:complete");
+	}
+	const governingHash =
+		value.governingHash === undefined
+			? undefined
+			: stringField(value.governingHash, "governingHash");
+	if (value.planSchema === 1 && governingHash === undefined) {
+		throw new TypeError("schema 1 finalization requires governingHash");
+	}
+	const correctionBudget =
+		value.correctionBudget === undefined
+			? undefined
+			: correctionBudgetField(value.correctionBudget, "correctionBudget");
+	if (correctionBudget !== undefined && value.route !== "final_corrections") {
+		throw new TypeError(
+			"only a final_corrections finalization records a correction budget",
+		);
+	}
+	const effortCorrections =
+		value.effortCorrections === undefined
+			? undefined
+			: effortCorrectionsField(value.effortCorrections, "effortCorrections");
+	if (effortCorrections !== undefined && correctionBudget === undefined) {
+		throw new TypeError(
+			"effortCorrections require the route's recorded correction budget",
+		);
+	}
+	return {
+		kind: "plan-approval-finalization",
+		version: 1,
+		id: stringField(value.id, "id"),
+		runId: stringField(value.runId, "runId"),
+		sourceSnapshotId: stringField(value.sourceSnapshotId, "sourceSnapshotId"),
+		sourceBaselineId: stringField(value.sourceBaselineId, "sourceBaselineId"),
+		route: value.route,
+		reviewer: approvalStepRef(value.reviewer, "reviewer"),
+		authorCorrection,
+		admittedFindingIds: findingIdsField(
+			value.admittedFindingIds,
+			"admittedFindingIds",
+		),
+		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
+		completion: {
+			stepName: "run:complete",
+			iteration: nonNegativeInteger(
+				completion.iteration,
+				"completion.iteration",
+			),
+		},
+		finalCommit: stringField(value.finalCommit, "finalCommit"),
+		finalBlobHash: stringField(value.finalBlobHash, "finalBlobHash"),
+		planSchema: value.planSchema,
+		...(governingHash !== undefined ? { governingHash } : {}),
+		snapshotLedgerHash: stringField(
+			value.snapshotLedgerHash,
+			"snapshotLedgerHash",
+		),
+		ledger: structuredClone(
+			object(value.ledger, "ledger"),
+		) as unknown as ParsedDeliveryBudget,
+		ledgerHash: stringField(value.ledgerHash, "ledgerHash"),
+		addressAdditions: addressAdditionsField(
+			value.addressAdditions,
+			"addressAdditions",
+		),
+		...(correctionBudget !== undefined ? { correctionBudget } : {}),
+		...(effortCorrections !== undefined ? { effortCorrections } : {}),
+		createdAt: stringField(value.createdAt, "createdAt"),
+	};
+}
 
 export function planSchemaMigrationKey(
 	runId: string,
@@ -801,6 +1358,16 @@ export function encodeImplementationBindingPayload(
 	if (encoded.predecessorPlanCommit === undefined) {
 		delete encoded.predecessorPlanCommit;
 	}
+	if (encoded.approvalFinalization === undefined) {
+		delete encoded.approvalFinalization;
+	} else {
+		if (encoded.approvalFinalization.finalizationId === undefined) {
+			delete encoded.approvalFinalization.finalizationId;
+		}
+		if (encoded.approvalFinalization.effortCorrections === undefined) {
+			delete encoded.approvalFinalization.effortCorrections;
+		}
+	}
 	return encoded;
 }
 
@@ -875,6 +1442,98 @@ export function decodeImplementationBindingPayload(
 		decisionsHash: stringField(value.decisionsHash, "decisionsHash"),
 		createdAt: stringField(value.createdAt, "createdAt"),
 		...optionalBindingSchemaFields(value),
+		...(value.approvalFinalization !== undefined
+			? {
+					approvalFinalization: bindingApprovalFinalization(
+						value.approvalFinalization,
+					),
+				}
+			: {}),
+	};
+}
+
+const BINDING_FINALIZATION_KEYS = new Set([
+	"derivation",
+	"finalizationId",
+	"sourceRunId",
+	"sourceSnapshotId",
+	"finalCommit",
+	"finalBlobHash",
+	"snapshotLedgerHash",
+	"admittedFindingIds",
+	"addressAdditions",
+	"effortCorrections",
+	"authorCommit",
+]);
+
+function bindingApprovalFinalization(
+	raw: unknown,
+): BindingApprovalFinalization {
+	const value = object(raw, "approvalFinalization");
+	rejectUnknownKeys(value, BINDING_FINALIZATION_KEYS, "approvalFinalization");
+	if (
+		value.derivation !== "recorded" &&
+		value.derivation !== "legacy_stale_addresses"
+	) {
+		throw new TypeError(
+			"approvalFinalization.derivation must be recorded or legacy_stale_addresses",
+		);
+	}
+	const finalizationId =
+		value.finalizationId === undefined
+			? undefined
+			: stringField(
+					value.finalizationId,
+					"approvalFinalization.finalizationId",
+				);
+	if ((value.derivation === "recorded") !== (finalizationId !== undefined)) {
+		throw new TypeError(
+			"a recorded finalization names its record; a legacy derivation has none",
+		);
+	}
+	return {
+		derivation: value.derivation,
+		...(finalizationId !== undefined ? { finalizationId } : {}),
+		sourceRunId: stringField(
+			value.sourceRunId,
+			"approvalFinalization.sourceRunId",
+		),
+		sourceSnapshotId: stringField(
+			value.sourceSnapshotId,
+			"approvalFinalization.sourceSnapshotId",
+		),
+		finalCommit: stringField(
+			value.finalCommit,
+			"approvalFinalization.finalCommit",
+		),
+		finalBlobHash: stringField(
+			value.finalBlobHash,
+			"approvalFinalization.finalBlobHash",
+		),
+		snapshotLedgerHash: stringField(
+			value.snapshotLedgerHash,
+			"approvalFinalization.snapshotLedgerHash",
+		),
+		admittedFindingIds: findingIdsField(
+			value.admittedFindingIds,
+			"approvalFinalization.admittedFindingIds",
+		),
+		addressAdditions: addressAdditionsField(
+			value.addressAdditions,
+			"approvalFinalization.addressAdditions",
+		),
+		...(value.effortCorrections !== undefined
+			? {
+					effortCorrections: effortCorrectionsField(
+						value.effortCorrections,
+						"approvalFinalization.effortCorrections",
+					),
+				}
+			: {}),
+		authorCommit:
+			value.authorCommit === null
+				? null
+				: stringField(value.authorCommit, "approvalFinalization.authorCommit"),
 	};
 }
 

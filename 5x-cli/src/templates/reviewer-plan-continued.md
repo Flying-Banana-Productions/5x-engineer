@@ -1,7 +1,7 @@
 ---
 name: reviewer-plan-continued
 description: Re-review a revised implementation plan
-version: 12
+version: 13
 variables: [plan_path, review_path, run_id, previous_review_commit, current_commit]
 step_name: "reviewer:plan"
 variable_defaults:
@@ -66,6 +66,8 @@ Only contract content outside notes governs the work. Read other plan content as
 While classifying prior findings and revision-causal issues, apply this dimension; it does not relax the closure rules:
 
 - **Issue coverage (issue-brief plans only)**: When the plan contract has a `## Issue Coverage` section, read the brief and its `source/` snapshots at the pinned `Source brief` commit with `git show <commit>:<path>`, never the live path. Verify that every brief `ACn` appears verbatim in the contract and maps to a `Wn`, a phase, and concrete evidence; that brief assumptions and unknowns are addressed; that scope matches the brief; and that compact mode was not used for uncertain scope, persistence, or authorization work. Report a gap as an ordinary plan-review item. Item budget fields such as `scopeClass` apply only when the budget contract is active; mode off and `v1_compat` keep the v1 output. Plans without `## Issue Coverage` skip this dimension.
+
+Plan executability is a deterministic CLI preflight, not a review judgment. A draft phase with no executable checklist item is returned to the author before review (`PLAN_REPAIR_REQUIRED`), and an approved plan is repaired with the operator-authorized `5x plan repair-checklists` command. Do not report a checklist-marker repair, a recorded repair receipt, or a checkbox toggle as a finding or as an Issue Coverage gap, and never invent a finding to obtain repair authority. A missing requirement, an unclear completion gate, or a phase with no requirements remains an ordinary plan-review item.
 
 This prompt is self-contained: a fresh reviewer session is still a closure review
 when the durable governance context says closure. Classify mechanically derivable

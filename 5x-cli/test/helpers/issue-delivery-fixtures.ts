@@ -21,6 +21,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	decodePlanApprovalFinalizationPayload,
+	decodePlanChecklistRepairPayload,
+	encodePlanApprovalFinalizationPayload,
+	encodePlanChecklistRepairPayload,
+	type PlanApprovalFinalizationPayload,
+	type PlanChecklistRepairPayload,
+} from "../../src/review-budget/record-lines.js";
 import { renderSkillByName } from "../../src/skills/loader.js";
 import { createRenderContext } from "../../src/skills/renderer.js";
 import { cleanGitEnv } from "./clean-env.js";
@@ -306,6 +314,141 @@ export const rec = {
 		});
 	},
 };
+
+/**
+ * Codec-valid plan 217 receipt lines. Each payload is encoded with the
+ * production codec and must decode back unchanged, so a fixture cannot drift
+ * from what the CLI actually writes.
+ */
+function canonical(value: unknown): string {
+	return JSON.stringify(value, (_key, v) =>
+		v && typeof v === "object" && !Array.isArray(v)
+			? Object.fromEntries(
+					Object.entries(v as Json).sort(([a], [b]) => a.localeCompare(b)),
+				)
+			: v,
+	);
+}
+
+function codecLine<T>(
+	payload: T,
+	encode: (value: T) => unknown,
+	decode: (raw: unknown) => T,
+): string {
+	const encoded = encode(payload);
+	const decoded = decode(JSON.parse(JSON.stringify(encoded)));
+	if (canonical(encode(decoded)) !== canonical(encoded)) {
+		throw new Error("receipt fixture does not round-trip through the codec");
+	}
+	return line("budget", encoded as Json);
+}
+
+export const receipt = {
+	/** A `plan-checklist-repair` line. `bindingId: null` is a source repair. */
+	checklistRepair(input: {
+		id: string;
+		runId: string;
+		bindingId: string | null;
+		beforeCommit: string;
+		afterCommit: string;
+		carriedFrom?: { runId: string; repairId: string };
+	}): string {
+		const payload: PlanChecklistRepairPayload = {
+			kind: "plan-checklist-repair",
+			version: 1,
+			id: input.id,
+			runId: input.runId,
+			subject: input.bindingId === null ? "source" : "execution",
+			bindingId: input.bindingId,
+			...(input.carriedFrom ? { carriedFrom: input.carriedFrom } : {}),
+			parentLineageId: null,
+			beforeCommit: input.beforeCommit,
+			afterCommit: input.afterCommit,
+			beforeBlobHash: `sha256:${"1".repeat(64)}`,
+			afterBlobHash: `sha256:${"2".repeat(64)}`,
+			authorizedPlanBytes: "plan\n- [ ] done\n",
+			planSchema: 0,
+			edits: [
+				{
+					line: 2,
+					anchorLine: 2,
+					phase: "1",
+					before: "- done",
+					after: "- [ ] done",
+					topLevel: true,
+				},
+			],
+			resetCheckedLines: [],
+			reason: "Operator authorized checklist-format repair and continuation",
+			intentDigest: `sha256:${input.id}`,
+			createdAt: "2026-11-05T12:00:00.000Z",
+		};
+		return codecLine(
+			payload,
+			encodePlanChecklistRepairPayload,
+			decodePlanChecklistRepairPayload,
+		);
+	},
+	/** A final_corrections `plan-approval-finalization` line on the planning run. */
+	approvalFinalization(input: {
+		id: string;
+		runId: string;
+		reviewedCommit: string;
+		finalCommit: string;
+	}): string {
+		const payload: PlanApprovalFinalizationPayload = {
+			kind: "plan-approval-finalization",
+			version: 1,
+			id: input.id,
+			runId: input.runId,
+			sourceSnapshotId: "snapshot-1",
+			sourceBaselineId: "baseline-1",
+			route: "final_corrections",
+			reviewer: {
+				stepName: "reviewer:plan",
+				iteration: 0,
+				commit: input.reviewedCommit,
+			},
+			authorCorrection: {
+				stepName: "author:process-plan-review",
+				iteration: 0,
+				commit: input.finalCommit,
+			},
+			admittedFindingIds: ["P1.1"],
+			decisionsHash: `sha256:${"3".repeat(64)}`,
+			completion: { stepName: "run:complete", iteration: 0 },
+			finalCommit: input.finalCommit,
+			finalBlobHash: `sha256:${"4".repeat(64)}`,
+			planSchema: 0,
+			snapshotLedgerHash: `sha256:${"5".repeat(64)}`,
+			ledger: {} as PlanApprovalFinalizationPayload["ledger"],
+			ledgerHash: `sha256:${"6".repeat(64)}`,
+			addressAdditions: [{ workItemId: "W1", findingIds: ["P1.1"] }],
+			correctionBudget: {
+				corrections: [{ findingId: "P1.1", effortDelta: 0 }],
+				effectiveCeiling: 4,
+			},
+			createdAt: "2026-11-05T12:00:00.000Z",
+		};
+		return codecLine(
+			payload,
+			encodePlanApprovalFinalizationPayload,
+			decodePlanApprovalFinalizationPayload,
+		);
+	},
+};
+
+/** Write a planning run's budget.jsonl into its own record dir. */
+export function writePlanningRecords(root: string, budget: string[]): string {
+	const rd = join(root, "records", "run_plan");
+	mkdirSync(rd, { recursive: true });
+	writeFileSync(join(rd, "budget.jsonl"), budget.map((l) => `${l}\n`).join(""));
+	writeFileSync(
+		join(rd, "run.json"),
+		JSON.stringify({ id: "run_plan", status: "completed" }),
+	);
+	return rd;
+}
 
 /** Write budget.jsonl, steps.jsonl, and run.json into a fresh record dir. */
 export function writeRunRecords(

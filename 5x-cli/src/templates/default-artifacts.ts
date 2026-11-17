@@ -131,6 +131,10 @@ Example gate: A failure in either settings write leaves both persisted values un
 Example checklist item: - [ ] Use the transaction helper for both writes and test rollback
 Only check an item after its requirement is met. Checked boxes alone do not authorize
 phase advancement when the supplied 5x workflow requires review or reconciliation.
+Every phase needs at least one executable item (- [ ]). A prose gate is fine; plain
+- bullets are not tracked, so a phase without task markers cannot be checked off.
+5x plan phases <plan> reports such a phase under .data.executability; for a draft,
+5x plan repair-checklists --plan <plan> --dry-run previews the mechanical marker fix.
 -->
 <!-- 5x:note:end id="generator-checklist" -->
 
