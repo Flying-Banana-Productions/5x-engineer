@@ -45,6 +45,7 @@ import {
 	DB_FILENAME,
 	resolveCheckoutRoot,
 	resolveControlPlaneRoot,
+	worktreesRoot,
 } from "./control-plane.js";
 import { isLinkedWorktreeCheckout } from "./run-identity.js";
 
@@ -92,16 +93,21 @@ export interface WorktreeDetachParams {
  *
  * Phase 3c: anchored to `<projectRoot>/<stateDir>/worktrees/` instead of
  * `<projectRoot>/.5x/worktrees/`. The `stateDir` defaults to `.5x` for
- * backward compatibility.
+ * backward compatibility. `worktree.root` in config overrides the parent
+ * directory entirely (see {@link worktreesRoot}).
  */
 function worktreeDir(
 	projectRoot: string,
 	planPath: string,
 	stateDir = ".5x",
+	configuredRoot?: string,
 ): string {
 	const slug = planSlugFromPath(planPath);
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
-	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
+	return join(
+		worktreesRoot(projectRoot, stateDir, configuredRoot),
+		`${slug}-${hash}`,
+	);
 }
 
 /**
@@ -218,7 +224,12 @@ export async function worktreeCreate(
 	// Determine branch name and worktree path
 	// Phase 3c: anchor worktree path to controlPlaneRoot/stateDir
 	const branch = params.branch || branchNameFromPlan(canonical);
-	const wtPath = worktreeDir(projectRoot, canonical, stateDir);
+	const wtPath = worktreeDir(
+		projectRoot,
+		canonical,
+		stateDir,
+		config.worktree?.root,
+	);
 
 	// Create the worktree
 	try {

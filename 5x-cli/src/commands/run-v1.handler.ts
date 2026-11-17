@@ -218,6 +218,7 @@ import {
 	controlPlaneStatePath,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
+	worktreesRoot,
 } from "./control-plane.js";
 import { createRecordContext, RecordContextError } from "./record-context.js";
 import { createReviewBudgetContext } from "./review-budget-context.js";
@@ -789,15 +790,20 @@ function harnessFreshnessFields(
 /**
  * Phase 3b: `stateDir` parameter anchors worktree path to
  * `<projectRoot>/<stateDir>/worktrees/` instead of `<projectRoot>/.5x/worktrees/`.
+ * `worktree.root` in config overrides the parent directory entirely.
  */
 function deriveDefaultWorktreeDir(
 	projectRoot: string,
 	planPath: string,
 	stateDir = ".5x",
+	configuredRoot?: string,
 ): string {
 	const slug = planSlugFromPath(planPath);
 	const hash = createHash("sha256").update(planPath).digest("hex").slice(0, 6);
-	return join(projectRoot, stateDir, "worktrees", `${slug}-${hash}`);
+	return join(
+		worktreesRoot(projectRoot, stateDir, configuredRoot),
+		`${slug}-${hash}`,
+	);
 }
 
 /**
@@ -822,6 +828,7 @@ async function ensureRunWorktree(
 	explicitPath: string | undefined,
 	postCreateHook: string | undefined,
 	stateDir = ".5x",
+	configuredRoot?: string,
 ): Promise<WorktreeInitResult> {
 	const gitWorktrees = await listWorktrees(projectRoot);
 
@@ -931,7 +938,12 @@ async function ensureRunWorktree(
 	}
 
 	const branch = expectedBranch;
-	const wtPath = deriveDefaultWorktreeDir(projectRoot, planPath, stateDir);
+	const wtPath = deriveDefaultWorktreeDir(
+		projectRoot,
+		planPath,
+		stateDir,
+		configuredRoot,
+	);
 
 	const physicalWtPath = realpathExisting(wtPath);
 	const existingByPath = gitWorktrees.find(
@@ -2414,6 +2426,7 @@ export async function runV1Init(params: RunInitParams): Promise<void> {
 				requestedWorktreePath,
 				config.worktree?.postCreate,
 				stateDir,
+				config.worktree?.root,
 			);
 		}
 

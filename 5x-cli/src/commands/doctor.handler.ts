@@ -25,6 +25,7 @@ import {
 	DB_FILENAME,
 	normalizeDbPath,
 	resolveControlPlaneRoot,
+	worktreesRoot,
 } from "./control-plane.js";
 
 export interface DoctorRunParams {
@@ -43,9 +44,20 @@ async function resolveDoctorContext(
 		const startDir = resolve(params.startDir ?? ".");
 		const controlPlane = resolveControlPlaneRoot(startDir);
 		const projectRoot = controlPlane.controlPlaneRoot;
+		let worktreeRoot: string | undefined;
 		if (controlPlane.mode === "none") {
 			const { config } = await resolveLayeredConfig(projectRoot, startDir);
 			controlPlane.stateDir = normalizeDbPath(config.db.path);
+			worktreeRoot = config.worktree.root;
+		} else {
+			// Only needed for the worktrees orphan scan — an unloadable config
+			// must not take down every other doctor check.
+			try {
+				const { config } = await resolveLayeredConfig(projectRoot, startDir);
+				worktreeRoot = config.worktree.root;
+			} catch {
+				worktreeRoot = undefined;
+			}
 		}
 		const stateDir = controlPlane.stateDir;
 		const dbRelPath = join(stateDir, DB_FILENAME);
@@ -55,6 +67,7 @@ async function resolveDoctorContext(
 			startDir,
 			projectRoot,
 			stateDir,
+			worktreesDir: worktreesRoot(projectRoot, stateDir, worktreeRoot),
 			homeDir: params.homeDir,
 			dbPath,
 			dbRelPath,

@@ -153,7 +153,7 @@ The `worktree_path` and `worktree_plan_path` fields are present when the run is 
 - Checks for a clean git working tree. If dirty and `--allow-dirty` is not set, returns an error with `code: "DIRTY_WORKTREE"`. This preserves fail-safe behavior from v0. Uncommitted changes under `paths.records` are exempt — they are expected between `run record` and `5x commit` / seal. Skills clear them before human gates and exits with the records-only checkpoint `5x commit --no-record -m <msg>` (no `git:commit` step; `committed: false` no-op when already clean).
 - Canonicalizes the plan path for DB identity (worktree-safe). **Validates that the plan path is under `controlPlaneRoot`** — external plans are rejected with `PLAN_OUTSIDE_CONTROL_PLANE`.
 - Validates that the plan path resolves inside the configured `paths.plans` directory. The file itself may be created later by the author workflow.
-- When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path.
+- When `--worktree` is set: reuses mapped worktree, auto-attaches a unique matching git worktree, or creates the default `<controlPlaneRoot>/<stateDir>/worktrees/<slug>-<hash>` path (or `<worktree.root>/<slug>-<hash>` when `worktree.root` is configured).
 - Run state is always stored in the control-plane root DB, regardless of which checkout the command is run from.
 - Dual-writes an unsealed `run.json` under `paths.records/<plan-slug>/<run-id>/` in the run's effective worktree (`format_version: 1`, `creator` from this installation's already-redacted recorder, `status: active`). Record files are re-rooted to a `--worktree` checkout so they commit with the code.
 - Writes the run id to the control-plane state root's `current-run` file (`.5x/current-run` by default; absolute configured `db.path` is the state root). Overwrites on resume.
@@ -849,7 +849,7 @@ Create a git worktree for a plan.
 
 **Behavior:**
 
-- Creates a new git worktree at `.5x/worktrees/<plan-slug>/` and checks out a new branch
+- Creates a new git worktree at `.5x/worktrees/<plan-slug>/` (or under `worktree.root` when configured) and checks out a new branch
 - If the worktree already exists, returns it with `"created": false` (idempotent)
 - Runs the `worktree.postCreate` hook from config (e.g., `npm install`) if configured
 - Records the worktree path in the `plans` table

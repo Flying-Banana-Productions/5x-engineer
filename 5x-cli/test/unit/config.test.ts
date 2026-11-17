@@ -46,6 +46,42 @@ describe("config", () => {
 		}
 	});
 
+	test("worktree.root: relative value resolves against the config file dir", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(join(tmp, "5x.toml"), '[worktree]\nroot = "../wt-root"\n');
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.worktree.root).toBe(resolve(tmp, "../wt-root"));
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("worktree.root: absolute value passes through unchanged", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const abs = join(tmpdir(), "elsewhere", "worktrees");
+			writeFileSync(
+				join(tmp, "5x.config.js"),
+				`export default { worktree: { root: ${JSON.stringify(abs)} } };`,
+			);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.worktree.root).toBe(abs);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("worktree.root: unset by default", async () => {
+		const tmp = makeTmpDir();
+		try {
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.worktree.root).toBeUndefined();
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
 	test("worktree postCreate command is supported", async () => {
 		const tmp = makeTmpDir();
 		try {

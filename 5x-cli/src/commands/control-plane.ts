@@ -179,6 +179,23 @@ export function controlPlaneStatePath(
 		: join(controlPlaneRoot, stateDir, filename);
 }
 
+/**
+ * Directory under which `5x` creates plan worktrees.
+ *
+ * `configuredRoot` is `config.worktree.root` — already absolute after config
+ * loading (relative values resolve against their config file), and may lie
+ * outside the repository. When unset, worktrees live in
+ * `<stateDir>/worktrees`, honouring an absolute `stateDir`.
+ */
+export function worktreesRoot(
+	controlPlaneRoot: string,
+	stateDir: string,
+	configuredRoot?: string,
+): string {
+	if (configuredRoot) return resolve(controlPlaneRoot, configuredRoot);
+	return controlPlaneStatePath(controlPlaneRoot, stateDir, "worktrees");
+}
+
 /** Path to the control-plane SQLite database (`5x.db`). */
 export function controlPlaneDbPath(
 	controlPlaneRoot: string,

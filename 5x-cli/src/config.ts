@@ -136,6 +136,19 @@ const WorktreeSchema = z.object({
 		.min(1)
 		.optional()
 		.describe("Shell command to run after `5x` creates a new git worktree."),
+	/**
+	 * Directory under which `5x` creates plan worktrees. Relative values
+	 * resolve against the declaring config file's directory; absolute values
+	 * (including paths outside the repository) are used as-is. Unset keeps
+	 * the default `<stateDir>/worktrees`.
+	 */
+	root: z
+		.string()
+		.min(1)
+		.optional()
+		.describe(
+			"Directory where `5x` creates plan worktrees (relative to the config file, or absolute; may be outside the repo). Defaults to `<stateDir>/worktrees`.",
+		),
 });
 
 /**
@@ -549,20 +562,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Resolve relative path strings in `raw.paths` against `baseDir`.
+ * Resolve relative path strings in `raw.paths` and `raw.worktree.root`
+ * against `baseDir`.
  *
  * Walks `raw.paths` and resolves each relative string value against `baseDir`
  * using `resolve(baseDir, value)`. Handles nested `paths.templates.plan` and
  * `paths.templates.review`. Already-absolute paths pass through unchanged.
  * Non-path fields are untouched.
  *
- * Returns a shallow clone with only `paths` modified.
+ * Returns a shallow clone with only `paths` / `worktree` modified.
  */
 function resolveRawConfigPaths(raw: unknown, baseDir: string): unknown {
 	if (!isRecord(raw)) return raw;
 
-	const paths = raw.paths;
-	if (!isRecord(paths)) return raw;
+	let out: Record<string, unknown> = raw;
+	const worktree = raw.worktree;
+	if (isRecord(worktree) && typeof worktree.root === "string") {
+		out = {
+			...out,
+			worktree: { ...worktree, root: resolve(baseDir, worktree.root) },
+		};
+	}
+
+	const paths = out.paths;
+	if (!isRecord(paths)) return out;
 
 	const resolvedPaths: Record<string, unknown> = {};
 
@@ -585,7 +608,7 @@ function resolveRawConfigPaths(raw: unknown, baseDir: string): unknown {
 		}
 	}
 
-	return { ...raw, paths: resolvedPaths };
+	return { ...out, paths: resolvedPaths };
 }
 
 /** Thrown when resolved `paths.records` is not inside the repository. */
@@ -696,7 +719,7 @@ function warnUnknownConfigKeys(
 		"delegationMode",
 	]);
 	const allowedOpencode = new Set(["url"]);
-	const allowedWorktree = new Set(["postCreate"]);
+	const allowedWorktree = new Set(["postCreate", "root"]);
 	const allowedPaths = new Set([
 		"plans",
 		"reviews",
@@ -882,6 +905,39 @@ function deepMerge(
 }
 
 /**
+ * Remove repo-wide keys that only the root config (and root
+ * `5x.toml.local`) may set: the `db` section and `worktree.root`. Both
+ * define a single location per control plane — letting a sub-project
+ * override them would split state across directories. Emits a warning for
+ * each ignored key.
+ */
+function stripRootOnlyKeys(
+	raw: Record<string, unknown>,
+	sourcePath: string | null,
+	warn: (...args: unknown[]) => void,
+): Record<string, unknown> {
+	let out = raw;
+	if ("db" in out) {
+		warn(
+			`Warning: "db" section in ${sourcePath} is ignored. ` +
+				"DB path is always resolved from the root config.",
+		);
+		const { db: _db, ...rest } = out;
+		out = rest;
+	}
+	const worktree = out.worktree;
+	if (isRecord(worktree) && "root" in worktree) {
+		warn(
+			`Warning: "worktree.root" in ${sourcePath} is ignored. ` +
+				"The worktree root is always resolved from the root config.",
+		);
+		const { root: _root, ...worktreeRest } = worktree;
+		out = { ...out, worktree: worktreeRest };
+	}
+	return out;
+}
+
+/**
  * Load and parse `5x.toml.local` for merging (no unknown-key warnings).
  * `rawForKeys` is the parsed table before path resolution (for local-key metadata).
  * `prepared` is null if the file is absent.
@@ -889,7 +945,8 @@ function deepMerge(
 function loadLocalTomlOverlay(
 	localPath: string,
 	options: {
-		stripDb: boolean;
+		/** Drop root-only keys (`db`, `worktree.root`) with a warning. */
+		stripRootOnly: boolean;
 		warn: (...args: unknown[]) => void;
 	},
 ): {
@@ -924,13 +981,11 @@ function loadLocalTomlOverlay(
 		? resolvedPaths
 		: raw;
 
-	if (options.stripDb && "db" in prepared) {
-		options.warn(
-			`Warning: "db" section in ${localPath} is ignored. ` +
-				"DB path is always resolved from the root config.",
-		);
-		const { db: _db, ...rest } = prepared;
-		return { prepared: rest, rawForKeys };
+	if (options.stripRootOnly) {
+		return {
+			prepared: stripRootOnlyKeys(prepared, localPath, options.warn),
+			rawForKeys,
+		};
 	}
 
 	return { prepared, rawForKeys };
@@ -960,7 +1015,7 @@ function mergeLayeredLocalTomlIntoRaw(
 
 	const rootLocalPath = join(resolve(controlPlaneRoot), LOCAL_CONFIG_FILENAME);
 	const rootOverlay = loadLocalTomlOverlay(rootLocalPath, {
-		stripDb: false,
+		stripRootOnly: false,
 		warn,
 	});
 	if (rootOverlay.prepared && rootOverlay.rawForKeys) {
@@ -977,7 +1032,7 @@ function mergeLayeredLocalTomlIntoRaw(
 		);
 		if (resolve(nearestLocalPath) !== resolve(rootLocalPath)) {
 			const nearestOverlay = loadLocalTomlOverlay(nearestLocalPath, {
-				stripDb: true,
+				stripRootOnly: true,
 				warn,
 			});
 			if (nearestOverlay.prepared && nearestOverlay.rawForKeys) {
@@ -1029,7 +1084,7 @@ export async function loadConfig(
 	if (!configPath) {
 		const localPath = join(resolvedRoot, LOCAL_CONFIG_FILENAME);
 		const localOverlay = loadLocalTomlOverlay(localPath, {
-			stripDb: false,
+			stripRootOnly: false,
 			warn: warnFn,
 		});
 		if (!localOverlay.prepared) {
@@ -1073,7 +1128,7 @@ export async function loadConfig(
 
 		const localPath = join(dirname(configPath), LOCAL_CONFIG_FILENAME);
 		const localOverlay = loadLocalTomlOverlay(localPath, {
-			stripDb: false,
+			stripRootOnly: false,
 			warn: warnFn,
 		});
 
@@ -1172,9 +1227,10 @@ async function loadRawConfig(configPath: string): Promise<unknown> {
  * config (when different path).
  * - Objects: deep field-level merge.
  * - Arrays: replace (nearest array replaces root array entirely).
- * - `db` section: always from root config (or Zod defaults). Nearest
- *   config `db` is ignored with a warning. Nearest `5x.toml.local` `db`
- *   is also ignored; root `5x.toml.local` may override `db`.
+ * - `db` section and `worktree.root`: always from root config (or Zod
+ *   defaults). Nearest config values are ignored with a warning. Nearest
+ *   `5x.toml.local` values are also ignored; root `5x.toml.local` may
+ *   override them.
  *
  * @param controlPlaneRoot - Root of the control-plane (where root config lives).
  * @param contextDir - Optional directory for nearest config discovery.
@@ -1262,31 +1318,18 @@ export async function resolveLayeredConfig(
 	const isLayered = nearestRaw !== null;
 
 	if (rootRaw && nearestRaw && isRecord(rootRaw) && isRecord(nearestRaw)) {
-		// Check for db override in nearest config — emit warning and strip
-		if ("db" in nearestRaw) {
-			warn(
-				`Warning: "db" section in ${nearestConfigPath} is ignored. ` +
-					"DB path is always resolved from the root config.",
-			);
-			const { db: _db, ...nearestWithoutDb } = nearestRaw;
-			mergedRaw = deepMerge(rootRaw, nearestWithoutDb);
-		} else {
-			mergedRaw = deepMerge(rootRaw, nearestRaw);
-		}
+		// Repo-wide keys (db, worktree.root) come from the root config only
+		mergedRaw = deepMerge(
+			rootRaw,
+			stripRootOnlyKeys(nearestRaw, nearestConfigPath, warn),
+		);
 	} else if (rootRaw) {
 		mergedRaw = rootRaw;
 	} else if (nearestRaw) {
 		// No root config, sub-project config only
-		if (isRecord(nearestRaw) && "db" in nearestRaw) {
-			warn(
-				`Warning: "db" section in ${nearestConfigPath} is ignored. ` +
-					"DB path is always resolved from the root config.",
-			);
-			const { db: _db, ...nearestWithoutDb } = nearestRaw;
-			mergedRaw = nearestWithoutDb;
-		} else {
-			mergedRaw = nearestRaw;
-		}
+		mergedRaw = isRecord(nearestRaw)
+			? stripRootOnlyKeys(nearestRaw, nearestConfigPath, warn)
+			: nearestRaw;
 	} else {
 		mergedRaw = {};
 	}

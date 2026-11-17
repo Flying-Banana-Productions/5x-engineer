@@ -10,6 +10,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { worktreesRoot } from "../../commands/control-plane.js";
 import { openDbReadOnly } from "../../db/connection.js";
 import { getPlan, upsertPlan } from "../../db/operations.js";
 import { listWorktrees } from "../../git.js";
@@ -57,7 +58,9 @@ function mappingMissing(path: string): boolean {
 }
 
 function worktreesDir(ctx: DoctorCheckContext): string {
-	return join(ctx.projectRoot, ctx.stateDir ?? ".5x", "worktrees");
+	return (
+		ctx.worktreesDir ?? worktreesRoot(ctx.projectRoot, ctx.stateDir ?? ".5x")
+	);
 }
 
 async function collectOrphanPaths(
