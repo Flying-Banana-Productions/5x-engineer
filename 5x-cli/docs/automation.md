@@ -2,8 +2,7 @@
 
 [README](../README.md) · [CLI reference](cli-reference.md) · [LLM index](../llms.txt)
 
-This is an operational reference for the implemented 2.0.0 development line,
-currently unreleased. Use it with the installed CLI's help and workflow skills.
+This is an operational reference for the 2.0.0 line, currently in beta. Use it with the installed CLI's help and workflow skills.
 The numbered design documents are historical/proposed architecture, not a
 substitute for checking the executable's capabilities.
 
@@ -246,14 +245,16 @@ Advisory hypothetical routes do not authorize the no-review final-correction
 shortcut or introduce debt-based completion blocks. Keep ordinary reviewer
 re-entry. No-binding/off compatibility uses the legacy readiness contract.
 
-The current `review implementation recover-plan` supports only a narrow reviewed
-amendment at an unfinished frontier. It requires a durable amendment
-authorization, completed plan-review snapshot, recorded author commit, and
-operator scope/preserved-phase attestations. Inspect `--help`, preview with
-`--dry-run`, and follow installed skill recovery. It preserves the original
-binding/baseline and requires fresh implementation review. Never fabricate
-attestations, rebind, or edit records to bypass rejection. General semantic
-amendment registration remains pending.
+`review implementation amend` registers a human-authorized, reviewer-approved
+semantic plan amendment on the existing execution run. It requires the coupled
+`authorize_amendment` human step, the plan reviewer's approval step in the same
+run, and the earliest affected phase. Inspect `--help`, preview with
+`--dry-run`, and follow the installed skill's authorize → amend → assess →
+register → resume sequence. It preserves the original binding/baseline; it does
+not complete a phase or approve implementation, and fresh implementation review
+is still required. Never fabricate authorization, rebind, or edit records to
+bypass rejection. `review implementation recover-plan` is retired; its
+historical receipts remain readable.
 
 ## Human handoff and recovery
 

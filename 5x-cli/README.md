@@ -17,10 +17,10 @@ An **orchestrating agent** follows installed workflow skills and delegates bound
 tasks to author and reviewer agents. The **CLI** manages runs, worktrees, records,
 validation, and governance. You can also compose its commands in scripts.
 
-> **Version status:** This checkout contains the implemented changes for **2.0.0
-> (unreleased)** since v1.3.0. The published npm version may differ. Check
-> `5x --version` and the [changelog][changelog]. General semantic plan amendments
-> and the dashboard are still pending; current output-format exceptions remain.
+> **Version status:** 2.0.0 is in beta. Install the prerelease with
+> `npm install -g @5x-ai/5x-cli@beta`; `latest` is still v1.3.0. Check
+> `5x --version` and the [changelog][changelog]. The dashboard is still pending;
+> current output-format exceptions remain.
 
 ## Contents
 

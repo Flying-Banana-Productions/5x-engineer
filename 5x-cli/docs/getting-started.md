@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Configuration](configuration.md) · [Operations](operations.md)
 
-This guide describes the implemented 2.0.0 development line, currently unreleased.
+This guide describes the 2.0.0 line, currently in beta.
 Use `5x --version` and the [changelog](../CHANGELOG.md) to match your installation.
 
 ## Install the CLI
@@ -10,13 +10,14 @@ Use `5x --version` and the [changelog](../CHANGELOG.md) to match your installati
 Install Bun >= 1.1.0 and Git, then:
 
 ```bash
-npm install -g @5x-ai/5x-cli
+npm install -g @5x-ai/5x-cli@beta
 5x --version
 5x --help
 ```
 
-The npm command installs the published package; it does not install unreleased
-main-branch changes. For development from this repository, run `bun install` in
+While 2.0.0 is in beta, the `beta` dist-tag installs the v2 prerelease; without
+it npm installs `latest`, which is still v1.3.0. The npm command installs the
+published package; it does not install unreleased main-branch changes. For development from this repository, run `bun install` in
 `5x-cli/`, then use `bun run src/bin.ts --help` from that directory. A local `bun
 link` makes that checkout available as `5x` for testing in another repository.
 

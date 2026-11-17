@@ -5,14 +5,39 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
-## 2.0.0 (Unreleased)
+## 2.0.0-beta.1 (2026-11-17)
 
-Release preparation in progress. The entries below describe implemented changes
-on main since 1.3.0. Plan 215 (same-run semantic plan amendments) is a required
-pre-release follow-up and is not implemented yet. Dashboard delivery remains
+First prerelease of the 2.0.0 line, published under the npm `beta` dist-tag
+(`npm install -g @5x-ai/5x-cli@beta`); `latest` remains 1.3.0. The entries below
+describe changes since 1.3.0. Dashboard delivery and output normalization remain
 pending and may be deferred beyond 2.0.0.
 
 ### Features
+
+- **Operator-directed checklist repair** — `5x plan repair-checklists` converts
+  plain list markers in completion-gate lists into task markers, proving that
+  only list prefixes change. `--plan` repairs an unapproved draft in place;
+  `--run --apply --reason` repairs an approved plan on the same run, commits
+  only the plan file, and records a `plan-checklist-repair` receipt with the
+  operator's instruction. No reviewer finding, gate, re-review, or new run is
+  required, and no phase is marked complete. Shared executability diagnostics
+  report the phase/line, whether a deterministic repair exists, and runnable
+  next commands; `plan phases` and run state stay usable on a non-executable
+  plan.
+- **Same-run semantic plan amendments** — `5x review implementation amend`
+  registers a human-authorized, reviewer-approved plan amendment on an existing
+  execution run. The original binding, budget baseline, run identity, and code
+  history are preserved; author admission, prompts, review validation, claim
+  reconciliation, gates, and run state consume the effective revision.
+  `review implementation recover-plan` is retired: historical receipts stay
+  readable and `5x upgrade` only reports them.
+- **Plan schema 1 execution contract** — schema 1 plans mark their governing
+  contract so informational text (status lines, execution context) can change
+  during an approved run without drift, while approved obligations stay bound.
+  `5x plan migrate` wraps or checks an unapproved plan, and
+  `5x review migrate-schema` records an equivalent or selective migration for
+  an approved or bound run without resetting budgets or decisions. Unversioned
+  plans and historical approvals keep schema 0 behavior.
 
 - **Explicit GitHub issue resolution** — new `5x-issue-resolution` skill
   resolves one github.com issue in the current repository by composing the
@@ -99,6 +124,12 @@ pending and may be deferred beyond 2.0.0.
 
 ### Fixes
 
+- **Final plan approval consistency** — final corrections are finalized against
+  the committed plan, reconciling the approval ledger with the approved bytes
+  and validating that the committed blob is executable.
+- **Actionable human gates** — an enforced gate invariant rejects a
+  `human_gate` route with no actionable gate; empty-verdict reviewer responses
+  are repaired, and historical gate-less runs have a recovery path.
 - **Clean records at human gates and exits** — `5x commit --no-record` with no
   `--files`/`--all-files` now commits only the active run's records and is a
   successful no-op (`committed: false`) when they are already committed. The
@@ -126,13 +157,14 @@ pending and may be deferred beyond 2.0.0.
   architecture decisions; closure history uses coupled reviewer/snapshot
   evidence. Advisory diagnostics remain nonblocking, review-only artifact
   commits preserve freshness/readiness, and reviewed amendments at unfinished
-  implementation frontiers can be recovered repeatedly. This recovery does not
-  provide plan 215's general semantic amendment registration.
+  implementation frontiers can be recovered repeatedly.
 - **Historical record backfill** — temporary export worktrees are initialized
   correctly, and backfill commits skip git hooks.
 
 ### Upgrade notes
 
+- Runs that record an amendment, schema migration, or checklist repair require
+  this CLI; older binaries must not execute them.
 - Run `5x upgrade` to refresh managed project assets and `5x harness sync` to
   synchronize installed agents and skills with the current workflow contracts.
   Plain `harness install` preserves existing agent files and does not establish

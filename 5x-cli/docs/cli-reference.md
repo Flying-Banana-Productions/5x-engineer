@@ -30,7 +30,8 @@ Angle-bracket arguments below are placeholders; replace them before running.
 | Human input | `prompt choose <message> --options a,b,c`, `prompt confirm <message>`, `prompt input <message>` |
 | Review governance | `review gate show`, `review decide --gate <id> …` |
 | Select plan approval | `review implementation bind --run <id> --source-run <id>` |
-| Narrow amendment recovery | `review implementation recover-plan --help` |
+| Register plan amendment | `review implementation amend --run <id> --human-step <s> --approval-step <s> --from-phase <p> [--dry-run]` |
+| Repair checklist markers | `plan repair-checklists --plan <path> --dry-run`, `plan repair-checklists --run <id> --apply --reason <text>` |
 | Plan schema migration | `plan migrate --plan <path> --mode <m>` (unapproved), `review migrate-schema --run <id> --mode <m> --prepare`, `review migrate-schema --run <id> --mode <m> --commit <sha>` |
 | Verify eligible correction | `review corrections finish --run <id> --phase <p> --review <observation-id> --commit <sha>` |
 | Manage worktrees | `worktree create`, `worktree attach`, `worktree detach`, `worktree remove`, `worktree list` |

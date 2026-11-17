@@ -2,7 +2,7 @@
 
 > 5x is a CLI toolbelt for AI-assisted plan generation, review, and phased implementation. An orchestrating agent follows installed skills; the CLI manages durable runs, validation, quality checks, and review governance.
 
-These links document the implemented 2.0.0 development line, currently unreleased. Check `5x --version` and the changelog: the published npm package can differ from main. Dashboard delivery, output normalization, and general semantic plan amendment registration are pending. The narrow operator-confirmed `review implementation recover-plan` path is implemented.
+These links document the 2.0.0 line, currently in beta (`npm install -g @5x-ai/5x-cli@beta`; `latest` is still 1.3.0). Check `5x --version` and the changelog: the published npm package can differ from main. Dashboard delivery and output normalization are pending. Same-run semantic plan amendments use `review implementation amend`; `review implementation recover-plan` is retired.
 
 ## Start here
 

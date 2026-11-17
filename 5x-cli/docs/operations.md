@@ -209,7 +209,7 @@ alone do not fail the command; failure findings return nonzero.
 | Invalid worker output | Inspect log/error detail and use `protocol schema` / `protocol emit … --help` |
 | No phases found | Check numeric `## Phase N: …` headings and Markdown checklists |
 
-For plan amendments, use the installed workflow's recovery guidance. The current
-`review implementation recover-plan` is a narrow, operator-confirmed recovery at
-an unfinished frontier, not general semantic amendment registration. See
+For plan amendments, use the installed workflow's guidance and
+`review implementation amend`. For a plan whose completion gates lack checklist
+markers, preview `plan repair-checklists --dry-run`. See
 [automation](automation.md#review-governance).

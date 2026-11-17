@@ -4,20 +4,19 @@
 
 ## Release boundary
 
-The current package source is versioned **2.0.0**, but the release is still marked
-**unreleased**. These instructions describe committed implementation since
-`5x-cli-v1.3.0`, including subsequent governance-recovery fixes. `npm install`
-installs the published package, not unreleased main. Check `5x --version` before
-following version-specific commands.
+2.0.0 is in beta: prereleases such as **2.0.0-beta.1** are published under the npm
+`beta` dist-tag, and `latest` is still v1.3.0. These instructions describe changes
+since `5x-cli-v1.3.0`. Check `5x --version` before following version-specific
+commands.
 
 Implemented additions include harness freshness/sync, doctor and lock recovery,
 ambient run identity, phase finish, a durable prompt queue, invocation registry,
 git-native records, Git-aware plan progress, and plan/implementation review
 governance.
 
-The dashboard, generalized same-run semantic amendment registration (plan 215),
-and output normalization remain pending. The narrow `recover-plan` command is
-implemented; it is not the general amendment workflow. Invocation cancellation
+The dashboard and output normalization remain pending. Same-run semantic plan
+amendments use `review implementation amend`; the earlier `recover-plan` command
+is retired. Invocation cancellation
 is capability-dependent, with provider-specific process adapters still follow-up
 work.
 
@@ -28,13 +27,13 @@ work.
 Install the release you intend to use through your package manager, for example:
 
 ```bash
-npm install -g @5x-ai/5x-cli@latest
+npm install -g @5x-ai/5x-cli@beta
 5x --version
 ```
 
-Until v2 is published, `latest` may still be v1.x. Use the repository development
-installation described in [setup](getting-started.md#install-the-cli) to evaluate
-unreleased changes.
+Until v2 is published as stable, `latest` is still v1.x; the `beta` dist-tag
+installs the v2 prerelease. Use the repository development installation described
+in [setup](getting-started.md#install-the-cli) to evaluate unreleased changes.
 
 ### 2. Migrate the project and synchronize the harness
 

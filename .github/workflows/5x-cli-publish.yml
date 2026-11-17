@@ -69,4 +69,22 @@ jobs:
         run: npm pack --dry-run
       - name: Stage npm package
         working-directory: 5x-cli
-        run: npm stage publish --access public
+        run: |
+          set -euo pipefail
+          # npm refuses a prerelease without an explicit dist-tag. Derive it from
+          # the prerelease identifier (2.0.0-beta.1 -> beta) so only stable
+          # versions move `latest`. The tag is immutable once staged.
+          version="${RELEASE_TAG#5x-cli-v}"
+          case "$version" in
+            *-*)
+              dist_tag="${version#*-}"
+              dist_tag="${dist_tag%%.*}"
+              ;;
+            *) dist_tag="latest" ;;
+          esac
+          if ! printf '%s' "$dist_tag" | grep -Eq '^[a-z][a-z0-9-]*$'; then
+            echo "cannot derive an npm dist-tag from version $version" >&2
+            exit 1
+          fi
+          echo "Staging $version under dist-tag $dist_tag"
+          npm stage publish --access public --tag "$dist_tag"
