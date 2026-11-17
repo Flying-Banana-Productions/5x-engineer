@@ -18,7 +18,11 @@ concurrency:
 
 jobs:
   lint-and-typecheck:
-    runs-on: ubuntu-latest
+    # This repository is public. Same-repo pushes and PRs run on the org's
+    # self-hosted macOS runner; fork PRs stay on GitHub-hosted runners so
+    # untrusted code never executes on that machine.
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64"]') }}
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: 5x-cli
@@ -35,7 +39,7 @@ jobs:
         run: bun run typecheck
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 20
     defaults:
       run:
@@ -52,7 +56,8 @@ jobs:
         run: bun test --concurrent --parallel=2 --timeout 15000
 
   package:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64"]') }}
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: 5x-cli
