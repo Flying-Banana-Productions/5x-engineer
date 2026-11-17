@@ -6,7 +6,7 @@ Cursor Agent CLI provider plugin for [`@5x-ai/5x-cli`](https://github.com/Flying
 
 - [Bun](https://bun.sh) >= 1.1.0 (same runtime as the CLI)
 - The Cursor `agent` CLI installed and authenticated (or credentials supplied via config, see below)
-- `@5x-ai/5x-cli` >= 1.3.0 (peer dependency)
+- `@5x-ai/5x-cli` 1.3.0 or later, including 2.0.0 prereleases (peer dependency)
 
 ## Install
 

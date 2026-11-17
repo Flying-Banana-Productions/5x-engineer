@@ -163,6 +163,8 @@ pending and may be deferred beyond 2.0.0.
 
 ### Upgrade notes
 
+- Cursor Agent provider users need `@5x-ai/provider-cursor-agent` 1.0.1 or
+  later; 1.0.0 declares a peer range that excludes 2.x.
 - Runs that record an amendment, schema migration, or checklist repair require
   this CLI; older binaries must not execute them.
 - Run `5x upgrade` to refresh managed project assets and `5x harness sync` to

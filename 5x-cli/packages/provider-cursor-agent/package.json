@@ -1,6 +1,6 @@
 {
   "name": "@5x-ai/provider-cursor-agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cursor Agent CLI provider plugin for @5x-ai/5x-cli",
   "license": "MIT",
   "author": "Flying Banana Productions",
@@ -33,6 +33,6 @@
     "bun": ">=1.1.0"
   },
   "peerDependencies": {
-    "@5x-ai/5x-cli": "^1.3.0"
+    "@5x-ai/5x-cli": "^1.3.0 || ^2.0.0-0"
   }
 }

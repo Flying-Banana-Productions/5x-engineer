@@ -22,7 +22,10 @@ concurrency:
 jobs:
   stage:
     name: Stage npm package
+    # Stays GitHub-hosted: npm trusted publishing and provenance do not
+    # support self-hosted runners.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
