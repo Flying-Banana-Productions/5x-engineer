@@ -155,6 +155,44 @@ describe("5x run init --worktree", () => {
 	);
 
 	test(
+		"worktree.root: creates the default worktree under an absolute root outside the repo",
+		async () => {
+			const dir = makeTmpDir();
+			const external = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const wtRoot = join(external, "nested", "wts");
+				writeFileSync(
+					join(dir, "5x.toml"),
+					`[worktree]\nroot = ${JSON.stringify(wtRoot)}\n`,
+				);
+				const result = await run5x(dir, [
+					"run",
+					"init",
+					"--plan",
+					planPath,
+					"--worktree",
+				]);
+				expect(result.exitCode).toBe(0);
+				const payload = parseJson(result.stdout).data as {
+					worktree: { action: string; worktree_path: string };
+				};
+				expect(payload.worktree.action).toBe("created");
+				expect(
+					realpathSync(payload.worktree.worktree_path).startsWith(
+						realpathSync(wtRoot),
+					),
+				).toBe(true);
+				expect(existsSync(join(dir, ".5x", "worktrees"))).toBe(false);
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(external);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"attaches explicit worktree path via --worktree <path> shorthand",
 		async () => {
 			const dir = makeTmpDir();

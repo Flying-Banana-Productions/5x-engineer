@@ -109,7 +109,18 @@ qualityGates = ["bun test", "bun run lint", "bun run typecheck"]
 
 [worktree]
 postCreate = "bun install"
+root = "../my-project-worktrees"   # optional
 ```
+
+`worktree.root` sets the directory where `5x` creates plan worktrees
+(`<root>/<plan-slug>-<hash>`). A relative value resolves against the config
+file's directory; an absolute value is used as-is and may point outside the
+repository. Commands run inside such a worktree still find the main
+repository's state through git. Like `db`, it is repo-wide: only the root
+config and the root `5x.toml.local` may set it; a sub-project value is
+ignored with a warning. When unset, worktrees go in
+`<stateDir>/worktrees` (by default `.5x/worktrees`). Worktrees that already
+exist keep their recorded path; changing `root` only affects new ones.
 
 These are illustrative project settings. `maxStepsPerRun` defaults to 250;
 `maxQualityRetries` defaults to 3. The workflow still reads

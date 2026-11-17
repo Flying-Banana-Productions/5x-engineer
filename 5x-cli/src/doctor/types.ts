@@ -22,6 +22,11 @@ export interface DoctorCheckContext {
 	startDir: string;
 	projectRoot: string;
 	stateDir?: string;
+	/**
+	 * Absolute directory holding 5x-created worktrees (`worktree.root`, or
+	 * `<stateDir>/worktrees`). Optional for stub contexts in tests.
+	 */
+	worktreesDir?: string;
 	homeDir?: string;
 	/**
 	 * Absolute control-plane DB path. Always a resolved path string —

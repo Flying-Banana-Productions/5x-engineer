@@ -169,6 +169,33 @@ describe("worktrees detect", () => {
 	});
 });
 
+describe("worktrees detect with configured worktree root", () => {
+	test("scans ctx.worktreesDir for orphans instead of <stateDir>/worktrees", async () => {
+		const tmp = makeTmp();
+		const external = makeTmp();
+		try {
+			createMigratedDb(tmp);
+			const orphan = join(external, "orphan-external");
+			mkdirSync(orphan, { recursive: true });
+			const ignored = join(tmp, ".5x", "worktrees", "not-scanned");
+			mkdirSync(ignored, { recursive: true });
+
+			const findings = await worktreesCheck.run({
+				...doctorCtx(tmp),
+				worktreesDir: external,
+			});
+			const orphans = findings
+				.filter((f) => f.code === "WORKTREE_ORPHAN")
+				.map((f) => JSON.stringify(f.detail));
+			expect(orphans.some((d) => d.includes("orphan-external"))).toBe(true);
+			expect(orphans.some((d) => d.includes("not-scanned"))).toBe(false);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+			rmSync(external, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("worktrees --fix", () => {
 	test("dead mapping is cleared; orphan directory is preserved", async () => {
 		const tmp = makeTmp();

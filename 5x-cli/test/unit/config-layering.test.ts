@@ -6,6 +6,7 @@
  * - Objects: deep field-level merge
  * - Arrays: replace
  * - `db` section: always from root (sub-project override ignored with warning)
+ * - `worktree.root`: always from root (sub-project override ignored with warning)
  */
 
 import { describe, expect, test } from "bun:test";
@@ -551,6 +552,98 @@ describe("resolveLayeredConfig", () => {
 			);
 			const result = await resolveLayeredConfig(tmp);
 			expect(result.config.db.path).toBe("local/5x.db");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	// -----------------------------------------------------------------------
+	// worktree.root: root-config only (one worktree location per repo)
+	// -----------------------------------------------------------------------
+
+	test("sub-project sets worktree.root: ignored with warning; sibling worktree keys still layer", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeToml(tmp, `[worktree]\nroot = "root-wts"\n`);
+			const subDir = join(tmp, "sub-project");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(
+				subDir,
+				`[worktree]\nroot = "sub-wts"\npostCreate = "bun install"\n`,
+			);
+
+			const result = await resolveLayeredConfig(tmp, subDir, warn);
+			expect(result.isLayered).toBe(true);
+			expect(result.config.worktree.root).toBe(join(tmp, "root-wts"));
+			expect(result.config.worktree.postCreate).toBe("bun install");
+			expect(warnings.some((w) => w.includes('"worktree.root"'))).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("no root config, sub-project sets worktree.root: ignored with warning", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			const subDir = join(tmp, "sub-project");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[worktree]\nroot = "sub-wts"\n`);
+
+			const result = await resolveLayeredConfig(tmp, subDir, warn);
+			expect(result.config.worktree.root).toBeUndefined();
+			expect(warnings.some((w) => w.includes('"worktree.root"'))).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("nearest 5x.toml.local worktree.root ignored with warning", async () => {
+		const tmp = makeTmpDir();
+		const warnings: string[] = [];
+		const warn = (...args: unknown[]) => {
+			warnings.push(args.map(String).join(" "));
+		};
+		try {
+			writeToml(tmp, `[worktree]\nroot = "root-wts"\n`);
+			const subDir = join(tmp, "pkg");
+			mkdirSync(subDir, { recursive: true });
+			writeToml(subDir, `[author]\nmodel = "m"\n`);
+			writeFileSync(
+				join(subDir, "5x.toml.local"),
+				`[worktree]\nroot = "/elsewhere"\n`,
+				"utf-8",
+			);
+			const result = await resolveLayeredConfig(tmp, subDir, warn);
+			expect(result.config.worktree.root).toBe(join(tmp, "root-wts"));
+			expect(
+				warnings.some(
+					(w) => w.includes('"worktree.root"') && w.includes("5x.toml.local"),
+				),
+			).toBe(true);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("root 5x.toml.local may override worktree.root", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeToml(tmp, `[worktree]\nroot = "main-wts"\n`);
+			writeFileSync(
+				join(tmp, "5x.toml.local"),
+				`[worktree]\nroot = "/abs/local-wts"\n`,
+				"utf-8",
+			);
+			const result = await resolveLayeredConfig(tmp);
+			expect(result.config.worktree.root).toBe("/abs/local-wts");
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}

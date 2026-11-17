@@ -137,6 +137,77 @@ describe("5x worktree", () => {
 	);
 
 	test(
+		"create: worktree.root places worktrees under an absolute dir outside the repo",
+		async () => {
+			const dir = makeTmpDir();
+			const external = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				const wtRoot = join(external, "nested", "wts");
+				writeFileSync(
+					join(dir, "5x.toml"),
+					`[worktree]\nroot = ${JSON.stringify(wtRoot)}\n`,
+				);
+
+				const result = await run5x(dir, [
+					"worktree",
+					"create",
+					"--plan",
+					planPath,
+				]);
+				expect(result.exitCode).toBe(0);
+				const payload = parseJson(result.stdout).data as {
+					worktree_path: string;
+					created: boolean;
+				};
+				expect(payload.created).toBe(true);
+				expect(payload.worktree_path.startsWith(wtRoot)).toBe(true);
+				expect(existsSync(payload.worktree_path)).toBe(true);
+				expect(existsSync(join(dir, ".5x", "worktrees"))).toBe(false);
+
+				// Commands run from inside the external worktree still resolve
+				// the main repo's control plane.
+				const list = await run5x(payload.worktree_path, ["worktree", "list"]);
+				expect(list.exitCode).toBe(0);
+				const worktrees = (
+					parseJson(list.stdout).data as { worktrees: unknown[] }
+				).worktrees;
+				expect(worktrees.length).toBe(1);
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(external);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"create: relative worktree.root resolves against the config file dir",
+		async () => {
+			const dir = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				writeFileSync(join(dir, "5x.toml"), '[worktree]\nroot = "wts"\n');
+
+				const result = await run5x(dir, [
+					"worktree",
+					"create",
+					"--plan",
+					planPath,
+				]);
+				expect(result.exitCode).toBe(0);
+				const payload = parseJson(result.stdout).data as {
+					worktree_path: string;
+				};
+				expect(payload.worktree_path.startsWith(join(dir, "wts"))).toBe(true);
+			} finally {
+				cleanupDir(dir);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"create: idempotent — returns existing worktree with created=false",
 		async () => {
 			const dir = makeTmpDir();
