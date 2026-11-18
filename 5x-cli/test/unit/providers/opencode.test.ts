@@ -990,8 +990,8 @@ describe("createProvider", () => {
 				archive: "docs/archive",
 				records: "docs/development/runs",
 				templates: {
-					plan: "docs/_implementation_plan_template.md",
-					review: "docs/development/reviews/_review_template.md",
+					plan: ".5x/templates/implementation-plan-template.md",
+					review: ".5x/templates/review-template.md",
 				},
 			},
 			records: { redact: [] },

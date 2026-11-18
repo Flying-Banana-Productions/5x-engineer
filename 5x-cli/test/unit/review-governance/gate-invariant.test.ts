@@ -198,8 +198,8 @@ const RENDER_CONFIG: Pick<FiveXConfig, "paths"> = {
 		archive: "/project/docs/archive",
 		records: "/project/docs/development/runs",
 		templates: {
-			plan: "/project/docs/_implementation_plan_template.md",
-			review: "/project/docs/development/reviews/_review_template.md",
+			plan: "/project/.5x/templates/implementation-plan-template.md",
+			review: "/project/.5x/templates/review-template.md",
 		},
 	},
 };

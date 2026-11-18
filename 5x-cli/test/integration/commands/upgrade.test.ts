@@ -304,6 +304,116 @@ describe("5x upgrade", () => {
 	);
 
 	test(
+		"warns about skeletons left at the former default paths without touching config",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				const toml = "maxStepsPerRun = 50\n";
+				writeFileSync(join(tmp, "5x.toml"), toml, "utf-8");
+				const legacyPlan = join(
+					tmp,
+					"docs",
+					"_implementation_plan_template.md",
+				);
+				mkdirSync(join(tmp, "docs"), { recursive: true });
+				writeFileSync(legacyPlan, "# legacy plan skeleton\n", "utf-8");
+
+				const { stdout, exitCode } = await runUpgrade(tmp);
+
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain(
+					"Warning: found docs/_implementation_plan_template.md, the former default for paths.templates.plan.",
+				);
+				expect(stdout).toContain(
+					"5x now reads .5x/templates/implementation-plan-template.md",
+				);
+				expect(stdout).not.toContain(
+					"former default for paths.templates.review",
+				);
+				expect(readFileSync(legacyPlan, "utf-8")).toBe(
+					"# legacy plan skeleton\n",
+				);
+				expect(readFileSync(join(tmp, "5x.toml"), "utf-8")).toBe(toml);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"warns when configured skeleton paths are missing or differ from bundled",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(
+					join(tmp, "5x.toml"),
+					'[paths.templates]\nplan = "docs/_implementation_plan_template.md"\nreview = "custom/review.md"\n',
+					"utf-8",
+				);
+				const customPlan = join(
+					tmp,
+					"docs",
+					"_implementation_plan_template.md",
+				);
+				mkdirSync(join(tmp, "docs"), { recursive: true });
+				writeFileSync(customPlan, "# custom plan skeleton\n", "utf-8");
+
+				const { stdout, exitCode } = await runUpgrade(tmp, ["--force"]);
+
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain(
+					"Warning: paths.templates.plan points to docs/_implementation_plan_template.md, which differs from the bundled version.",
+				);
+				// Explicitly configured, so not reported as a leftover legacy file.
+				expect(stdout).not.toContain("former default");
+				expect(stdout).toContain(
+					"Warning: paths.templates.review points to custom/review.md, which does not exist.",
+				);
+				// --force refreshes managed copies but never configured paths.
+				expect(readFileSync(customPlan, "utf-8")).toBe(
+					"# custom plan skeleton\n",
+				);
+				expect(stdout).toContain(
+					"Created .5x/templates/implementation-plan-template.md",
+				);
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"warns when the managed skeleton in use differs from bundled",
+		async () => {
+			const tmp = makeTmpDir();
+			try {
+				writeFileSync(join(tmp, "5x.toml"), "maxStepsPerRun = 50\n", "utf-8");
+				const first = await runUpgrade(tmp);
+				expect(first.exitCode).toBe(0);
+				const reviewPath = join(tmp, ".5x", "templates", "review-template.md");
+				writeFileSync(reviewPath, "# edited review\n", "utf-8");
+
+				const { stdout, exitCode } = await runUpgrade(tmp);
+
+				expect(exitCode).toBe(0);
+				expect(stdout).toContain(
+					'Warning: .5x/templates/review-template.md differs from the bundled version. Run "5x upgrade --force"',
+				);
+				expect(stdout).toContain(
+					"Skipped .5x/templates/implementation-plan-template.md (matches bundled)",
+				);
+				expect(stdout).not.toContain("All templates up-to-date");
+				expect(readFileSync(reviewPath, "utf-8")).toBe("# edited review\n");
+			} finally {
+				cleanupDir(tmp);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
 		"forced upgrade and explicit prompt refresh deliver the implementation review contract",
 		async () => {
 			const project = await setupProject();
@@ -1078,37 +1188,17 @@ describe("schema 1 workflow assets", () => {
 					"paths.templates.plan",
 				]);
 				expect(shown.exitCode, shown.stderr).toBe(0);
-				const configured = envelopeData(shown.stdout).value;
-				expect(configured).toBe(
-					join(project.dir, "docs/_implementation_plan_template.md"),
-				);
 				const installedPath = join(
 					project.dir,
 					".5x",
 					"templates",
 					"implementation-plan-template.md",
 				);
+				// The default resolves to the scaffolded skeleton.
+				expect(envelopeData(shown.stdout).value).toBe(installedPath);
 				const bundled = readFileSync(installedPath, "utf-8");
 				expect(bundled).toContain("<!-- 5x:plan-schema:1 -->");
 				expect(bundled).toContain(PLAN_SCHEMA_AUTHORITY_INSTRUCTION);
-				const pointed = await run5x(project, [
-					"config",
-					"set",
-					"paths.templates.plan",
-					".5x/templates/implementation-plan-template.md",
-					"--local",
-				]);
-				expect(pointed.exitCode, `${pointed.stdout}\n${pointed.stderr}`).toBe(
-					0,
-				);
-				const pointedShow = await run5x(project, [
-					"config",
-					"show",
-					"--key",
-					"paths.templates.plan",
-				]);
-				expect(pointedShow.exitCode, pointedShow.stderr).toBe(0);
-				expect(envelopeData(pointedShow.stdout).value).toBe(installedPath);
 
 				const customRelative = "docs/custom-plan-template.md";
 				const customPath = join(project.dir, customRelative);

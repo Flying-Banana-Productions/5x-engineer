@@ -800,8 +800,8 @@ describe("invoke — variable substitution (unit)", () => {
 			paths: {
 				...rawConfig.paths,
 				templates: {
-					plan: "/tmp/project/docs/_implementation_plan_template.md",
-					review: "/tmp/project/docs/development/reviews/_review_template.md",
+					plan: "/tmp/project/.5x/templates/implementation-plan-template.md",
+					review: "/tmp/project/.5x/templates/review-template.md",
 				},
 			},
 		};
@@ -816,7 +816,7 @@ describe("invoke — variable substitution (unit)", () => {
 		);
 
 		expect(vars.plan_template_path).toBe(
-			"/tmp/project/docs/_implementation_plan_template.md",
+			"/tmp/project/.5x/templates/implementation-plan-template.md",
 		);
 	});
 
@@ -833,8 +833,8 @@ describe("invoke — variable substitution (unit)", () => {
 			paths: {
 				...rawConfig.paths,
 				templates: {
-					plan: "/tmp/project/docs/_implementation_plan_template.md",
-					review: "/tmp/project/docs/development/reviews/_review_template.md",
+					plan: "/tmp/project/.5x/templates/implementation-plan-template.md",
+					review: "/tmp/project/.5x/templates/review-template.md",
 				},
 			},
 		};
@@ -850,7 +850,7 @@ describe("invoke — variable substitution (unit)", () => {
 		);
 
 		expect(vars.review_template_path).toBe(
-			"/tmp/project/docs/development/reviews/_review_template.md",
+			"/tmp/project/.5x/templates/review-template.md",
 		);
 	});
 
@@ -867,8 +867,8 @@ describe("invoke — variable substitution (unit)", () => {
 			paths: {
 				...rawConfig.paths,
 				templates: {
-					plan: "/tmp/project/docs/_implementation_plan_template.md",
-					review: "/tmp/project/docs/development/reviews/_review_template.md",
+					plan: "/tmp/project/.5x/templates/implementation-plan-template.md",
+					review: "/tmp/project/.5x/templates/review-template.md",
 				},
 			},
 		};

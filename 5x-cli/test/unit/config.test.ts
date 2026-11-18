@@ -671,10 +671,10 @@ describe("loadConfig path normalization", () => {
 			expect(config.records.actor).toBeUndefined();
 			expect(config.plans.branch).toBeUndefined();
 			expect(config.paths.templates.plan).toBe(
-				join(tmp, "docs/_implementation_plan_template.md"),
+				join(tmp, ".5x/templates/implementation-plan-template.md"),
 			);
 			expect(config.paths.templates.review).toBe(
-				join(tmp, "docs/development/reviews/_review_template.md"),
+				join(tmp, ".5x/templates/review-template.md"),
 			);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
@@ -708,7 +708,7 @@ describe("loadConfig path normalization", () => {
 			);
 			// Review template should also be absolute (Zod default)
 			expect(config.paths.templates.review).toBe(
-				join(tmp, "docs/development/reviews/_review_template.md"),
+				join(tmp, ".5x/templates/review-template.md"),
 			);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
