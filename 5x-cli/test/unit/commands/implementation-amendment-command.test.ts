@@ -174,8 +174,9 @@ const inputFor = (built: ReturnType<typeof fixture>) => built.input;
 // `--concurrent`.
 // Bun bug: https://github.com/oven-sh/bun/issues/45365 (async form) and
 // https://github.com/oven-sh/bun/issues/34069 (spawnSync form). Seen on
-// 1.3.14 through 1.4.3. Once fixed, drop `test.serial` here and in
-// protocol-validate.test.ts.
+// 1.3.14 through 1.4.4. Once fixed, drop `test.serial` here, in
+// protocol-validate.test.ts and in
+// test/integration/providers/cursor-agent.test.ts.
 describe("review implementation amend", () => {
 	test.serial(
 		"dry-run and record use the author commit across a later review commit",

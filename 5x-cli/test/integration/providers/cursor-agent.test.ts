@@ -152,8 +152,17 @@ function baseConfig(
 	} as unknown as FiveXConfig;
 }
 
+// Every test spawns the mock agent (create-chat plus a run). Under
+// `bun test --concurrent`, ten of these start within milliseconds, and on
+// GitHub's Ubuntu runners Bun intermittently loses the child processes: a test
+// stalls until its 30s timeout, or the whole test process hangs until the job
+// is cancelled. `test.serial` keeps the spawns one test at a time;
+// `describe.serial` does not serialize under `--concurrent`.
+// Bun bug: https://github.com/oven-sh/bun/issues/45365 and
+// https://github.com/oven-sh/bun/issues/34069 (see the same workaround in
+// test/unit/commands/implementation-amendment-command.test.ts).
 describe("cursor-agent provider integration (mock agent binary)", () => {
-	test(
+	test.serial(
 		"factory resolves cursor-agent plugin and full streaming lifecycle",
 		async () => {
 			const tmp = makeTmpDir();
@@ -210,7 +219,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"runStreamed with AuthorStatus extracts structured from final assistant flush (no timestamp_ms)",
 		async () => {
 			const tmp = makeTmpDir();
@@ -260,7 +269,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"runStreamed with AuthorStatus outputSchema extracts structured from final assistant JSON",
 		async () => {
 			const tmp = makeTmpDir();
@@ -299,7 +308,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"resumeSession(existingId) passes --resume without create-chat",
 		async () => {
 			const tmp = makeTmpDir();
@@ -332,7 +341,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"configured apiKey is forwarded via CURSOR_API_KEY env, not argv",
 		async () => {
 			const tmp = makeTmpDir();
@@ -369,7 +378,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"mock exits non-zero: run() throws; runStreamed yields terminal error",
 		async () => {
 			const tmp = makeTmpDir();
@@ -402,7 +411,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"binary not found surfaces install hint",
 		async () => {
 			const tmp = makeTmpDir();
@@ -428,7 +437,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"create-chat auth failure surfaces clear error message",
 		async () => {
 			const tmp = makeTmpDir();
@@ -452,7 +461,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"run() returns RunResult from mock stream-json",
 		async () => {
 			const tmp = makeTmpDir();
@@ -481,7 +490,7 @@ describe("cursor-agent provider integration (mock agent binary)", () => {
 		{ timeout: 30000 },
 	);
 
-	test(
+	test.serial(
 		"direct spawn helper uses stdin ignore and cleanGitEnv",
 		async () => {
 			const tmp = makeTmpDir();
