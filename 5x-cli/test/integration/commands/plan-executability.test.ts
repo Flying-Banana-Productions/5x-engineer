@@ -164,6 +164,39 @@ const FLOWS = [
 	},
 ] as const;
 
+describe("plan phases budget check", () => {
+	test.serial(
+		"reports the diagnostic the pre-review repair gate would raise",
+		async () => {
+			const { dir, planPath } = await setup("enforced", false);
+			try {
+				const missing = ok(await cli(dir, ["plan", "phases", planPath]));
+				expect(missing.data?.budget).toEqual({
+					ok: false,
+					required: true,
+					diagnostic: expect.objectContaining({
+						code: "BUDGET_SECTION_MISSING",
+					}),
+				});
+				// Inspection stays nonblocking: phases are still reported.
+				expect(missing.data?.phases).toHaveLength(2);
+
+				const text = await cli(dir, ["plan", "phases", planPath, "--text"]);
+				expect(text.stdout).toMatch(
+					/Delivery Budget: .*Missing exact '## Delivery Budget' section \(plan review will return this plan to the author\)/,
+				);
+
+				writeFileSync(planPath, draft(true));
+				const present = ok(await cli(dir, ["plan", "phases", planPath]));
+				expect(present.data?.budget).toEqual({ ok: true, required: true });
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		},
+		{ timeout: 30000 },
+	);
+});
+
 describe("plan executability before review", () => {
 	for (const flow of FLOWS) {
 		test.serial(

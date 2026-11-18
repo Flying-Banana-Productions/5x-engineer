@@ -104,6 +104,12 @@ The agent runs the command and follows the output: write the plan from the
 configured template, check it with `5x plan phases`, ask the operator before
 committing, and hand off for plan review.
 
+`5x plan phases <path>` reports two draft checks an author can run without a
+run: `data.executability` (every phase has checklist items) and `data.budget`
+(`ok`, `required`, and a `diagnostic` when the Delivery Budget or its debt-claim
+evidence would fail the pre-review repair gate). Both are informational; the
+command still succeeds.
+
 ```bash
 5x guide plan docs/tdd/rate-limiter.md --out docs/development/031-rate-limiter.plan.md
 5x guide plan docs/tdd/rate-limiter.md   # the agent chooses a name in paths.plans

@@ -62,7 +62,7 @@ describe("5x guide plan", () => {
 				expect(result.stdout.startsWith("You are implementing")).toBe(true);
 				expect(result.stdout).toContain("## Standalone Authoring");
 				expect(result.stdout).toContain(
-					"5x plan phases docs/plans/a.md | jq '.data.executability'",
+					"5x plan phases docs/plans/a.md | jq '.data | {executability, budget}'",
 				);
 				expect(result.stdout.endsWith("\n")).toBe(true);
 				expect(existsSync(join(dir, ".5x"))).toBe(false);

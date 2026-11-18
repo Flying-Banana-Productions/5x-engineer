@@ -66,6 +66,7 @@ import {
 import {
 	type ExecutabilityRepairSubject,
 	executabilityRepairCommands,
+	planReviewRepairGate,
 } from "../review-budget/plan-repair.js";
 import {
 	describeBindingReadError,
@@ -187,6 +188,15 @@ function formatPhasesText(data: Record<string, unknown>): void {
 		for (const command of executability.next) {
 			console.log(`  repair: ${command}`);
 		}
+	}
+	const budget = data.budget as
+		| { ok: boolean; required: boolean; diagnostic?: { message: string } }
+		| undefined;
+	if (budget && !budget.ok) {
+		const scope = budget.required
+			? "plan review will return this plan to the author"
+			: "not required while review budgeting is off";
+		console.log(`Delivery Budget: ${budget.diagnostic?.message} (${scope})`);
 	}
 }
 
@@ -529,6 +539,11 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 		(executability?.phases ?? []).map((entry) => [entry.id, entry.executable]),
 	);
 
+	// Additive and nonblocking, like executability: the same verdict the
+	// pre-review repair gate reaches, so an author can check a draft before
+	// any review exists. `required` is false when review budgeting is off.
+	const budgetGate = planReviewRepairGate(markdown);
+
 	const result: Record<string, unknown> = {
 		phases: plan.phases.map((p) => ({
 			id: p.number,
@@ -556,6 +571,11 @@ export async function planPhases(params: PlanPhasesParams): Promise<void> {
 					},
 				}
 			: {}),
+		budget: {
+			ok: budgetGate === null,
+			required: config.reviewBudget.mode !== "off",
+			...(budgetGate ? { diagnostic: budgetGate.detail.diagnostic } : {}),
+		},
 		filePaths: worktreePlanPath
 			? { root: planPath, worktree: worktreePlanPath }
 			: { root: planPath },

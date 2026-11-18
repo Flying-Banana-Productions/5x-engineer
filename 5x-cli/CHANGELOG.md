@@ -22,6 +22,11 @@ pending and may be deferred beyond 2.0.0.
   check with `5x plan phases`, commit only on the operator's go-ahead, and hand
   off for plan review. It is read-only and works before `5x init`. `--json`
   returns an envelope.
+- **Delivery Budget check in `plan phases`** — `5x plan phases` adds a `budget`
+  block (`ok`, `required`, and a `diagnostic` when it fails) with the verdict
+  the pre-review repair gate would reach, so an author can check a draft's
+  Delivery Budget and debt-claim evidence before any review exists. It is
+  additive and nonblocking; `required` is false when review budgeting is off.
 - **Configurable worktree root** — `[worktree] root` sets where 5x creates plan
   worktrees. Relative values resolve against the config file's directory;
   absolute values may point outside the repository. Unset keeps

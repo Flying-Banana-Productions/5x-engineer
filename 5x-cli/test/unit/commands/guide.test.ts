@@ -104,8 +104,9 @@ describe("buildPlanGuide", () => {
 			expect(prompt).toContain("## Standalone Authoring");
 			expect(prompt).toContain("stop and ask the operator instead");
 			expect(prompt).toContain(
-				"5x plan phases docs/plans/031-limiter.plan.md | jq '.data.executability'",
+				"5x plan phases docs/plans/031-limiter.plan.md | jq '.data | {executability, budget}'",
 			);
+			expect(prompt).toContain("`budget.ok: true`");
 			expect(prompt).toContain("`5x-plan-review` skill");
 			expect(prompt).not.toContain("### Output path");
 			expect(prompt).not.toContain("### Requirements");

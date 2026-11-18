@@ -213,12 +213,18 @@ function standaloneSection(input: StandaloneSectionInput): string {
 		[
 			"### Check the plan",
 			"",
-			`    5x plan phases ${plan} | jq '.data.executability'`,
+			`    5x plan phases ${plan} | jq '.data | {executability, budget}'`,
 			"",
-			"The plan must parse, have at least one phase, and report `executable: true`.",
-			"If a phase has no executable items, preview the fix with:",
+			"The plan must parse, have at least one phase, and report",
+			"`executability.executable: true` and `budget.ok: true`.",
 			"",
-			`    5x plan repair-checklists --plan ${plan} --dry-run`,
+			"- If a phase has no executable items, preview the fix with:",
+			"",
+			`      5x plan repair-checklists --plan ${plan} --dry-run`,
+			"",
+			"- If `budget.ok` is false, `budget.diagnostic` names what is wrong with the",
+			"  Delivery Budget or its debt-claim evidence. Fix the plan and check again.",
+			"  Plan review returns a plan with a failing budget to the author unread.",
 		].join("\n"),
 	);
 
