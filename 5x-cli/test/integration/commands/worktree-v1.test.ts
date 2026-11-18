@@ -79,10 +79,14 @@ function runGit(cwd: string, args: string[]): CmdResult {
 	};
 }
 
-async function run5x(cwd: string, args: string[]): Promise<CmdResult> {
+async function run5x(
+	cwd: string,
+	args: string[],
+	extraEnv: Record<string, string> = {},
+): Promise<CmdResult> {
 	const proc = Bun.spawn(["bun", "run", BIN, ...args], {
 		cwd,
-		env: cleanGitEnv(),
+		env: { ...cleanGitEnv(), ...extraEnv },
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -176,6 +180,40 @@ describe("5x worktree", () => {
 			} finally {
 				cleanupDir(dir);
 				cleanupDir(external);
+			}
+		},
+		{ timeout: 15000 },
+	);
+
+	test(
+		"create: worktree.root = ~/… expands to the home directory",
+		async () => {
+			const dir = makeTmpDir();
+			const home = makeTmpDir();
+			try {
+				const { planPath } = setupProject(dir);
+				writeFileSync(
+					join(dir, "5x.toml"),
+					'[worktree]\nroot = "~/wts/proj"\n',
+				);
+
+				const result = await run5x(
+					dir,
+					["worktree", "create", "--plan", planPath],
+					{ HOME: home },
+				);
+				expect(result.exitCode).toBe(0);
+				const payload = parseJson(result.stdout).data as {
+					worktree_path: string;
+				};
+				expect(
+					payload.worktree_path.startsWith(join(home, "wts", "proj")),
+				).toBe(true);
+				expect(existsSync(payload.worktree_path)).toBe(true);
+				expect(existsSync(join(dir, "~"))).toBe(false);
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(home);
 			}
 		},
 		{ timeout: 15000 },

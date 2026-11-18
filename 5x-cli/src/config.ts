@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
 import { z } from "zod";
-import { isPathUnder, realpathExisting } from "./paths.js";
+import { expandHomePath, isPathUnder, realpathExisting } from "./paths.js";
 
 const AgentConfigSchema = z.object({
 	/** Provider name — open string to allow third-party plugins (e.g. "opencode", "codex", "@acme/provider-foo"). */
@@ -561,12 +561,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value != null && !Array.isArray(value);
 }
 
+/** Resolve one configured path: expand a leading `~`, then resolve against `baseDir`. */
+function resolveConfigPath(baseDir: string, value: string): string {
+	return resolve(baseDir, expandHomePath(value));
+}
+
 /**
  * Resolve relative path strings in `raw.paths` and `raw.worktree.root`
  * against `baseDir`.
  *
  * Walks `raw.paths` and resolves each relative string value against `baseDir`
- * using `resolve(baseDir, value)`. Handles nested `paths.templates.plan` and
+ * using `resolve(baseDir, value)`, after expanding a leading `~` to the
+ * user's home directory. Handles nested `paths.templates.plan` and
  * `paths.templates.review`. Already-absolute paths pass through unchanged.
  * Non-path fields are untouched.
  *
@@ -580,7 +586,10 @@ function resolveRawConfigPaths(raw: unknown, baseDir: string): unknown {
 	if (isRecord(worktree) && typeof worktree.root === "string") {
 		out = {
 			...out,
-			worktree: { ...worktree, root: resolve(baseDir, worktree.root) },
+			worktree: {
+				...worktree,
+				root: resolveConfigPath(baseDir, worktree.root),
+			},
 		};
 	}
 
@@ -595,14 +604,14 @@ function resolveRawConfigPaths(raw: unknown, baseDir: string): unknown {
 			const resolvedTemplates: Record<string, unknown> = {};
 			for (const [tKey, tValue] of Object.entries(value)) {
 				if (typeof tValue === "string") {
-					resolvedTemplates[tKey] = resolve(baseDir, tValue);
+					resolvedTemplates[tKey] = resolveConfigPath(baseDir, tValue);
 				} else {
 					resolvedTemplates[tKey] = tValue;
 				}
 			}
 			resolvedPaths[key] = resolvedTemplates;
 		} else if (typeof value === "string") {
-			resolvedPaths[key] = resolve(baseDir, value);
+			resolvedPaths[key] = resolveConfigPath(baseDir, value);
 		} else {
 			resolvedPaths[key] = value;
 		}

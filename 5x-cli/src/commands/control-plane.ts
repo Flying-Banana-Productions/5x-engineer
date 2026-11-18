@@ -22,7 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseToml } from "@decimalturn/toml-patch";
 import { outputError } from "../output.js";
-import { realpathExisting } from "../paths.js";
+import { expandHomePath, realpathExisting } from "../paths.js";
 import { resolveProjectRoot } from "../project-root.js";
 
 // ---------------------------------------------------------------------------
@@ -149,9 +149,11 @@ function readDbPathFromConfig(rootDir: string): string | null {
 /**
  * Normalize `db.path` — it should be a directory path, not a file path.
  * Backward compat: if `path.basename(dbPath) === '5x.db'`, strip the
- * filename and use `path.dirname(dbPath)`.
+ * filename and use `path.dirname(dbPath)`. A leading `~` expands to the
+ * user's home directory (yielding an absolute state dir).
  */
-export function normalizeDbPath(dbPath: string): string {
+export function normalizeDbPath(rawDbPath: string): string {
+	const dbPath = expandHomePath(rawDbPath);
 	if (basename(dbPath) === DB_FILENAME) {
 		return dirname(dbPath);
 	}
