@@ -5,7 +5,7 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
-## 2.0.0-beta.1 (2026-11-17)
+## 2.0.0-beta.1 (2026-11-18)
 
 First prerelease of the 2.0.0 line, published under the npm `beta` dist-tag
 (`npm install -g @5x-ai/5x-cli@beta`); `latest` remains 1.3.0. The entries below
@@ -14,6 +14,16 @@ pending and may be deferred beyond 2.0.0.
 
 ### Features
 
+- **Configurable worktree root** — `[worktree] root` sets where 5x creates plan
+  worktrees. Relative values resolve against the config file's directory;
+  absolute values may point outside the repository. Unset keeps
+  `<stateDir>/worktrees`. Like `db`, the key is repo-wide: only the root config
+  and root `5x.toml.local` may set it, and sub-project values are ignored with a
+  warning.
+- **Home expansion in configured paths** — a leading `~` or `~/…` in
+  `worktree.root`, `paths.*` (including `paths.templates.*`), and `db.path`
+  expands to the user's home directory. `~user/…` and environment variables are
+  not expanded.
 - **Operator-directed checklist repair** — `5x plan repair-checklists` converts
   plain list markers in completion-gate lists into task markers, proving that
   only list prefixes change. `--plan` repairs an unapproved draft in place;
@@ -124,6 +134,14 @@ pending and may be deferred beyond 2.0.0.
 
 ### Fixes
 
+- **Template path defaults** — `paths.templates.plan` and
+  `paths.templates.review` now default to the skeletons that `5x init` and
+  `5x upgrade` scaffold under `.5x/templates/`, so new projects no longer point
+  authors and reviewers at files that do not exist. `5x upgrade` never rewrites
+  config for this; it warns about a file left at a former default path, a
+  missing or outdated custom template, or an outdated managed copy.
+- **Worktree paths with an absolute `db.path`** — worktrees are no longer
+  created at a shadow path under the project root.
 - **Final plan approval consistency** — final corrections are finalized against
   the committed plan, reconciling the approval ledger with the approved bytes
   and validating that the committed blob is executable.
@@ -163,6 +181,12 @@ pending and may be deferred beyond 2.0.0.
 
 ### Upgrade notes
 
+- Projects that relied on the former template defaults
+  (`docs/_implementation_plan_template.md`,
+  `docs/development/reviews/_review_template.md`) without setting
+  `[paths.templates]` now use `.5x/templates/`. Set `paths.templates.*`
+  explicitly to keep the old files; `5x upgrade` warns when one is still
+  present.
 - Cursor Agent provider users need `@5x-ai/provider-cursor-agent` 1.0.1 or
   later; 1.0.0 declares a peer range that excludes 2.x.
 - Runs that record an amendment, schema migration, or checklist repair require
