@@ -24,7 +24,8 @@ export function createProgram(): Command {
 				"  Precedence: --text/--json flag > FIVEX_OUTPUT_FORMAT env > json (default)\n\n" +
 				"JSON envelopes use { ok, data } for success, { ok, error } for errors.\n" +
 				"Grandfathered: init, upgrade, and harness install always emit text;\n" +
-				"run watch streams NDJSON or human-readable output.\n\n" +
+				"run watch streams NDJSON or human-readable output. guide prints\n" +
+				"markdown unless JSON is requested explicitly.\n\n" +
 				"Exit codes: 0=success, 1=error, 2=not found, 3=non-interactive,\n" +
 				"4=locked, 5=dirty, 6=limit, 7=invalid output.\n\n" +
 				"Offline protocol documentation: 5x protocol emit reviewer --help\n" +

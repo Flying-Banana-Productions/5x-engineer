@@ -161,10 +161,21 @@ export function jsonStringify(value: unknown): string {
 type OutputFormat = "json" | "text";
 
 let outputFormat: OutputFormat = "json";
+let outputFormatExplicit = false;
 
 /** Set the output format. Called from bin.ts based on --text/--json/env. */
 export function setOutputFormat(format: OutputFormat): void {
 	outputFormat = format;
+	outputFormatExplicit = true;
+}
+
+/**
+ * True once a format has been requested (flag or env) rather than defaulted.
+ * Lets a command whose natural output is not an envelope tell "JSON by
+ * default" apart from "JSON was asked for".
+ */
+export function isOutputFormatExplicit(): boolean {
+	return outputFormatExplicit;
 }
 
 /** Get the current output format. */

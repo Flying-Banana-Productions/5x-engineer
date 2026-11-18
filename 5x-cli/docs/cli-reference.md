@@ -22,6 +22,7 @@ Angle-bracket arguments below are placeholders; replace them before running.
 | Delegate through a provider | `invoke author <template>`, `invoke reviewer <template>` |
 | Inspect/cancel invocation | `invoke status --run <id>`, `invoke status --id <uuid>`, `invoke cancel <uuid>` |
 | Inspect/render prompts | `template list`, `template describe <name>`, `template render <name>` |
+| One-off task without a harness | `guide plan [source] [--out <plan-path>]` |
 | Construct/validate results | `protocol emit author\|reviewer`, `protocol validate author\|reviewer`, `protocol schema author\|reviewer` |
 | Run checks | `quality run [--record]` |
 | Finish author iteration | `phase finish --phase <p> --iteration <n> --step <name> [--input <file>]` |
@@ -92,7 +93,30 @@ inherit a user's text preference.
 | `run watch` | NDJSON stream, or text with `--human-readable` |
 | `protocol emit author/reviewer` | Raw canonical result JSON, not an envelope |
 | `protocol schema author/reviewer` | Raw JSON Schema |
+| `guide plan` | Markdown, unless JSON is requested with `--json` or `FIVEX_OUTPUT_FORMAT=json` |
 | `--help`, `--version` | CLI help/version text |
+
+### Guides
+
+`5x guide plan` prints this project's plan-authoring rules for an agent that is
+not running a 5x workflow, such as a coding assistant with no harness installed.
+The agent runs the command and follows the output: write the plan from the
+configured template, check it with `5x plan phases`, ask the operator before
+committing, and hand off for plan review.
+
+```bash
+5x guide plan docs/tdd/rate-limiter.md --out docs/development/031-rate-limiter.plan.md
+5x guide plan docs/tdd/rate-limiter.md   # the agent chooses a name in paths.plans
+5x guide plan                            # requirements come from the conversation
+```
+
+The guide is built from the `author-generate-plan` prompt, including a project
+override, so a standalone plan follows the same rules as an orchestrated one. It
+is read-only: no run, lock, or database is created, and it works before
+`5x init` by inlining the bundled plan template. `--out` must resolve inside
+`paths.plans`. With `--json`, `data` holds `prompt`, `source_path`, `plan_path`,
+`plans_dir`, `plan_template_path`, `plan_template_inlined`, and
+`template_source`. Errors are envelopes unless `--text` is set.
 
 `run watch` errors before streaming can still be envelopes. Command-line usage
 errors can be parser text on stderr. Output normalization in design documents is
