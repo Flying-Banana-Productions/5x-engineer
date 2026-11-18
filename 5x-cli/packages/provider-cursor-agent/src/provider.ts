@@ -10,16 +10,18 @@ import type {
 } from "@5x-ai/5x-cli";
 
 import {
-	createCursorChatSessionId,
-	CursorAgentSession,
-	forceKillSubprocess,
 	type CursorAgentExecutionHost,
+	CursorAgentSession,
 	type CursorAgentSessionOptions,
 	type CursorAgentSubprocess,
+	createCursorChatSessionId,
+	forceKillSubprocess,
 } from "./session.js";
 import type { CursorAgentConfig } from "./types.js";
 
-export class CursorAgentProvider implements AgentProvider, CursorAgentExecutionHost {
+export class CursorAgentProvider
+	implements AgentProvider, CursorAgentExecutionHost
+{
 	private config: CursorAgentConfig;
 	private sessions = new Map<string, CursorAgentSession>();
 	private processes = new Set<CursorAgentSubprocess>();

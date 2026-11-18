@@ -2,18 +2,20 @@
  * Cursor Agent CLI session — spawns `agent` per run, maps stream-json NDJSON → AgentEvent.
  */
 
-import type { AgentEvent, AgentSession, RunOptions, RunResult } from "@5x-ai/5x-cli";
-import {
-	AgentCancellationError,
-	AgentTimeoutError,
+import type {
+	AgentEvent,
+	AgentSession,
+	RunOptions,
+	RunResult,
 } from "@5x-ai/5x-cli";
+import { AgentCancellationError, AgentTimeoutError } from "@5x-ai/5x-cli";
 
 import { buildRunArgs, type RunArgContext } from "./cli-args.js";
 import { buildSubprocessEnv } from "./env.js";
 import {
+	type CursorAgentMapperState,
 	createMapperState,
 	mapCursorAgentLine,
-	type CursorAgentMapperState,
 } from "./event-mapper.js";
 import {
 	formatPromptOverLimitMessage,
@@ -107,6 +109,13 @@ function anySignal(signals: AbortSignal[]): AbortSignal {
 		});
 	}
 	return controller.signal;
+}
+
+// DIAGNOSTIC (temporary): CURSOR_HANG_DEBUG=1 traces subprocess lifecycle.
+const HANG_DEBUG = process.env.CURSOR_HANG_DEBUG === "1";
+function hangDebug(pid: number | undefined, msg: string): void {
+	if (!HANG_DEBUG) return;
+	console.error(`[cursor-hang ${new Date().toISOString()} pid=${pid}] ${msg}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +299,10 @@ export class CursorAgentSession implements AgentSession {
 	): AsyncIterable<AgentEvent> {
 		this.assertProviderOpen();
 
-		const { effectivePrompt, hasOutputSchema } = this.preparePrompt(prompt, opts);
+		const { effectivePrompt, hasOutputSchema } = this.preparePrompt(
+			prompt,
+			opts,
+		);
 		const guard = guardPromptSize(effectivePrompt);
 		if (!guard.ok) {
 			yield {
@@ -355,6 +367,8 @@ export class CursorAgentSession implements AgentSession {
 		}
 
 		this.provider.trackProcess(proc);
+		hangDebug(proc.pid, `spawned argv=${JSON.stringify(argv.slice(1))}`);
+		void proc.exited.then((code) => hangDebug(proc.pid, `exited code=${code}`));
 		const onAbort = () => {
 			void forceKillSubprocess(proc);
 		};
@@ -366,8 +380,10 @@ export class CursorAgentSession implements AgentSession {
 		const mapperState = createMapperState();
 		let sawTerminal = false;
 		const stderrPromise = readStreamFull(stderrStream);
+		void stderrPromise.then(() => hangDebug(proc.pid, "stderr EOF"));
 		try {
 			for await (const line of readNdjsonLines(stdoutStream)) {
+				hangDebug(proc.pid, `stdout line type=${String(line.type)}`);
 				if (cancelSignal?.aborted) break;
 
 				resetInactivityTimeout();
@@ -410,10 +426,12 @@ export class CursorAgentSession implements AgentSession {
 				}
 			}
 
+			hangDebug(proc.pid, "stdout EOF");
 			const [exitCode, stderrText] = await Promise.all([
 				proc.exited,
 				stderrPromise,
 			]);
+			hangDebug(proc.pid, "exit+stderr awaited");
 			const stderrPart = stderrExcerpt(stderrText);
 
 			if (cancelSignal?.aborted) {
@@ -484,11 +502,21 @@ export async function createCursorChatSessionId(
 	}
 
 	host.trackProcess(proc);
+	hangDebug(proc.pid, "create-chat spawned");
 	try {
 		const [stdoutText, stderrText, exitCode] = await Promise.all([
-			readStreamFull(subprocessReadable(proc.stdout)),
-			readStreamFull(subprocessReadable(proc.stderr)),
-			proc.exited,
+			readStreamFull(subprocessReadable(proc.stdout)).then((t) => {
+				hangDebug(proc.pid, "create-chat stdout EOF");
+				return t;
+			}),
+			readStreamFull(subprocessReadable(proc.stderr)).then((t) => {
+				hangDebug(proc.pid, "create-chat stderr EOF");
+				return t;
+			}),
+			proc.exited.then((c) => {
+				hangDebug(proc.pid, `create-chat exited code=${c}`);
+				return c;
+			}),
 		]);
 
 		if (exitCode !== 0) {

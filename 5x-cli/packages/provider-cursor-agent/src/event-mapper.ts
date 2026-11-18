@@ -61,7 +61,10 @@ function truncate(text: string, max = 120): string {
 	return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
-function summarizeToolArgs(tool: string, args: Record<string, unknown>): string {
+function summarizeToolArgs(
+	tool: string,
+	args: Record<string, unknown>,
+): string {
 	const path = getString(args, "path");
 	if (path && (tool === "read" || tool === "write" || tool === "edit")) {
 		return path;
@@ -228,8 +231,7 @@ function mapToolCallLine(
 	}
 
 	if (subtype === "completed") {
-		const tool =
-			(callId && state.toolNamesByCallId.get(callId)) ?? parsed.tool;
+		const tool = (callId && state.toolNamesByCallId.get(callId)) ?? parsed.tool;
 		if (callId) {
 			state.toolNamesByCallId.delete(callId);
 		}
@@ -250,7 +252,8 @@ function parseResultLine(
 	state: CursorAgentMapperState,
 	options?: CursorAgentMapperOptions,
 ): AgentEvent | AgentEvent[] {
-	const isError = line.is_error === true || getString(line, "subtype") === "error";
+	const isError =
+		line.is_error === true || getString(line, "subtype") === "error";
 
 	if (isError) {
 		const msg =

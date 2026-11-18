@@ -152,6 +152,38 @@ function baseConfig(
 	} as unknown as FiveXConfig;
 }
 
+// DIAGNOSTIC (temporary): every test here normally finishes in <100ms. If
+// anything is still running after 20s, dump process / fd state so CI logs
+// show what the hung test is waiting on.
+process.env.CURSOR_HANG_DEBUG = "1";
+const hangWatchdog = setTimeout(() => {
+	const script = String.raw`
+echo "=== [cursor-hang watchdog] $(date -u +%FT%TZ) self=$PPID"
+ps -eo pid,ppid,stat,etimes,wchan:20,args --forest | grep -v " ps -eo" | head -80
+for pid in $(pgrep -f mock-cursor-agent || true); do
+  echo "--- mock pid $pid"; grep -E "^(State|PPid)" /proc/$pid/status 2>/dev/null
+  ls -l /proc/$pid/fd 2>/dev/null
+done
+echo "--- bun test process fds (self=$PPID)"
+ls -l /proc/$PPID/fd 2>/dev/null | grep -E "pipe|socket" | head -60
+echo "--- zombies"; ps -eo pid,ppid,stat,args | awk '$3 ~ /Z/'
+echo "--- holders of each pipe the test process reads"
+for ino in $(ls -l /proc/$PPID/fd 2>/dev/null | grep -o "pipe:\[[0-9]*\]" | sort -u); do
+  holders=$(for p in /proc/[0-9]*; do ls -l $p/fd 2>/dev/null | grep -qF "$ino" && echo -n "$(basename $p)($(tr -d '\0' < $p/comm 2>/dev/null)) "; done)
+  echo "$ino -> $holders"
+done
+`;
+	const out = Bun.spawnSync(["bash", "-c", script], {
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	console.error(
+		new TextDecoder().decode(out.stdout) + new TextDecoder().decode(out.stderr),
+	);
+}, 20000);
+(hangWatchdog as { unref?: () => void }).unref?.();
+
 describe("cursor-agent provider integration (mock agent binary)", () => {
 	test(
 		"factory resolves cursor-agent plugin and full streaming lifecycle",

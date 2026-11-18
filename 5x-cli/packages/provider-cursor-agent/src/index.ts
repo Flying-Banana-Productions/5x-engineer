@@ -4,15 +4,18 @@
 
 import type { AgentProvider, ProviderPlugin } from "@5x-ai/5x-cli";
 
-import { buildCreateChatArgs, buildRunArgs, type RunArgContext } from "./cli-args.js";
+import {
+	buildCreateChatArgs,
+	buildRunArgs,
+	type RunArgContext,
+} from "./cli-args.js";
 import { buildSubprocessEnv } from "./env.js";
 import {
-	createMapperState,
-	mapCursorAgentLine,
 	type CursorAgentMapperOptions,
 	type CursorAgentMapperState,
+	createMapperState,
+	mapCursorAgentLine,
 } from "./event-mapper.js";
-import { CursorAgentProvider } from "./provider.js";
 import {
 	formatPromptOverLimitMessage,
 	getPromptBytes,
@@ -21,23 +24,27 @@ import {
 	type PromptGuardResult,
 	type PromptOverLimitPayload,
 } from "./prompt-guard.js";
+import { CursorAgentProvider } from "./provider.js";
 import {
 	extractStructuredOutput,
-	wrapPromptForStructuredOutput,
 	type StructuredExtractResult,
+	wrapPromptForStructuredOutput,
 } from "./structured.js";
 import type { CursorAgentConfig } from "./types.js";
 
-export { buildCreateChatArgs, buildRunArgs, type RunArgContext } from "./cli-args.js";
+export {
+	buildCreateChatArgs,
+	buildRunArgs,
+	type RunArgContext,
+} from "./cli-args.js";
 export { buildSubprocessEnv } from "./env.js";
 export {
+	type CursorAgentMapperOptions,
+	type CursorAgentMapperState,
 	createMapperState,
 	mapCursorAgentLine,
 	summarizeCursorToolArgs,
-	type CursorAgentMapperOptions,
-	type CursorAgentMapperState,
 } from "./event-mapper.js";
-export { CursorAgentProvider } from "./provider.js";
 export {
 	formatPromptOverLimitMessage,
 	getPromptBytes,
@@ -46,10 +53,11 @@ export {
 	type PromptGuardResult,
 	type PromptOverLimitPayload,
 } from "./prompt-guard.js";
+export { CursorAgentProvider } from "./provider.js";
 export {
 	extractStructuredOutput,
-	wrapPromptForStructuredOutput,
 	type StructuredExtractResult,
+	wrapPromptForStructuredOutput,
 } from "./structured.js";
 export type { CursorAgentConfig } from "./types.js";
 
