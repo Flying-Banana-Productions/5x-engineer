@@ -7,16 +7,55 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	canonicalizePlanPath,
+	expandHomePath,
 	isPathUnder,
 	planSlugFromPath,
 	realpathExisting,
 	relativePathUnder,
 	resolvePlanArg,
 } from "../../src/paths.js";
+
+describe("expandHomePath", () => {
+	const HOME = "/home/tester";
+
+	test("bare ~ expands to home", () => {
+		expect(expandHomePath("~", HOME)).toBe(HOME);
+	});
+
+	test("~/path expands under home", () => {
+		expect(expandHomePath("~/worktrees/proj", HOME)).toBe(
+			join(HOME, "worktrees/proj"),
+		);
+	});
+
+	test("~/ alone expands to home", () => {
+		expect(expandHomePath("~/", HOME)).toBe(HOME);
+	});
+
+	test("~user, $HOME, mid-path ~ and ordinary paths are unchanged", () => {
+		for (const raw of [
+			"~other/x",
+			"$HOME/x",
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: literal config text, must not expand
+			"${HOME}/x",
+			"a/~/b",
+			"./~/x",
+			"relative/dir",
+			"/abs/dir",
+			"",
+		]) {
+			expect(expandHomePath(raw, HOME)).toBe(raw);
+		}
+	});
+
+	test("defaults to the OS home directory", () => {
+		expect(expandHomePath("~/x")).toBe(join(homedir(), "x"));
+	});
+});
 
 describe("planSlugFromPath", () => {
 	test("extracts slug from POSIX path", () => {

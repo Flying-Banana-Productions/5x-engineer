@@ -1,4 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import {
 	basename,
 	dirname,
@@ -8,6 +9,23 @@ import {
 	resolve,
 	sep,
 } from "node:path";
+
+/**
+ * Expand a leading `~` in a configured path to the user's home directory.
+ *
+ * Only `~` and `~/…` (or `~\…` on Windows) are expanded. `~user/…` and
+ * environment variables (`$HOME`) are deliberately left alone: they are
+ * not portable and would make the same config resolve differently per
+ * machine. Everything else is returned unchanged, so callers still resolve
+ * relative paths against their own base directory.
+ */
+export function expandHomePath(rawPath: string, home = homedir()): string {
+	if (rawPath === "~") return home;
+	if (rawPath.startsWith("~/") || (sep === "\\" && rawPath.startsWith("~\\"))) {
+		return join(home, rawPath.slice(2));
+	}
+	return rawPath;
+}
 
 /** Git env vars that override repo discovery (hooks / inherited worktrees). */
 const GIT_ENV_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];

@@ -6,11 +6,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import {
 	controlPlaneDbPath,
 	controlPlaneStatePath,
 	DB_FILENAME,
+	normalizeDbPath,
+	worktreesRoot,
 } from "../../../src/commands/control-plane.js";
 
 const ROOT = "/repo";
@@ -42,5 +45,36 @@ describe("controlPlaneDbPath", () => {
 		const result = controlPlaneDbPath(ROOT, ABS);
 		expect(result).toBe(join(ABS, DB_FILENAME));
 		expect(result).not.toBe(join(ROOT, ABS, DB_FILENAME));
+	});
+});
+
+describe("normalizeDbPath", () => {
+	test("strips the 5x.db filename", () => {
+		expect(normalizeDbPath(".5x/5x.db")).toBe(".5x");
+		expect(normalizeDbPath("state")).toBe("state");
+	});
+
+	test("expands a leading ~ to an absolute state dir", () => {
+		expect(normalizeDbPath("~/5x-state/5x.db")).toBe(
+			join(homedir(), "5x-state"),
+		);
+		expect(normalizeDbPath("~/5x-state")).toBe(join(homedir(), "5x-state"));
+		expect(isAbsolute(normalizeDbPath("~/5x-state"))).toBe(true);
+	});
+
+	test("does not expand ~user or $HOME", () => {
+		expect(normalizeDbPath("~other/state")).toBe("~other/state");
+		expect(normalizeDbPath("$HOME/state")).toBe("$HOME/state");
+	});
+});
+
+describe("worktreesRoot", () => {
+	test("defaults to <stateDir>/worktrees, honouring absolute stateDir", () => {
+		expect(worktreesRoot(ROOT, REL)).toBe(join(ROOT, REL, "worktrees"));
+		expect(worktreesRoot(ROOT, ABS)).toBe(join(ABS, "worktrees"));
+	});
+
+	test("configured root wins", () => {
+		expect(worktreesRoot(ROOT, REL, "/elsewhere/wts")).toBe("/elsewhere/wts");
 	});
 });

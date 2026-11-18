@@ -115,7 +115,7 @@ root = "../my-project-worktrees"   # optional
 `worktree.root` sets the directory where `5x` creates plan worktrees
 (`<root>/<plan-slug>-<hash>`). A relative value resolves against the config
 file's directory; an absolute value is used as-is and may point outside the
-repository. Commands run inside such a worktree still find the main
+repository; `~/…` expands to your home directory. Commands run inside such a worktree still find the main
 repository's state through git. Like `db`, it is repo-wide: only the root
 config and the root `5x.toml.local` may set it; a sub-project value is
 ignored with a warning. When unset, worktrees go in
@@ -142,8 +142,11 @@ Common defaults:
 | `paths.templates.plan` | `docs/_implementation_plan_template.md` |
 | `paths.templates.review` | `docs/development/reviews/_review_template.md` |
 
-Paths resolve relative to the owning configuration layer. `plans.branch` adds a
-configured branch to Git-aware progress discovery.
+Paths resolve relative to the owning configuration layer. In `paths.*`,
+`worktree.root` and `db.path`, a leading `~` or `~/…` expands to your home
+directory; `~user/…` and environment variables such as `$HOME` are not
+expanded. `plans.branch` adds a configured branch to Git-aware progress
+discovery.
 
 Layering merges the root main config and nearest subproject main config, then
 root/nearest `5x.toml.local` overlays. Objects merge deeply; arrays replace rather

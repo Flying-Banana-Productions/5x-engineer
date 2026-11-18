@@ -37,6 +37,7 @@ import { getSchemaVersion, runMigrations } from "../db/schema.js";
 import { getLatestCommit, gitLsTreePaths, gitShowFile } from "../git.js";
 import { runHarnessFreshnessChecks } from "../harnesses/freshness.js";
 import type { LosslessBlocker } from "../harnesses/manifest.js";
+import { expandHomePath } from "../paths.js";
 import {
 	foldEffectiveExecution,
 	type RevisionFoldDiagnostic,
@@ -942,7 +943,7 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 					isRecord(raw.db) &&
 					typeof raw.db.path === "string"
 				) {
-					dbRelPath = raw.db.path;
+					dbRelPath = expandHomePath(raw.db.path);
 				}
 			} else {
 				const mod = await import(configPath);
@@ -952,7 +953,7 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 					isRecord(raw.db) &&
 					typeof raw.db.path === "string"
 				) {
-					dbRelPath = raw.db.path;
+					dbRelPath = expandHomePath(raw.db.path);
 				}
 			}
 		} catch {

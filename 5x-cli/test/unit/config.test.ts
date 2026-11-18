@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	applyModelOverrides,
@@ -67,6 +67,45 @@ describe("config", () => {
 			);
 			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
 			expect(config.worktree.root).toBe(abs);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("~ expands to the home directory in worktree.root and paths.*", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				[
+					"[worktree]",
+					'root = "~/wts/proj"',
+					"[paths]",
+					'plans = "~/plans"',
+					"[paths.templates]",
+					'plan = "~"',
+					"",
+				].join("\n"),
+			);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.worktree.root).toBe(join(homedir(), "wts/proj"));
+			expect(config.paths.plans).toBe(join(homedir(), "plans"));
+			expect(config.paths.templates.plan).toBe(homedir());
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("~user and $HOME are not expanded (resolved relative to the config dir)", async () => {
+		const tmp = makeTmpDir();
+		try {
+			writeFileSync(
+				join(tmp, "5x.toml"),
+				'[worktree]\nroot = "$HOME/wts"\n[paths]\nplans = "~other/plans"\n',
+			);
+			const { config } = await loadConfig(tmp, undefined, undefined, tmp);
+			expect(config.worktree.root).toBe(resolve(tmp, "$HOME/wts"));
+			expect(config.paths.plans).toBe(resolve(tmp, "~other/plans"));
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
