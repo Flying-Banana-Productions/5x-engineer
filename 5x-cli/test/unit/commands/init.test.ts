@@ -411,10 +411,8 @@ describe("generateTomlConfig", () => {
 		expect(content).toContain('# actor = "your-label"');
 		expect(content).toContain("# [plans]");
 		expect(content).toContain('# branch = "release/plans"');
-		expect(content).toContain(
-			'plan = ".5x/templates/implementation-plan-template.md"',
-		);
-		expect(content).toContain('review = ".5x/templates/review-template.md"');
+		// paths.templates.* defaults already point at the scaffolded skeletons.
+		expect(content).not.toContain("[paths.templates]");
 		expect(content).toContain("[db]");
 		expect(content).toContain("maxAutoRetries");
 		expect(content).toContain("maxStepsPerRun");

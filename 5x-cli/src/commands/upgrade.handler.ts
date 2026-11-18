@@ -13,7 +13,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
 	parse as tomlParse,
 	patch as tomlPatch,
@@ -46,6 +46,7 @@ import { resolveControlPlaneRoot } from "./control-plane.js";
 import { harnessSyncCore } from "./harness.handler.js";
 import {
 	checkInstalledPromptTemplates,
+	DOCUMENT_TEMPLATES,
 	ensureGitattributes,
 	ensureGitignore,
 	ensureTemplateFiles,
@@ -340,21 +341,102 @@ function upgradeDatabase(projectRoot: string, dbRelPath: string): string[] {
 // Template refresh
 // ---------------------------------------------------------------------------
 
-function refreshTemplates(projectRoot: string, force: boolean): string[] {
+/**
+ * Pre-`.5x/templates` defaults for `paths.templates.*`. Projects that relied
+ * on them get a warning only; upgrade never rewrites config to pin them.
+ */
+const LEGACY_DOCUMENT_TEMPLATE_PATHS: Record<
+	(typeof DOCUMENT_TEMPLATES)[number]["key"],
+	string
+> = {
+	plan: "docs/_implementation_plan_template.md",
+	review: "docs/development/reviews/_review_template.md",
+};
+
+function displayPath(projectRoot: string, absPath: string): string {
+	const rel = relative(projectRoot, absPath);
+	return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? absPath : rel;
+}
+
+/**
+ * Report plan/review skeleton state:
+ * - scaffold/refresh the managed copies under `.5x/templates/`;
+ * - warn when the skeleton in use differs from the bundled version (managed
+ *   copies can be refreshed with `--force`; custom paths are never touched);
+ * - warn when a file still exists at the legacy default location but is no
+ *   longer the configured template.
+ *
+ * `templatePaths` is the resolved `paths.templates` config, or `null` when the
+ * config could not be loaded (path checks are then skipped).
+ */
+function refreshTemplates(
+	projectRoot: string,
+	force: boolean,
+	templatePaths: { plan: string; review: string } | null,
+): string[] {
 	const log: string[] = [];
 	log.push(
 		"  Document skeletons: --force overwrites plan/review templates only; prompt overrides are preserved.",
 	);
 
 	const templateResult = ensureTemplateFiles(projectRoot, force);
-	for (const name of templateResult.created) {
-		log.push(`  Created .5x/templates/${name}`);
-	}
-	for (const name of templateResult.overwritten) {
-		log.push(`  Updated .5x/templates/${name}`);
-	}
-	for (const name of templateResult.skipped) {
-		log.push(`  Skipped .5x/templates/${name} (unchanged)`);
+	let warnings = 0;
+
+	for (const tmpl of DOCUMENT_TEMPLATES) {
+		const managedPath = join(projectRoot, ".5x", "templates", tmpl.name);
+		const managedDisplay = `.5x/templates/${tmpl.name}`;
+		const configuredPath = templatePaths?.[tmpl.key] ?? managedPath;
+		const usesManaged = resolve(configuredPath) === resolve(managedPath);
+		const configKey = `paths.templates.${tmpl.key}`;
+
+		if (templateResult.created.includes(tmpl.name)) {
+			log.push(`  Created ${managedDisplay}`);
+		} else if (templateResult.overwritten.includes(tmpl.name)) {
+			log.push(`  Updated ${managedDisplay}`);
+		} else if (!usesManaged) {
+			log.push(`  Skipped ${managedDisplay} (already exists)`);
+		} else if (readFileSync(managedPath, "utf-8") === tmpl.content) {
+			log.push(`  Skipped ${managedDisplay} (matches bundled)`);
+		} else {
+			warnings++;
+			log.push(
+				`  Warning: ${managedDisplay} differs from the bundled version. ` +
+					'Run "5x upgrade --force" to overwrite it with the latest skeleton.',
+			);
+		}
+
+		if (!usesManaged) {
+			const shown = displayPath(projectRoot, configuredPath);
+			if (!existsSync(configuredPath)) {
+				warnings++;
+				log.push(
+					`  Warning: ${configKey} points to ${shown}, which does not exist.`,
+				);
+			} else if (readFileSync(configuredPath, "utf-8") !== tmpl.content) {
+				warnings++;
+				log.push(
+					`  Warning: ${configKey} points to ${shown}, which differs from the bundled version. ` +
+						`Upgrade does not modify configured templates; compare it with ${managedDisplay} ` +
+						`or unset ${configKey} to use the managed copy.`,
+				);
+			}
+		}
+
+		const legacyPath = join(
+			projectRoot,
+			LEGACY_DOCUMENT_TEMPLATE_PATHS[tmpl.key],
+		);
+		if (
+			resolve(configuredPath) !== resolve(legacyPath) &&
+			existsSync(legacyPath)
+		) {
+			warnings++;
+			log.push(
+				`  Warning: found ${LEGACY_DOCUMENT_TEMPLATE_PATHS[tmpl.key]}, the former default for ${configKey}. ` +
+					`It is no longer used; 5x now reads ${displayPath(projectRoot, configuredPath)}. ` +
+					`Set ${configKey} to keep using it, or delete it.`,
+			);
+		}
 	}
 
 	// Check installed prompt templates — never auto-write, just report.
@@ -374,6 +456,7 @@ function refreshTemplates(projectRoot: string, force: boolean): string[] {
 	if (
 		templateResult.created.length === 0 &&
 		templateResult.overwritten.length === 0 &&
+		warnings === 0 &&
 		promptResult.diverged.length === 0 &&
 		promptResult.current.length === 0
 	) {
@@ -968,7 +1051,19 @@ export async function runUpgrade(params: UpgradeParams): Promise<void> {
 
 	// 3. Templates
 	console.log("Templates:");
-	const templateLog = refreshTemplates(projectRoot, force);
+	let templatePaths: { plan: string; review: string } | null = null;
+	try {
+		// Config warnings surface in the git-attributes step below.
+		const { config } = await resolveLayeredConfig(
+			projectRoot,
+			projectRoot,
+			() => {},
+		);
+		templatePaths = config.paths.templates;
+	} catch {
+		// Unloadable config: scaffold managed copies, skip path checks.
+	}
+	const templateLog = refreshTemplates(projectRoot, force, templatePaths);
 	for (const line of templateLog) console.log(line);
 	console.log();
 

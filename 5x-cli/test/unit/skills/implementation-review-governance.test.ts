@@ -1412,7 +1412,7 @@ describe("issue-resolution prompt guidance (plan 217 phase 2)", () => {
 		const rendered = renderTemplate("author-generate-plan", {
 			prd_path: "docs/prd.md",
 			plan_path: "docs/development/plans/001-thing.md",
-			plan_template_path: "docs/_implementation_plan_template.md",
+			plan_template_path: ".5x/templates/implementation-plan-template.md",
 		});
 		const prompt = rendered.prompt;
 		expect(prompt).toContain(
@@ -1549,7 +1549,7 @@ describe("workflow repair assets (plan 217 phase 5)", () => {
 		const generate = renderTemplate("author-generate-plan", {
 			prd_path: "docs/brief.md",
 			plan_path: "docs/development/plans/001-thing.md",
-			plan_template_path: "docs/_implementation_plan_template.md",
+			plan_template_path: ".5x/templates/implementation-plan-template.md",
 		}).prompt;
 		expect(generate).toContain(
 			"Every phase needs at least one executable checklist item; a prose completion gate is fine",

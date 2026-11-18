@@ -40,10 +40,9 @@ no quality gates. `init` creates `.5x/`, document skeletons under
 create it when needed.
 
 The scaffolded skeletons are `implementation-plan-template.md` and
-`review-template.md`. Configured `paths.templates.plan` and
-`paths.templates.review` can select project-owned alternatives; inspect the
-effective settings rather than assuming the skeleton location is the configured
-path. [Template customization](configuration.md#templates) explains both kinds
+`review-template.md`, the default `paths.templates.plan` and
+`paths.templates.review` values. Set either key to select a project-owned
+alternative. [Template customization](configuration.md#templates) explains both kinds
 of template.
 
 ## Install a harness

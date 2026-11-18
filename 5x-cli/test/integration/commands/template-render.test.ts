@@ -686,7 +686,9 @@ describe("5x template render", () => {
 				const data = json.data as Record<string, unknown>;
 				const prompt = data.prompt as string;
 				// Should contain the resolved plan template path
-				expect(prompt).toContain("_implementation_plan_template.md");
+				expect(prompt).toContain(
+					join(dir, ".5x", "templates", "implementation-plan-template.md"),
+				);
 			} finally {
 				cleanupDir(dir);
 			}

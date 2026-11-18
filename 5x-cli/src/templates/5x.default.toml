@@ -65,10 +65,6 @@ reviews = "docs/development/reviews"
 archive = "docs/archive"
 records = "docs/development/runs"
 
-[paths.templates]
-plan = ".5x/templates/implementation-plan-template.md"
-review = ".5x/templates/review-template.md"
-
 # SQLite database location for run history and state
 [db]
 path = ".5x/5x.db"

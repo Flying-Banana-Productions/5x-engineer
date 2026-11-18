@@ -47,12 +47,14 @@ describe("renderTemplate", () => {
 		const result = renderTemplate("author-generate-plan", {
 			prd_path: "docs/requirements/feature.md",
 			plan_path: "docs/development/001-impl-feature.md",
-			plan_template_path: "docs/_implementation_plan_template.md",
+			plan_template_path: ".5x/templates/implementation-plan-template.md",
 		});
 		expect(result.name).toBe("author-generate-plan");
 		expect(result.prompt).toContain("docs/requirements/feature.md");
 		expect(result.prompt).toContain("docs/development/001-impl-feature.md");
-		expect(result.prompt).toContain("docs/_implementation_plan_template.md");
+		expect(result.prompt).toContain(
+			".5x/templates/implementation-plan-template.md",
+		);
 		expect(result.prompt).not.toContain("{{prd_path}}");
 		expect(result.prompt).not.toContain("{{plan_path}}");
 		expect(result.prompt).not.toContain("{{plan_template_path}}");
@@ -71,7 +73,7 @@ describe("renderTemplate", () => {
 		const result = renderTemplate("author-generate-plan", {
 			prd_path: "docs/requirements/feature.md",
 			plan_path: "docs/development/001-impl-feature.md",
-			plan_template_path: "docs/_implementation_plan_template.md",
+			plan_template_path: ".5x/templates/implementation-plan-template.md",
 			extra_unused: "some value",
 		});
 		expect(result.prompt).toBeTruthy();
@@ -92,7 +94,7 @@ describe("author-generate-plan template", () => {
 	const vars = {
 		prd_path: "docs/workflows/370-feature.md",
 		plan_path: "docs/development/370-impl-feature.md",
-		plan_template_path: "docs/_implementation_plan_template.md",
+		plan_template_path: ".5x/templates/implementation-plan-template.md",
 	};
 
 	test("renders with valid variables", () => {

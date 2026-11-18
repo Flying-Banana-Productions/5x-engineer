@@ -109,11 +109,11 @@ const PathsSchema = z.object({
 		.object({
 			plan: z
 				.string()
-				.default("docs/_implementation_plan_template.md")
+				.default(".5x/templates/implementation-plan-template.md")
 				.describe("Path to the plan template file."),
 			review: z
 				.string()
-				.default("docs/development/reviews/_review_template.md")
+				.default(".5x/templates/review-template.md")
 				.describe("Path to the review template file."),
 		})
 		.default({})

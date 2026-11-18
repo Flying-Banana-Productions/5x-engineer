@@ -139,8 +139,8 @@ Common defaults:
 | `paths.planReviews`, `paths.runReviews` | Fall back to `paths.reviews` |
 | `paths.archive` | `docs/archive` |
 | `paths.records` | `docs/development/runs` |
-| `paths.templates.plan` | `docs/_implementation_plan_template.md` |
-| `paths.templates.review` | `docs/development/reviews/_review_template.md` |
+| `paths.templates.plan` | `.5x/templates/implementation-plan-template.md` |
+| `paths.templates.review` | `.5x/templates/review-template.md` |
 
 Paths resolve relative to the owning configuration layer. In `paths.*`,
 `worktree.root` and `db.path`, a leading `~` or `~/…` expands to your home
@@ -227,15 +227,18 @@ a personal overlay or `FIVEX_RECORDS_ACTOR` for personal attribution.
 There are two separate customization surfaces:
 
 1. **Document skeletons:** `init` scaffolds plan/review Markdown skeletons under
-   `.5x/templates/`. `paths.templates.*` selects the paths supplied to authors
-   and reviewers. To use the scaffolded copies explicitly:
-   ```bash
-   5x config set paths.templates.plan .5x/templates/implementation-plan-template.md
-   5x config set paths.templates.review .5x/templates/review-template.md
-   ```
+   `.5x/templates/`, which are the `paths.templates.*` defaults. Set
+   `paths.templates.plan` or `paths.templates.review` to supply a
+   project-owned skeleton instead.
 2. **Agent task prompts:** bundled by default. `5x init --install-templates`
    installs editable overrides under `.5x/templates/prompts/`. Overrides take
    precedence over bundled prompts. Inspect them with `template list/describe`.
+
+`upgrade` scaffolds missing skeletons, and `upgrade --force` refreshes the
+copies under `.5x/templates/`. It never modifies a configured skeleton path, but
+warns when the skeleton in use differs from the bundled version or when a file
+remains at a former default location (`docs/_implementation_plan_template.md`,
+`docs/development/reviews/_review_template.md`).
 
 `upgrade` checks installed prompt versions; custom overrides can retain old
 workflow instructions. Review them during upgrades, including continued variants.

@@ -440,10 +440,10 @@ describe("resolveLayeredConfig", () => {
 			);
 			expect(result.config.paths.archive).toBe(join(tmp, "docs/archive"));
 			expect(result.config.paths.templates.plan).toBe(
-				join(tmp, "docs/_implementation_plan_template.md"),
+				join(tmp, ".5x/templates/implementation-plan-template.md"),
 			);
 			expect(result.config.paths.templates.review).toBe(
-				join(tmp, "docs/development/reviews/_review_template.md"),
+				join(tmp, ".5x/templates/review-template.md"),
 			);
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });

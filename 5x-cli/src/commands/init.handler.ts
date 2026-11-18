@@ -136,6 +136,23 @@ async function runSubProjectInit(params: InitParams): Promise<void> {
  * from managed worktrees by the Phase 1a guard above, so template paths
  * always resolve under the correct control-plane root. No re-anchoring needed.
  */
+/**
+ * Plan/review document skeletons scaffolded under `.5x/templates/`. These
+ * filenames are the `paths.templates.*` schema defaults.
+ */
+const DOCUMENT_TEMPLATES = [
+	{
+		key: "plan",
+		name: "implementation-plan-template.md",
+		content: DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
+	},
+	{
+		key: "review",
+		name: "review-template.md",
+		content: DEFAULT_REVIEW_TEMPLATE,
+	},
+] as const;
+
 function ensureTemplateFiles(
 	projectRoot: string,
 	force: boolean,
@@ -147,18 +164,11 @@ function ensureTemplateFiles(
 	const templatesDir = join(projectRoot, ".5x", "templates");
 	mkdirSync(templatesDir, { recursive: true });
 
-	const targets = [
-		{
-			name: "implementation-plan-template.md",
-			path: join(templatesDir, "implementation-plan-template.md"),
-			content: DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE,
-		},
-		{
-			name: "review-template.md",
-			path: join(templatesDir, "review-template.md"),
-			content: DEFAULT_REVIEW_TEMPLATE,
-		},
-	] as const;
+	const targets = DOCUMENT_TEMPLATES.map((t) => ({
+		name: t.name,
+		path: join(templatesDir, t.name),
+		content: t.content,
+	}));
 
 	const created: string[] = [];
 	const overwritten: string[] = [];
@@ -500,6 +510,7 @@ export async function initScaffold(params: InitParams): Promise<void> {
 // Export helpers for testing and for the upgrade command
 export {
 	checkInstalledPromptTemplates,
+	DOCUMENT_TEMPLATES,
 	ensureGitattributes,
 	ensureGitignore,
 	ensurePromptTemplates,
