@@ -14,8 +14,7 @@ import {
 	buildPlanGuide,
 	DELEGATED_ONLY_SECTIONS,
 	PLAN_GUIDE_TEMPLATE,
-	PLAN_PATH_PLACEHOLDER,
-	SOURCE_PLACEHOLDER,
+	PLAN_NAME_PLACEHOLDER,
 	stripSections,
 } from "../../../src/commands/guide.handler.js";
 import { CliError } from "../../../src/output.js";
@@ -160,20 +159,89 @@ describe("buildPlanGuide", () => {
 		}
 	});
 
-	test("without a source or plan path, tells the agent how to supply them", async () => {
+	test("without a source, works from the conversation instead of a path", async () => {
 		const dir = makeProject();
 		try {
-			const result = await buildPlanGuide({ startDir: dir, warn: quiet });
+			const result = await buildPlanGuide({
+				out: "docs/plans/a.md",
+				startDir: dir,
+				warn: quiet,
+			});
 			const { prompt } = result;
 
 			expect(result.source_path).toBeNull();
-			expect(result.plan_path).toBeNull();
-			expect(prompt).toContain(`Requirements document: ${SOURCE_PLACEHOLDER}`);
+			expect(prompt).toContain(
+				"- Requirements: given by the operator in this conversation",
+			);
+			expect(prompt).toContain(
+				"1. Work from the requirements the operator has given you in this conversation",
+			);
+			expect(prompt).toContain("ask the operator before writing anything");
 			expect(prompt).toContain("### Requirements");
-			expect(prompt).toContain("ask the operator\nbefore writing anything");
+			expect(prompt).toContain("do not cite the conversation as a source");
+			// No stand-in is left where a path would be.
+			expect(prompt).not.toContain("Requirements document:");
+			expect(prompt).not.toContain("5X-GUIDE");
+			expect(prompt).not.toContain("<requirements>");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	test("without a source, rewrites mentions in a project prompt override", async () => {
+		const override = getDefaultTemplateRaw(PLAN_GUIDE_TEMPLATE).replace(
+			"1. Read the requirements document at `{{prd_path}}` thoroughly.",
+			"1. Study `{{prd_path}}` and list its open questions.",
+		);
+		const dir = makeProject({ files: { [PROMPT_OVERRIDE]: override } });
+		try {
+			const { prompt } = await buildPlanGuide({ startDir: dir, warn: quiet });
+			expect(prompt).toContain(
+				"1. Study the requirements given in this conversation and list its open questions.",
+			);
+			expect(prompt).not.toContain("5X-GUIDE");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	test("without a plan path, resolves the plans directory and shows the naming in use", async () => {
+		const dir = makeProject({
+			files: {
+				"docs/plans/001-first.plan.md": "# 1\n",
+				"docs/plans/002-second.plan.md": "# 2\n",
+				"docs/plans/notes.txt": "x\n",
+			},
+		});
+		try {
+			const result = await buildPlanGuide({
+				source: "docs/tdd/limiter.md",
+				startDir: dir,
+				warn: quiet,
+			});
+			const { prompt } = result;
+			const shown = `docs/plans/${PLAN_NAME_PLACEHOLDER}`;
+
+			expect(result.plan_path).toBeNull();
+			expect(prompt).toContain(`Target plan output path: ${shown}`);
+			expect(prompt).toContain(`5x plan phases ${shown} | jq`);
 			expect(prompt).toContain("### Output path");
-			expect(prompt).toContain("Plans for this project live in `docs/plans`.");
-			expect(prompt).toContain(`5x plan phases ${PLAN_PATH_PLACEHOLDER} | jq`);
+			expect(prompt).toContain("Plans for this project live in `docs/plans`,");
+			expect(prompt).toContain(
+				"Recent plans there: `001-first.plan.md`, `002-second.plan.md`.",
+			);
+			expect(prompt).not.toContain("notes.txt");
+			expect(prompt).not.toContain("<plan-path>");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	test("without a plan path in an empty plans directory, says so", async () => {
+		const dir = makeProject();
+		try {
+			const { prompt } = await buildPlanGuide({ startDir: dir, warn: quiet });
+			expect(prompt).toContain("There are no plans there yet.");
 		} finally {
 			cleanup(dir);
 		}

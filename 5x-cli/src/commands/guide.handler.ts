@@ -9,7 +9,7 @@
  * write nothing, so they work in a repository that has never run `5x init`.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { resolveLayeredConfig } from "../config.js";
 import {
@@ -79,11 +79,35 @@ export const DELEGATED_ONLY_SECTIONS = [
 	"Completion",
 ] as const;
 
-/** Stand-in used throughout the guide when no plan path was given. */
-export const PLAN_PATH_PLACEHOLDER = "<plan-path>";
+/**
+ * File-name stand-in when no plan path was given. The guide shows it inside
+ * the configured plans directory, so only the name is left to choose.
+ */
+export const PLAN_NAME_PLACEHOLDER = "<plan-name>.md";
 
-/** Stand-in used throughout the guide when no requirements file was given. */
-export const SOURCE_PLACEHOLDER = "<requirements>";
+/** How many existing plan names to show as a naming example. */
+const PLAN_NAME_EXAMPLES = 3;
+
+/**
+ * Rendered in place of a requirements path when none was given, then
+ * rewritten: a path that is not a path would misdirect the agent.
+ */
+const NO_SOURCE_SENTINEL = "5X-GUIDE-NO-REQUIREMENTS-FILE";
+
+/** Wording for the bundled prompt's two path-shaped requirement lines. */
+const NO_SOURCE_REWRITES: ReadonlyArray<readonly [string, string]> = [
+	[
+		`- Requirements document: ${NO_SOURCE_SENTINEL}`,
+		"- Requirements: given by the operator in this conversation (no requirements file was passed)",
+	],
+	[
+		`Read the requirements document at \`${NO_SOURCE_SENTINEL}\` thoroughly.`,
+		"Work from the requirements the operator has given you in this conversation, such as a pasted document, an issue body, or a description. If you have none, ask the operator before writing anything.",
+	],
+];
+
+/** Any other mention, including in a project override of the prompt. */
+const NO_SOURCE_PHRASE = "the requirements given in this conversation";
 
 /** Where the guide points when the configured skeleton is missing on disk. */
 const INLINED_TEMPLATE_REFERENCE =
@@ -128,6 +152,28 @@ export function stripSections(
 	return { text: kept.join("\n").trimEnd(), removed };
 }
 
+/** Replace a requirements path that does not exist with conversation wording. */
+function describeConversationSource(prompt: string): string {
+	let text = prompt;
+	for (const [from, to] of NO_SOURCE_REWRITES) text = text.replace(from, to);
+	return text
+		.replaceAll(`\`${NO_SOURCE_SENTINEL}\``, NO_SOURCE_PHRASE)
+		.replaceAll(NO_SOURCE_SENTINEL, NO_SOURCE_PHRASE);
+}
+
+/** The last few plan file names in the plans directory, as naming examples. */
+function existingPlanNames(plansDir: string): string[] {
+	try {
+		return readdirSync(plansDir, { withFileTypes: true })
+			.filter((entry) => entry.isFile() && /\.md$/i.test(entry.name))
+			.map((entry) => entry.name)
+			.sort()
+			.slice(-PLAN_NAME_EXAMPLES);
+	} catch {
+		return [];
+	}
+}
+
 /** A path as the agent should type it: relative to its cwd when possible. */
 function displayPath(absPath: string, cwd: string): string {
 	const rel = relativePathUnder(absPath, cwd);
@@ -146,15 +192,18 @@ function fenceFor(content: string): string {
 
 interface StandaloneSectionInput {
 	source: string | null;
-	plan: string | null;
+	/** The plan path as shown in the guide; a placeholder path when not given. */
+	plan: string;
+	planGiven: boolean;
 	planExists: boolean;
 	plansDir: string;
+	existingPlans: string[];
 	inlinedTemplate: string | null;
 }
 
 /** The ending the guide owns: everything after the project's planning rules. */
 function standaloneSection(input: StandaloneSectionInput): string {
-	const plan = input.plan ?? PLAN_PATH_PLACEHOLDER;
+	const plan = input.plan;
 	const parts: string[] = [];
 
 	parts.push(
@@ -177,25 +226,27 @@ function standaloneSection(input: StandaloneSectionInput): string {
 			[
 				"### Requirements",
 				"",
-				`No requirements file was given. \`${SOURCE_PLACEHOLDER}\` in this guide means the`,
-				"requirements the operator has given you in this conversation, such as a pasted",
-				"document, an issue body, or a description. If you have none, ask the operator",
-				"before writing anything. A reviewer will later read the plan without this",
-				"conversation, so the plan must state those requirements well enough to stand",
-				"on its own.",
+				"No requirements file was given, so the requirements are what the operator has",
+				"told you in this conversation. A reviewer will later read the plan without",
+				"this conversation: state those requirements in the plan well enough for it to",
+				"stand on its own, and do not cite the conversation as a source.",
 			].join("\n"),
 		);
 	}
 
-	if (input.plan === null) {
+	if (!input.planGiven) {
+		const examples =
+			input.existingPlans.length > 0
+				? `Recent plans there: ${input.existingPlans.map((name) => `\`${name}\``).join(", ")}.`
+				: "There are no plans there yet.";
 		parts.push(
 			[
 				"### Output path",
 				"",
-				`No output path was given. Plans for this project live in \`${input.plansDir}\`.`,
-				"Choose a file name there that matches the plans already present, and ask the",
-				"operator if no convention is evident. Use that path wherever",
-				`\`${PLAN_PATH_PLACEHOLDER}\` appears in this guide.`,
+				`No output path was given. Plans for this project live in \`${input.plansDir}\`,`,
+				`so this guide uses \`${plan}\`. Replace \`${PLAN_NAME_PLACEHOLDER}\` with a file`,
+				"name that follows the naming of the plans already there, and ask the operator",
+				`if no convention is evident. ${examples}`,
 			].join("\n"),
 		);
 	} else if (input.planExists) {
@@ -358,24 +409,30 @@ export async function buildPlanGuide(
 		),
 	);
 	const templateSource = getTemplateSource(PLAN_GUIDE_TEMPLATE);
+	const shownPlansDir = displayPath(plansDir, cwd);
+	const shownPlan = planPath
+		? displayPath(planPath, cwd)
+		: `${shownPlansDir.replace(/[\\/]+$/, "")}/${PLAN_NAME_PLACEHOLDER}`;
 	const rendered = renderTemplate(PLAN_GUIDE_TEMPLATE, {
-		prd_path: sourcePath ? displayPath(sourcePath, cwd) : SOURCE_PLACEHOLDER,
-		plan_path: planPath ? displayPath(planPath, cwd) : PLAN_PATH_PLACEHOLDER,
+		prd_path: sourcePath ? displayPath(sourcePath, cwd) : NO_SOURCE_SENTINEL,
+		plan_path: shownPlan,
 		plan_template_path: inlined
 			? INLINED_TEMPLATE_REFERENCE
 			: displayPath(planTemplatePath, cwd),
 	});
 
 	const { text: rules } = stripSections(
-		rendered.prompt,
+		sourcePath ? rendered.prompt : describeConversationSource(rendered.prompt),
 		DELEGATED_ONLY_SECTIONS,
 	);
 
 	const ending = standaloneSection({
 		source: sourcePath ? displayPath(sourcePath, cwd) : null,
-		plan: planPath ? displayPath(planPath, cwd) : null,
+		plan: shownPlan,
+		planGiven: planPath !== null,
 		planExists: planPath !== null && existsSync(planPath),
-		plansDir: displayPath(plansDir, cwd),
+		plansDir: shownPlansDir,
+		existingPlans: planPath ? [] : existingPlanNames(plansDir),
 		inlinedTemplate: inlined ? DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE : null,
 	});
 
