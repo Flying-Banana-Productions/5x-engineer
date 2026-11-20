@@ -329,6 +329,8 @@ export interface DerivedImplementationGate {
 	decisionsHash: string;
 	causes: ImplementationObservationGateCause[];
 	resolved: boolean;
+	/** An advisory amendment gate; it offers only `authorize_amendment`. */
+	advisory?: true;
 }
 
 export interface ReviewGovernanceStore {
@@ -658,6 +660,57 @@ export function deriveOpenImplementationGate(
 	return null;
 }
 
+/**
+ * Advisory bindings derive no open gate, so their causes never block phase
+ * completion. A `plan_amendment` cause is the one exception, and only for
+ * `review gate show` and `review decide`: a scoped `authorize_amendment` is
+ * the sole entry to `5x review implementation amend`. Boundary and run-state
+ * checks keep using deriveOpenImplementationGate.
+ */
+export function deriveAdvisoryAmendmentGate(
+	recordStore: RecordStore,
+	runId: string,
+	phase: string,
+): DerivedImplementationGate | null {
+	const latest = latestGoverningImplementationObservation(
+		recordStore,
+		runId,
+		phase,
+	);
+	if (!latest) return null;
+	const fingerprint = bindingFingerprint(recordStore, runId, latest.bindingId);
+	if (fingerprint.mode !== "advisory") return null;
+	const causes = latest.gateCauses.filter(
+		(cause) => cause.kind === "plan_amendment",
+	);
+	if (causes.length === 0) return null;
+	const gateId = implementationObservationGateId({
+		runId,
+		phase,
+		bindingId: latest.bindingId,
+		observationId: latest.id,
+		causes,
+		...(latest.revisionId !== undefined
+			? { revisionId: latest.revisionId }
+			: {}),
+	});
+	if (recordStore.getLine(runId, "decisions", governanceDecisionKey(gateId)))
+		return null;
+	return {
+		domain: "implementation",
+		gateId,
+		runId,
+		observationId: latest.id,
+		bindingId: latest.bindingId,
+		phase,
+		ledgerHash: fingerprint.ledgerHash,
+		decisionsHash: fingerprint.decisionsHash,
+		causes,
+		resolved: false,
+		advisory: true,
+	};
+}
+
 function bindingFingerprint(
 	recordStore: RecordStore,
 	runId: string,
@@ -715,13 +768,22 @@ export function implementationGatePromptContext(input: {
 		phase: input.gate.phase,
 		causes: structuredClone(input.gate.causes),
 		eligibleFindings,
-		allowedChoices: allowedImplementationChoices(input.gate.causes),
+		allowedChoices: allowedImplementationGateChoices(input.gate),
 		requiredFieldsByChoice: structuredClone(
 			IMPLEMENTATION_DECISION_REQUIRED_FIELDS,
 		),
 		ledgerHash: input.ledgerHash,
 		decisionsHash: input.decisionsHash,
 	};
+}
+
+export function allowedImplementationGateChoices(
+	gate: DerivedImplementationGate,
+): ImplementationDecisionChoice[] {
+	// Advisory runs keep the v1 human gate for continue, override, and abort.
+	return gate.advisory
+		? ["authorize_amendment"]
+		: allowedImplementationChoices(gate.causes);
 }
 
 export function allowedImplementationChoices(

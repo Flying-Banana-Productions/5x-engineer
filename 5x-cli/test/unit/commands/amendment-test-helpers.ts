@@ -84,11 +84,11 @@ function item(id: string): VerdictItem {
 }
 
 /**
- * Seed an implementation run with a binding on `AMENDMENT_PLAN`, a phase 2
- * observation, and an accepted `authorize_amendment` from revision
- * `binding-1`. This is the state a plan reviewer sees before registration.
+ * Seed an implementation run with a binding on `AMENDMENT_PLAN` and a phase 2
+ * reviewer step whose observation carries a `plan_amendment` cause for R1.
+ * Nothing authorizes the amendment yet.
  */
-export function seedPendingImplementationAmendment(
+export function seedImplementationAmendmentObservation(
 	ctx: ReviewBudgetCommandContext,
 	input: {
 		runId: string;
@@ -229,6 +229,32 @@ export function seedPendingImplementationAmendment(
 		completionAuthorized: false,
 		createdAt: "2026-10-19T00:00:00.000Z",
 	});
+	putStep(
+		"reviewer:impl",
+		"2",
+		0,
+		{ readiness: "not_ready", items: [finding] },
+		input.priorCommit,
+	);
+	return { fingerprint, append, putStep };
+}
+
+/**
+ * Seed `seedImplementationAmendmentObservation` plus an accepted
+ * `authorize_amendment` from revision `binding-1`. This is the state a plan
+ * reviewer sees before registration.
+ */
+export function seedPendingImplementationAmendment(
+	ctx: ReviewBudgetCommandContext,
+	input: {
+		runId: string;
+		priorCommit: string;
+		authorCommit: string;
+		mode?: "advisory" | "enforced";
+	},
+) {
+	const { fingerprint, append, putStep } =
+		seedImplementationAmendmentObservation(ctx, input);
 	const scope = {
 		predecessorRevisionId: "binding-1",
 		earliestAffectedPhase: "2",
@@ -253,13 +279,6 @@ export function seedPendingImplementationAmendment(
 		amendmentScope: scope,
 	});
 	append("decisions", governanceDecisionKey(decision.gateId), decision);
-	putStep(
-		"reviewer:impl",
-		"2",
-		0,
-		{ readiness: "not_ready", items: [finding] },
-		input.priorCommit,
-	);
 	const human = putStep(
 		"human:review-governance",
 		"2",

@@ -525,7 +525,12 @@ When `PINNED_MODE` is `enforced`, that route is the only branch:
 
 When `PINNED_MODE` is `advisory`, keep ordinary reviewer re-entry. Do not take
 the no-review shortcut and do not add debt-based completion blocks. Ignore
-advisory hypothetical routes for advancement.
+advisory hypothetical routes for advancement. A `human_gate` route goes to
+Step 5a. When `nextAction` is `plan_amendment` and the operator authorizes a
+plan change, run `5x review gate show --phase $PHASE`: an advisory gate offers
+only `authorize_amendment`. Record it and follow the authorize → amend → assess
+→ register → resume sequence in Step 5b. Use Step 5a to continue, override, or
+abort without amending.
 
 When `PINNED_MODE` is empty, use the legacy readiness route:
 

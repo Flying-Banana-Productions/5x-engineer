@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { resolveAmendmentReviewContext } from "../../../src/commands/amendment-review-context.js";
 import {
 	amendImplementationPlanCommand,
+	showReviewGate,
 	submitReviewDecision,
 } from "../../../src/commands/review-decision.handler.js";
 import {
@@ -12,12 +13,14 @@ import {
 	stepIdempotencyKey,
 } from "../../../src/control-plane/index.js";
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
+import { deriveOpenImplementationGate } from "../../../src/review-governance/store.js";
 import type { ReviewGateCause } from "../../../src/review-governance/types.js";
 import { cleanGitEnv } from "../../helpers/clean-env.js";
 import {
 	AMENDED_PLAN,
 	amendmentLedger as ledger,
 	AMENDMENT_PLAN as PLAN,
+	seedImplementationAmendmentObservation,
 	seedPendingImplementationAmendment,
 } from "./amendment-test-helpers.js";
 import {
@@ -43,10 +46,8 @@ function git(dir: string, args: string[]): string {
 	return result.stdout.toString().trim();
 }
 
-function fixture(options?: {
+function repoFixture(options?: {
 	maxSteps?: number;
-	mode?: "advisory" | "enforced";
-	gateCauses?: ReviewGateCause[];
 	boundaryHash?: "review" | "side";
 }) {
 	const dir = mkdtempSync(join(tmpdir(), "amend-cmd-"));
@@ -84,13 +85,20 @@ function fixture(options?: {
 	ctx.executionContext.controlPlaneRoot = dir;
 	ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
 	ctx.executionContext.run.plan_path = "plan.md";
-	const { decision, scope, fingerprint, human, putStep } =
-		seedPendingImplementationAmendment(ctx, {
-			runId: RUN,
-			priorCommit: prior,
-			authorCommit: author,
-			mode: options?.mode,
-		});
+	return { dir, ctx, prior, author, review, boundary, amended };
+}
+
+/**
+ * Record the author, commit, and plan reviewer steps that assess the amended
+ * plan after the human step, and return the `amend` input that cites them.
+ */
+function recordPlanReview(
+	repo: ReturnType<typeof repoFixture>,
+	putStep: ReturnType<typeof seedImplementationAmendmentObservation>["putStep"],
+	humanStepId: string,
+	gateCauses?: ReviewGateCause[],
+) {
+	const { ctx, author, review, boundary, amended } = repo;
 	putStep(
 		"author:process-plan-review",
 		"plan",
@@ -138,16 +146,34 @@ function fixture(options?: {
 		findings: [],
 		assessments: [],
 		priorFindings: [],
-		effectiveGateCauses: options?.gateCauses ?? [],
+		effectiveGateCauses: gateCauses ?? [],
 		origin: TEST_ORIGIN,
 	});
-	const input = {
+	return {
 		runId: RUN,
-		humanStep: human.id,
+		humanStep: humanStepId,
 		approvalStep: "reviewer:plan:plan:1",
 		fromPhase: "2",
 		resolves: [] as string[],
 	};
+}
+
+function fixture(options?: {
+	maxSteps?: number;
+	mode?: "advisory" | "enforced";
+	gateCauses?: ReviewGateCause[];
+	boundaryHash?: "review" | "side";
+}) {
+	const repo = repoFixture(options);
+	const { dir, ctx, author, review } = repo;
+	const { decision, scope, fingerprint, human, putStep } =
+		seedPendingImplementationAmendment(ctx, {
+			runId: RUN,
+			priorCommit: repo.prior,
+			authorCommit: author,
+			mode: options?.mode,
+		});
+	const input = recordPlanReview(repo, putStep, human.id, options?.gateCauses);
 	return {
 		dir,
 		ctx,
@@ -397,6 +423,98 @@ describe("review implementation amend", () => {
 				).rejects.toThrow("unresolved approval gate");
 			} finally {
 				enforced.close();
+			}
+		},
+		20000,
+	);
+
+	test.serial(
+		"an advisory plan_amendment cause opens an authorize-only gate that amend registers",
+		async () => {
+			const repo = repoFixture();
+			try {
+				const { ctx } = repo;
+				const { fingerprint, putStep } = seedImplementationAmendmentObservation(
+					ctx,
+					{
+						runId: RUN,
+						priorCommit: repo.prior,
+						authorCommit: repo.author,
+					},
+				);
+				const promptStore = createMemoryPromptStore();
+				const deps = { context: ctx, promptStore };
+				const shown = await showReviewGate(RUN, deps, { phase: "2" });
+				if (!shown.open || !("gate" in shown))
+					throw new Error("expected an advisory amendment gate");
+				expect(shown).toMatchObject({
+					mode: "advisory",
+					allowedChoices: ["authorize_amendment"],
+				});
+				expect(shown.gate.causes).toEqual([
+					{ kind: "plan_amendment", findingId: "R1", fingerprint },
+				]);
+				expect(promptStore.listOpenPrompts(RUN)).toHaveLength(0);
+				// Boundary and run-state checks still see no open gate.
+				expect(
+					deriveOpenImplementationGate(ctx.recordStore, RUN, "2"),
+				).toBeNull();
+				const decide = (
+					choice: "authorize_amendment" | "defer_accept_risk",
+					extra: object = {},
+				) =>
+					submitReviewDecision(
+						{
+							runId: RUN,
+							gateId: shown.gate.gateId,
+							phase: "2",
+							findingIds: ["R1"],
+							payload: {
+								choice,
+								rationale: "Operator authorized the provider change",
+								evidence: [],
+								...extra,
+							},
+						},
+						deps,
+					);
+				await expect(decide("defer_accept_risk")).rejects.toMatchObject({
+					code: "REVIEW_DECISION_INVALID",
+				});
+				const decided = await decide("authorize_amendment", {
+					amendmentScope: {
+						predecessorRevisionId: "binding-1",
+						earliestAffectedPhase: "2",
+						reopenCompletedPhases: false,
+						claimEdits: [],
+						resolutionRefs: [],
+					},
+				});
+				expect(decided).toMatchObject({ nextAction: "plan_amendment" });
+				expect(await showReviewGate(RUN, deps, { phase: "2" })).toMatchObject({
+					open: false,
+					mode: "advisory",
+				});
+				const human = ctx.recordStore
+					.listLines(RUN, "steps")
+					.find(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"human:review-governance",
+					);
+				if (!human) throw new Error("expected the coupled human step");
+				const input = recordPlanReview(repo, putStep, human.idempotencyKey);
+				const preview = await amendImplementationPlanCommand(
+					{ ...input, dryRun: true },
+					ctx,
+				);
+				expect(preview.dryRun).toBe(true);
+				const recorded = await amendImplementationPlanCommand(input, ctx);
+				expect(recorded.created).toBe(true);
+				expect(recorded.completionAuthorized).toBe(false);
+			} finally {
+				repo.ctx.db.close();
+				rmSync(repo.dir, { recursive: true, force: true });
 			}
 		},
 		20000,
