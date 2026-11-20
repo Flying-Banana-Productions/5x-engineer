@@ -14,6 +14,19 @@ pending and may be deferred beyond 2.0.0.
 
 ### Features
 
+- **Plan-authoring guide for tools without a harness** — `5x guide plan [source]
+  [--out <plan-path>]` prints this project's plan-authoring rules as markdown for
+  an agent to follow, so a tool with no 5x harness installed can write a plan
+  that an orchestrator reviews later. It is built from the `author-generate-plan`
+  prompt, including a project override, and ends with standalone instructions:
+  check with `5x plan phases`, commit only on the operator's go-ahead, and hand
+  off for plan review. It is read-only and works before `5x init`. `--json`
+  returns an envelope.
+- **Delivery Budget check in `plan phases`** — `5x plan phases` adds a `budget`
+  block (`ok`, `required`, and a `diagnostic` when it fails) with the verdict
+  the pre-review repair gate would reach, so an author can check a draft's
+  Delivery Budget and debt-claim evidence before any review exists. It is
+  additive and nonblocking; `required` is false when review budgeting is off.
 - **Configurable worktree root** — `[worktree] root` sets where 5x creates plan
   worktrees. Relative values resolve against the config file's directory;
   absolute values may point outside the repository. Unset keeps

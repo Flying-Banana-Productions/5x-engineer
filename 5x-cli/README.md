@@ -132,6 +132,25 @@ tracked run records. The workflow asks you to resolve decisions it cannot make
 from the approved scope. Plan generation/review and implementation are distinct
 workflows; an approved plan is the starting point for implementation.
 
+### One-off tasks without a harness
+
+An agent with no 5x harness installed can still write a plan that a 5x
+orchestrator picks up later. For example, draft the plan in Claude Code, then
+review and implement it from OpenCode:
+
+```bash
+5x guide plan docs/product/my-feature-prd.md
+```
+
+The command prints this project's plan-authoring rules for the agent to follow,
+and ends by handing the plan off for review. It starts no run and installs
+nothing. To make it discoverable, add a line to the tool's instruction file
+(`CLAUDE.md`, `AGENTS.md`):
+
+```markdown
+To write an implementation plan, run `5x guide plan <requirements-file>` and follow its output.
+```
+
 ## Everyday commands
 
 Use `--text` for terminal inspection. Most commands default to JSON for automation.
