@@ -147,6 +147,15 @@ pending and may be deferred beyond 2.0.0.
 
 ### Fixes
 
+- **Plan amendments on advisory runs** — a run pinned to `advisory` mode can now
+  register a semantic plan amendment. Before, `review decide` rejected every
+  advisory decision, so `authorize_amendment` could not be recorded and an
+  amended plan stayed blocked by drift. When the latest phase review carries a
+  `plan_amendment` cause, `5x review gate show --phase <p>` now shows a gate
+  over only those causes that offers only `authorize_amendment`; then authorize,
+  amend, assess, register, and resume as in enforced mode. The gate never blocks
+  phase completion and creates no prompt. Advisory runs still use the v1 human
+  gate to continue, override, or abort.
 - **Template path defaults** — `paths.templates.plan` and
   `paths.templates.review` now default to the skeletons that `5x init` and
   `5x upgrade` scaffold under `.5x/templates/`, so new projects no longer point

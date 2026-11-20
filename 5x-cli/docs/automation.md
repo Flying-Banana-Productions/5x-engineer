@@ -244,6 +244,10 @@ For enforced implementation, the recorded result's `governance.route` and
 Advisory hypothetical routes do not authorize the no-review final-correction
 shortcut or introduce debt-based completion blocks. Keep ordinary reviewer
 re-entry. No-binding/off compatibility uses the legacy readiness contract.
+An advisory review with a `plan_amendment` cause is the one gate an advisory
+run exposes: `review gate show --phase <p>` offers only `authorize_amendment`,
+for the amendment sequence below. It never blocks phase completion; continue,
+override, and abort stay on the v1 human gate.
 
 `review implementation amend` registers a human-authorized, reviewer-approved
 semantic plan amendment on the existing execution run. It requires the coupled

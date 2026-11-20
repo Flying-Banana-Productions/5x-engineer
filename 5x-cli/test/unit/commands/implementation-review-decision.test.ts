@@ -386,7 +386,7 @@ describe("implementation review decide", () => {
 				{ context: ctx, promptStore },
 				{ phase: "1" },
 			);
-			if (!shown.open || !("allowedChoices" in shown))
+			if (!shown.open || !("allowedChoices" in shown) || !("promptId" in shown))
 				throw new Error("Expected inherited gate");
 			expect(shown.allowedChoices).toEqual(["revise_plan", "abort"]);
 			expect(shown.eligibleFindings).toEqual([]);
@@ -515,7 +515,7 @@ describe("implementation review decide", () => {
 				phase: "1",
 			},
 		);
-		if (!shown.open) throw new Error("expected gate");
+		if (!shown.open || !("promptId" in shown)) throw new Error("expected gate");
 		const input = {
 			runId: RUN,
 			gateId: shown.gate.gateId,
@@ -569,7 +569,7 @@ describe("implementation review decide", () => {
 				phase: "1",
 			},
 		);
-		if (!shown.open) throw new Error("expected gate");
+		if (!shown.open || !("promptId" in shown)) throw new Error("expected gate");
 		const original = ctx.recordStore.atomicAppendIfAllNew.bind(ctx.recordStore);
 		let injected = false;
 		ctx.recordStore.atomicAppendIfAllNew = (ops) => {
