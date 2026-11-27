@@ -108,6 +108,12 @@ export interface CaptureBaselineInput {
 	configSnapshot: ReviewBudgetThresholds;
 	mode: Exclude<ReviewBudgetMode, "off">;
 	origin: RecordOrigin;
+	/**
+	 * Governing baseline the run starts from. Omitted, it equals `b0`. A bound
+	 * execution run passes the binding's governing baseline so amendment
+	 * reviews are measured against the approved ceilings.
+	 */
+	governingB?: number;
 }
 
 export type CaptureBaselineResult =
@@ -340,6 +346,14 @@ export function createReviewBudgetStore(
 					"review budget baseline b0 must be a positive integer",
 				);
 			}
+			if (
+				input.governingB !== undefined &&
+				(!Number.isInteger(input.governingB) || input.governingB <= 0)
+			) {
+				throw new RangeError(
+					"review budget governing baseline must be a positive integer",
+				);
+			}
 			const createdAt = now();
 			const key = baselineIdempotencyKey(input.runId);
 			const result = recordStore.append({
@@ -352,7 +366,7 @@ export function createReviewBudgetStore(
 					runId: input.runId,
 					captureKind: input.captureKind,
 					b0,
-					b: b0,
+					b: input.governingB ?? b0,
 					originalLedger: input.parsed,
 					surface: input.parsed.surface,
 					originalSection: input.originalSection ?? null,

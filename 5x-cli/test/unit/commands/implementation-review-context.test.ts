@@ -629,7 +629,7 @@ describe("implementation review observations", () => {
 			protocol.pending.gateCauses.some(
 				(cause) => cause.kind === "inherited_budget",
 			),
-		).toBe(true);
+		).toBe(false);
 		expect(protocol.pending.telemetry.addedPaths).toEqual(["src/new.ts"]);
 		expect(protocol.pending.telemetry.boundaryInventory).toEqual([
 			{ itemId: "I1", changes: [], unknown: true },
@@ -742,7 +742,7 @@ describe("implementation review observations", () => {
 		ctx.db.close();
 	});
 
-	test("a complete route with inherited budget becomes a human gate", async () => {
+	test("an over-budget binding is telemetry, not an implementation gate", async () => {
 		const ctx = makeBudgetContext({ mode: "enforced" });
 		seed(ctx, binding({ effort: 8, governingB: 1 }));
 		const composed = await composeImplementationReviewerRecord({
@@ -757,22 +757,25 @@ describe("implementation review observations", () => {
 		});
 		expect(composed.status).toBe("applied");
 		if (composed.status !== "applied") return;
-		expect(composed.pending.route).toBe("human_gate");
-		expect(composed.pending.nextAction).toBe("human_gate");
+		expect(composed.pending.route).toBe("complete");
+		expect(composed.pending.gateCauses).toEqual([]);
 		expect(
-			composed.pending.gateCauses.some(
-				(cause) => cause.kind === "inherited_budget",
+			composed.pending.diagnostics.some(
+				(diagnostic) => diagnostic.code === "INHERITED_BUDGET_UNRESOLVED",
 			),
-		).toBe(true);
-		expect(composed.pending.completionAuthorized).toBe(false);
+		).toBe(false);
+		// The recorded figures still show the overage.
+		expect(composed.pending.inheritedBudgetGovernance?.requiresHuman).toBe(
+			true,
+		);
 		const written = await recordImplementationReviewerStepWithObservation(
 			recordParams(readyVerdict(), 1),
 			composed.pending,
 			ctx,
+			composed.reconciliation,
 		);
-		expect(written.observation?.route).toBe("human_gate");
-		expect(written.observation?.nextAction).toBe("human_gate");
-		expect(written.completionAuthorized).toBe(false);
+		expect(written.observation?.route).toBe("complete");
+		expect(written.completionAuthorized).toBe(true);
 		ctx.db.close();
 	});
 
@@ -1443,6 +1446,125 @@ describe("implementation credit reconciliation composition", () => {
 			],
 		};
 	}
+
+	/**
+	 * Governing baseline 30: standard ceiling 38, absolute ceiling 45. The
+	 * ledger totals 39 points, with one intrinsic -2 claim due in phase 1.
+	 */
+	function overStandardBinding() {
+		const seedBinding = binding({ governingB: 30 });
+		seedBinding.phaseMap = [
+			{ id: "1", heading: "Phase 1" },
+			{ id: "2", heading: "Phase 2" },
+		];
+		const base = seedBinding.ledger.workItems[0];
+		if (!base) throw new Error("missing work item");
+		const efforts: Array<1 | 2 | 3 | 5 | 8> = [8, 8, 8, 8, 5];
+		seedBinding.ledger.workItems = [
+			...efforts.map((effort, index) => ({
+				...structuredClone(base),
+				id: `W${index + 1}`,
+				effort,
+				debtClaim: null,
+			})),
+			{
+				...structuredClone(base),
+				id: "W6",
+				effort: 2,
+				architectureDelta: -2,
+				debtClaim: {
+					debtClaimId: "DC1",
+					coupling: "intrinsic",
+					targetPhase: "1",
+					minimalAlternativeEffortDelta: 0,
+					minimalAlternativeArchitectureDelta: 0,
+					before: "two stores",
+					after: "one binding",
+				},
+			},
+		];
+		seedBinding.debtTargets = [
+			{ claimId: "DC1", sourceLabel: "1", phaseId: "1" },
+		];
+		return seedBinding;
+	}
+
+	async function composeOverStandard(realization: "realized" | "not_realized") {
+		const ctx = makeBudgetContext({ mode: "enforced" });
+		ctx.store.saveImplementationBinding(overStandardBinding(), TEST_ORIGIN);
+		ctx.store.saveImplementationReviewContext(
+			phaseContext("1", COMMIT, "ctx-1"),
+			TEST_ORIGIN,
+		);
+		const composed = await composeImplementationReviewerRecord({
+			ctx,
+			runId: "run1",
+			stepName: STEP,
+			phase: "1",
+			iteration: 1,
+			verdict: {
+				readiness: "ready" as const,
+				items: [],
+				creditRealizations: [
+					{
+						creditClaimId: "DC1",
+						realization,
+						realizedArchitectureDelta: realization === "realized" ? -2 : 0,
+						evidence: `Post-state at ${COMMIT} reviewed.`,
+					},
+				],
+			},
+			contextId: "ctx-1",
+			codeContext: phaseDiff(COMMIT),
+		});
+		return { ctx, composed };
+	}
+
+	test("verified credit covers effort above the standard ceiling at review time", async () => {
+		const { ctx, composed } = await composeOverStandard("realized");
+		try {
+			if (composed.status !== "applied")
+				throw new Error(`expected applied: ${JSON.stringify(composed)}`);
+			expect(composed.pending.route).toBe("complete");
+			expect(composed.pending.gateCauses).toEqual([]);
+			// One budget: the observation and the reconciliation agree.
+			expect(composed.reconciliation.budget).toMatchObject({
+				W: 39,
+				S: 38,
+				E: 40,
+				realizedCredit: 2,
+				budgetBand: "within_debt_allowance",
+				requiresHuman: false,
+			});
+			expect(composed.pending.inheritedBudgetGovernance).toEqual(
+				composed.reconciliation.budget.inheritedBudgetGovernance,
+			);
+			expect(composed.pending.inheritedBudgetGovernance?.requiresHuman).toBe(
+				false,
+			);
+		} finally {
+			ctx.db.close();
+		}
+	});
+
+	test("unrealized credit still blocks through the credit shortfall gate", async () => {
+		const { ctx, composed } = await composeOverStandard("not_realized");
+		try {
+			if (composed.status !== "applied")
+				throw new Error(`expected applied: ${JSON.stringify(composed)}`);
+			expect(composed.reconciliation.budget).toMatchObject({
+				E: 38,
+				budgetBand: "over_effective",
+				requiresHuman: true,
+			});
+			expect(composed.pending.route).toBe("human_gate");
+			expect(composed.pending.gateCauses.map((cause) => cause.kind)).toEqual([
+				"credit_shortfall",
+			]);
+		} finally {
+			ctx.db.close();
+		}
+	});
 
 	test("composition persists reconciliation, downgrades completion, and matches invoke and protocol", async () => {
 		const ctx = makeBudgetContext({ mode: "enforced" });

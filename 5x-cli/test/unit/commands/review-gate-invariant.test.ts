@@ -365,29 +365,18 @@ describe("enforced empty negative verdicts are response repairs", () => {
 		}
 	});
 
-	test("implementation: an independent inherited cause keeps a real, decidable gate", async () => {
+	test("implementation: an over-budget binding is not an independent gate cause", async () => {
 		const ctx = implementationContext(binding({ effort: 8, governingB: 1 }));
 		try {
 			const composed = await compose(ctx, {
 				readiness: "not_ready",
 				items: [],
 			});
-			if (composed.status !== "applied") throw new Error("expected applied");
-			expect(composed.pending.route).toBe("human_gate");
-			expect(composed.pending.gateCauses.map((cause) => cause.kind)).toEqual([
-				"inherited_budget",
-			]);
-			await recordImplementationReviewerStepWithObservation(
-				recordParams({ readiness: "not_ready", items: [] }, 1),
-				composed.pending,
-				ctx,
-				composed.reconciliation,
-			);
+			// Budget is enforced at plan review, so an empty negative verdict
+			// has no independent cause and stays a reviewer response repair.
+			expect(composed.status).toBe("error");
 			expect(
 				deriveOpenImplementationGate(ctx.recordStore, RUN, PHASE),
-			).not.toBeNull();
-			expect(
-				deriveGatelessImplementationObservation(ctx.recordStore, RUN, PHASE),
 			).toBeNull();
 		} finally {
 			ctx.db.close();
@@ -841,7 +830,8 @@ const ROUTES: Array<{
 			band: "within_standard",
 			alerts: ["positive_architecture_exceeded"],
 		},
-		payload: { choice: "revise_plan", rationale: "Return to plan review" },
+		// Historical cause: only abort is offered; a fresh review supersedes it.
+		payload: { choice: "abort", rationale: "Historical inherited gate" },
 	},
 	{
 		name: "credit_shortfall",

@@ -789,9 +789,10 @@ export function allowedImplementationGateChoices(
 export function allowedImplementationChoices(
 	causes: readonly ImplementationObservationGateCause[],
 ): ImplementationDecisionChoice[] {
+	// Historical `inherited_budget` causes offer no decision of their own.
+	// A fresh implementation review supersedes them; `revise_plan` stays
+	// decodable for recorded decisions but is no longer offered.
 	const choices: ImplementationDecisionChoice[] = [];
-	if (causes.some((cause) => cause.kind === "inherited_budget"))
-		choices.push("revise_plan");
 	if (causes.some((cause) => cause.kind === "plan_amendment"))
 		choices.push("authorize_amendment");
 	if (
@@ -804,8 +805,7 @@ export function allowedImplementationChoices(
 	)
 		choices.push("defer_accept_risk", "accept_with_restriction");
 	// Claim choices require a shortfall whose claim ids scope validation and
-	// coverage can both accept. Inherited budgets can request plan revision;
-	// they cannot be waived by an unrelated claim decision.
+	// coverage can both accept.
 	if (
 		causes.some(
 			(cause) => cause.kind === "credit_shortfall" && cause.claimIds.length > 0,
