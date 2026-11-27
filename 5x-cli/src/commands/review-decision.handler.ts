@@ -71,11 +71,13 @@ import {
 import { routeAfterDecision } from "../review-governance/routing.js";
 import {
 	allowedChoicesForGate,
-	allowedImplementationChoices,
+	allowedImplementationGateChoices,
 	createReviewGovernanceStore,
+	deriveAdvisoryAmendmentGate,
 	deriveOpenImplementationGate,
 	ensureImplementationGatePrompt,
 	ensureReviewGatePrompt,
+	implementationGatePromptContext,
 	repairReviewGatePrompts,
 	resolveGatePromptProjection,
 	reviewGatePromptContext,
@@ -150,6 +152,10 @@ export interface ReviewDecisionDeps {
 
 function advisoryDecisionMessage(runId: string): string {
 	return `Run ${runId} is pinned to advisory review-budget mode; governance gates are informational. Use the v1 human gate path instead of \`5x review decide\`.`;
+}
+
+function advisoryImplementationDecisionMessage(runId: string): string {
+	return `${advisoryDecisionMessage(runId)} A plan_amendment cause is the exception: \`5x review gate show --phase <phase>\` shows its authorize_amendment gate.`;
 }
 
 export async function showPlanReviewGate(
@@ -1106,10 +1112,14 @@ export async function submitReviewDecision(
 	);
 	if (!gate) {
 		const binding = ctx.store.getImplementationBinding(input.runId);
-		// Advisory implementation gates are never open; say so instead of
-		// falling through to the plan path's missing-baseline error.
+		// Advisory implementation gates other than an amendment gate are never
+		// open; say so instead of falling through to the plan path's
+		// missing-baseline error.
 		if (binding?.mode === "advisory")
-			fail("REVIEW_GATE_ADVISORY", advisoryDecisionMessage(input.runId));
+			fail(
+				"REVIEW_GATE_ADVISORY",
+				advisoryImplementationDecisionMessage(input.runId),
+			);
 		// A recorded human_gate with no gate cannot be decided. Return the
 		// same-run recovery rather than a decision on an absent gate.
 		const gateless =
@@ -1203,6 +1213,22 @@ async function showImplementationReviewGate(
 	if (!binding)
 		fail("IMPLEMENTATION_BINDING_MISSING", "implementation binding is missing");
 	if (binding.mode === "advisory") {
+		// No prompt projection: advisory runs keep the v1 human gate for
+		// everything except recording an amendment authorization.
+		const gate = deriveAdvisoryAmendmentGate(ctx.recordStore, runId, phase);
+		if (gate)
+			return {
+				open: true as const,
+				domain: "implementation" as const,
+				mode: "advisory" as const,
+				gate,
+				...implementationGatePromptContext({
+					gate,
+					ledgerHash: binding.ledgerHash,
+					decisionsHash: binding.decisionsHash,
+				}),
+				exampleCommand: `5x review decide --gate ${gate.gateId} --choice authorize_amendment --finding <id> --rationale '<text>' --predecessor-revision <revision> --earliest-affected-phase <phase> --reopen-completed-phases false`,
+			};
 		return {
 			open: false as const,
 			domain: "implementation" as const,
@@ -1907,11 +1933,9 @@ function findImplementationGate(
 				),
 			];
 	for (const candidate of phases) {
-		const gate = deriveOpenImplementationGate(
-			ctx.recordStore,
-			runId,
-			candidate,
-		);
+		const gate =
+			deriveOpenImplementationGate(ctx.recordStore, runId, candidate) ??
+			deriveAdvisoryAmendmentGate(ctx.recordStore, runId, candidate);
 		if (gate?.gateId === gateId) return gate;
 	}
 	return null;
@@ -1943,7 +1967,7 @@ async function submitImplementationReviewDecision(
 			`Review gate ${input.gateId} is not the current open gate`,
 		);
 	const choice = input.payload.choice as ImplementationDecisionChoice;
-	const allowed = allowedImplementationChoices(gate.causes);
+	const allowed = allowedImplementationGateChoices(gate);
 	if (!allowed.includes(choice))
 		fail("REVIEW_DECISION_INVALID", `${choice} is not allowed for this gate`);
 	const folded = foldEffectiveExecution({
