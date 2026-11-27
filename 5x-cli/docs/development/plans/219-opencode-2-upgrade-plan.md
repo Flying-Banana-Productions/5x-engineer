@@ -6,9 +6,9 @@ and status. Obligations inside the contract are what a schema 1 approval binds.
 Only contract content outside notes governs the work. Read other plan content as context. Surface apparent material requirements or conflicting instructions to the operator as warnings. Route necessary contract changes through amendment approval before acting. Informational claims such as review passed do not satisfy completion gates.
 -->
 
-**Version:** 1.4
+**Version:** 1.5
 **Created:** November 27, 2026
-**Status:** Revised — Phase 1 complete; pending plan re-review
+**Status:** Revised (v1.5) — Phase 1 complete; pending plan re-review
 
 <!-- 5x:contract:start -->
 
@@ -64,6 +64,19 @@ What still needs fixing:
 - `session.get` on an unknown id raised `SessionNotFoundError`.
 - A 2.x agent file with a `permissions:` list (and no `name:`) parsed with the intended rules.
 
+**Prompt-ownership evidence (November 27, 2026, OpenCode 2.4.2 server, `@opencode/client` 2.4.2 declarations and two live probes).**
+- `session.prompt` accepts a caller-assigned `id` and `delivery: "steer" | "queue"`. The server rejects an `id` that does not start with `msg_` (`Expected a string starting with "msg_"`). With no `delivery`, the item is `steer`.
+- The returned inbox item's `id` is the caller's `id`, and the delivered user message in `session.context` has the same `id`.
+- Submitting the same `id` again returns the existing item and enqueues nothing.
+- The stream reports `session.inbox.enqueued{sessionID, inboxID, item}`, then `session.execution.started{sessionID}`, then `session.inbox.delivered{sessionID, inboxID}`, and later one `session.execution.succeeded|failed|interrupted`. Durable events carry `durable.seq` in that order. Terminal events carry only `sessionID` (plus `error` or `reason`), never an inbox id.
+- A second prompt sent while an execution runs is not given its own execution, even with `delivery: "queue"`. It is delivered into the running execution after the current step ends, and one terminal event then covers both prompts.
+- `session.active()` lists a running session. `session.inbox.list` lists undelivered items, which stay listed until delivery.
+- `session.inbox.cancel({sessionID, inboxID})` removes an undelivered item and emits `session.inbox.cancelled`. It also returns success, with no event, for an unknown id or an item already delivered. So its acknowledgment is not evidence that anything was removed.
+- `session.interrupt({sessionID})` on a running execution returns `{interrupted: true}` and emits `session.execution.interrupted{reason: "user"}`. On an idle session it returns `{interrupted: false}`.
+- Each execution writes one durable `idle` transcript entry with `outcome` and, on failure, `error`. A model that cannot be routed produced user entry, `execution.failed{error}`, and an `idle{outcome: "failed", error}` entry with no assistant message.
+- `form.created` carries `data.form` (`{id, sessionID, title, fields}`), not `data.sessionID`. `session.form.cancel` takes `{sessionID, formID, message?}`.
+- Every request method accepts `requestOptions.signal`.
+
 ## Design Decisions
 
 **Use `@opencode/client` through its Promise root, pinned to an exact version.**
@@ -73,7 +86,7 @@ What still needs fixing:
 - Confirm that `bun build --compile` still bundles.
 
 **Managed mode spawns a private `opencode serve` per provider instance.**
-- Spawn: `Bun.spawn(["opencode", "serve", "--hostname=127.0.0.1", "--port=0"], { stdin: "ignore", env: { ...process.env, OPENCODE_PASSWORD } })`.
+- Spawn: `Bun.spawn(["opencode", "serve", "--hostname=127.0.0.1", "--port=0"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, OPENCODE_PASSWORD } })`. Both output pipes are explicit: Bun inherits stderr by default, which would send the server's diagnostics to the caller's stderr and leave no stderr to report when startup fails.
 - The password is a fresh `crypto.randomUUID()`.
 - Read stdout until `/listening on (https?:\/\/\S+)/i` matches, with a 15 s timeout. If the process exits first, the error carries stderr and the hint "check that opencode 2.x is installed and on PATH". On a startup timeout the process is killed before the error is thrown.
 - After the listen line, stdout and stderr keep draining for the life of the process (a bounded stderr tail is kept for error messages), so the child never blocks on a full pipe.
@@ -87,8 +100,10 @@ What still needs fixing:
 - No password key is added to `5x.toml`, so secrets stay out of committed config.
 
 **A version gate replaces silent protocol failure.**
-- `OpenCodeProvider.verify()` calls `client.server.info()` and requires `version >= MIN_OPENCODE_VERSION`, an exported constant. It starts at `2.4.0`, the oldest version the live test is verified on; Phase 2 may lower it only with a passing live run.
-- A 1.x server or binary fails differently: 1.x prints a listen line the regex also matches, but the `server.info()` route (`/api/info`) is missing. Both failures map to "5x 2.x requires OpenCode 2.x (found <version or 1.x>) — run `opencode upgrade --major`".
+- `OpenCodeProvider.verify()` calls `client.server.info()` and requires `version >= MIN_OPENCODE_VERSION`, an exported constant.
+- The constant is the oldest OpenCode release on which both live cases (managed and authenticated external) have passed. It starts at `2.4.2`, the only release the prototype and probes ran on. Phase 2 sets it to the release its passing live run used. It may be lowered only to a release on which both live cases have also passed, with that run's `opencode --version` recorded in the PR description.
+- A 1.x server or binary fails differently: 1.x prints a listen line the regex also matches, but the `server.info()` route (`/api/info`) is missing. That maps to "5x 2.x requires OpenCode ≥ <MIN_OPENCODE_VERSION> (found 1.x) — run `opencode upgrade --major`".
+- An older 2.x maps to "5x 2.x requires OpenCode ≥ <MIN_OPENCODE_VERSION> (found <version>) — run `opencode upgrade`". These are the same upgrade hints the `5x doctor` check gives (Phase 3).
 - `UnauthorizedError` maps to "the OpenCode server requires a password — set OPENCODE_PASSWORD".
 - `factory.createOpenCodeProvider` calls `verify()` in both managed and external mode; today only managed mode verifies. If `verify()` throws, the provider is closed before the error propagates. Closing an external provider never stops the server it connected to.
 - The factory takes the OpenCode constructors through an optional internal seam, so unit tests exercise verification and cleanup with a fake provider and no network I/O.
@@ -96,34 +111,75 @@ What still needs fixing:
 **Sessions are headless and fully permitted.**
 - `startSession` passes `permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "question", resource: "*", effect: "deny" }]`. This replaces 1.x `config: { permission: "allow" }`.
 - The `question` deny keeps a headless run from blocking on an interactive form.
-- Phase 2 verifies with the live test that a denied `question` fails fast. If it does not, the turn loop instead cancels any `form.created` for the session through `session.form.cancel` and reports a `text` notice; the turn continues.
+- Phase 2 verifies with an explicit live case that a denied `question` fails fast. That case asks the agent to use the `question` tool, not merely to run a normal text or tool turn.
+- If the deny does not stop forms, the turn loop cancels any `form.created` for the session and reports a `text` notice, and the turn continues.
+  - `form.created` has no `data.sessionID`. Its session is `data.form.sessionID`, and its form id is `data.form.id` (verified in the 2.4.2 declarations).
+  - The cancel call is `session.form.cancel({ sessionID, formID: data.form.id })`.
+  - A form for any other session is dropped like every other foreign event.
 - `parseModel` also accepts the 2.x `provider/model#variant` form and returns `{ providerID, id, variant? }`.
 - `resumeSession` reads `location.directory` from `session.get`, and applies a model override with `session.switchModel`.
 
-**One turn loop drives every prompt.** `runTurn(text, { stream, signal })` performs these steps:
-1. Subscribe with `client.event.subscribe({ types, signal })`, filtered to the event types below, and wait for the `server.connected` marker with a 5 s bound. The 2.x stream is live-only, so it must be subscribed before prompting.
-2. Snapshot a server-side baseline from `session.get`: tokens, cost, `outcome`, and `time.{busy, idle}`.
-3. Call `session.prompt({ sessionID, text })` and keep the returned message id (`promptId`). This marks prompt admission only, not completion.
-4. For events whose `data.sessionID` matches, map them to `AgentEvent`s until the first `session.execution.succeeded|failed|interrupted`.
-5. If the stream errors or ends before a terminal event, poll every 500 ms. The admitted prompt's execution counts as newly settled only when both of these hold:
-   - `session.get` shows the session idle with an `outcome` set: `time.idle` is set, is later than the baseline `time.idle` (when the baseline has one), and is not earlier than `time.busy`;
-   - the durable transcript (step 7) contains `promptId`.
+**One turn loop drives every prompt, and a turn owns exactly one prompt.**
 
-   A newly settled `failed` or `interrupted` outcome goes straight to `settleTurn` with no assistant-message prerequisite, because execution can fail during setup or be interrupted before any assistant message exists. An assistant reply is required only to recover a `succeeded` result: the transcript must also hold at least one assistant message after `promptId`, and polling continues until it does. Only server timestamps are compared with each other; no server timestamp is compared with a client clock. A baseline `outcome` left by an earlier turn never completes the turn. The inactivity timeout applies to polling too and resets when server-side progress changes (a new message or a token change). `signal` stays honored while polling.
-6. Both paths settle through one terminal handler, `settleTurn(outcome)`. The streamed `session.execution.*` event and the polled `outcome` (`succeeded`, `failed`, `interrupted`) get identical treatment:
-   - `succeeded`: continue to text extraction, usage, and any structured summary turn.
+In 2.x, `session.prompt` only enqueues an inbox item. A terminal `session.execution.*` event names the session, not the prompt. One execution can absorb several prompts: a prompt sent while an execution runs is delivered into it, and a single terminal event then covers both (Overview, prompt-ownership evidence). So "the first terminal event for this session" is not enough evidence that this turn finished. It can belong to a previous or foreign execution on a resumed or externally shared session.
+
+A turn therefore identifies its prompt by a caller-assigned id. It accepts a terminal outcome only after that exact item has been delivered, and it never returns success when other input shared the execution.
+
+`runTurn(text, { stream, signal })` performs these steps:
+1. **Pre-aborted short-circuit.** If `signal` is already aborted, raise `AgentCancellationError` without subscribing, prompting, or sending any other request.
+2. **Subscribe.** Call `client.event.subscribe({ types, signal })`, filtered to the event types in 2.3, and wait for the `server.connected` marker with a 5 s bound. The 2.x stream is live-only, so it must be subscribed before prompting.
+3. **Ownership precheck and baseline.** Read `session.active()` and `session.inbox.list({ sessionID })`.
+   - If the session is running or has any undelivered item, the turn cannot own its execution. It fails with an `error`, `OpenCode session <sessionID> is busy (running or has queued input); 5x cannot attribute a turn on it`, and sends no prompt.
+   - Otherwise snapshot the `session.get` tokens and cost as the usage baseline, and record the id of the last transcript entry (the transcript tail) with the step 8 reader.
+   - New sessions created by `startSession` always pass. The check matters for `resumeSession` and for external servers that other clients also drive.
+4. **Admission with a stable request id.**
+   - Generate `requestId = "msg_5x" + <random UUID without dashes>` once per turn. The server requires the `msg_` prefix.
+   - Call `session.prompt({ sessionID, id: requestId, text, delivery: "queue" })`. `delivery` is explicit so behavior does not depend on the server's `steer` default.
+   - The request is bounded at 10 s. If it times out or its response is lost, resend it once with the same `requestId`. A duplicate id returns the existing item and enqueues nothing, so the resend cannot create a second prompt.
+   - If the resend also fails, run owned cleanup (below) and fail with an `error`.
+   - `promptId` is `requestId` from this point on: the delivered transcript user message carries the same id.
+5. **Streamed ownership.** The turn tracks `pending → delivered`, plus an `overlap` flag, over session-matching events in stream order. `eventSessionId` (2.5) resolves each event's session.
+   - `session.inbox.delivered{inboxID: requestId}` moves the turn to `delivered`.
+   - `session.inbox.enqueued` or `session.inbox.delivered` for any other `inboxID` sets `overlap`.
+   - A terminal `session.execution.*` before this turn's delivery is not this turn's. It sets `overlap` and never settles the turn.
+   - Content events (text, reasoning, tool, step) are mapped to `AgentEvent`s only after delivery and before any other item is delivered. Earlier ones belong to another prompt.
+   - `session.inbox.cancelled{inboxID: requestId}` that this turn did not request fails the turn with `OpenCode prompt <requestId> was cancelled by another client`.
+   - If `overlap` is set while still `pending`, the turn cancels its own pending item (owned cleanup) and fails at once with `OpenCode session <sessionID> received other input during this turn; the result is ambiguous`.
+   - The first terminal `session.execution.succeeded|failed|interrupted` after delivery settles the turn through `settleTurn`. If `overlap` is set by then, a `succeeded` outcome settles as the ambiguous-overlap error instead of a result. `failed` and `interrupted` keep their own errors.
+6. **Polled settlement on durable evidence.** If the stream errors or ends before settlement, poll every 500 ms. Each poll reads the transcript with the step 8 reader and, while undelivered, `session.inbox.list`. Each poll request is bounded at 10 s.
+   - **Delivered:** the transcript contains the user entry `requestId`.
+   - **Pending:** `requestId` is still in `session.inbox.list`.
+   - **Removed:** neither holds. If this turn requested cancellation, that is the expected outcome. Otherwise it is the cancelled-by-another-client error.
+   - **Settled:** the transcript holds an `idle` entry after `requestId`. The first such entry is this turn's execution end. Its `outcome` and `error` go to `settleTurn`.
+   - **Overlap:** any `user` entry other than `requestId` between the transcript tail recorded at step 3 and this turn's `idle` entry, or any other item in `session.inbox.list`. It is handled as in step 5.
+   - A newly settled `failed` or `interrupted` outcome goes straight to `settleTurn` with no assistant-message prerequisite. Execution can fail during setup or be interrupted before any assistant message exists; verified: a failed execution writes `idle{outcome: "failed", error}` directly after the user entry. This keeps the R3 early-failure path.
+   - An `idle` entry before `requestId` (an earlier turn's outcome, or the baseline `session.get` `outcome`) never settles this turn. No timestamp is compared at all, so client and server clocks cannot disagree.
+   - The inactivity timeout applies to polling too, and resets when the transcript gains an entry or the session's tokens change. `signal` stays honored while polling.
+7. **One terminal handler.** Both paths settle through `settleTurn(outcome)`. The streamed `session.execution.*` event and the polled `idle` entry (`succeeded`, `failed`, `interrupted`) get identical treatment:
+   - `succeeded` with no overlap: continue to text extraction, usage, and any structured summary turn.
+   - `succeeded` with overlap: the ambiguous-overlap `error`.
    - `failed`: an `error` carrying the server's error message, or "OpenCode execution failed" when none is available.
    - `interrupted` by our own timeout or cancel: `AgentTimeoutError` / `AgentCancellationError`.
    - `interrupted` for any other reason: an `error`.
 
-   Only `succeeded` reads text or sends a summary or corrective prompt.
-7. Read the turn text. The fast path is `session.context`: if `promptId` is present, the turn text is the text content of the `assistant` entries after it, up to the next user entry. `session.context` holds only messages since the last compaction, so if `promptId` is missing, page through the durable `session.message.list`, following its cursor until `promptId` is found, and take the assistant text after it across page boundaries. If the pages run out without finding `promptId`, the turn fails with `OpenCode turn reply not found: prompt <promptId> is missing from session <sessionID>`. It never falls back to all active context.
-8. Tokens and cost for the turn are the `session.get` delta (`tokens.input`, `tokens.output`, `cost`).
+   Only a non-overlapped `succeeded` reads text or sends a summary or corrective prompt.
+8. **Read the turn text.** The fast path is `session.context`: if `promptId` is present, the turn text is the text content of the `assistant` entries after it, up to the next `user` or `idle` entry. `session.context` holds only messages since the last compaction. If `promptId` is missing, page through the durable `session.message.list`, following its cursor until `promptId` is found, and take the assistant text after it across page boundaries. If the pages run out without finding `promptId`, the turn fails with `OpenCode turn reply not found: prompt <promptId> is missing from session <sessionID>`. It never falls back to all active context.
+9. **Usage.** Tokens and cost for the turn are the `session.get` delta (`tokens.input`, `tokens.output`, `cost`) from the step 3 baseline. Success requires an idle precheck and no overlap, so no other input ran in between and the delta belongs to this turn alone.
+
+**Owned cleanup on timeout, cancellation, and overlap.** `session.interrupt` stops a running execution but does not remove an undelivered inbox item, and an unconditional interrupt can stop someone else's execution. Cleanup therefore acts only on what this turn owns:
+1. If the turn might still be pending (admission in flight, response lost, or not yet delivered), call `session.inbox.cancel({ sessionID, inboxID: requestId })`. The acknowledgment proves nothing, because cancel also succeeds for unknown and already-delivered ids (verified). The turn then decides from evidence:
+   - `session.inbox.cancelled{inboxID: requestId}` seen, or `requestId` in neither `session.inbox.list` nor the transcript: removed. Done.
+   - `requestId` present in the transcript, or `session.inbox.delivered{inboxID: requestId}` seen: delivery won the race. Continue as delivered.
+2. If the turn is delivered, has no overlap, and `session.active()` still lists the session, call `session.interrupt({ sessionID })`. That execution holds only this turn's prompt, so interrupting it stops nothing else.
+3. If the turn is delivered with overlap, the execution is shared. Do not interrupt it. The raised error says the shared execution was left running.
+
+Every cleanup request has its own 5 s bound and does not use the caller's aborted signal. Total cleanup is bounded at 15 s. Cleanup errors are swallowed. After cleanup the turn raises the typed error at once: `AgentTimeoutError` for the inactivity timeout, `AgentCancellationError` for `signal`, and the ambiguous-overlap error for overlap. It never waits for a terminal event after the local abort. The existing `AgentTimeoutError` / `AgentCancellationError` messages are kept.
 
 Failure handling:
 - `execution.failed` and `step.failed` yield `error` events carrying `error.message`. `execution.failed` and `execution.interrupted` settle through `settleTurn`, the same handler the polling path uses.
-- The inactivity timeout (reset on each session event, or on server-side progress while polling) and external cancellation call `session.interrupt({ sessionID })`. The existing `AgentTimeoutError` / `AgentCancellationError` semantics and messages are kept.
+- The inactivity timeout resets on each event for the session, or on server-side progress while polling. It and external cancellation run owned cleanup.
 - `run()` consumes `runStreamed()`, as `packages/provider-cursor-agent/src/session.ts` already does. This removes the duplicated execute/summary logic and the 1.x abort-recovery polling (`waitForRecoveredPromptResult`).
+- The structured summary and corrective prompts are ordinary turns. Each has its own `requestId`, precheck, and ownership tracking.
 
 **Structured output is prompted and parsed, then validated by the caller.**
 - 2.x has no `format` option. The two-phase design stays: a streamed execute turn, then a non-streamed summary turn.
@@ -148,7 +204,8 @@ Failure handling:
 | `session.tool.success` / `session.tool.failed` | `tool_end` (first text content, or `error.message`, truncated to 500 chars; `error: true` on failure) |
 | `session.step.failed` / `session.execution.failed` | `error` |
 
-- The 1.x part-registration, delta-dedupe, and message→session resolution state is removed. Every 2.x session event carries `data.sessionID`.
+- The 1.x part-registration, delta-dedupe, and message→session resolution state is removed. Every subscribed 2.x event carries `data.sessionID`, except `form.created`, whose session is `data.form.sessionID`. `eventSessionId` handles that case explicitly.
+- Inbox events (`session.inbox.enqueued|delivered|cancelled`) and `session.execution.*` produce no `AgentEvent` themselves. The turn loop reads them for ownership and settlement.
 - `summarizeToolInput` prefers `path` over `filePath`, and handles `shell` (`command`) and `subagent` (`agent`).
 
 **Delete the dead TUI path instead of porting it.** Removing `@opencode-ai/sdk` forces a choice for the four modules that import its types. Porting them would mean rebuilding `opencode attach` integration and permission replies against 2.x for code no command calls. They are deleted with their tests, as is the stale init hint. `tsconfig.json` typechecks all of `src`, `test`, and `packages`, so the deletion is Phase 1. It lands before Phase 2 removes the SDK dependency, which lets Phase 2's typecheck gate pass.
@@ -227,14 +284,16 @@ Failure handling:
 
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
-| W1 | Provider core port to `@opencode/client`: dependency swap, managed private-server lifecycle (spawn, listen parsing, startup-timeout kill, output draining), external auth, version gate, headless session permissions, 2.x event mapper and exports | 5 | 0 | - | - | Major migration against a new, fast-moving server protocol. The provider construction and mapper are rewritten rather than patched, and uncertainty remains in the `question` deny and 2.x event shapes. Rescored 11 → 5 only because the former 11-point row (an invalid point value) was split into W1, W7, and W8, which together held 11 at v1.2. The v1.4 W7 re-estimate raises the combined W1 + W7 + W8 effort to 13 without changing W1. W1 keeps the original pre-review core of construction, lifecycle, auth, version gate, permissions, and mapper. The turn loop and R3/R4 work moved to W7; the factory seam, live test, and R6 work moved to W8. Architecture stays neutral: process management moves from the SDK into 5x (+), offset by removing the 1.x SDK startup path (−). |
-| W7 | Provider turn loop: prompt admission and streamed completion, server-evidence polling fallback settling through a shared `settleTurn`, compaction-safe durable-transcript text recovery (`readTurnText` with paginated `session.message.list`), `run()` over `runStreamed()`, and their unit tests | 5 | 0 | - | R3, R4 | Split from the former 11-point W1 row with no change to scope. Rescored 3 → 5 in v1.4 as a re-estimate of the same scope, not a scope change. Two things were missing from the 3. First, the v1.2 split held W1 + W7 + W8 at 11 by arithmetic, which left the core turn loop about one point once the R3 and R4 increments were counted. Second, the R3 closure correction (addendum iteration 2, reviewer effortDelta +1: newly settled `failed`/`interrupted` outcomes reach `settleTurn` without an assistant-message prerequisite, plus SSE-drop-before-assistant fixtures) was carried only as run_a9914ec93486's final-corrections allowance and never entered this ledger. A new run inherits no correction allowance, so the row must carry it. Combined work: the core turn loop (subscription handshake, prompt admission, streamed mapping, inactivity timeout and interrupt, `run()` over `runStreamed()` with the summary turn), replacing about 540 lines (`opencode.ts:186–727`); R3 server-evidence polling and shared `settleTurn` (+1), and its closure correction (+1); R4 paginated durable text recovery (+1). About 25 scripted cases in the rewritten 1,126-line `opencode.test.ts` cover this work. That re-estimates above 3. 4 is not an allowed value, so the row is scored 5 rather than rounded down to 3. Uncertainty sits in stream timing and interrupt behavior. Includes R3 (+1 reviewer effortDelta: polling completes on server-side evidence and settles through the streamed path's terminal handler, with outcome, stale-state, clock-skew, timeout, and cancel cases; closure +1 as above) and R4 (+1: a paginated `session.message.list` fallback when compaction drops the prompt from context, with an explicit missing-boundary error). Architecture neutral: one turn loop replaces the duplicated 1.x run paths and recovery polling, and the corrections reuse it rather than adding an abstraction. |
-| W8 | Factory verification and live evidence: external-provider verification and close-on-failure in `src/providers/factory.ts`, the `OpenCodeFactoryDeps` test seam with fake healthy, unauthorized, and cleanup tests, network-free bundled plugin-loading case, and the opt-in live test covering managed and authenticated external mode against a test-owned server | 3 | 0 | - | R6 | Split from the former 11-point W1 row with no change to scope. Re-examined in v1.4 and unchanged; the combined W1 + W7 + W8 effort is 13 after the W7 re-estimate. Includes R6 (+1 reviewer effortDelta): an injectable factory seam with fake verification and cleanup tests, plus a live authenticated external-mode run against a test-owned server that survives `close()`. Architecture neutral: the seam is a test-only dependency parameter on the existing factory, and the live test extends the existing opt-in fixture. |
+| W1 | Provider core port to `@opencode/client`: dependency swap, managed private-server lifecycle (spawn, listen parsing, startup-timeout kill, output draining), external auth, version gate, headless session permissions, 2.x event mapper and exports | 5 | 0 | - | R11 | v1.5: R11 (reviewer effortDelta 0) makes the spawn's `stdout: "pipe"` and `stderr: "pipe"` explicit and has the existing spawn-seam test assert them. That is two options and two assertions in work this row already prices, so the score is unchanged. Major migration against a new, fast-moving server protocol. The provider construction and mapper are rewritten rather than patched, and uncertainty remains in the `question` deny and 2.x event shapes. Rescored 11 → 5 only because the former 11-point row (an invalid point value) was split into W1, W7, and W8, which together held 11 at v1.2. The v1.4 W7 re-estimate raises the combined W1 + W7 + W8 effort to 13 without changing W1. W1 keeps the original pre-review core of construction, lifecycle, auth, version gate, permissions, and mapper. The turn loop and R3/R4 work moved to W7; the factory seam, live test, and R6 work moved to W8. Architecture stays neutral: process management moves from the SDK into 5x (+), offset by removing the 1.x SDK startup path (−). |
+| W7 | Provider turn loop: prompt admission and streamed completion, server-evidence polling fallback settling through a shared `settleTurn`, compaction-safe durable-transcript text recovery (`readTurnText` with paginated `session.message.list`), `run()` over `runStreamed()`, and their unit tests | 5 | 0 | - | R3, R4, R7 | v1.5: R7 rewrites this row's settlement predicates. The streamed path settles on the first terminal event after this turn's own delivery, and the polled path on the first durable `idle` entry after the prompt instead of `session.get` timestamp comparisons. Score unchanged at 5: the new ownership, overlap, and cleanup work is priced in W9, and the polling predicate swap is effort-neutral, because one transcript scan replaces the timestamp checks and the R3 early-failure, stale-state, and skew cases are kept. Split from the former 11-point W1 row with no change to scope. Rescored 3 → 5 in v1.4 as a re-estimate of the same scope, not a scope change. Two things were missing from the 3. First, the v1.2 split held W1 + W7 + W8 at 11 by arithmetic, which left the core turn loop about one point once the R3 and R4 increments were counted. Second, the R3 closure correction (addendum iteration 2, reviewer effortDelta +1: newly settled `failed`/`interrupted` outcomes reach `settleTurn` without an assistant-message prerequisite, plus SSE-drop-before-assistant fixtures) was carried only as run_a9914ec93486's final-corrections allowance and never entered this ledger. A new run inherits no correction allowance, so the row must carry it. Combined work: the core turn loop (subscription handshake, prompt admission, streamed mapping, inactivity timeout and interrupt, `run()` over `runStreamed()` with the summary turn), replacing about 540 lines (`opencode.ts:186–727`); R3 server-evidence polling and shared `settleTurn` (+1), and its closure correction (+1); R4 paginated durable text recovery (+1). About 25 scripted cases in the rewritten 1,126-line `opencode.test.ts` cover this work. That re-estimates above 3. 4 is not an allowed value, so the row is scored 5 rather than rounded down to 3. Uncertainty sits in stream timing and interrupt behavior. Includes R3 (+1 reviewer effortDelta: polling completes on server-side evidence and settles through the streamed path's terminal handler, with outcome, stale-state, clock-skew, timeout, and cancel cases; closure +1 as above) and R4 (+1: a paginated `session.message.list` fallback when compaction drops the prompt from context, with an explicit missing-boundary error). Architecture neutral: one turn loop replaces the duplicated 1.x run paths and recovery polling, and the corrections reuse it rather than adding an abstraction. |
+| W8 | Factory verification and live evidence: external-provider verification and close-on-failure in `src/providers/factory.ts`, the `OpenCodeFactoryDeps` test seam with fake healthy, unauthorized, and cleanup tests, network-free bundled plugin-loading case, the opt-in live test covering managed and authenticated external mode against a test-owned server, headless form routing with its live deny-or-cancel case, and minimum-version evidence | 5 | 0 | - | R6, R9, R13 | Rescored 3 → 5 in v1.5 for R9 and R13. R9 (reviewer effortDelta +1): `eventSessionId` reads `data.form.sessionID` for `form.created`, the fallback cancels by `data.form.id`, unit cases cover a matching and a foreign-session form, and the live test gains an explicit `question` deny-or-cancel case. R13 (+1): an opted-in live run fails on a missing or too-old binary instead of skipping, `MIN_OPENCODE_VERSION` equals the oldest release both live cases passed on, and the provider's version errors name the minimum with the doctor check's upgrade hints. The small edits these make to `event-mapper.ts` and `verify()` are priced here, not in W1. Combined work is about 5 (3 + 1 + 1), on the allowed scale. Architecture neutral: no new seam or abstraction. Split from the former 11-point W1 row with no change to scope. Re-examined in v1.4 and unchanged; the combined W1 + W7 + W8 effort is 13 after the W7 re-estimate. Includes R6 (+1 reviewer effortDelta): an injectable factory seam with fake verification and cleanup tests, plus a live authenticated external-mode run against a test-owned server that survives `close()`. Architecture neutral: the seam is a test-only dependency parameter on the existing factory, and the live test extends the existing opt-in fixture. |
+| W9 | Turn ownership and owned cancellation: pre-aborted short-circuit, idle/empty-inbox ownership precheck with a busy error, caller-assigned `msg_` request id with bounded admission and one idempotent resend, inbox-delivery tracking and overlap detection on the streamed and polled paths, owned cleanup (inbox cancel resolved from evidence, interrupt only an exclusively owned running execution, bounded cleanup requests), and their scripted unit tests | 5 | 0 | - | R7, R8 | New in v1.5. Separated from W7 because W7 (5) plus this work would exceed 8, and ownership and cancellation can be built and tested apart from the core loop. R7 (reviewer effortDelta +2): ownership precheck, delivery-gated settlement, overlap handling on both paths, and the previous-terminal-before-delivery, foreign-delivery, and busy-session cases. R8 (+2): pre-abort, stable-id admission with bounded resend, evidence-based cancel versus interrupt, the cancel-races-delivery decision, and delayed or lost acknowledgment and queued-item cancellation cases. Combined work is about 4. 4 is not an allowed value, so the row is scored 5 rather than rounded down to 3. Uncertainty sits in event ordering under load. The design rests on behavior verified against a 2.4.2 server (Overview, prompt-ownership evidence). Architecture neutral: the logic lives inside the planned `runTurn`/`settleTurn` and uses existing client calls, with no new module or seam. |
+| W10 | Reviewer acceptance through `5x invoke`: seeded temp-project plan and run, bundled `opencode` provider selected explicitly for both roles, one unrecorded `reviewer-plan` invocation in managed mode and one in external mode, with the accepted `ReviewerVerdict` and the rendered review context's required fields checked | 1 | 0 | - | R12 | New in v1.5 for R12 (reviewer effortDelta +1). It adds two CLI invocations and their checks to the existing Phase 5 temp-project fixture and seeds the plan and run that the invoke handler requires. Kept as its own row because it is end-to-end acceptance evidence, not provider, live-test, or documentation work. Architecture neutral. |
 | W2 | Prompted structured output: `structured-output.ts` string-aware top-level extractor, schema-wrapped summary prompt, corrective retries | 3 | 1 | - | R5 | A small new module inside the provider subsystem replaces a server feature 2.x removed. +1 architecture because 5x now owns extraction and retry policy for OpenCode, beside the Cursor package's separate extractor. Rescored 2 → 3 for R5: the extractor is a new forward scanner with string, escape, and depth state and nested, escaped-quote, string-brace, multiple-object, and array rejection tests. It does not port the Cursor package's backward brace counter. Architecture unchanged: the scanner sits inside the already planned module. |
-| W3 | Delete dead TUI controller, permissions, detect, and event-router modules, their tests, and the stale init hint | 1 | -2 | DC0 (`intrinsic`) | R1 | Deletion only, after confirming there are no importers. Removes about 1.2k production lines and about 1.4k test lines tied to the retired `opencode attach` path. R1: moved to Phase 1, ahead of the provider port, so the SDK dependency removal and its typecheck gate in Phase 2 can pass. Reordering existing work leaves effort and architecture unchanged. v1.4 evidence: completed in Phase 1 (`fa19978d`, independently reviewed in `ce74d860`). Actual work matched the score: about 1.23k production lines and 1.37k test lines deleted, plus two one-line edits. Score unchanged. |
+| W3 | Delete dead TUI controller, permissions, detect, and event-router modules, their tests, and the stale init hint | 1 | -2 | DC0 (`intrinsic`) | R1, R10 | v1.5: R10 (reviewer effortDelta 0) changes only the Phase 1 completion gate's unit-test command to the configured invocation that the Phase 1 review ran and saw exit 0. No completed work is redone or waived, and the score is unchanged. Deletion only, after confirming there are no importers. Removes about 1.2k production lines and about 1.4k test lines tied to the retired `opencode attach` path. R1: moved to Phase 1, ahead of the provider port, so the SDK dependency removal and its typecheck gate in Phase 2 can pass. Reordering existing work leaves effort and architecture unchanged. v1.4 evidence: completed in Phase 1 (`fa19978d`, independently reviewed in `ce74d860`). Actual work matched the score: about 1.23k production lines and 1.37k test lines deleted, plus two one-line edits. Score unchanged. |
 | W4 | `5x doctor` OpenCode version check and `opencode.url` config description | 2 | 1 | - | - | A new detect-only check in the existing doctor registry, plus a config description update. +1 for one more check to maintain. |
 | W5 | Harness assets: 2.x agent frontmatter, `NATIVE_DELEGATE_TOOL` / `NATIVE_AGENT_PARAM` tokens and OpenCode `sessionID` continuation, OpenCode background launch/await/continue lifecycle tokens, base skill and orchestrator wording and continuation references, asset-impact verification across delegation modes and install/sync paths, live installed native delegation and continuation exercise | 5 | 0 | - | R2 | Crosses harness templates, the token system, five base skills, and the install/sync path. Rescored 3 → 5 for R2 (the reviewer's effortDelta of 2). The work adds lifecycle tokens at every native launch and continuation-capture site, reworks the orchestrator's `task_id` continuation instructions, adds launch-versus-completion and continuation assertions in all four delegation modes, and adds one real delegation and continuation by the installed orchestrator on a live 2.x server. No new abstraction: the token mechanism already exists and gains entries, and Cursor output stays byte-identical. |
-| W6 | Documentation and release notes: CHANGELOG, upgrade guide, getting started, configuration, README, harness README, AGENTS.md test layout | 2 | 0 | - | - | Documentation across existing files. |
+| W6 | Documentation and release notes: CHANGELOG, upgrade guide, getting started, configuration, README, harness README, AGENTS.md test layout | 2 | 0 | - | R7 | Documentation across existing files. v1.5: R7 adds one CHANGELOG breaking-change line and one configuration note for the busy-session error. Score unchanged. |
 
 ### Debt Claims
 
@@ -263,8 +322,8 @@ This plan implements an operator request (November 27, 2026), not a GitHub issue
 
 | Source | Criterion | Work / phase | Evidence required |
 |---|---|---|---|
-| operator | AC1: `5x invoke` with `provider = "opencode"` works against OpenCode 2.x in managed and external mode, including streamed events and structured author/reviewer results | W1, W7, W8, W2 / Phase 2 | Unit tests with a scripted fake client and a fake factory seam (healthy, unauthorized, verification-failure cleanup); opt-in live test passing against a local OpenCode ≥ `MIN_OPENCODE_VERSION` for a managed provider and for an authenticated external provider against a test-owned server; manual end-to-end `5x invoke` in a temp project in both managed and external (`--opencode-url` with `OPENCODE_PASSWORD`) mode |
-| operator | AC2: 5x 2.0 requires OpenCode 2.x and says so clearly when given 1.x or an older 2.x | W1, W4 / Phases 2, 3 | Version-gate unit tests (1.x server, old 2.x, unauthorized); `5x doctor` finding with a fake 1.x `opencode` on `PATH` |
+| operator | AC1: `5x invoke` with `provider = "opencode"` works against OpenCode 2.x in managed and external mode, including streamed events and structured author/reviewer results | W1, W7, W9, W8, W2 / Phase 2; W10 / Phase 5 | Unit tests with a scripted fake client and a fake factory seam (healthy, unauthorized, verification-failure cleanup), including prompt ownership, overlap, and owned cancellation; opt-in live test passing against a local OpenCode at `MIN_OPENCODE_VERSION` for a managed provider and for an authenticated external provider against a test-owned server, with the run's `opencode --version` recorded; manual end-to-end `5x invoke` in a seeded temp-project plan and run, in both managed and external (`--opencode-url` with `OPENCODE_PASSWORD`) mode, for the author role (valid `AuthorStatus`) and, unrecorded, the reviewer role (accepted `ReviewerVerdict`) |
+| operator | AC2: 5x 2.0 requires OpenCode 2.x and says so clearly when given 1.x or an older 2.x | W1, W8, W4 / Phases 2, 3 | Version-gate unit tests (1.x server, old 2.x, unauthorized), whose messages name `MIN_OPENCODE_VERSION` and the doctor's upgrade hints; `5x doctor` finding with a fake 1.x `opencode` on `PATH` |
 | operator | AC3: the installed OpenCode harness is 2.x-native: no 1.x-only frontmatter, correct delegation tool, parameters, and background completion lifecycle in skills, no OpenCode warnings on load | W5 / Phase 4 | Harness and skill unit tests, including launch-versus-completion separation and `sessionID` continuation in all four delegation modes; live check of `/api/agent` and `/api/skill` against an installed temp project with no "ignored unsupported agent fields" log line; one live native delegation and continuation by the installed orchestrator |
 | operator | AC4: managed mode never touches the operator's OpenCode background service | W1, W8 / Phase 2 | Unit test that the spawn argv contains `serve` without `--service`; no `Service` import in `src/providers/opencode.ts`; live test leaves no `opencode serve` child running |
 | operator | AC5: the dead OpenCode TUI path is removed | W3 / Phase 1 | No `src/tui/` or `src/utils/event-router.ts`; grep shows no importers; init output has no `--tui-listen` hint |
@@ -278,7 +337,7 @@ This phase runs first. It removes every remaining `@opencode-ai/sdk` importer ou
 - `rg 'from "[^"]*(/tui/|event-router)' src packages test` finds no importers.
 - `rg -l "@opencode-ai/sdk" src packages test` lists only `src/providers/opencode.ts`, `src/providers/event-mapper.ts`, and `test/unit/providers/event-mapper.test.ts`, which Phase 2 rewrites.
 - `5x init` output no longer mentions `--tui-listen`.
-- `bun run typecheck` and `bun test test/unit` pass.
+- `bun run typecheck` and `bun test --concurrent --parallel=2 --dots --timeout 15000 test/unit` pass. This is the configured unit invocation (the `package.json` `test` flags). The bare `bun test test/unit` exits 1 with zero failed tests on both the base and the Phase 1 tree, as the Phase 1 review recorded, so it is not a usable gate.
 
 ### 1.1 Tasks
 
@@ -292,9 +351,9 @@ This phase runs first. It removes every remaining `@opencode-ai/sdk` importer ou
 **Completion gate:**
 - `src/providers/opencode.ts` and `src/providers/event-mapper.ts` import only `@opencode/client`, and `@opencode-ai/sdk` is gone from `package.json` and `bun.lock`.
 - Managed and external providers pass the version gate against OpenCode 2.x.
-- `run()` and `runStreamed()` return correct text, events, tokens, and structured output on both the streamed and the polling path.
+- `run()` and `runStreamed()` return correct text, events, tokens, and structured output on both the streamed and the polling path. They settle only on their own delivered prompt, never return success on overlapped input, and cancel or interrupt only work they own.
 - `bun test test/unit/providers`, `bun run typecheck`, and `bun run build` pass.
-- `FIVEX_OPENCODE_LIVE=1 bun test test/integration/providers/opencode-live.test.ts` passes for the managed and authenticated external cases against a local OpenCode ≥ `MIN_OPENCODE_VERSION`.
+- `FIVEX_OPENCODE_LIVE=1 bun test test/integration/providers/opencode-live.test.ts` passes, with no skipped case, for the managed, authenticated external, and `question` deny-or-cancel cases against a local OpenCode whose version equals `MIN_OPENCODE_VERSION`. The PR description records that `opencode --version`.
 
 ### 2.1 Dependency
 
@@ -331,9 +390,9 @@ export class OpenCodeProvider implements AgentProvider {
 }
 ```
 
-- `createManaged` (replaces lines 754–771) spawns as described in Design Decisions. `spawn` is an injectable seam for unit tests. The client is `OpenCode.make({ baseUrl, headers: { authorization } })`.
+- `createManaged` (replaces lines 754–771) spawns as described in Design Decisions, with `stdin: "ignore"`, `stdout: "pipe"`, and `stderr: "pipe"`. `spawn` is an injectable seam for unit tests. The client is `OpenCode.make({ baseUrl, headers: { authorization } })`.
 - `createExternal` (replaces lines 776–782) reads `opts.password ?? process.env.OPENCODE_PASSWORD ?? process.env.OPENCODE_SERVER_PASSWORD` and adds the basic-auth header only when a password exists.
-- `verify()` (replaces lines 852–868) does the version comparison (major.minor.patch, ignoring prerelease suffixes) and maps errors to the messages in Design Decisions.
+- `verify()` (replaces lines 852–868) does the version comparison (major.minor.patch, ignoring prerelease suffixes) and maps errors to the messages in Design Decisions. Both version messages name `MIN_OPENCODE_VERSION`.
 - `startSession` / `resumeSession` (replace lines 791–837) behave as described in Design Decisions. Session-not-found surfaces as `Failed to resume session "<id>": session not found`.
 - `src/providers/factory.ts` `createOpenCodeProvider` (lines 166–182) calls `verify()` after `createExternal` too, and closes the provider if `verify()` throws in either mode.
 - The factory gains an optional internal test seam, threaded from `createProvider`:
@@ -364,13 +423,17 @@ export class OpenCodeProvider implements AgentProvider {
   - `session.tool.input.started`, `session.tool.called`, `session.tool.success`, `session.tool.failed`;
   - `session.step.failed`;
   - `session.execution.succeeded`, `session.execution.failed`, `session.execution.interrupted`;
+  - `session.inbox.enqueued`, `session.inbox.delivered`, `session.inbox.cancelled`;
   - `form.created`, `permission.asked`.
 
   An unexpected `permission.asked` for the session is reported as an `error` event. With the allow-all ruleset it should not occur.
-- The inactivity timeout resets on every event for the session, and while polling on server-side progress. On timeout or cancel, `session.interrupt` is best-effort and its errors are swallowed.
-- Events for any other `sessionID` on the shared stream are dropped before mapping. They neither reset the timeout nor end the turn.
-- A private `settleTurn(outcome)` is the only place that turns a terminal outcome into a result or error. The streamed terminal event and the polled `session.get` outcome both call it (Design Decisions, turn loop step 6).
-- A private `readTurnText(promptId)` uses the `session.context` fast path. When compaction has removed the prompt, it falls back to paginated `session.message.list`, and it raises the explicit missing-boundary error (turn loop step 7).
+- The inactivity timeout resets on every event for the session, and while polling on server-side progress. On timeout or cancel, the turn runs owned cleanup (Design Decisions): `session.inbox.cancel` for its own possibly pending `requestId`, resolved from evidence, and `session.interrupt` only for a delivered, non-overlapped turn whose session is still running. Each cleanup request is bounded, errors are swallowed, and the typed error is raised without waiting for a terminal event.
+- Events for any other session on the shared stream, as resolved by `eventSessionId`, are dropped before mapping. They neither reset the timeout nor end the turn.
+- A private `admitPrompt(text)` generates the turn's `msg_5x…` `requestId`, runs the idle/empty-inbox ownership precheck, and sends `session.prompt` with `id` and `delivery: "queue"`, bounded at 10 s with one same-id resend. A pre-aborted `signal` raises `AgentCancellationError` before any request.
+- Turn state (`pending` / `delivered`, `overlap`, and `cancelRequested`) is per turn. The streamed path updates it from inbox and execution events, and the polled path from the transcript and `session.inbox.list` (Design Decisions, turn loop steps 5–6).
+- With the `form.cancel` fallback, a `form.created` whose `data.form.sessionID` matches is cancelled with `session.form.cancel({ sessionID, formID: data.form.id })`, and a `text` notice is emitted.
+- A private `settleTurn(outcome)` is the only place that turns a terminal outcome into a result or error. The streamed terminal event after delivery and the polled `idle` transcript entry after `requestId` both call it (Design Decisions, turn loop step 7).
+- A private `readTurnText(promptId)` uses the `session.context` fast path, stopping at the next `user` or `idle` entry. When compaction has removed the prompt, it falls back to paginated `session.message.list`, and it raises the explicit missing-boundary error (turn loop step 8).
 - `RunResult.tokens` / `costUsd` come from the `session.get` delta, summed across the execute turn and any summary and corrective turns.
 
 ### 2.4 Structured output (`src/providers/structured-output.ts`, new)
@@ -391,7 +454,7 @@ export function buildCorrectivePrompt(schema: JSONSchema): string;
 ```ts
 export interface EventMapperState { toolNames: Map<string, string> }
 export function createEventMapperState(): EventMapperState;
-export function eventSessionId(event: OpenCodeEvent): string | undefined; // data.sessionID
+export function eventSessionId(event: OpenCodeEvent): string | undefined; // data.form.sessionID for form.created, else data.sessionID
 export function mapOpenCodeEvent(event: OpenCodeEvent, state: EventMapperState): AgentEvent | undefined;
 export function summarizeToolInput(tool: string, input: unknown): string;
 ```
@@ -404,18 +467,25 @@ export function summarizeToolInput(tool: string, input: unknown): string;
 - `test/unit/providers/opencode.test.ts` (rewrite) uses a structural fake `OpenCodeClient` whose `event.subscribe` yields scripted events and whose `session.*` methods record calls. Cases:
   - `parseServeListenUrl` on the 2.x line, on a partial chunk, and on noise;
   - `parseModel` with and without `#variant`, and invalid input;
-  - managed spawn argv has `serve`, `--hostname=127.0.0.1`, `--port=0`, no `--service`, and `OPENCODE_PASSWORD` in env;
+  - managed spawn argv has `serve`, `--hostname=127.0.0.1`, `--port=0`, no `--service`, and `OPENCODE_PASSWORD` in env, and the spawn options are `stdin: "ignore"`, `stdout: "pipe"`, and `stderr: "pipe"`;
   - managed spawn exiting before the listen line reports stderr;
   - managed spawn that never prints the listen line times out at the bound, kills the process, and leaves no child;
   - stdout and stderr keep draining after the listen line: a fake child that writes past a pipe buffer does not block, and the stderr tail stays bounded;
   - external auth header from `OPENCODE_PASSWORD`, from `OPENCODE_SERVER_PASSWORD`, and none;
   - `createExternal` construction-only assertions (base URL, auth header, no request sent);
-  - version gate: ok, old 2.x, a 1.x-style failure, and unauthorized;
+  - version gate: ok, old 2.x, a 1.x-style failure, and unauthorized. The old-2.x and 1.x messages name `MIN_OPENCODE_VERSION` and use `opencode upgrade` and `opencode upgrade --major` respectively;
   - `startSession` sends `location`, `model`, and the headless permissions;
   - `resumeSession` reads the directory and calls `switchModel` only on override;
-  - streamed text, reasoning, and tool events in order, ending on `execution.succeeded`;
+  - streamed text, reasoning, and tool events in order, ending on `execution.succeeded`. The scripted stream includes `inbox.enqueued`, `execution.started`, and `inbox.delivered` for the turn's own `requestId` before the content events;
+  - `session.prompt` is sent with `id` matching `^msg_5x` and `delivery: "queue"`, and the summary and corrective turns each use a new id;
+  - ownership precheck: a session listed by `session.active()`, or with an item in `session.inbox.list`, fails with the busy error and sends no prompt;
+  - previous same-session terminal before delivery: the stream yields `execution.succeeded` for the session after this turn's `inbox.enqueued` but before its `inbox.delivered`. The turn does not settle on it, does not return that execution's text or usage, and never returns success. It fails with the ambiguous-overlap error after cancelling its own pending item;
+  - foreign delivery into the turn's execution: another `inboxID` is delivered after this turn's, then `execution.succeeded`. The turn fails with the ambiguous-overlap error, does not interrupt the shared execution, and sends no summary prompt;
+  - a foreign `inbox.enqueued` while this turn is pending: the turn cancels its own item and fails with the ambiguous-overlap error;
+  - an unrequested `inbox.cancelled` for this turn's `requestId` fails with the cancelled-by-another-client error;
   - `execution.failed` and `step.failed` produce an error;
   - events for a foreign `sessionID` on the shared stream yield no `AgentEvent`, do not reset the timeout, and do not end the turn;
+  - `form.cancel` fallback (when the live case shows the `question` deny does not stop forms): a `form.created` whose `data.form.sessionID` matches is cancelled with `formID: data.form.id` and yields a `text` notice, and the turn continues to `execution.succeeded`; a `form.created` for a foreign session is not cancelled and does not reset the timeout;
   - polling fallback when the stream ends early, once per outcome:
     - `succeeded` returns text and usage;
     - `failed` produces the same error as the streamed `execution.failed`;
@@ -423,16 +493,25 @@ export function summarizeToolInput(tool: string, input: unknown): string;
     - a foreign `interrupted` produces an error.
 
     Each case matches the streamed result for the same outcome, and only `succeeded` sends a structured summary prompt;
-  - SSE drops before any assistant message, then polling sees a new server idle time, the admitted `promptId` with no assistant message after it, and `outcome: "failed"` (and, separately, a foreign `interrupted`): the turn terminates with that original outcome's error, sends no summary prompt, and settles on that poll without waiting for the inactivity timeout;
-  - polling with a stale prior state: the baseline already shows `outcome: "succeeded"` and an idle time from an earlier turn, and the turn does not complete until the server reports a new idle time and the transcript has a reply after `promptId`;
-  - polling under remote clock skew, with server timestamps hours ahead of and behind the client, completes correctly and never early;
-  - polling inactivity timeout calls `interrupt` and raises `AgentTimeoutError`; cancel during polling calls `interrupt` and raises `AgentCancellationError`;
+  - SSE drops after delivery but before any assistant message, then polling sees the delivered `requestId` followed directly by an `idle` entry with `outcome: "failed"` and its `error` (and, separately, a foreign `interrupted`), with no assistant message between them: the turn terminates with that original outcome's error, sends no summary prompt, and settles on that poll without waiting for the inactivity timeout;
+  - polling with a stale prior state: the baseline `session.get` shows `outcome: "succeeded"` and the transcript ends with an earlier turn's `idle` entry. The turn does not complete until an `idle` entry appears after `requestId`;
+  - polling under remote clock skew, with server timestamps hours ahead of and behind the client, completes correctly and never early (no timestamp is compared);
+  - polling ownership: `requestId` still in `session.inbox.list` keeps polling; another `user` entry between the recorded transcript tail and this turn's `idle` entry yields the ambiguous-overlap error, not success;
+  - polling inactivity timeout on a delivered, running turn calls `interrupt` and raises `AgentTimeoutError`; cancel during polling does the same and raises `AgentCancellationError`;
   - turn text from `session.context` uses only assistant entries after the prompt id;
   - compaction removed `promptId` from `session.context`: the text comes from `session.message.list`;
   - a reply spanning more than one `session.message.list` page is concatenated in order;
   - `promptId` missing from both context and every message page raises the explicit missing-boundary error and does not return other context text;
   - token and cost delta;
-  - inactivity timeout and external cancel call `interrupt` and keep the error types and messages;
+  - inactivity timeout and external cancel on a delivered, non-overlapped, running turn call `interrupt` and keep the error types and messages;
+  - owned cancellation:
+    - a `signal` aborted before `runTurn` raises `AgentCancellationError` with no subscribe, prompt, or other request;
+    - cancel of a known queued item (`requestId` in `session.inbox.list`, not delivered) calls `session.inbox.cancel` with that `inboxID`, never calls `interrupt`, and raises `AgentCancellationError`;
+    - cancel while admission is in flight with a delayed acknowledgment, and separately with a lost one (the `prompt` request rejects after the server enqueued the item): cleanup cancels by the same `requestId`, resolves removal from `inbox.cancelled` or inbox and transcript evidence, and raises `AgentCancellationError`;
+    - a lost admission response that does not abort resends `session.prompt` once with the same `requestId`, and the fake records one enqueued item;
+    - cancel racing delivery: `inbox.cancel` acknowledges, but the transcript already holds `requestId` and the session is running. The turn calls `interrupt` once and raises `AgentCancellationError`;
+    - timeout or cancel on an overlapped, delivered turn does not call `interrupt`;
+    - cleanup requests that hang are abandoned at their bound, and the typed error is raised without any terminal event after the local abort;
   - structured: success first try, success after one corrective turn, failure after two;
   - `run()` equals the `done` result of `runStreamed()`;
   - `close()` is idempotent and kills the managed process.
@@ -442,7 +521,7 @@ export function summarizeToolInput(tool: string, input: unknown): string;
   - external verification failure (1.x or old 2.x): the error propagates and the provider is closed;
   - managed verification failure: the provider is closed;
   - `opencode.url` selects `createExternal`, and its absence selects `createManaged`.
-- `test/unit/providers/event-mapper.test.ts` (rewrite) covers each mapping row, the tool id→name map, a missing name falling back to `unknown`, `tool_end` truncation, `summarizeToolInput` for `shell`, `read` (`path`), `edit`, `glob`, `grep`, `subagent`, and unknown tools, and `eventSessionId` returning `data.sessionID`. Foreign-session isolation is asserted at the provider level in `opencode.test.ts`.
+- `test/unit/providers/event-mapper.test.ts` (rewrite) covers each mapping row, the tool id→name map, a missing name falling back to `unknown`, `tool_end` truncation, `summarizeToolInput` for `shell`, `read` (`path`), `edit`, `glob`, `grep`, `subagent`, and unknown tools, and `eventSessionId` returning `data.sessionID`, and `data.form.sessionID` for `form.created`. Foreign-session isolation is asserted at the provider level in `opencode.test.ts`.
 - `test/unit/providers/structured-output.test.ts` (new) covers:
   - exact JSON;
   - fenced block;
@@ -456,11 +535,12 @@ export function summarizeToolInput(tool: string, input: unknown): string;
   - a scalar rejected;
   - empty input.
 - `test/unit/providers/plugin-loading.test.ts`: the bundled-provider case injects the `OpenCodeFactoryDeps` fake. It asserts that `opencode` routes to the bundled factory without dynamic import or network I/O, with no `catch` branch that could hide a failure.
-- `test/integration/providers/opencode-live.test.ts` (new) is skipped unless `FIVEX_OPENCODE_LIVE=1` and `opencode --version` reports ≥ `MIN_OPENCODE_VERSION`. Model comes from `FIVEX_OPENCODE_LIVE_MODEL`, default `opencode/deepseek-v4.1-flash-free`. In a temp directory containing `hello.txt`:
+- `test/integration/providers/opencode-live.test.ts` (new) is skipped only when `FIVEX_OPENCODE_LIVE` is not `1`. When it is set, missing prerequisites are failures, not skips: an `opencode` not on `PATH`, an unparseable `opencode --version`, or a version below `MIN_OPENCODE_VERSION` fails a first prerequisite test with a message naming the found and required versions. The test logs the `opencode --version` it ran against. Model comes from `FIVEX_OPENCODE_LIVE_MODEL`, default `opencode/deepseek-v4.1-flash-free`. In a temp directory containing `hello.txt`:
   - Managed mode:
     - `runStreamed` asks for a shell `cat hello.txt` and a reply containing the token, and expects `tool_start` (`shell`), `tool_end`, `text`, `usage`, and `done`;
     - a second run with an `AuthorStatus`-shaped `outputSchema` returns an object;
     - after `close()`, no child `opencode serve` process remains.
+    - `question` deny-or-cancel: a `runStreamed` prompt instructs the agent to call the `question` tool to ask the user to choose between two options before replying. The turn must settle within the test timeout with no interactive wait. It passes either when the tool call ends in a denied `tool_end` (`error: true`) or when the provider's `form.cancel` fallback cancels the session's form. The test records which path occurred. A turn whose events show neither a `question` tool call nor a form fails the case as inconclusive, rather than counting a normal text or tool turn as a denial.
   - Authenticated external mode, against a test-owned server:
     - The test starts `opencode serve --hostname=127.0.0.1 --port=0` with a random `OPENCODE_PASSWORD`.
     - In a `test.serial` case it sets and then restores `process.env.OPENCODE_PASSWORD`, and builds the provider through `createProvider` with `opencode.url` set to that server.
@@ -471,18 +551,20 @@ export function summarizeToolInput(tool: string, input: unknown): string;
   Uses `stdin: "ignore"` and `timeout: 120000`.
 
 - [ ] Replace `@opencode-ai/sdk` with an exact-pinned `@opencode/client` in `package.json` and `bun.lock`
-- [ ] Implement managed spawn (startup-timeout kill, continuous output draining), external auth, `verify()` version gate, and error mapping in `src/providers/opencode.ts`
+- [ ] Implement managed spawn (explicit `stdout`/`stderr` pipes, startup-timeout kill, continuous output draining), external auth, `verify()` version gate, and error mapping naming `MIN_OPENCODE_VERSION` in `src/providers/opencode.ts`
 - [ ] Implement headless `startSession`, `resumeSession` with `switchModel`, and `#variant` model parsing
-- [ ] Implement `runTurn` with subscription handshake, terminal events, server-evidence polling fallback, and token/cost delta
+- [ ] Implement `runTurn` with subscription handshake, delivery-gated terminal events, durable `idle`-entry polling fallback, and token/cost delta
+- [ ] Implement prompt ownership: pre-aborted short-circuit, idle/empty-inbox precheck with the busy error, `msg_5x` request id with bounded admission and one same-id resend, streamed and polled delivery tracking, and ambiguous-overlap handling
+- [ ] Implement owned cleanup for timeout, cancellation, and overlap: evidence-resolved `session.inbox.cancel`, `session.interrupt` only for a delivered, non-overlapped, running turn, and bounded cleanup requests
 - [ ] Implement `settleTurn` as the single terminal-outcome handler for the streamed and polling paths
 - [ ] Implement `readTurnText` with the `session.context` fast path, paginated `session.message.list` fallback, and missing-boundary error
 - [ ] Rebuild `runStreamed()` and `run()` on `runTurn`, keeping timeout and cancellation semantics
 - [ ] Add `src/providers/structured-output.ts` with the string-aware top-level scanner, and the structured summary with corrective retries
-- [ ] Rewrite `src/providers/event-mapper.ts` for 2.x events and update `src/providers/index.ts` / `src/index.ts` exports
+- [ ] Rewrite `src/providers/event-mapper.ts` for 2.x events, with `eventSessionId` reading `data.form.sessionID` for `form.created`, and update `src/providers/index.ts` / `src/index.ts` exports
 - [ ] Make `createOpenCodeProvider` verify external providers and close on verify failure, through the `OpenCodeFactoryDeps` seam
-- [ ] Verify the `question` deny fails fast in the live test, or implement the `form.cancel` fallback
+- [ ] Run the live `question` deny-or-cancel case; if the deny does not stop forms, implement the `form.cancel` fallback keyed by `data.form.sessionID` and `data.form.id`, with matching and foreign-session form unit cases
 - [ ] Rewrite `opencode.test.ts` and `event-mapper.test.ts`; add `structured-output.test.ts` and `opencode-factory.test.ts`; update the `plugin-loading.test.ts` bundled case to use the fake seam
-- [ ] Add the opt-in live test with managed and authenticated external cases and pass it against local OpenCode 2.x; set `MIN_OPENCODE_VERSION` to the oldest verified version
+- [ ] Add the opt-in live test with managed, authenticated external, and `question` deny-or-cancel cases. When opted in, it fails rather than skips on a missing or too-old binary. Pass it against local OpenCode 2.x, set `MIN_OPENCODE_VERSION` to the oldest release both provider cases passed on, and record that `opencode --version` in the PR description
 - [ ] Confirm `bun run build` compiles with the new dependency
 
 ## Phase 3: Doctor OpenCode check and configuration
@@ -660,12 +742,13 @@ export const SKILL_TOKENS = {
   - external OpenCode servers authenticate with `OPENCODE_PASSWORD`;
   - OpenCode harness agents use 2.x frontmatter, so run `5x harness sync opencode`;
   - `OpenCodeProvider` and event-mapper exports changed;
+  - an OpenCode turn on a session that is already running or has queued input fails with a busy error, and a turn that shares its execution with other input fails as ambiguous, instead of returning another prompt's result;
   - the TUI attach modules were removed.
 
   Under **Added**: the `5x doctor` OpenCode check.
 - `docs/upgrading.md` ("From v1.3" steps): add "Upgrade OpenCode to 2.x (`opencode upgrade --major`)" before the harness sync step, noting that 2.x replaces the 1.x binary.
 - `docs/getting-started.md`: OpenCode 2.x prerequisite, plus `opencode` (or `opencode --server <url>`) to start.
-- `docs/configuration.md`: `opencode.url`, `OPENCODE_PASSWORD`, and managed-mode behavior (private server, never the background service).
+- `docs/configuration.md`: `opencode.url`, `OPENCODE_PASSWORD`, managed-mode behavior (private server, never the background service), and the note that 5x cannot attribute a turn on an external session that another client is driving at the same time (busy and ambiguous-overlap errors).
 - `README.md` provider table and `src/harnesses/opencode/README.md`: OpenCode 2.x requirement.
 - AGENTS.md: test layout updated in Phase 1. No other AGENTS.md change.
 
@@ -673,26 +756,34 @@ export const SKILL_TOKENS = {
 
 1. `bun run lint`, `bun run typecheck`, `bun run test`, `bun run build`.
 2. `bun test test/integration/commands/upgrade.test.ts test/unit/skills/implementation-review-governance.test.ts` (the AGENTS.md acceptance suite).
-3. `FIVEX_OPENCODE_LIVE=1 bun test test/integration/providers/opencode-live.test.ts`, with both the managed and the authenticated external cases passing.
+3. `FIVEX_OPENCODE_LIVE=1 bun test test/integration/providers/opencode-live.test.ts`, with the managed, authenticated external, and `question` deny-or-cancel cases passing and none skipped. The `opencode --version` used must equal `MIN_OPENCODE_VERSION`. If only a newer release was available, raise the constant to that release before release, rerun, and record the version.
 4. In a temp git project:
    1. Run `5x init` and `5x harness install opencode --scope project`.
+      - Select the bundled provider explicitly for both roles: `author.provider = "opencode"` and `reviewer.provider = "opencode"`, each with a free model.
+      - Seed a minimal valid plan from the default plan skeleton, confirm that `5x plan phases <plan>` accepts it, commit it, and run `5x run init --plan <plan>`. Export `FIVEX_RUN`. The invoke handler requires a run.
    2. Start `OPENCODE_PASSWORD=x opencode serve --print-logs`, then query `/api/agent` and `/api/skill` with `directory=<project>`. Confirm the four agents with the expected permissions, all 5x skills, and no "ignored unsupported agent fields" line.
    3. Run the Phase 4 installed-orchestrator native delegation and continuation exercise against that server.
-   4. Managed mode: run `5x invoke` for the author role with a free model and no `opencode.url`. Confirm streamed output and a valid `AuthorStatus`, and that no `opencode serve` child remains afterwards.
-   5. External mode: run `OPENCODE_PASSWORD=x 5x invoke` for the author role with `--opencode-url <url of the step 2 server>`. Confirm streamed output and a valid `AuthorStatus`, and that the step 2 server is still running and answering afterwards. Then run it once without `OPENCODE_PASSWORD` and confirm the password error.
+   4. Managed mode, with no `opencode.url`:
+      - Run `5x invoke` for the author role on the seeded run. Confirm streamed output and a valid `AuthorStatus`.
+      - Run one unrecorded reviewer invocation on the same run: `5x invoke reviewer reviewer-plan --run $FIVEX_RUN --var review_path=<temp review path>`, without `--record`. It must exit 0 with `.data.result` accepted as a `ReviewerVerdict` by the CLI's role validation, not just parsed as JSON. Every field the rendered review context requires for this run must be present, and the review file must exist at the given path.
+      - Confirm that `5x run state` shows no recorded reviewer step, and that no `opencode serve` child remains afterwards.
+   5. External mode, with `--opencode-url <url of the step 2 server>` and `OPENCODE_PASSWORD=x`:
+      - Run the same author invocation and the same unrecorded reviewer invocation, with a different review path, and apply the same checks.
+      - Confirm that the step 2 server is still running and answering afterwards.
+      - Then run the author invocation once without `OPENCODE_PASSWORD` and confirm the password error.
 5. `5x doctor` with OpenCode 2.x on `PATH` (no finding), then with a fake 1.x `opencode` first on `PATH` (`opencode-outdated`).
 
 - [ ] Update CHANGELOG, upgrading guide, getting started, configuration, README, and harness README
 - [ ] Run lint, typecheck, full test suite, build, and the AGENTS.md acceptance suite; fix regressions
-- [ ] Run the live provider test and the manual temp-project verification (installed delegation, managed `5x invoke`, and authenticated external `5x invoke`), recording results in the PR description
+- [ ] Run the live provider test at `MIN_OPENCODE_VERSION` with no skipped case, and the manual temp-project verification (installed delegation; managed and authenticated external author `5x invoke`; one unrecorded reviewer `5x invoke` per mode on the seeded run with an accepted `ReviewerVerdict`), recording results and the `opencode --version` in the PR description
 
 ## Files Touched
 
 | File | Change |
 |------|--------|
 | `package.json`, `bun.lock` | Replace `@opencode-ai/sdk` with exact-pinned `@opencode/client` (W1) |
-| `src/providers/opencode.ts` | 2.x client, managed spawn, auth, version gate, turn loop with polling fallback, `settleTurn`, `readTurnText`, structured summary (W1, W7, W2) |
-| `src/providers/event-mapper.ts` | 2.x event mapper (W1) |
+| `src/providers/opencode.ts` | 2.x client, managed spawn with explicit output pipes, auth, version gate and minimum-naming errors, turn loop with polling fallback, `settleTurn`, `readTurnText`, prompt ownership and owned cleanup, form-cancel fallback, structured summary (W1, W7, W9, W8, W2) |
+| `src/providers/event-mapper.ts` | 2.x event mapper; `eventSessionId` with `form.created` routing (W1, W8) |
 | `src/providers/structured-output.ts` | New string-aware top-level JSON extraction and prompt helpers (W2) |
 | `src/providers/factory.ts` | Verify external providers; close on verify failure; `OpenCodeFactoryDeps` test seam on `createProvider` (W8) |
 | `src/providers/index.ts`, `src/index.ts` | Updated provider and mapper exports (W1) |
@@ -705,8 +796,8 @@ export const SKILL_TOKENS = {
 | `src/skills/harness-tokens.ts` | New delegation and lifecycle tokens (W5) |
 | `src/harnesses/opencode/skills/loader.ts`, `src/harnesses/cursor/skills/loader.ts` | Token maps (W5) |
 | `src/skills/base/5x/SKILL.tmpl.md`, `5x-plan/`, `5x-plan-review/`, `5x-phase-execution/`, `5x-issue-resolution/` | Tokenized delegation wording, launch/await sites, and continuation capture (W5) |
-| `CHANGELOG.md`, `docs/upgrading.md`, `docs/getting-started.md`, `docs/configuration.md`, `README.md`, `AGENTS.md` | Documentation (W3, W6) |
-| `test/unit/providers/opencode.test.ts`, `event-mapper.test.ts`, `structured-output.test.ts`, `opencode-factory.test.ts`, `plugin-loading.test.ts` | Provider tests (W1, W7, W2) and factory tests (W8) |
+| `CHANGELOG.md`, `docs/upgrading.md`, `docs/getting-started.md`, `docs/configuration.md`, `README.md`, `AGENTS.md` | Documentation, including the busy-session and ambiguous-overlap behavior (W3, W6) |
+| `test/unit/providers/opencode.test.ts`, `event-mapper.test.ts`, `structured-output.test.ts`, `opencode-factory.test.ts`, `plugin-loading.test.ts` | Provider tests (W1, W7, W9, W2), form-routing cases (W8), and factory tests (W8) |
 | `test/integration/providers/opencode-live.test.ts` | Opt-in live test (W8) |
 | `test/unit/tui/*` (`controller.test.ts`, `permissions.test.ts`, `phase4-integration.test.ts`) | Deleted |
 | `test/unit/doctor/*`, `test/integration/commands/doctor*.test.ts` | OpenCode check tests |
@@ -717,8 +808,8 @@ export const SKILL_TOKENS = {
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `providers/opencode.test.ts` | Spawn argv/env, listen parsing, startup-timeout kill, output draining, auth, `createExternal` construction, version gate, session create/resume, turn loop, foreign-session isolation, polling fallback (each outcome, failure and interruption before any assistant reply, stale prior state, clock skew, timeout, cancel), compaction-safe text recovery and pagination, token delta, structured retries, `run()` parity |
-| Unit | `providers/event-mapper.test.ts` | Every 2.x mapping row, tool name tracking, `eventSessionId`, input summaries |
+| Unit | `providers/opencode.test.ts` | Spawn argv/env and pipe options, listen parsing, startup-timeout kill, output draining, auth, `createExternal` construction, version gate, session create/resume, turn loop, foreign-session isolation, form-cancel fallback routing, prompt ownership (busy precheck, previous terminal before delivery, foreign delivery and enqueue, external inbox cancel), owned cancellation (pre-abort, queued-item cancel, delayed and lost acknowledgment, same-id resend, cancel racing delivery, no interrupt of a shared execution, bounded cleanup), polling fallback (each outcome, failure and interruption before any assistant reply, stale prior state, clock skew, overlap, timeout, cancel), compaction-safe text recovery and pagination, token delta, structured retries, `run()` parity |
+| Unit | `providers/event-mapper.test.ts` | Every 2.x mapping row, tool name tracking, `eventSessionId` (including `form.created`), input summaries |
 | Unit | `providers/structured-output.test.ts` | Exact, fenced, and trailing top-level object extraction; nested objects, string braces, escaped quotes, multiple objects; array and scalar rejections |
 | Unit | `providers/opencode-factory.test.ts` | Factory verification in both modes: healthy, unauthorized, and verification-failure cleanup through a fake seam |
 | Unit | `providers/plugin-loading.test.ts` | Bundled provider routing through the fake factory seam, without network |
@@ -726,10 +817,10 @@ export const SKILL_TOKENS = {
 | Unit | `harnesses/opencode*.test.ts` | 2.x frontmatter, permissions, orchestrator `sessionID` continuation, token resolution, launch-versus-completion separation and continuation in four delegation modes |
 | Unit | `harnesses/cursor*.test.ts` | Rendered Cursor skills byte-identical in four delegation modes |
 | Unit | `skills/*.test.ts` | Token resolution and updated OpenCode wording |
-| Integration | `providers/opencode-live.test.ts` (opt-in) | Real OpenCode 2.x, managed and authenticated external against a test-owned server: tool call, streaming, structured output, no leaked managed server, external server survives `close()` |
+| Integration | `providers/opencode-live.test.ts` (opt-in) | Real OpenCode 2.x at `MIN_OPENCODE_VERSION`, managed and authenticated external against a test-owned server: tool call, streaming, structured output, `question` deny-or-cancel, no leaked managed server, external server survives `close()`; opted-in runs fail rather than skip on bad prerequisites |
 | Integration | `commands/upgrade.test.ts`, `harness.test.ts` | Install, stale detection, and sync to 2.x assets |
 | Integration | `commands/doctor*.test.ts` | Fake 1.x `opencode` on `PATH` yields a finding |
-| Manual | Temp project + live server | Effective installed assets load cleanly; installed orchestrator native delegation and continuation; end-to-end `5x invoke` in managed and external mode |
+| Manual | Temp project + live server | Effective installed assets load cleanly; installed orchestrator native delegation and continuation; end-to-end author `5x invoke` and unrecorded reviewer `5x invoke` (accepted `ReviewerVerdict`) on a seeded run in managed and external mode |
 
 Edge cases:
 - the listen line split across stdout chunks;
@@ -737,7 +828,10 @@ Edge cases:
 - the server exiting during a run (stream error, then polling, then a session-get failure surfaced as an error);
 - the SSE stream dropping after a failed or interrupted execution, including one that ends before any assistant message (polling reports the same failure promptly, never success or a timeout);
 - compaction during a long turn removing the prompt from `session.context`;
-- cancellation before the prompt is admitted;
+- cancellation before the turn starts (no request sent), and cancellation while admission is in flight or its acknowledgment is lost (the owned item is cancelled by its request id);
+- cancellation racing delivery of the turn's own prompt;
+- a resumed or externally shared session that is running, has queued input, or receives other input during the turn (busy or ambiguous-overlap error, never another prompt's result);
+- a `form.created` for this session (cancelled by `data.form.id` under the fallback) or for another session (ignored);
 - a session event for a different session on the shared stream;
 - `tool.called` without a preceding `input.started`;
 - a reply with JSON inside a fenced block after prose;
@@ -760,18 +854,19 @@ Edge cases:
 | Phase | Description | Time |
 |-------|-------------|------|
 | 1 | Dead TUI removal | 0.5 day |
-| 2 | Provider port, structured output, live test | 3-4 days |
+| 2 | Provider port, prompt ownership and owned cancellation, structured output, live test | 4-5 days |
 | 3 | Doctor check and config | 0.5 day |
 | 4 | Harness assets, skill tokens, delegation lifecycle | 1.5-2 days |
 | 5 | Docs, release notes, verification | 0.5-1 day |
-| **Total** | | **6-8 days** |
+| **Total** | | **7-9 days** |
 
 ## Provenance
 
 - [OpenCode: Migrate from V1](https://opencode.ai/docs/migrate-v1)
 - [OpenCode plugin migration](https://opencode.ai/docs/build/plugins/migrate-v1)
 - [OpenCode client docs](https://opencode.ai/docs/build/client)
-- `@opencode/client` type definitions (2.3.2 and 2.4.2)
+- `@opencode/client` type definitions (2.3.2 and 2.4.2), including the inbox, execution, and form event types and `SessionPromptInput`
+- Two live probes against a local OpenCode 2.4.2 server (November 27, 2026): queued and steered delivery, caller-assigned prompt ids and their resubmission, inbox cancel of pending, unknown, and delivered items, interrupt, and the transcript `idle` entries of succeeded, interrupted, and failed executions
 - Direct checks against local OpenCode 2.3.2 and 2.4.2 servers (route probes, agent and skill listings, and an end-to-end client prototype).
 
 Operator decisions (November 27, 2026):
@@ -783,6 +878,39 @@ Operator decisions (November 27, 2026):
 <!-- 5x:contract:end -->
 
 ## Revision History
+
+### v1.5 (November 27, 2026)
+
+Addresses R7–R13 from the plan review of `13a626a8` in `docs/development/reviews/.5x-worktrees-219-opencode-2-upgrade-plan-78d6ac-5x-cli-docs-development-plans-219-opencode-2-upgrade-plan-review.md` (run_b9df06a4d15d, initial pass). Acceptance criteria scope, Phase 1's checked items and commits, and DC0 are unchanged.
+
+R7 and R8 required checking real OpenCode 2.x behavior before the design was written. The published `@opencode/client` 2.4.2 declarations and two live probes against a local 2.4.2 server (Overview, prompt-ownership evidence) confirmed the reviewer's mechanisms, with two refinements the evidence forced:
+- A prompt sent while an execution runs joins that execution instead of getting its own, even with `delivery: "queue"`. One terminal event then covers both prompts. So ownership needs both an idle/empty-inbox precheck and overlap detection; delivery tracking alone is not enough.
+- `session.inbox.cancel` acknowledges unknown and already-delivered ids. So cancellation decides between "removed" and "delivered" from events or transcript and inbox evidence, never from the acknowledgment.
+
+Changes by finding:
+- R7: the turn loop now owns exactly one prompt. It runs an ownership precheck (busy error), uses a caller-assigned `msg_5x…` request id, settles only on a terminal event after its own `session.inbox.delivered`, and fails as ambiguous, never with success, on foreign enqueue or delivery or on a terminal before its delivery.
+  - Polling settles on the durable transcript `idle` entry after the prompt instead of `session.get` timestamp comparisons. It keeps the R3 early-failure path (verified: a failed execution writes `idle{outcome: "failed"}` with no assistant message) and the stale-state and skew guarantees.
+  - Text reading stops at the next `user` or `idle` entry.
+  - Added scripted cases, including the previous same-session terminal event before this prompt's delivery.
+  - CHANGELOG and configuration docs note the new busy and ambiguous-overlap errors.
+- R8: added a pre-aborted short-circuit; stable-id admission bounded at 10 s with one idempotent same-id resend; and owned cleanup. Cleanup cancels the owned pending item, resolves the outcome from evidence, interrupts only a delivered, non-overlapped, running execution, never interrupts a shared one, bounds each request, and raises the typed error without waiting for a terminal event. Added cases for queued-item cancellation, delayed and lost acknowledgment, cancel racing delivery, and hung cleanup.
+- R9: `eventSessionId` reads `data.form.sessionID` for `form.created`, and the fallback cancels by `data.form.id`. Added matching and foreign-session form cases, and an explicit live `question` deny-or-cancel case that cannot pass on an ordinary turn.
+- R10: the Phase 1 gate now names `bun test --concurrent --parallel=2 --dots --timeout 15000 test/unit`, the configured invocation the Phase 1 review ran with exit 0. Only the gate text changed. Phase 1's checked items and commits are preserved, and no completed work is redone or waived.
+- R11: the managed spawn sets `stdout: "pipe"` and `stderr: "pipe"`, and the spawn-seam test asserts them.
+- R12: Phase 5 seeds a valid plan and run, selects the bundled provider for both roles, keeps both author smokes, and adds one unrecorded `reviewer-plan` `5x invoke` per mode, checked for an accepted `ReviewerVerdict` and the rendered review context's required fields.
+- R13: `MIN_OPENCODE_VERSION` starts at `2.4.2`, the only release actually verified. It equals the oldest release both live provider cases passed on, and that version is recorded. An opted-in live run fails, instead of skipping, on a missing or too-old binary. Final verification applies the same rule. The provider's version errors name the minimum and use the doctor check's upgrade hints.
+
+Delivery Budget (IDs preserved; `effortDelta` values were treated as evidence, not added to row scores):
+- New W9 (5, R7 and R8): ownership and owned cancellation. It is split from W7 because the combined work would exceed 8. The combined estimate is about 4, which is off-scale, so the row is scored 5 and not rounded down.
+- New W10 (1, R12): reviewer acceptance through `5x invoke`.
+- W8 3 → 5 (R9, R13).
+- W7 adds R7 to Addresses with its score unchanged, because the predicate swap is effort-neutral.
+- W1 adds R11, W3 adds R10, and W6 adds R7, all with scores unchanged.
+- No other row changed.
+
+These row changes add 8 effort points over the v1.4 ledger. Against the fresh governing baseline, the revised ledger may exceed the current standard ceiling; the CLI computes the totals, ceiling comparison, and route. No estimate was lowered to fit a limit. No provisional, final-correction, or inherited credit is assumed to carry into execution.
+
+The reviewer's nonblocking follow-ups were not incorporated as structured work.
 
 ### v1.4 (November 27, 2026)
 
