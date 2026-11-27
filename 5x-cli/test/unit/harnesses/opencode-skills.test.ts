@@ -709,11 +709,130 @@ const DELEGATION_MODES = [
 	{ label: "author-native/reviewer-invoke", author: true, reviewer: false },
 ] as const;
 
-const AUTHOR_AGENTS = ["5x-plan-author", "5x-code-author", "<agent>"];
 const COMPLETION_RESULT =
 	"RESULT=<final JSON object from $CHILD_SESSION_ID's completion report>";
 /** A line that pipes a result into the recording/validation consumer. */
 const CONSUMER = /\|\s*5x (protocol validate|phase finish)\b/;
+const VALIDATE_AUTHOR = /echo "\$RESULT" \| 5x protocol validate author\b/;
+const VALIDATE_REVIEWER = /echo "\$RESULT" \| 5x protocol validate reviewer\b/;
+const PHASE_FINISH = /^echo "\$RESULT" \| 5x phase finish --phase \$PHASE\b/;
+
+/**
+ * Every planned native launch site (Phase 4.2), the step it lives in, and the
+ * step that holds its own validation/recording consumer. `role` selects the
+ * delegation modes in which the site renders; `any` renders whenever at least
+ * one role is native. `loopBack` is wording the launch step must contain when
+ * its consumer is an earlier step it loops back to.
+ */
+interface ExpectedSite {
+	skill: string;
+	step: string;
+	agent: string;
+	role: "author" | "reviewer" | "any";
+	consumerStep: string;
+	consumer: RegExp;
+	loopBack?: string;
+}
+
+const PE_STEP2 =
+	"#### Step 2: Quality, protocol, and checklist (`phase finish`)";
+
+const EXPECTED_SITES: ExpectedSite[] = [
+	{
+		skill: "5x",
+		step: "### Native delegation (`subagent` tool)",
+		agent: "<agent>",
+		role: "any",
+		consumerStep: "### Native delegation (`subagent` tool)",
+		consumer: /echo "\$RESULT" \| 5x protocol validate <role>/,
+	},
+	{
+		skill: "5x-plan",
+		step: "### Step 2: Generate the plan",
+		agent: "5x-plan-author",
+		role: "author",
+		consumerStep: "### Step 2: Generate the plan",
+		consumer: VALIDATE_AUTHOR,
+	},
+	{
+		skill: "5x-plan-review",
+		step: "### Delegating sub-agent work (native reviewer)",
+		agent: "5x-reviewer",
+		role: "reviewer",
+		consumerStep: "### Delegating sub-agent work (native reviewer)",
+		consumer: VALIDATE_REVIEWER,
+	},
+	{
+		skill: "5x-plan-review",
+		step: "### Step 1: Review",
+		agent: "5x-reviewer",
+		role: "reviewer",
+		consumerStep: "### Step 1: Review",
+		consumer: VALIDATE_REVIEWER,
+	},
+	{
+		skill: "5x-plan-review",
+		step: "### Step 3: Author revision or final corrections",
+		agent: "5x-plan-author",
+		role: "author",
+		consumerStep: "### Step 3: Author revision or final corrections",
+		consumer: VALIDATE_AUTHOR,
+	},
+	{
+		skill: "5x-phase-execution",
+		step: "#### Step 1: Author implements",
+		agent: "5x-code-author",
+		role: "author",
+		consumerStep: PE_STEP2,
+		consumer: PHASE_FINISH,
+	},
+	{
+		skill: "5x-phase-execution",
+		step: "##### Step 2a: Quality retry",
+		agent: "5x-code-author",
+		role: "author",
+		consumerStep: "##### Step 2a: Quality retry",
+		consumer: PHASE_FINISH,
+	},
+	{
+		skill: "5x-phase-execution",
+		step: "#### Step 3: Code review",
+		agent: "5x-reviewer",
+		role: "reviewer",
+		consumerStep: "#### Step 3: Code review",
+		consumer: VALIDATE_REVIEWER,
+	},
+	{
+		skill: "5x-phase-execution",
+		step: "#### Step 5: Author fixes review items",
+		agent: "5x-code-author",
+		role: "author",
+		consumerStep: PE_STEP2,
+		consumer: PHASE_FINISH,
+		loopBack: "loop back to Step 2",
+	},
+	{
+		skill: "5x-issue-resolution",
+		step: "### Step 1: Planning run and intake",
+		agent: "5x-plan-author",
+		role: "author",
+		consumerStep: "### Step 1: Planning run and intake",
+		consumer: VALIDATE_AUTHOR,
+	},
+];
+
+function expectedSitesFor(mode: {
+	author: boolean;
+	reviewer: boolean;
+}): ExpectedSite[] {
+	return EXPECTED_SITES.filter((s) =>
+		s.role === "any"
+			? mode.author || mode.reviewer
+			: s.role === "author"
+				? mode.author
+				: mode.reviewer,
+	);
+}
 
 interface LaunchSite {
 	skill: string;
@@ -730,6 +849,31 @@ function launchSites(skill: string, lines: string[]): LaunchSite[] {
 	return sites;
 }
 
+/** Markdown heading lines (outside fenced code), with their line index. */
+function headings(lines: string[]): { line: number; text: string }[] {
+	const out: { line: number; text: string }[] = [];
+	let fenced = false;
+	lines.forEach((text, line) => {
+		if (text.startsWith("```")) fenced = !fenced;
+		else if (!fenced && /^#{2,6} \S/.test(text)) out.push({ line, text });
+	});
+	return out;
+}
+
+/** The step a line belongs to: the nearest preceding heading. */
+function stepOf(lines: string[], line: number): string {
+	const hs = headings(lines).filter((h) => h.line <= line);
+	return hs[hs.length - 1]?.text ?? "";
+}
+
+/** [start, end) of the step whose heading is exactly `heading`. */
+function stepRange(lines: string[], heading: string): [number, number] {
+	const hs = headings(lines);
+	const idx = hs.findIndex((h) => h.text === heading);
+	expect(idx).toBeGreaterThanOrEqual(0);
+	return [hs[idx]?.line ?? -1, hs[idx + 1]?.line ?? lines.length];
+}
+
 describe("OpenCode background delegation lifecycle (four modes)", () => {
 	for (const mode of DELEGATION_MODES) {
 		describe(mode.label, () => {
@@ -743,65 +887,91 @@ describe("OpenCode background delegation lifecycle (four modes)", () => {
 				}
 			});
 
-			test("launch, child id, and completed RESULT precede the $RESULT consumer", () => {
-				let total = 0;
-				for (const skill of skills) {
+			test("native launch sites are exactly the planned sites for the configured roles", () => {
+				const actual = skills.flatMap((skill) => {
 					const lines = skill.content.split("\n");
-					for (const site of launchSites(skill.name, lines)) {
-						total++;
-						// LAUNCH may span a continuation line before the child id.
-						let i = site.line + 1;
-						if (lines[i]?.trim().startsWith("sessionID=")) i++;
-						expect(lines[i]).toBe("CHILD_SESSION_ID=<sessionID from LAUNCH>");
-						const resultIdx = lines.indexOf(COMPLETION_RESULT, i);
-						expect(resultIdx).toBeGreaterThan(i);
-						// Only comments sit between the child id and RESULT.
-						for (const between of lines.slice(i + 1, resultIdx)) {
-							expect(between.startsWith("#")).toBe(true);
-						}
-						const consumerIdx = lines.findIndex(
-							(l, idx) => idx > resultIdx && CONSUMER.test(l),
+					return launchSites(skill.name, lines).map((site) => ({
+						skill: site.skill,
+						step: stepOf(lines, site.line),
+						agent: site.agent,
+					}));
+				});
+				const expected = expectedSitesFor(mode).map((s) => ({
+					skill: s.skill,
+					step: s.step,
+					agent: s.agent,
+				}));
+				const key = (s: { skill: string; step: string; agent: string }) =>
+					`${s.skill} | ${s.step} | ${s.agent}`;
+				expect(actual.map(key).sort()).toEqual(expected.map(key).sort());
+			});
+
+			test("each launch's child id and completed RESULT feed that step's own $RESULT consumer", () => {
+				for (const exp of expectedSitesFor(mode)) {
+					const skill = skills.find((s) => s.name === exp.skill);
+					const lines = (skill?.content ?? "").split("\n");
+					const [stepStart, stepEnd] = stepRange(lines, exp.step);
+					const sites = launchSites(exp.skill, lines).filter(
+						(s) =>
+							s.agent === exp.agent && s.line > stepStart && s.line < stepEnd,
+					);
+					expect(sites).toHaveLength(1);
+					const site = sites[0] as LaunchSite;
+
+					// LAUNCH may span a continuation line before the child id.
+					let i = site.line + 1;
+					if (lines[i]?.trim().startsWith("sessionID=")) i++;
+					expect(lines[i]).toBe("CHILD_SESSION_ID=<sessionID from LAUNCH>");
+					const resultIdx = lines.indexOf(COMPLETION_RESULT, i);
+					expect(resultIdx).toBeGreaterThan(i);
+					expect(resultIdx).toBeLessThan(stepEnd);
+					// Only comments sit between the child id and RESULT.
+					for (const between of lines.slice(i + 1, resultIdx)) {
+						expect(between.startsWith("#")).toBe(true);
+					}
+
+					// The consumer lives in this site's own consumer step: after RESULT
+					// when it is the same step or a later one, never borrowed from
+					// another step's validation.
+					const [cStart, cEnd] = stepRange(lines, exp.consumerStep);
+					const searchFrom = cStart === stepStart ? resultIdx + 1 : cStart;
+					const consumerIdx = lines.findIndex(
+						(l, idx) => idx >= searchFrom && idx < cEnd && CONSUMER.test(l),
+					);
+					expect(consumerIdx).toBeGreaterThan(-1);
+					const consumerLine = lines[consumerIdx] ?? "";
+					expect(consumerLine).toMatch(exp.consumer);
+					expect(consumerLine).toContain('"$RESULT"');
+					expect(consumerLine).not.toContain("$LAUNCH");
+
+					if (cStart < stepStart) {
+						// Loop-back consumer: the launch step routes to it explicitly.
+						expect(exp.loopBack).toBeDefined();
+						expect(lines.slice(resultIdx, stepEnd).join("\n")).toContain(
+							exp.loopBack as string,
 						);
-						expect(consumerIdx).toBeGreaterThan(resultIdx);
-						expect(lines[consumerIdx]).toContain('"$RESULT"');
-						// No other launch is started before this result is consumed.
+					} else {
+						// No other launch starts before this result is consumed.
 						const nextLaunch = lines.findIndex(
 							(l, idx) => idx > site.line && l.startsWith("LAUNCH=<"),
 						);
 						if (nextLaunch >= 0) {
-							expect(nextLaunch).toBeGreaterThan(resultIdx);
+							expect(nextLaunch).toBeGreaterThan(consumerIdx);
 						}
 					}
-					// Every consumer reads $RESULT; the acknowledgment is never validated.
-					for (const l of lines.filter((x) => CONSUMER.test(x))) {
+				}
+			});
+
+			test("no consumer validates the launch acknowledgment", () => {
+				for (const skill of skills) {
+					for (const l of skill.content
+						.split("\n")
+						.filter((x) => CONSUMER.test(x))) {
 						expect(l).not.toContain("$LAUNCH");
 					}
 					expect(skill.content).not.toMatch(/\$LAUNCH\b/);
 				}
-				if (mode.author || mode.reviewer) {
-					expect(total).toBeGreaterThan(0);
-				}
 			});
-
-			test("native launch sites match the configured roles", () => {
-				const sites = skills.flatMap((skill) =>
-					launchSites(skill.name, skill.content.split("\n")),
-				);
-				const reviewerSites = sites.filter((s) => s.agent === "5x-reviewer");
-				const authorSites = sites.filter((s) =>
-					AUTHOR_AGENTS.includes(s.agent),
-				);
-				expect(reviewerSites.length > 0).toBe(mode.reviewer);
-				// The foundation skill's generic <agent> example renders whenever any
-				// role is native; role-specific author sites only for a native author.
-				expect(
-					authorSites.filter((s) => s.agent !== "<agent>").length > 0,
-				).toBe(mode.author);
-				if (!mode.author && !mode.reviewer) {
-					expect(sites).toHaveLength(0);
-				}
-			});
-
 			test("invoke-only renders contain no native tool or lifecycle lines", () => {
 				if (mode.author || mode.reviewer) return;
 				const combined = skills.map((s) => s.content).join("\n\n");
