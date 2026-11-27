@@ -27,6 +27,7 @@ import {
 import { validateStructuredOutput } from "../../../src/commands/protocol-helpers.js";
 import { RecordContextError } from "../../../src/commands/record-context.js";
 import { recordedEnvelope } from "../../../src/control-plane/record-types.js";
+import { recordStep } from "../../../src/db/operations-v1.js";
 import { CliError } from "../../../src/output.js";
 import type { AgentProvider } from "../../../src/providers/types.js";
 import {
@@ -2970,3 +2971,108 @@ function stubImplementationBinding(
 			invalidatedObservationIds: [],
 		}) satisfies EffectiveExecution;
 }
+
+describe("protocol validate author — plan completion gate", () => {
+	// An 8-point W1 plus a reviewer effortDelta of 3, summed into the row.
+	const summedPlan = budgetPlan.replace(
+		"| W1 | Work | 2 | 0 | - | - | Needed |",
+		"| W1 | Work | 11 | 0 | - | R1 | 8 existing plus 3 from R1 |",
+	);
+	const splitPlan = budgetPlan.replace(
+		"| W1 | Work | 2 | 0 | - | - | Needed |",
+		[
+			"| W1 | Work core | 5 | 0 | - | - | Re-estimated core |",
+			"| W4 | Work mapping | 3 | 0 | - | R1 | Separable mapping |",
+			"| W5 | Work resume | 3 | 0 | - | R1 | Separable resume |",
+		].join("\n"),
+	);
+
+	async function recordAuthor(
+		dir: string,
+		ctx: ReturnType<typeof makeBudgetContext>,
+		plan: string,
+	) {
+		writeFileSync(join(dir, "plan.md"), plan);
+		ctx.executionContext.effectivePlanPath = join(dir, "plan.md");
+		return protocolValidate({
+			role: "author",
+			input: writeInput(dir, { result: "complete", commit: "abc1234" }),
+			run: "run1",
+			record: true,
+			step: "author:process-plan-review",
+			phase: "plan",
+			startDir: dir,
+			phaseChecklistValidate: false,
+			createReviewBudgetContext: async () => ctx,
+		});
+	}
+
+	test("an off-scale summed effort returns a targeted repair, and the split passes", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			await expect(recordAuthor(dir, ctx, summedPlan)).rejects.toMatchObject({
+				code: "PLAN_REPAIR_REQUIRED",
+				detail: {
+					diagnostic: { code: "BUDGET_INVALID_EFFORT" },
+					remediation: expect.stringContaining("not recorded"),
+				},
+			});
+			await recordAuthor(dir, ctx, splitPlan);
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("a non-executable revision is refused like the next review would", async () => {
+		const dir = makeTmpDir();
+		const ctx = makeBudgetContext();
+		try {
+			setupProjectDir(dir);
+			insertRun(dir, "run1", join(dir, "plan.md"));
+			await expect(
+				recordAuthor(
+					dir,
+					ctx,
+					budgetPlan.replace("- [ ] Do the work", "- Do the work"),
+				),
+			).rejects.toMatchObject({
+				code: "PLAN_REPAIR_REQUIRED",
+				detail: { next: [expect.stringContaining("repair-checklists")] },
+			});
+		} finally {
+			ctx.db.close();
+			cleanupDir(dir);
+		}
+	});
+
+	test("budget is not required when budgeting is off or the run is v1-compatible", async () => {
+		for (const setup of ["off", "v1_compat"] as const) {
+			const dir = makeTmpDir();
+			const ctx = makeBudgetContext(
+				setup === "off" ? { mode: "off" } : undefined,
+			);
+			try {
+				setupProjectDir(dir);
+				insertRun(dir, "run1", join(dir, "plan.md"));
+				if (setup === "v1_compat") {
+					// A prior plan review without a baseline: the next review
+					// stays on the v1 path and does not parse the budget.
+					recordStep(ctx.db, {
+						run_id: "run1",
+						step_name: "reviewer:plan",
+						phase: "plan",
+						result_json: "{}",
+					});
+				}
+				await recordAuthor(dir, ctx, summedPlan);
+			} finally {
+				ctx.db.close();
+				cleanupDir(dir);
+			}
+		}
+	});
+});

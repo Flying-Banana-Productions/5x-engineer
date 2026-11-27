@@ -1,7 +1,7 @@
 ---
 name: author-generate-plan
 description: Generate an implementation plan from requirements
-version: 7
+version: 8
 variables: [prd_path, plan_path, plan_template_path, run_id]
 step_name: "author:generate-plan"
 variable_defaults:
@@ -32,13 +32,14 @@ You are implementing the 5x workflow. Generate an implementation plan from the p
 - Break the work into phases with clear completion gates.
 - Each phase should be independently testable and deliverable.
 - Include checklist items (`- [ ]`) for trackable work items within each phase. Every phase needs at least one executable checklist item; a prose completion gate is fine, but plain `-` bullets are not tracked and leave the phase impossible to check off.
-- Before committing, run `5x plan phases {{plan_path}} | jq '.data.executability'`. If it reports a phase with no executable items, fix the draft yourself: `5x plan repair-checklists --plan {{plan_path}} --dry-run` previews the mechanical marker fix and the `--apply` command it prints writes it; a phase with no requirements needs written checklist items. This is draft authoring, not an operator approval.
+- Before committing, run `5x plan phases {{plan_path}} | jq '.data | {executability, budget}'`. Commit only when `executability.executable` is `true` and, when `budget.required` is `true`, `budget.ok` is `true`; otherwise `budget.diagnostic` names the row or debt claim to fix. If executability reports a phase with no executable items, fix the draft yourself: `5x plan repair-checklists --plan {{plan_path}} --dry-run` previews the mechanical marker fix and the `--apply` command it prints writes it; a phase with no requirements needs written checklist items. This is draft authoring, not an operator approval.
 - Include code snippets for non-trivial interfaces, types, and function signatures.
 - Reference specific files and line numbers where changes will be made.
 - Include a Files Touched table and Tests table.
 - Include an Estimated Timeline unless compact mode applies.
 - Be specific about what changes — avoid vague descriptions.
 - Include the required `## Delivery Budget` table and `### Surface Snapshot` from the plan template. Score implementation work only; tests belong to the work item they validate and are not separate scored rows.
+- A work-item row's Effort must be one of 1, 2, 3, 5, or 8. When an item's work exceeds 8, split genuinely separable work into separate `Wn` rows rather than writing an off-scale score.
 - Give every work item a stable `Wn` ID that remains attached to that item across revisions. Include an `Addresses` cell (`-` initially) and do not write totals, ceilings, baseline values, or budget status; the CLI derives them.
 - Every negative architecture row must name a stable `DCn` and include a matching `### Debt Claims` / `#### DCn` block. Write the Debt claim table cell in the literal parser-accepted form ``DC0 (`intrinsic`)`` (or ``DC0 (`adjacent`)`` / ``DC0 (`unrelated`)``): do not backtick `DC0`, and do backtick the coupling. Complete evidence is mandatory: coupling in the table plus target implementation phase, minimal-compliant effort delta, minimal-compliant architecture delta, and non-empty concrete `Before` / `After` states. Do not claim architecture reduction without all of this evidence.
 

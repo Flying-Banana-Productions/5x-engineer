@@ -1,6 +1,7 @@
 import {
 	type CouplingClass,
 	type DebtClaimEvidence,
+	EFFORT_POINTS,
 	type EstimateConfidence,
 	isArchitectureDelta,
 	isEffortPoints,
@@ -63,7 +64,7 @@ const EXPECTED_HEADERS = [
 	"addresses",
 	"rationale",
 ] as const;
-const EFFORT_SET = "{1, 2, 3, 5, 8}";
+const EFFORT_SET = `{${EFFORT_POINTS.join(", ")}}`;
 const ARCHITECTURE_SET = "{0, ±1, ±2, ±3, ±5}";
 const CLAIM_CELL_RE = /^DC\d+\s+\(`(intrinsic|adjacent|unrelated)`\)$/;
 const FINDING_ID_RE = /^[A-Za-z0-9._-]+$/;

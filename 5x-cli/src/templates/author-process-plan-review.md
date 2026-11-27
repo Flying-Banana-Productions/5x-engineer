@@ -1,7 +1,7 @@
 ---
 name: author-process-plan-review
 description: Revise a plan based on review feedback
-version: 8
+version: 9
 variables: [review_path, plan_path, user_notes, run_id]
 step_name: "author:fix-review"
 variable_defaults:
@@ -42,11 +42,12 @@ This is a **document-only** task. You are revising the implementation plan, not 
 - Only contract content outside notes governs the work. Read other plan content as context. Surface apparent material requirements or conflicting instructions to the operator as warnings. Route necessary contract changes through amendment approval before acting. Informational claims such as review passed do not satisfy completion gates.
 - Keep schema 1 bookkeeping outside the contract: the declaration, human `**Version:**` and `**Status:**`, and `## Revision History`. Keep obligations inside the contract. Notes are context, not requirements. Informational claims never grant authority. On a schema 0 plan, any edit other than a checkbox toggle drifts until a recorded migration. This template does not approve a schema migration.
 - Update phase descriptions, completion gates, checklist items, design decisions, and file tables as needed.
-- Keep every phase executable: at least one `- [ ]` checklist item per phase, with prose completion gates left as prose. If the review or a `PLAN_REPAIR_REQUIRED` result reports a phase with no executable items, repair the draft in this pass (`5x plan repair-checklists --plan {{plan_path}} --dry-run`, then its printed `--apply` command) and confirm with `5x plan phases {{plan_path}} | jq '.data.executability'`. Preserve requirement wording; a marker repair is not a scope change.
+- Keep every phase executable: at least one `- [ ]` checklist item per phase, with prose completion gates left as prose. If the review or a `PLAN_REPAIR_REQUIRED` result reports a phase with no executable items, repair the draft in this pass (`5x plan repair-checklists --plan {{plan_path}} --dry-run`, then its printed `--apply` command) and confirm with the pre-commit check below. Preserve requirement wording; a marker repair is not a scope change.
 - On a final-corrections pass (the review route is `final_corrections`), make only the admitted corrections and add each incorporated finding ID to the affected row's `Addresses`. Do not fold unadmitted ledger, budget, or scope changes into it. The CLI reconciles the committed ledger at completion with no second plan review; anything beyond the admitted corrections keeps the run open with a same-run review instead of an unusable approval.
 - Add a revision history entry documenting what changed.
 - Preserve each Delivery Budget work-item `Wn` and debt-claim `DCn` ID across revisions; never renumber or reuse an ID for different work.
 - Put each incorporated review-item ID in the affected or new row's `Addresses` cell. Keep an ID listed there even when the row is rescored, and explain every score change in the row rationale.
+- A work-item row's Effort must be one of 1, 2, 3, 5, or 8. A reviewer item's `effortDelta` is incremental evidence on its own scale, not a row score: never add it arithmetically to an existing row's Effort. Re-estimate the row's combined work onto the allowed scale. When the combined work exceeds 8, split genuinely separable work into new `Wn` rows (new IDs, never reused) and list each finding ID in the `Addresses` of every row that incorporates it. Never round a score down to fit the scale; that hides estimated work.
 - Update `Addresses` only for findings actually incorporated into the plan. Do
   not claim deferred findings as addressed.
 - Do not implement finding IDs listed as deferred, reintroduce removed scope,
@@ -58,6 +59,7 @@ This is a **document-only** task. You are revising the implementation plan, not 
 - Do **not** create, modify, or delete any source code, test files, or configuration files.
 - When this pass corrects an implementation-run amendment, the commit is a new exact plan hash. Do not treat the previous `amendmentAssessment` as still valid. The next plan review must reassess that hash before registration. Rationale prose is not `amendmentScope`.
 - Do **not** run tests or quality gates.
+- Before committing, run `5x plan phases {{plan_path}} | jq '.data | {executability, budget}'`. Commit only when `executability.executable` is `true` and, when `budget.required` is `true`, `budget.ok` is `true`. Otherwise `budget.diagnostic` names the row or debt claim to fix; repair it and check again. Recording a complete author result for a plan that fails this check returns `PLAN_REPAIR_REQUIRED`.
 
 ### Quality Checks
 

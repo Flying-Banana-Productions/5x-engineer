@@ -21,7 +21,10 @@ import {
 	type ImplementationBindingPayload,
 	type ImplementationReviewObservationPayload,
 } from "../../../src/review-budget/record-lines.js";
-import { DEFAULT_REVIEW_BUDGET_CONFIG } from "../../../src/review-budget/types.js";
+import {
+	DEFAULT_REVIEW_BUDGET_CONFIG,
+	EFFORT_POINTS,
+} from "../../../src/review-budget/types.js";
 import {
 	appendPlanReviewPromptContext,
 	buildImplementationReviewPromptContext,
@@ -36,6 +39,7 @@ import {
 import { hashPlanBytes } from "../../../src/review-governance/implementation-state.js";
 import { renderSkillByName } from "../../../src/skills/loader.js";
 import { createRenderContext } from "../../../src/skills/renderer.js";
+import { DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE } from "../../../src/templates/default-artifacts.js";
 import {
 	getDefaultTemplateRaw,
 	renderTemplate,
@@ -1555,7 +1559,7 @@ describe("workflow repair assets (plan 217 phase 5)", () => {
 			"Every phase needs at least one executable checklist item; a prose completion gate is fine",
 		);
 		expect(generate).toContain(
-			"5x plan phases docs/development/plans/001-thing.md | jq '.data.executability'",
+			"5x plan phases docs/development/plans/001-thing.md | jq '.data | {executability, budget}'",
 		);
 		expect(generate).toContain(
 			"5x plan repair-checklists --plan docs/development/plans/001-thing.md --dry-run",
@@ -1742,6 +1746,7 @@ describe("workflow repair assets (plan 217 phase 5)", () => {
 			expect(plan).toContain("`PLAN_REPAIR_REQUIRED`");
 			expect(plan).toContain("5x plan repair-checklists --plan");
 			expect(plan).toContain("jq '.data.executability.executable'");
+			expect(plan).toContain("jq '.data | {executability, budget}'");
 			const review = renderSkillByName("5x-plan-review", context).content;
 			expect(review).toContain(
 				"If the render or invoke fails with `PLAN_REPAIR_REQUIRED`, no reviewer ran",
@@ -1757,6 +1762,64 @@ describe("workflow repair assets (plan 217 phase 5)", () => {
 			expect(review).toContain("`UNEXPLAINED_NEGATIVE_VERDICT`");
 			for (const content of [plan, review]) {
 				expect(content).not.toMatch(/\.phases\[\] \| select\(\.number/);
+			}
+		}
+	});
+
+	test("plan author steps state the effort scale and require a valid budget before recording", () => {
+		const scale = EFFORT_POINTS.join(", ");
+		const proseScale = `${EFFORT_POINTS.slice(0, -1).join(", ")}, or ${EFFORT_POINTS.at(-1)}`;
+		const check = "jq '.data | {executability, budget}'";
+		const revise = renderTemplate("author-process-plan-review", {
+			review_path: "review.md",
+			plan_path: "plan.md",
+			user_notes: "",
+		}).prompt;
+		const generate = renderTemplate("author-generate-plan", {
+			prd_path: "docs/brief.md",
+			plan_path: "plan.md",
+			plan_template_path: "template.md",
+		}).prompt;
+		for (const prompt of [revise, generate]) {
+			expect(prompt).toContain(`Effort must be one of ${proseScale}`);
+			expect(prompt).toContain(`5x plan phases plan.md | ${check}`);
+			expect(prompt).toContain("`budget.ok` is `true`");
+		}
+		// A reviewer delta is not a row score, and off-scale work is split or
+		// re-estimated, never rounded away.
+		expect(revise).toContain("never add it arithmetically");
+		expect(revise).toContain(
+			"split genuinely separable work into new `Wn` rows",
+		);
+		expect(revise).toContain("Never round a score down");
+		// The plan skeleton's scoring legend uses the same scale.
+		expect(DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE).toContain(
+			`{0 or ${EFFORT_POINTS.join("\\|")}}`,
+		);
+		const legend =
+			DEFAULT_IMPLEMENTATION_PLAN_TEMPLATE.match(
+				/Scoring: (effort [^.]+)\./,
+			)?.[1] ?? "";
+		expect(
+			[...legend.matchAll(/(\d+) [a-z]/g)].map((m) => Number(m[1])),
+		).toEqual([...EFFORT_POINTS]);
+
+		for (const { context } of roleCases) {
+			for (const name of ["5x-plan", "5x-plan-review"]) {
+				const content = renderSkillByName(name, context).content.replace(
+					/\s+/g,
+					" ",
+				);
+				expect(content).toContain(check);
+				expect(content).toContain("budget.ok");
+				expect(content).toContain(scale);
+				expect(content).toContain("never round an effort score yourself");
+				// Same-session repair is only expressible with invoke delegation.
+				if (context.authorNative) {
+					expect(content).not.toContain(".error.detail.session_id");
+				} else {
+					expect(content).toContain(".error.detail.session_id");
+				}
 			}
 		}
 	});

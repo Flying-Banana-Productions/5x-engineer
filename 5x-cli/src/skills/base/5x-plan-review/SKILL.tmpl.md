@@ -330,8 +330,9 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 
 If the render or invoke fails with `PLAN_REPAIR_REQUIRED`, no reviewer ran
 and nothing was recorded: the draft has a phase with no executable checklist
-item. Go to Step 3 as an ordinary author revision, passing the error's
-`.error.detail.next` repair commands in `user_notes`, without incrementing
+item, or its Delivery Budget is invalid. Go to Step 3 as an ordinary author
+revision, passing the error's `.error.detail.next` repair commands or
+`.error.detail.diagnostic` in `user_notes`, without incrementing
 `$ITERATION`, then repeat this Step 1. Never ask the reviewer for a finding to
 obtain repair authority.
 
@@ -406,12 +407,27 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 
 Check the result:
 - `result: "complete"` — verify `AuthorStatus.commit` is present and run
-  `5x plan phases $PLAN_PATH`. If `$FINAL_CORRECTIONS=true`, record the author
-  step through the normal validation/invoke command and go directly to Step 5:
+  `5x plan phases $PLAN_PATH | jq '.data | {executability, budget}'`. The
+  revision is usable only when `executability.executable` is `true` and, when
+  `budget.required` is `true`, `budget.ok` is `true`. If
+  `$FINAL_CORRECTIONS=true`, record the author step through the normal
+  validation/invoke command and go directly to Step 5:
   this is exactly one bounded author pass and must not re-enter the reviewer.
   Otherwise continue to the next review cycle.
 - `result: "needs_human"` — go to Step 4 (Escalate).
 - `result: "failed"` — go to Step 4 (Escalate).
+
+If recording a complete author result fails with `PLAN_REPAIR_REQUIRED`, the
+committed plan would be returned unread by the next review (for example, a
+Delivery Budget row with an Effort outside 1, 2, 3, 5, 8), and the author step
+was not recorded. Re-delegate this Step 3 without incrementing `$ITERATION`,
+passing `.error.detail.diagnostic` (or `.error.detail.next`) and
+`.error.detail.remediation` in `user_notes`. The author re-estimates or splits
+the work; never round an effort score yourself.
+{{#if author_invoke}}
+The author already ran, so continue the same session: add `--session` set to
+`.error.detail.session_id` when it is present.
+{{/if}}
 
 For ordinary author revisions, increment $ITERATION. If $ITERATION exceeds
 `maxReviewIterations` (read from resolved `5x config show`), go to Step 4

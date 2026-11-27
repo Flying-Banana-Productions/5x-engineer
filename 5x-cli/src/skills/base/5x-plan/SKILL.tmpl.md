@@ -195,7 +195,21 @@ SESSION_ID=$(echo "$RESULT" | jq -r '.data.session_id // empty')
 {{/if}}
 
 Check the result:
-- If `result: "complete"` — continue to Step 3.
+- If `result: "complete"` — confirm
+  `5x plan phases $PLAN_PATH | jq '.data | {executability, budget}'` reports
+  `executability.executable: true` and, when `budget.required` is `true`,
+  `budget.ok: true`, then continue to Step 3.
+- If recording a complete result fails with `PLAN_REPAIR_REQUIRED`, the author
+  step was not recorded: the committed draft would be returned unread by plan
+  review (for example, a Delivery Budget Effort outside 1, 2, 3, 5, 8).
+  Re-delegate this step with `.error.detail.diagnostic` (or
+  `.error.detail.next`) and `.error.detail.remediation` in
+  `--var user_notes`. The author re-estimates or splits the work; never round
+  an effort score yourself.
+{{#if author_invoke}}
+  Continue the same author session by adding `--session` set to
+  `.error.detail.session_id` when it is present.
+{{/if}}
 {{#if any_native}}
 - If `result: "needs_human"` — present the reason and options **provide-guidance** vs **abort** using your native UI (see `5x` foundation skill). If the human provides guidance, re-invoke with `--var user_notes="$GUIDANCE"`.
 {{else}}
@@ -236,7 +250,9 @@ Report to the human: plan is ready at $PLAN_PATH.
   by a new run or a manufactured review finding.
 - The plan must include the Delivery Budget table. Its `Wn` / `DCn` IDs stay
   stable across review revisions, and every negative architecture row has a
-  matching complete Debt Claims block.
+  matching complete Debt Claims block. Every row's Effort is one of 1, 2, 3,
+  5, 8; when budgeting is active, `5x plan phases $PLAN_PATH | jq
+  '.data.budget.ok'` is `true` before the author result is recorded.
 - Author must produce a commit via `5x commit` (AuthorStatus.commit is
   present). All author completions — plan generation, plan revision —
   must result in a committed change.

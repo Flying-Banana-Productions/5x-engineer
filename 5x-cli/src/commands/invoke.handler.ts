@@ -129,6 +129,7 @@ import {
 	createReviewBudgetContext,
 	ensurePlanReviewBaselineForContext,
 	latestPlanReviewIdentity,
+	planAuthorCompletionGate,
 	planReviewBaselineAssessmentContract,
 	type ReviewBudgetCommandContext,
 	recordPlanReviewerStepWithSnapshot,
@@ -1490,6 +1491,40 @@ export async function invokeAgent(
 				...(structured as Record<string, unknown>),
 				governance: implementationGovernanceDecoration(pendingImplementation),
 			};
+		}
+	}
+
+	// A successful plan-author result must leave a plan the next review will
+	// accept (the same budget/executability repair gate). The author already
+	// ran, so the error carries the session for a same-session repair.
+	if (
+		role === "author" &&
+		params.record &&
+		params.run &&
+		canonicalPhaseId(recordPhase ?? "") === "plan" &&
+		(structured as { result?: unknown } | null)?.result === "complete"
+	) {
+		try {
+			budgetContext ??= await (
+				deps?.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId, startDir: workdir }, warn);
+		} catch (err) {
+			// Runs without a resolvable record context keep ordinary recording.
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+		const planPath = budgetContext?.executionContext.effectivePlanPath;
+		if (budgetContext && planPath && existsSync(planPath)) {
+			const gate = planAuthorCompletionGate({
+				ctx: budgetContext,
+				runId,
+				planMarkdown: readFileSync(planPath, "utf-8"),
+			});
+			if (gate) {
+				outputError(gate.code, gate.message, {
+					...postProviderFailure(gate.detail),
+					remediation: gate.detail.remediation,
+				});
+			}
 		}
 	}
 

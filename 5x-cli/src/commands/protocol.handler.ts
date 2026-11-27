@@ -64,6 +64,7 @@ import { RecordContextError } from "./record-context.js";
 import {
 	composePlanReviewerRecord,
 	createReviewBudgetContext,
+	planAuthorCompletionGate,
 	type ReviewBudgetCommandContext,
 	recordPlanReviewerStepWithSnapshot,
 } from "./review-budget-context.js";
@@ -972,6 +973,37 @@ export async function protocolValidate(
 		const checklist = await evaluatePhaseChecklist(params);
 		if (!checklist.ok) {
 			outputError(checklist.code, checklist.message);
+		}
+	}
+
+	// A successful plan-author result must leave a plan the next review will
+	// accept: the same budget/executability repair gate, checked here so a
+	// missed author preflight is repaired before this step is recorded.
+	if (
+		role === "author" &&
+		params.record &&
+		params.run &&
+		recordStepName &&
+		(resolvedPhase ?? params.phase) === "plan" &&
+		(validated as { result?: unknown } | null)?.result === "complete"
+	) {
+		let authorContext: ReviewBudgetCommandContext | undefined;
+		try {
+			authorContext = await (
+				params.createReviewBudgetContext ?? createReviewBudgetContext
+			)({ runId: params.run, startDir: params.startDir }, warn);
+		} catch (err) {
+			// Runs without a resolvable record context keep ordinary recording.
+			if (!(err instanceof RecordContextError)) throw err;
+		}
+		const planPath = authorContext?.executionContext.effectivePlanPath;
+		if (authorContext && planPath && existsSync(planPath)) {
+			const gate = planAuthorCompletionGate({
+				ctx: authorContext,
+				runId: params.run,
+				planMarkdown: readFileSync(planPath, "utf-8"),
+			});
+			if (gate) outputError(gate.code, gate.message, gate.detail);
 		}
 	}
 
