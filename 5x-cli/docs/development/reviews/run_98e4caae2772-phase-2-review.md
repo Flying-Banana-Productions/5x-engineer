@@ -71,3 +71,31 @@ The managed and authenticated external cases provide Phase 2 evidence for operat
 - [ ] Amend the question acceptance and fallback design, then pass the controlled no-skip live gate at the pinned minimum.
 - [ ] Fix and verify buffered overlap suppression and owned cleanup.
 - [ ] Address the bounded recovery and version diagnostic corrections and rerun the affected tests.
+
+## Addendum (November 27, 2026) — Phase 2 implementation closure
+
+**Reviewed range / context:** `4f91b494f193dc62f62e852b1bab9bb6a2416e73..aa99077eca2d6d7471e806b8d3fb40bc135bc2f2`, context `4b14075a-12fe-431a-95a2-f461117b94e5`; effective registered v1.9 (`amendment:9284200c43a9379afe49ff0d13d65fc0ec48fb249895d2143fd368b110da089e`), enforced. No credit claims are due.
+
+### Prior-finding outcomes
+
+| Finding ID | Outcome | Evidence |
+|---|---|---|
+| P1.2 | Addressed | `opencode.ts:1229–1255, 1325–1330, 1445–1449` stops the drain on pre-delivery overlap before later buffered events can enable stream output. Once overlap is known, the mapper suppresses content. The new lost-admission regression runs the original buffered ordering in external and managed mode: no mixed text or reasoning, no success or summary, only owned inbox cancellation, and no external interrupt. |
+| P2.1 | Addressed | `opencode.ts:279–298, 895–936, 978–1054, 1311–1357, 1455–1528` limits transcript pages and poll reads by the applicable absolute deadline, stops pagination at the closing idle entry, and drops the admission deadline from wake scheduling once evidence resolves admission. Regressions exercise a hung polling page, a delayed window page, unnecessary pages after the boundary, and a recovered admission with a delayed terminal. |
+| P2.2 | Addressed | `opencode.ts:208–226, 1814–1820` keeps the 404/HTML legacy signals and correct auth handling, while HTTP 503 and malformed JSON surface as health-check errors. Tests cover both formerly misclassified responses. |
+
+### What's addressed
+
+- **Amended headless acceptance (W11):** P1.1 was resolved by the registered plan amendment and is not a required prior finding in this review. In `opencode-live.test.ts:85–261, 445–620`, a single raw observer starts before prompting, and a matching positive-control form is required. The control and deny arm use the same model, server, prompt, and isolated working directory, with distinct sessions and prompt IDs. The deny arm requires provider `done` without an error, no matching question call or form, and continuous raw observation through the first deny-session terminal event after delivery. A missing form, gap, missing terminal event, or provider error cannot count as a pass. Control cancellation is fixture cleanup; there is no production cancel-and-continue policy.
+- **Live acceptance evidence:** I checked both successful transcripts (`agent-004.ndjson` and the second-run live log). Each shows `opencode v2.4.2` (equal to `MIN_OPENCODE_VERSION`), five passing cases and no skips. Both show the observer connected before either prompt, a `question` form on the allow-only control, control interruption after fixture cancellation, and a deny arm with only `execute`, no form, provider `done`, and raw `session.execution.succeeded`. This verifies both provider modes and the amended comparison on the reviewed code. The independent rerun also observed the control form and complete raw coverage; the deny arm failed with the hosted model's explicit free-usage-limit error, so that run does **not** count as a pass. The failure confirms the test does not treat absence during an errored turn as acceptance.
+- **Local deterministic verification:** `bun test test/unit/providers` passed (323 tests). The configured phase-finish quality run passed; its full unit suite logged 4,431 tests passing. No code or plan changes were made during this review.
+
+### Nonblocking follow-ups
+
+- The plan's title-block status still says the v1.9 amendment is pending review. That line is outside the governing contract and is stale relative to the registered amendment; use the durable revision, not that status line.
+- The live observer checks the terminal predicate again after collecting provider events. The outer test timeout still bounds the case, but timestamping the raw terminal at receipt would make the test's narrower raw-event wait budget explicit even when collection finishes late. Similarly, retaining the order of a post-terminal stream end would avoid treating a later disconnect as an observation gap. Neither timing edge affects the two passing transcripts.
+- **Future PR description:** record the verified output `opencode v2.4.2` when the PR is opened. No PR was created or pushed in this review.
+
+### Updated readiness
+
+**Ready.** All required prior items are addressed and the successful live transcripts satisfy the effective v1.9 headless comparison at the pinned minimum. No new blocking finding was found in the correction range.
