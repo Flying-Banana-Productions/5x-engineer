@@ -1,0 +1,16 @@
+{
+  "id": "run_a9914ec93486",
+  "plan_path": "5x-cli/docs/development/plans/219-opencode-2-upgrade-plan.md",
+  "config_json": {
+    "maxStepsPerRun": 250
+  },
+  "created_at": "2026-11-27 11:49:13",
+  "sealed_at": null,
+  "status": "active",
+  "final_head_commit": null,
+  "cli_version": "2.0.0-beta.1",
+  "format_version": 1,
+  "creator": {
+    "installation_id": "eca1b52d-1c4f-4337-9c73-d8c035d3b08c"
+  }
+}
