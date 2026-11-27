@@ -260,7 +260,9 @@ const OpenCodeConfigSchema = z.object({
 		.string()
 		.url()
 		.optional()
-		.describe("OpenCode server URL; omit for local/managed OpenCode."),
+		.describe(
+			"OpenCode server URL; omit for local/managed OpenCode. A password-protected external server needs OPENCODE_PASSWORD (or OPENCODE_SERVER_PASSWORD) in the environment.",
+		),
 });
 
 const RecordsSchema = z.object({

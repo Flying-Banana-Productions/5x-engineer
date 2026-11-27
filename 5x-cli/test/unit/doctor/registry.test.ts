@@ -25,9 +25,10 @@ function finding(
 }
 
 describe("builtinDoctorChecks", () => {
-	test("registers freshness, locks, worktrees, runs, db, prompts, invocations, and records in that order", () => {
+	test("registers freshness, opencode, locks, worktrees, runs, db, prompts, invocations, and records in that order", () => {
 		expect(builtinDoctorChecks.map((c) => c.id)).toEqual([
 			"harness-freshness",
+			"opencode",
 			"locks",
 			"worktrees",
 			"runs",

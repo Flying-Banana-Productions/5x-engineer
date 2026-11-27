@@ -647,10 +647,10 @@ export function summarizeToolInput(tool: string, input: unknown): string;
 
 ### 3.2 Tasks
 
-- [ ] Add `src/doctor/checks/opencode.ts` with injectable version runner and register it
-- [ ] Add unit tests: not applicable, missing binary, 1.x, old 2.x, current 2.x, unparseable output
-- [ ] Add a doctor integration case with a fake `opencode` script on `PATH` printing `1.2.3`
-- [ ] Update the `opencode.url` description and the config registry/help snapshot tests that include it
+- [x] Add `src/doctor/checks/opencode.ts` with injectable version runner and register it
+- [x] Add unit tests: not applicable, missing binary, 1.x, old 2.x, current 2.x, unparseable output
+- [x] Add a doctor integration case with a fake `opencode` script on `PATH` printing `1.2.3`
+- [x] Update the `opencode.url` description and the config registry/help snapshot tests that include it
 
 ## Phase 4: Harness assets and skill tokens
 
