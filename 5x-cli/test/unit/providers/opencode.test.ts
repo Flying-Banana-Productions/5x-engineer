@@ -25,6 +25,7 @@ import {
 	parseModel,
 	parseServeListenUrl,
 	startManagedServer,
+	turnWakeDelay,
 } from "../../../src/providers/opencode.js";
 import type {
 	AgentEvent,
@@ -119,6 +120,9 @@ class FakeOpenCode {
 	/** Per-call transcript reads hook (count of context reads so far). */
 	onContextRead: ((n: number) => void) | undefined;
 	contextReads = 0;
+	/** Delay, in ms, before the n-th (1-based) `message.list` page returns. */
+	listDelay: ((n: number) => number) | undefined;
+	listReads = 0;
 	scripts: TurnScript[] = [];
 	/** Override for `session.prompt`. */
 	onPrompt: ((input: Record<string, unknown>) => Promise<unknown>) | undefined;
@@ -354,7 +358,10 @@ class FakeOpenCode {
 			},
 			message: {
 				list: (input: Record<string, unknown>) =>
-					self.call("message.list", input, () => {
+					self.call("message.list", input, async () => {
+						self.listReads += 1;
+						const delay = self.listDelay?.(self.listReads) ?? 0;
+						if (delay > 0) await tick(delay);
 						const start = input.cursor ? Number(input.cursor) : 0;
 						const limit = Math.min(Number(input.limit ?? 100), self.pageSize);
 						const data = self.transcript.slice(start, start + limit);
@@ -386,6 +393,7 @@ function fakeServer(): ManagedServer & { closed: number } {
 async function setup(opts?: {
 	managed?: boolean;
 	fake?: FakeOpenCode;
+	timings?: Partial<OpenCodeTimings>;
 }): Promise<{
 	fake: FakeOpenCode;
 	provider: OpenCodeProvider;
@@ -396,7 +404,7 @@ async function setup(opts?: {
 		fake.client(),
 		opts?.managed ? fakeServer() : null,
 		undefined,
-		{ timings: T },
+		{ timings: { ...T, ...opts?.timings } },
 	);
 	const session = await provider.startSession({
 		model: "",
@@ -799,6 +807,30 @@ describe("version gate", () => {
 		await expect(gate(infoOk("1.2.6"))).rejects.toThrow(expected);
 	});
 
+	test("an unavailable endpoint or undecodable reply is a health-check failure, not 1.x", async () => {
+		for (const respond of [
+			// Upstream outage behind the URL.
+			() => new Response("Service Unavailable", { status: 503 }),
+			// A JSON content type with a body that does not decode.
+			() =>
+				new Response("not json", {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		]) {
+			const err = await gate(respond).catch((e: Error) => e);
+			expect((err as Error).message).toStartWith(
+				"OpenCode server health check failed at http://h:1 — ",
+			);
+			expect((err as Error).message).not.toContain("1.x");
+			expect((err as Error).message).not.toContain("upgrade");
+		}
+		const outage = await gate(
+			() => new Response("Service Unavailable", { status: 503 }),
+		).catch((e: Error) => e);
+		expect((outage as Error).message).toContain("503");
+	});
+
 	test("unauthorized maps to the password error", async () => {
 		await expect(
 			gate(() =>
@@ -1140,6 +1172,66 @@ describe("prompt ownership", () => {
 		expect(fake.count("session.prompt")).toBe(1);
 	});
 
+	test("overlap buffered before our own delivery during lost-admission polling: no mixed content, no summary, exact-id cleanup", async () => {
+		for (const managed of [false, true]) {
+			const { fake, session } = await setup({ managed });
+			let id = "";
+			fake.onPrompt = async (input) => {
+				id = input.id as string;
+				throw new TypeError("fetch failed"); // lost admission reply
+			};
+			// While the reconciliation poll reads the transcript, the stream
+			// buffers a foreign enqueue and delivery, then ours, mixed content,
+			// and terminal success.
+			fake.onContextRead = (n) => {
+				if (n !== 2) return;
+				fake.emit("session.inbox.enqueued", {
+					sessionID: SID,
+					inboxID: "msg_foreign",
+					item: {},
+				});
+				fake.emit("session.inbox.delivered", {
+					sessionID: SID,
+					inboxID: "msg_foreign",
+				});
+				fake.emit("session.inbox.enqueued", {
+					sessionID: SID,
+					inboxID: id,
+					item: {},
+				});
+				fake.emit("session.inbox.delivered", { sessionID: SID, inboxID: id });
+				fake.emit("session.reasoning.delta", {
+					sessionID: SID,
+					delta: "MIXED-REASONING",
+				});
+				fake.emit("session.text.delta", { sessionID: SID, delta: "MIXED" });
+				fake.emit("session.execution.succeeded", { sessionID: SID });
+			};
+			const events = await collect(
+				session.runStreamed("go", { outputSchema: { type: "object" } }),
+			);
+			expect(events.map((e) => e.type)).toEqual(["error"]);
+			expect(JSON.stringify(events)).not.toContain("MIXED");
+			expect(doneResult(events)).toBeUndefined();
+			expect(errorMessages(events)[0]).toStartWith(
+				`OpenCode session ${SID} received other input during this turn; the result is ambiguous`,
+			);
+			// No summary turn, and the prompt was never resent.
+			expect(promptIds(fake)).toEqual([id]);
+			// Cleanup acted only on the owned inbox id.
+			const cancels = fake.calls.filter((c) => c.m === "session.inbox.cancel");
+			expect(cancels.length).toBeGreaterThan(0);
+			expect(cancels.every((c) => c.input?.inboxID === id)).toBe(true);
+			// Our item was delivered: only a managed private server is interrupted.
+			expect(fake.count("session.interrupt")).toBe(managed ? 1 : 0);
+			if (!managed) {
+				expect(errorMessages(events)[0]).toContain(
+					`the OpenCode execution on session ${SID} was left running on the external server`,
+				);
+			}
+		}
+	});
+
 	test("a foreign enqueue while pending cancels the turn's own item and fails ambiguous", async () => {
 		const { fake, session } = await setup();
 		fake.onPrompt = async (input) => {
@@ -1474,6 +1566,20 @@ describe("polling fallback", () => {
 		}
 	});
 
+	test("a hung page read while polling is cut at the inactivity deadline, not the request bound", async () => {
+		const { fake, session } = await setup({ timings: { requestMs: 2_000 } });
+		fake.contextView = () => []; // forces the durable message.list path
+		fake.hang.add("message.list");
+		dropAfterDelivery(fake, () => {});
+		const start = Date.now();
+		const err = await session.run("go", { timeout: 0.15 }).catch((e) => e);
+		const elapsed = Date.now() - start;
+		expect(err).toBeInstanceOf(AgentTimeoutError);
+		expect((err as Error).message).toStartWith("Agent timed out after 150ms");
+		expect(fake.count("message.list")).toBeGreaterThan(0);
+		expect(elapsed).toBeLessThan(1_000);
+	});
+
 	test("polling request failures surface as an error", async () => {
 		const { fake, session } = await setup();
 		dropAfterDelivery(fake, () => {
@@ -1550,6 +1656,46 @@ describe("turn window", () => {
 		const result = await session.run("go");
 		expect(result.text).toBe("one\ntwo\nthree");
 		expect(result.tokens).toEqual({ in: 30, out: 15 });
+	});
+
+	test("message.list pagination stops at the page holding the closing idle entry", async () => {
+		const { fake, session } = await setup();
+		fake.pageSize = 2;
+		fake.contextView = () => [];
+		fake.onPrompt = async (input) => {
+			const id = input.id as string;
+			void (async () => {
+				fake.enqueue(id);
+				fake.deliver(id);
+				fake.assistant({ text: "ours" });
+				fake.finish();
+				// A long later history that the window never needs.
+				for (let i = 0; i < 10; i++) {
+					fake.transcript.push({ id: `msg_later_${i}`, type: "user" });
+				}
+			})();
+			return { id };
+		};
+		const result = await session.run("go");
+		expect(result.text).toBe("ours");
+		// [prompt, assistant], [idle, later_0]: no page after the boundary.
+		expect(fake.count("message.list")).toBe(2);
+	});
+
+	test("a delayed page in the window read is bounded by the reconciliation limit", async () => {
+		const { fake, session } = await setup({
+			timings: { requestMs: 2_000, reconcileMs: 150 },
+		});
+		fake.pageSize = 1;
+		fake.contextView = () => [];
+		fake.listDelay = (n) => (n === 2 ? 1_000 : 0);
+		const start = Date.now();
+		const err = await session.run("go").catch((e: Error) => e);
+		const elapsed = Date.now() - start;
+		expect((err as Error).message).toMatch(
+			/^OpenCode turn window for prompt msg_5x[0-9a-f]+ on session ses_test could not be read within 150ms/,
+		);
+		expect(elapsed).toBeLessThan(700);
 	});
 
 	test("prompt missing from context and every page raises the missing-boundary error", async () => {
@@ -1907,6 +2053,61 @@ describe("owned cancellation", () => {
 			/^OpenCode prompt msg_5x[0-9a-f]+ admission is unresolved on session ses_test; it may still be queued or run/,
 		);
 		expect(b.fake.count("session.prompt")).toBe(1);
+	});
+
+	test("a lost admission reply on a turn that keeps running past the admission bound still settles on its own result", async () => {
+		const { fake, session } = await setup();
+		fake.onPrompt = async (input) => {
+			const id = input.id as string;
+			void (async () => {
+				await tick(20);
+				fake.enqueue(id);
+				fake.deliver(id);
+				// Runs well past the 150 ms admission bound before replying.
+				await tick(400);
+				fake.assistant({ text: "late reply" });
+				fake.finish();
+			})();
+			throw new TypeError("fetch failed");
+		};
+		const result = await session.run("go");
+		expect(result.text).toBe("late reply");
+		expect(fake.count("session.prompt")).toBe(1);
+		expect(fake.count("session.inbox.cancel")).toBe(0);
+	});
+
+	test("the wake schedule includes the admission deadline only while admission is unresolved", () => {
+		const now = 1_000;
+		const base = { pollMs: 500, admissionDeadline: now - 50 };
+		// Resolved admission: an expired admission deadline is ignored.
+		expect(turnWakeDelay(now, { ...base, admissionUnresolved: false })).toBe(
+			500,
+		);
+		// Unresolved: the expired deadline needs an immediate wake.
+		expect(turnWakeDelay(now, { ...base, admissionUnresolved: true })).toBe(0);
+		expect(
+			turnWakeDelay(now, {
+				pollMs: 500,
+				admissionDeadline: now + 80,
+				admissionUnresolved: true,
+			}),
+		).toBe(80);
+		// Poll schedule and inactivity deadline still apply.
+		expect(
+			turnWakeDelay(now, {
+				pollMs: 500,
+				nextPollAt: now + 30,
+				inactivityDeadline: now + 60,
+				admissionUnresolved: false,
+			}),
+		).toBe(30);
+		expect(
+			turnWakeDelay(now, {
+				pollMs: 500,
+				inactivityDeadline: now + 60,
+				admissionUnresolved: false,
+			}),
+		).toBe(60);
 	});
 
 	test("a declared prompt rejection fails the turn at once", async () => {

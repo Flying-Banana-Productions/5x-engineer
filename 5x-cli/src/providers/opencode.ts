@@ -205,6 +205,24 @@ function oneXMessage(): string {
 	return `5x 2.x requires OpenCode ≥ ${MIN_OPENCODE_VERSION} (found 1.x) — run \`opencode upgrade --major\``;
 }
 
+/**
+ * True only for the signals of a 1.x server, which has no `server.info`
+ * route: a 404, or its web UI's HTML served for the unknown path. Any other
+ * HTTP status (an upstream 5xx, a proxy error) or decode failure does not
+ * establish a version.
+ */
+function isLegacyInfoRouteError(err: unknown): boolean {
+	if (!(err instanceof ClientError)) return false;
+	if (err.reason === "UnexpectedStatus") {
+		const cause = err.cause as { status?: unknown } | undefined;
+		return cause?.status === 404;
+	}
+	if (err.reason === "UnsupportedContentType") {
+		return /\btext\/html\b/i.test(err.message);
+	}
+	return false;
+}
+
 function outdatedMessage(found: string): string {
 	return `5x 2.x requires OpenCode ≥ ${MIN_OPENCODE_VERSION} (found ${found}) — run \`opencode upgrade\``;
 }
@@ -259,6 +277,24 @@ class RequestTimeoutError extends Error {
 		super(`OpenCode request timed out after ${ms}ms`);
 		this.name = "RequestTimeoutError";
 	}
+}
+
+class DeadlineReachedError extends Error {
+	constructor() {
+		super("OpenCode reads reached the turn's deadline");
+		this.name = "DeadlineReachedError";
+	}
+}
+
+/**
+ * The bound for one request: the per-request limit, capped by the time left
+ * before an absolute `deadline` (the active turn or reconciliation limit).
+ */
+function requestBound(requestMs: number, deadline: number | undefined): number {
+	if (deadline === undefined) return requestMs;
+	const remaining = deadline - Date.now();
+	if (remaining <= 0) throw new DeadlineReachedError();
+	return Math.min(requestMs, remaining);
 }
 
 /**
@@ -859,10 +895,29 @@ class OpenCodeSession implements AgentSession {
 	): Promise<TurnResult> {
 		const { timings } = this.ctx;
 		const deadline = Date.now() + timings.reconcileMs;
+		const noEnd = () =>
+			new Error(
+				`OpenCode turn window for prompt ${promptId} on session ${this.id} has no end`,
+			);
+		let scanned = false;
 		while (true) {
-			const scan = await scanTranscript(this.ctx, this.id, promptId, {
-				signal,
-			});
+			let scan: TranscriptScan;
+			try {
+				scan = await scanTranscript(this.ctx, this.id, promptId, {
+					signal,
+					deadline,
+				});
+			} catch (err) {
+				if (err instanceof AgentCancellationError || Date.now() < deadline) {
+					throw err;
+				}
+				// The reconciliation bound ended this read.
+				if (scanned) throw noEnd();
+				throw new Error(
+					`OpenCode turn window for prompt ${promptId} on session ${this.id} could not be read within ${timings.reconcileMs}ms: ${errorText(err)}`,
+				);
+			}
+			scanned = true;
 			if (!scan.found) {
 				throw new Error(
 					`OpenCode turn reply not found: prompt ${promptId} is missing from session ${this.id}`,
@@ -872,12 +927,11 @@ class OpenCodeSession implements AgentSession {
 			if (scan.idle) {
 				return windowResult(scan.window, promptId, this.id);
 			}
-			if (Date.now() >= deadline) {
-				throw new Error(
-					`OpenCode turn window for prompt ${promptId} on session ${this.id} has no end`,
-				);
-			}
-			await sleepUnlessAborted(timings.pollMs, signal);
+			if (Date.now() >= deadline) throw noEnd();
+			await sleepUnlessAborted(
+				Math.min(timings.pollMs, deadline - Date.now()),
+				signal,
+			);
 		}
 	}
 }
@@ -924,14 +978,21 @@ interface TranscriptScan {
 
 const MESSAGE_PAGE_LIMIT = 100;
 
-async function readAllMessages(
+/**
+ * Read the durable transcript in order, stopping at the first page that
+ * holds `promptId`'s closing `idle` entry: later pages are never needed.
+ * Each page read is bounded by the request limit and the caller's deadline.
+ */
+async function readMessagesThrough(
 	ctx: ProviderContext,
 	sessionID: string,
-	signal: AbortSignal | undefined,
+	promptId: string,
+	opts: { signal?: AbortSignal; deadline?: number },
 ): Promise<Entry[]> {
 	const entries: Entry[] = [];
 	let cursor: string | undefined;
 	const seenCursors = new Set<string>();
+	let promptSeen = false;
 	while (true) {
 		const page = await bounded(
 			(s) =>
@@ -944,10 +1005,14 @@ async function readAllMessages(
 					},
 					{ signal: s },
 				),
-			ctx.timings.requestMs,
-			signal,
+			requestBound(ctx.timings.requestMs, opts.deadline),
+			opts.signal,
 		);
-		entries.push(...(page.data as Entry[]));
+		for (const entry of page.data as Entry[]) {
+			entries.push(entry);
+			if (!promptSeen) promptSeen = entry.id === promptId;
+			else if (entry.type === "idle") return entries;
+		}
 		const next = page.cursor?.next ?? undefined;
 		if (!next || page.data.length === 0 || seenCursors.has(next)) break;
 		seenCursors.add(next);
@@ -965,11 +1030,11 @@ async function scanTranscript(
 	ctx: ProviderContext,
 	sessionID: string,
 	promptId: string,
-	opts: { signal?: AbortSignal; tailId?: string },
+	opts: { signal?: AbortSignal; tailId?: string; deadline?: number },
 ): Promise<TranscriptScan> {
 	const context = (await bounded(
 		(s) => ctx.client.session.context({ sessionID }, { signal: s }),
-		ctx.timings.requestMs,
+		requestBound(ctx.timings.requestMs, opts.deadline),
 		opts.signal,
 	)) as Entry[];
 
@@ -983,7 +1048,7 @@ async function scanTranscript(
 				? context.some((e) => e.id === opts.tailId)
 				: !context.some((e) => e.type === "compaction");
 		if (!contextComplete || opts.tailId === undefined) {
-			const all = await readAllMessages(ctx, sessionID, opts.signal);
+			const all = await readMessagesThrough(ctx, sessionID, promptId, opts);
 			const idx = all.findIndex((e) => e.id === promptId);
 			if (idx >= 0 || !contextComplete) {
 				entries = all;
@@ -1094,14 +1159,39 @@ function windowResult(
 // One turn's admission, ownership, settlement, and owned cleanup
 // ---------------------------------------------------------------------------
 
+/**
+ * @internal Delay before the turn loop must wake again on its own: the poll
+ * interval, the next scheduled poll, the inactivity deadline, and the
+ * admission deadline only while admission is unresolved. A resolved
+ * admission's expired deadline never schedules a zero-delay wakeup.
+ */
+export function turnWakeDelay(
+	now: number,
+	s: {
+		pollMs: number;
+		nextPollAt?: number;
+		inactivityDeadline?: number;
+		admissionDeadline?: number;
+		admissionUnresolved: boolean;
+	},
+): number {
+	const candidates: number[] = [s.pollMs];
+	if (s.nextPollAt !== undefined) candidates.push(s.nextPollAt - now);
+	if (s.inactivityDeadline !== undefined) {
+		candidates.push(s.inactivityDeadline - now);
+	}
+	if (s.admissionUnresolved && s.admissionDeadline !== undefined) {
+		candidates.push(s.admissionDeadline - now);
+	}
+	return Math.max(0, Math.min(...candidates));
+}
+
 class TurnRun {
 	readonly requestId = `msg_5x${crypto.randomUUID().replace(/-/g, "")}`;
 
 	private state: TurnState = "admitting";
 	private overlap = false;
 	private cancelRequested = false;
-	/** Another item was delivered after ours: stop mapping content. */
-	private contentClosed = false;
 	private mode: "stream" | "poll" = "stream";
 	private lastProgress = Date.now();
 	private unknownSince: number | undefined;
@@ -1139,13 +1229,16 @@ class TurnRun {
 				return await this.failWithCleanup("cancel");
 			}
 
-			// Streamed events, in order.
+			// Streamed events, in order. Overlap known before our delivery stops
+			// the drain at once: a later buffered delivery of ours must not enable
+			// content mapping. The rest of the queue is left to owned cleanup,
+			// which reads it as exact-id reconciliation evidence.
 			while (this.pump.queue.length > 0) {
 				const event = this.pump.queue.shift();
 				if (!event) break;
 				const mapped = this.onStreamEvent(event);
 				if (mapped && this.opts.stream) yield mapped;
-				if (this.terminal) break;
+				if (this.terminal || this.overlapBeforeDelivery()) break;
 			}
 
 			if (this.state === "removed" && !this.cancelRequested) {
@@ -1153,10 +1246,7 @@ class TurnRun {
 					`OpenCode prompt ${this.requestId} was cancelled by another client`,
 				);
 			}
-			if (
-				this.overlap &&
-				(this.state === "admitting" || this.state === "pending")
-			) {
+			if (this.overlapBeforeDelivery()) {
 				return await this.failWithCleanup("overlap");
 			}
 			if (this.terminal) return this.settleTurn(this.terminal);
@@ -1203,10 +1293,7 @@ class TurnRun {
 						`OpenCode prompt ${this.requestId} was cancelled by another client`,
 					);
 				}
-				if (
-					this.overlap &&
-					(this.state === "admitting" || this.state === "pending")
-				) {
+				if (this.overlapBeforeDelivery()) {
 					return await this.failWithCleanup("overlap");
 				}
 				if (this.terminal) return this.settleTurn(this.terminal);
@@ -1221,21 +1308,49 @@ class TurnRun {
 				}
 			}
 
-			await this.notifier.wait(this.nextWakeDelay(needsPoll));
+			await this.notifier.wait(
+				turnWakeDelay(Date.now(), {
+					pollMs: this.timings.pollMs,
+					...(needsPoll && { nextPollAt: this.nextPollAt }),
+					...(this.opts.timeoutMs !== undefined && {
+						inactivityDeadline: this.lastProgress + this.opts.timeoutMs,
+					}),
+					admissionDeadline: this.admitDeadline,
+					admissionUnresolved: this.admissionUnresolved(),
+				}),
+			);
 		}
 	}
 
-	private nextWakeDelay(polling: boolean): number {
-		const now = Date.now();
-		const candidates: number[] = [this.timings.pollMs];
-		if (polling) candidates.push(this.nextPollAt - now);
+	/** Overlap is known while this turn's own item is not yet delivered. */
+	private overlapBeforeDelivery(): boolean {
+		return (
+			this.overlap && (this.state === "admitting" || this.state === "pending")
+		);
+	}
+
+	/** The admission reply was lost and no evidence has resolved it yet. */
+	private admissionUnresolved(): boolean {
+		return this.admitReply === "indeterminate" && this.state === "admitting";
+	}
+
+	/**
+	 * The earliest limit that applies to the next poll's reads: the inactivity
+	 * timeout, the admission reconciliation bound while admission is
+	 * unresolved, and the `unknown` reconciliation bound.
+	 */
+	private pollDeadline(): number | undefined {
+		const limits: number[] = [];
 		if (this.opts.timeoutMs !== undefined) {
-			candidates.push(this.lastProgress + this.opts.timeoutMs - now);
+			limits.push(this.lastProgress + this.opts.timeoutMs);
 		}
-		if (this.admitDeadline !== undefined) {
-			candidates.push(this.admitDeadline - now);
+		if (this.admissionUnresolved() && this.admitDeadline !== undefined) {
+			limits.push(this.admitDeadline);
 		}
-		return Math.max(0, Math.min(...candidates));
+		if (this.state === "unknown" && this.unknownSince !== undefined) {
+			limits.push(this.unknownSince + this.timings.reconcileMs);
+		}
+		return limits.length > 0 ? Math.min(...limits) : undefined;
 	}
 
 	/** 4. Send `session.prompt` once with a stable id; never resend. */
@@ -1297,7 +1412,6 @@ class TurnRun {
 					if (this.state !== "removed") this.state = "delivered";
 				} else {
 					this.overlap = true;
-					if (this.state === "delivered") this.contentClosed = true;
 				}
 				return undefined;
 			case "session.inbox.cancelled":
@@ -1329,7 +1443,9 @@ class TurnRun {
 					message: `OpenCode asked for permission (${String(data.action ?? "unknown")}) in a headless session`,
 				};
 			default:
-				if (this.state !== "delivered" || this.contentClosed) return undefined;
+				// Once overlap is known, foreign input may already shape the
+				// content: never stream it, since a later error cannot retract it.
+				if (this.state !== "delivered" || this.overlap) return undefined;
 				return mapOpenCodeEvent(event, this.mapperState);
 		}
 	}
@@ -1338,6 +1454,7 @@ class TurnRun {
 	private async poll(): Promise<void> {
 		const { client } = this.ctx;
 		const signal = this.opts.signal;
+		const deadline = this.pollDeadline();
 		try {
 			let inInbox = false;
 			let inboxSignature = "";
@@ -1345,7 +1462,7 @@ class TurnRun {
 				const inbox = await bounded(
 					(s) =>
 						client.session.inbox.list({ sessionID: this.sid }, { signal: s }),
-					this.timings.requestMs,
+					requestBound(this.timings.requestMs, deadline),
 					signal,
 				);
 				inboxSignature = inbox.map((item) => item.id).join(",");
@@ -1358,6 +1475,7 @@ class TurnRun {
 			const scan = await scanTranscript(this.ctx, this.sid, this.requestId, {
 				signal,
 				tailId: this.anchors.tailId,
+				deadline,
 			});
 			this.pollFailures = 0;
 
@@ -1404,6 +1522,9 @@ class TurnRun {
 			}
 		} catch (err) {
 			if (err instanceof AgentCancellationError) return;
+			// A read cut short by the turn's own limit is not a failed poll: the
+			// driver acts on that limit next.
+			if (deadline !== undefined && Date.now() >= deadline) return;
 			this.pollFailures++;
 			if (this.pollFailures >= this.timings.maxPollFailures) {
 				throw new Error(
@@ -1693,10 +1814,7 @@ export class OpenCodeProvider implements AgentProvider {
 			version = String((info as { version?: unknown })?.version ?? "");
 		} catch (err) {
 			if (isUnauthorizedError(err)) throw new Error(PASSWORD_ERROR);
-			if (err instanceof ClientError && err.reason !== "Transport") {
-				// 1.x has no /api/info route (404, or its web UI's HTML).
-				throw new Error(oneXMessage());
-			}
+			if (isLegacyInfoRouteError(err)) throw new Error(oneXMessage());
 			throw new Error(
 				`OpenCode server health check failed at ${this.serverUrl} — ${errorText(err)}`,
 			);
