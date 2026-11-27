@@ -47,7 +47,8 @@ opencode --version
 ```
 
 The 2.x installer replaces the 1.x binary rather than installing beside it.
-External OpenCode 2.x servers are password-protected; see
+If you use a password-protected external OpenCode 2.x server, set
+`OPENCODE_PASSWORD` in the environment that runs `5x`; see
 [configuration](configuration.md#opencode-provider). Then, from the initialized
 project:
 

@@ -22,10 +22,12 @@ the OpenCode harness to OpenCode 2.x.
   provider, protected by a random password, and never starts, reuses, or
   restarts the OpenCode background service.
 - **External OpenCode servers authenticate with `OPENCODE_PASSWORD`** —
-  `opencode.url` / `--opencode-url` are unchanged. A password-protected server
-  reads its password from `OPENCODE_PASSWORD`, falling back to
-  `OPENCODE_SERVER_PASSWORD`. No password key is added to `5x.toml`. A missing
-  password fails with "the OpenCode server requires a password — set
+  `opencode.url` / `--opencode-url` are unchanged. For a password-protected
+  server, 5x reads the password in its own process from `OPENCODE_PASSWORD`,
+  falling back to `OPENCODE_SERVER_PASSWORD`; set it where `5x` runs. With
+  neither set, 5x sends no credentials, so an unprotected server still works.
+  No password key is added to `5x.toml`. A protected server with no password
+  set fails with "the OpenCode server requires a password — set
   OPENCODE_PASSWORD".
 - **OpenCode harness agents use 2.x frontmatter** — agents drop `name:` and the
   1.x `tools:` block in favor of `permissions:` rules (the orchestrator denies
@@ -34,26 +36,34 @@ the OpenCode harness to OpenCode 2.x.
   before validating its result. Run `5x harness sync opencode` (or `5x upgrade
   --sync`) to refresh an existing install; freshness reports it as stale until
   then.
-- **`OpenCodeProvider` and event-mapper exports changed** — the 1.x mapper
-  exports (`mapSseToAgentEvent`, `mapSseStreamToAgentEvents`,
-  `getEventSessionId`, `createSessionResolveContext`,
-  `resolveSessionIdWithContext`, `MAX_TRACKED_DELTA_PART_IDS`,
-  `EventMapperOptions`, `SessionResolveContext`) are replaced by
-  `mapOpenCodeEvent` and `eventSessionId` for 2.x events. New exports:
-  `MIN_OPENCODE_VERSION`, `parseServeListenUrl`, `OpenCodeFactoryDeps`, and the
+- **`OpenCodeProvider` and event-mapper exports changed** — the package root
+  (`@5x-ai/5x-cli`, the only `package.json` export) adds `MIN_OPENCODE_VERSION`
+  beside `OpenCodeProvider`, which now wraps the 2.x client; structured output
+  is prompted and parsed, with up to two corrective prompts, because 2.x has no
+  JSON-schema output format. The other changes are to the internal provider
+  barrel (`src/providers/index.ts`), which is not a package entry point and
+  cannot be imported from the package: the 1.x mapper exports
+  (`mapSseToAgentEvent`, `mapSseStreamToAgentEvents`, `getEventSessionId`,
+  `createSessionResolveContext`, `resolveSessionIdWithContext`,
+  `MAX_TRACKED_DELTA_PART_IDS`, `EventMapperOptions`, `SessionResolveContext`)
+  are replaced there by `mapOpenCodeEvent` and `eventSessionId` for 2.x events,
+  and it adds `parseServeListenUrl`, `OpenCodeFactoryDeps`, and the
   structured-output helpers (`extractStructuredJson`,
-  `buildStructuredOutputPrompt`, `buildCorrectivePrompt`). `OpenCodeProvider`
-  wraps the 2.x client; structured output is prompted and parsed, with up to
-  two corrective prompts, because 2.x has no JSON-schema output format.
+  `buildStructuredOutputPrompt`, `buildCorrectivePrompt`).
 - **OpenCode turns own exactly one prompt** — a turn on a session that is
   already running or has queued input fails with a busy error, and a turn that
   shares its execution with other input fails as ambiguous, instead of
   returning another prompt's result. A turn whose prompt state cannot be
   established (unresolved admission, or a prompt that left the inbox but is not
   in the transcript) fails instead of succeeding. Token usage comes only from
-  the turn's own transcript window. On an external server, a timeout or
-  cancellation cancels the turn's own queued prompt but never interrupts the
-  session, so its execution may be left running; the error says so.
+  the turn's own transcript window. Timeout or cancellation cleanup depends on
+  evidence of the prompt's state, and the error does not by itself mean the
+  work stopped: 5x attempts to cancel the turn's own queued prompt by its id;
+  if the prompt was delivered, managed mode attempts to interrupt the private
+  server's execution, while an external server is never interrupted and the
+  error says the execution was left running; if neither removal nor delivery
+  is confirmed, nothing is interrupted and the error says the prompt may still
+  be queued or run.
 - **TUI attach modules removed** — the unused `opencode attach` /
   `--tui-listen` modules (`src/tui/*`, `src/utils/event-router.ts`) are deleted,
   and `5x init` no longer prints the `--tui-listen` hint.

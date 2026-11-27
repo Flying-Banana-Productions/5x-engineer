@@ -100,10 +100,14 @@ for OpenCode 1.x (`opencode upgrade --major`) or an older 2.x
   service (`opencode serve --service`), so your own OpenCode sessions are not
   affected.
 - **External mode:** set `opencode.url` (or pass `--opencode-url <url>`) to use
-  a server you already run. OpenCode 2.x servers are password-protected; 5x
-  reads the password from `OPENCODE_PASSWORD`, falling back to
-  `OPENCODE_SERVER_PASSWORD`, and always uses the username `opencode`. There is
-  no `5x.toml` key for the password, so it stays out of committed config.
+  a server you already run. If that server is password-protected, set its
+  password in the environment of the process that runs `5x` (not the server's):
+  5x reads `OPENCODE_PASSWORD`, falling back to `OPENCODE_SERVER_PASSWORD`, and
+  sends it with the username `opencode`. With neither set, 5x sends no
+  credentials, which works for an unprotected server; a protected server then
+  fails with "the OpenCode server requires a password — set OPENCODE_PASSWORD".
+  There is no `5x.toml` key for the password, so it stays out of committed
+  config.
 
 ```toml
 [opencode]
@@ -126,13 +130,21 @@ time:
   <id> received other input during this turn; the result is ambiguous`, rather
   than returning another prompt's result.
 
-On timeout or cancellation, a turn cancels its own queued prompt by its id and
-reports when removal cannot be confirmed. In managed mode it also interrupts
-the private server's running execution. On an external server it never
-interrupts a running execution, which may keep running; the error says the
-execution `was left running on the external server`. An unresolved prompt
-admission (for example, a lost reply) is reported as `may still be queued or
-run`, not assumed cancelled.
+On timeout or cancellation, 5x cleans up only what the evidence shows the
+turn owns. The timeout or cancellation error alone does not mean the work
+stopped; read its note:
+
+- If the prompt has not been delivered, 5x attempts to cancel that queued
+  prompt by its exact id, then waits briefly for evidence of removal or
+  delivery. Confirmed removal needs nothing more.
+- If the prompt was delivered (its execution is running), managed mode
+  attempts to interrupt the private server's execution. On an external server
+  5x never interrupts the session; the execution may keep running, and the
+  error says it `was left running on the external server`.
+- If neither removal nor delivery is confirmed in time, including an
+  unresolved admission (for example, a lost reply), 5x interrupts nothing in
+  either mode, and the error says the prompt `may still be queued or run`. In
+  managed mode the private server is stopped when the provider closes.
 
 ### Timeouts and continuation
 
