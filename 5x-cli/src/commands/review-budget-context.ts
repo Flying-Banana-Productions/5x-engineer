@@ -169,6 +169,70 @@ export function hasPriorPlanReviewerStep(
 	});
 }
 
+export interface PlanAuthorCompletionGate {
+	code: "PLAN_REPAIR_REQUIRED";
+	message: string;
+	detail: Record<string, unknown>;
+}
+
+/**
+ * Post-author gate for a successful plan-author result. Applies the same
+ * repair verdict the next plan review reaches before invoking a reviewer
+ * (budget validity under the same mode/baseline condition, then phase
+ * executability), so a missed author preflight returns its targeted
+ * diagnostic on this step instead of surfacing on the next review render.
+ * Returns null when the next review would accept the plan for review.
+ */
+export function planAuthorCompletionGate(input: {
+	ctx: Pick<
+		ReviewBudgetCommandContext,
+		"db" | "recordStore" | "store" | "config" | "executionContext"
+	>;
+	runId: string;
+	planMarkdown: string;
+}): PlanAuthorCompletionGate | null {
+	// Legacy runs may predate authoritative record files; this safety net
+	// then checks executability only and leaves budget admission to review.
+	let recorded = false;
+	let baseline: ReturnType<typeof input.ctx.store.getBaseline> = null;
+	try {
+		recorded = Boolean(input.ctx.recordStore.getRun(input.runId));
+		if (recorded) baseline = input.ctx.store.getBaseline(input.runId);
+	} catch {
+		recorded = false;
+	}
+	const mode = baseline?.mode ?? input.ctx.config.reviewBudget.mode;
+	const planPath = input.ctx.executionContext.effectivePlanPath;
+	const check = `5x plan phases ${planPath} | jq '.data | {executability, budget}'`;
+	const remediation = `The plan-author result was not recorded. Have the author repair the plan (continue the same author session when available), commit it, confirm with \`${check}\`, then record the new author result. Re-estimate an invalid effort onto the allowed scale or split genuinely separable work into new rows; never round to hide estimated work.`;
+	if (
+		recorded &&
+		mode !== "off" &&
+		(baseline || !hasPriorPlanReviewerStep(input.ctx, input.runId))
+	) {
+		const repair = planReviewRepairGate(input.planMarkdown);
+		if (repair) {
+			return {
+				code: "PLAN_REPAIR_REQUIRED",
+				message: repair.message,
+				detail: { ...repair.detail, remediation },
+			};
+		}
+	}
+	const executability = planReviewExecutabilityGate({
+		planMarkdown: input.planMarkdown,
+		planPath,
+	});
+	if (executability) {
+		return {
+			code: "PLAN_REPAIR_REQUIRED",
+			message: executability.message,
+			detail: { ...executability.detail, remediation },
+		};
+	}
+	return null;
+}
+
 /** Durable snapshots of an active-budget run; null when no baseline governs it. */
 function activePlanReviewSnapshots(
 	ctx: Pick<ReviewBudgetCommandContext, "recordStore" | "store">,

@@ -208,11 +208,13 @@ async function authorCorrection(
 	planPath: string,
 	runId: string,
 	markdown: string,
+	workingCopy?: string,
 ): Promise<string> {
 	writeFileSync(planPath, markdown);
 	git(dir, "add", planPath);
 	git(dir, "commit", "-m", "apply final corrections");
 	const commit = git(dir, "rev-parse", "HEAD");
+	if (workingCopy !== undefined) writeFileSync(planPath, workingCopy);
 	const recorded = await cli(
 		dir,
 		[
@@ -550,9 +552,10 @@ describe("final-corrections approval finalization", () => {
 					planPath,
 					sourceId,
 					plan({ w2Addresses: "P1.1", w2Item: "Build the follow-up" }),
+					// The working copy keeps the valid checkbox, so the author
+					// record gate (which reads it) passes; it is not the anchor.
+					plan({ w2Addresses: "P1.1" }),
 				);
-				// The working copy keeps the valid checkbox; it is not the anchor.
-				writeFileSync(planPath, plan({ w2Addresses: "P1.1" }));
 				const refused = await cli(dir, ["run", "complete", "--run", sourceId]);
 				expect(refused.exitCode).not.toBe(0);
 				const error = JSON.parse(refused.stdout).error;

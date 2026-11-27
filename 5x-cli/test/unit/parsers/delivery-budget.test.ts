@@ -284,6 +284,39 @@ ${CANONICAL.replace(
 		expect(architecture.message).toContain("{0, ±1, ±2, ±3, ±5}");
 	});
 
+	test("a reviewer effortDelta summed into a row is not a row score", () => {
+		// W1 was 8; adding a reviewer effortDelta of 3 gives a plausible
+		// combined estimate (11) that is not on the row scale.
+		const summed = expectFailure(
+			replaceOnce(
+				"| W1 | Existing behavior | 3 | 0 | - | F0, F1 |",
+				"| W1 | Existing behavior | 11 | 0 | - | F0, F1, R1 |",
+			),
+			"BUDGET_INVALID_EFFORT",
+		);
+		expect(summed.message).toContain("Effort '11'");
+		// The repair splits separable work without cutting it (5 + 3 + 3) and
+		// keeps the finding mapped on every row that incorporates it.
+		const split = parseDeliveryBudget(
+			replaceOnce(
+				"| W1 | Existing behavior | 3 | 0 | - | F0, F1 | Required behavior |",
+				[
+					"| W1 | Existing behavior | 5 | 0 | - | F0, F1 | Re-estimated core |",
+					"| W3 | Event mapping | 3 | 0 | - | R1 | Separable mapping |",
+					"| W4 | Session resume | 3 | 0 | - | R1 | Separable resume |",
+				].join("\n"),
+			),
+		);
+		if (!split.ok) throw new Error(split.message);
+		const rows = split.value.workItems.filter((item) =>
+			["W1", "W3", "W4"].includes(item.id),
+		);
+		expect(rows.reduce((total, item) => total + item.effort, 0)).toBe(11);
+		expect([...incorporatedFindingIds(split.value.workItems)]).toEqual(
+			expect.arrayContaining(["F0", "F1", "R1"]),
+		);
+	});
+
 	test("requires valid claims only for negative architecture rows", () => {
 		expectFailure(
 			replaceOnce("DC0 (`intrinsic`)", "-"),

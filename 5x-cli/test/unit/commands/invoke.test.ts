@@ -2372,3 +2372,92 @@ model = "sample/test"
 		}
 	}, 30000);
 });
+
+describe("plan-author completion gate (invoke)", () => {
+	// W1 was an 8-point item; the author added a reviewer effortDelta of 3
+	// directly to the row. 11 is a plausible estimate but not a row score.
+	const rowPlan = (rows: string) => `## Delivery Budget
+- Estimate confidence: high
+| ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
+| --- | --- | --- | --- | --- | --- | --- |
+${rows}
+### Surface Snapshot
+- Subsystems: 1
+- Production files: 1
+- Persistent/external boundaries: 0
+
+## Phase 1: Work
+
+- [ ] Do the work`;
+	const summedPlan = rowPlan(
+		"| W1 | Upgrade adapter | 11 | 0 | - | R1 | 8 existing plus 3 from R1 |",
+	);
+	const splitPlan = rowPlan(
+		[
+			"| W1 | Upgrade adapter core | 5 | 0 | - | - | Re-estimated core |",
+			"| W4 | Adapter event mapping | 3 | 0 | - | R1 | Separable mapping work |",
+			"| W5 | Adapter session resume | 3 | 0 | - | R1 | Separable resume work |",
+		].join("\n"),
+	);
+
+	test("rejects an off-scale summed effort with a same-session repair, then records the split", async () => {
+		const dir = makeTmpDir();
+		const db = openPrivateControlPlaneDb(dir);
+		const ctx = makeBudgetContext();
+		try {
+			copyInitializedRepo(dir);
+			await initScaffold({ startDir: dir });
+			const planPath = join(dir, "plan.md");
+			writeFileSync(planPath, summedPlan);
+			createRunV1(db, { id: "run1", planPath });
+			ctx.executionContext.effectivePlanPath = planPath;
+			const invoke = () =>
+				invokeAgent(
+					"author",
+					{
+						template: "author-process-plan-review",
+						run: "run1",
+						vars: [`plan_path=${planPath}`],
+						phase: "plan",
+						record: true,
+						recordStep: "author:process-plan-review",
+						quiet: true,
+						workdir: dir,
+					},
+					{
+						db,
+						createReviewBudgetContext: async () => ctx,
+						createProvider: async () =>
+							structuredProvider({ result: "complete", commit: "abc1234" }),
+					},
+				);
+
+			await expect(invoke()).rejects.toMatchObject({
+				code: "PLAN_REPAIR_REQUIRED",
+				detail: {
+					diagnostic: { code: "BUDGET_INVALID_EFFORT" },
+					session_id: "session-governance",
+				},
+			});
+			const authorSteps = () =>
+				ctx.recordStore
+					.listLines("run1", "steps")
+					.filter(
+						(line) =>
+							(line.payload as { step_name?: string }).step_name ===
+							"author:process-plan-review",
+					);
+			expect(authorSteps()).toHaveLength(0);
+
+			// Not auto-rounded: the author re-estimates and splits separable
+			// work, keeping R1 on every row that incorporates it.
+			writeFileSync(planPath, splitPlan);
+			await invoke();
+			expect(authorSteps()).toHaveLength(1);
+		} finally {
+			ctx.db.close();
+			db.close();
+			cleanupDir(dir);
+		}
+	}, 30000);
+});
