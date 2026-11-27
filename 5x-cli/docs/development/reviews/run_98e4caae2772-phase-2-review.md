@@ -99,3 +99,22 @@ The managed and authenticated external cases provide Phase 2 evidence for operat
 ### Updated readiness
 
 **Ready.** All required prior items are addressed and the successful live transcripts satisfy the effective v1.9 headless comparison at the pinned minimum. No new blocking finding was found in the correction range.
+
+## Addendum (November 27, 2026) — Phase 2 closure after governance merge
+
+**Reviewed range / context:** `aa99077eca2d6d7471e806b8d3fb40bc135bc2f2..cf351476d70da58309f2a0d9428a12589082791c`, context `42f054f5-88ce-4fae-8966-e295ffcd123e`, iteration 2. The binding remains enforced and the effective plan remains registered v1.9 (`amendment:9284200c43a9379afe49ff0d13d65fc0ec48fb249895d2143fd368b110da089e`). This context requires no prior-finding outcomes or credit realizations.
+
+### Verification
+
+- Retrieved and inspected the exact governed diff. The merge changes 5x budget governance and its tests and instructions, not Phase 2 provider code, dependencies, provider tests, or the approved plan. No new Phase 2 blocker was introduced. `git diff --check` passed for the range.
+- The governance change keeps inherited budget information as telemetry rather than an implementation gate. It preserves credit-shortfall and implementation-finding routes and leaves historical inherited-budget observations in the audit trail. This fresh review does not replay the prior closure outcomes.
+- Prior live acceptance remains applicable to the unchanged provider and live test. Both successful runs recorded `opencode v2.4.2`, the pinned minimum, with five passes and no failures or skips. The observer connected before either prompt and remained live through the deny terminal; the allow-only control produced a `question` form, while the deny session had no matching `question` call or form and reached provider `done` and raw `session.execution.succeeded`. This is prior live evidence, not a rerun at the merge. Configured quality verification at the merged head runs separately and was not duplicated here.
+
+### Nonblocking follow-ups
+
+- The informational plan status still says the amendment is pending review. Use the registered revision above, not that stale status line.
+- Record `opencode v2.4.2` in the PR description when the PR is opened.
+
+### Updated readiness
+
+**Ready.** The merge does not change Phase 2 implementation or live acceptance, and this closure found no new Phase 2 blockers. Record the verdict against this context and verify the independently run quality gates before marking the phase complete.
