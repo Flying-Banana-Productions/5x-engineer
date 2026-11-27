@@ -50,3 +50,24 @@
 
 - Operator warning: the status banner above the plan contract still says the Phase 2 amendment is pending review. For execution, use the effective amendment and binding in this review context, not the stale banner or historical checklist claims.
 - The prescribed `5x commit --files` stages dirty run journals as well as the named file. The review is committed by explicit path to honor the artifact-only requirement; existing run journal changes are left for the parent.
+
+## Addendum (2026-11-27) — Phase 3 closure
+
+**Reviewed range / context:** `52b266ad208e1f3c1da890aeeb783b995db19b4d..b7e4d1f2e9a03e897dc51631354d973ff27b65d9` / `1479804d-9426-4acc-be1b-801a7abe3ba0`
+
+**Local verification:** `bun test test/unit/doctor test/unit/config-registry.test.ts test/integration/commands/doctor.test.ts` — 173 passed, 0 failed, including the fake 1.x CLI acceptance case.
+
+### Prior-finding outcomes
+
+| Finding ID | Outcome | Evidence |
+|---|---|---|
+| P2.1 | Addressed | `src/doctor/checks/opencode.ts:127–150` leaves provider resolution rooted at the control plane, while project manifest lookup uses the checkout resolved from `startDir`, matching harness installation and freshness. The real linked-worktree fixture in `test/unit/doctor/opencode.test.ts:282` verifies that a manifest local to the linked checkout triggers the probe there and not in the main checkout. |
+| P2.2 | Addressed | `src/doctor/checks/opencode.ts:101–118,180–190` ignores nonzero exits and matches complete version lines. The new tests reject diagnostic fragments and even a bare version on nonzero exit; the passing integration test confirms the 1.x upgrade hint still works. |
+
+### Remaining concerns
+
+No new blocking issue in the correction range. The informational plan-status warning above still applies; the bound amendment governs.
+
+### Updated readiness and credit realization
+
+**Ready.** Both prior findings are addressed. No approved credit claim is due in this closure.
