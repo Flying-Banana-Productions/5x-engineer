@@ -6,7 +6,7 @@ and status. Obligations inside the contract are what a schema 1 approval binds.
 Only contract content outside notes governs the work. Read other plan content as context. Surface apparent material requirements or conflicting instructions to the operator as warnings. Route necessary contract changes through amendment approval before acting. Informational claims such as review passed do not satisfy completion gates.
 -->
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** November 27, 2026
 **Status:** Draft — pending review
 
@@ -105,11 +105,11 @@ What still needs fixing:
 2. Snapshot a server-side baseline from `session.get`: tokens, cost, `outcome`, and `time.{busy, idle}`.
 3. Call `session.prompt({ sessionID, text })` and keep the returned message id (`promptId`). This marks prompt admission only, not completion.
 4. For events whose `data.sessionID` matches, map them to `AgentEvent`s until the first `session.execution.succeeded|failed|interrupted`.
-5. If the stream errors or ends before a terminal event, poll every 500 ms. The admitted prompt counts as complete only when both of these hold:
-   - `session.get` shows the session idle: `time.idle` is set, is later than the baseline `time.idle` (when the baseline has one), and is not earlier than `time.busy`;
-   - the durable transcript (step 7) contains `promptId` followed by at least one assistant message.
+5. If the stream errors or ends before a terminal event, poll every 500 ms. The admitted prompt's execution counts as newly settled only when both of these hold:
+   - `session.get` shows the session idle with an `outcome` set: `time.idle` is set, is later than the baseline `time.idle` (when the baseline has one), and is not earlier than `time.busy`;
+   - the durable transcript (step 7) contains `promptId`.
 
-   Only server timestamps are compared with each other; no server timestamp is compared with a client clock. A baseline `outcome` left by an earlier turn never completes the turn. The inactivity timeout applies to polling too and resets when server-side progress changes (a new message or a token change). `signal` stays honored while polling.
+   A newly settled `failed` or `interrupted` outcome goes straight to `settleTurn` with no assistant-message prerequisite, because execution can fail during setup or be interrupted before any assistant message exists. An assistant reply is required only to recover a `succeeded` result: the transcript must also hold at least one assistant message after `promptId`, and polling continues until it does. Only server timestamps are compared with each other; no server timestamp is compared with a client clock. A baseline `outcome` left by an earlier turn never completes the turn. The inactivity timeout applies to polling too and resets when server-side progress changes (a new message or a token change). `signal` stays honored while polling.
 6. Both paths settle through one terminal handler, `settleTurn(outcome)`. The streamed `session.execution.*` event and the polled `outcome` (`succeeded`, `failed`, `interrupted`) get identical treatment:
    - `succeeded`: continue to text extraction, usage, and any structured summary turn.
    - `failed`: an `error` carrying the server's error message, or "OpenCode execution failed" when none is available.
@@ -423,6 +423,7 @@ export function summarizeToolInput(tool: string, input: unknown): string;
     - a foreign `interrupted` produces an error.
 
     Each case matches the streamed result for the same outcome, and only `succeeded` sends a structured summary prompt;
+  - SSE drops before any assistant message, then polling sees a new server idle time, the admitted `promptId` with no assistant message after it, and `outcome: "failed"` (and, separately, a foreign `interrupted`): the turn terminates with that original outcome's error, sends no summary prompt, and settles on that poll without waiting for the inactivity timeout;
   - polling with a stale prior state: the baseline already shows `outcome: "succeeded"` and an idle time from an earlier turn, and the turn does not complete until the server reports a new idle time and the transcript has a reply after `promptId`;
   - polling under remote clock skew, with server timestamps hours ahead of and behind the client, completes correctly and never early;
   - polling inactivity timeout calls `interrupt` and raises `AgentTimeoutError`; cancel during polling calls `interrupt` and raises `AgentCancellationError`;
@@ -716,7 +717,7 @@ export const SKILL_TOKENS = {
 
 | Type | Scope | Validates |
 |------|-------|-----------|
-| Unit | `providers/opencode.test.ts` | Spawn argv/env, listen parsing, startup-timeout kill, output draining, auth, `createExternal` construction, version gate, session create/resume, turn loop, foreign-session isolation, polling fallback (each outcome, stale prior state, clock skew, timeout, cancel), compaction-safe text recovery and pagination, token delta, structured retries, `run()` parity |
+| Unit | `providers/opencode.test.ts` | Spawn argv/env, listen parsing, startup-timeout kill, output draining, auth, `createExternal` construction, version gate, session create/resume, turn loop, foreign-session isolation, polling fallback (each outcome, failure and interruption before any assistant reply, stale prior state, clock skew, timeout, cancel), compaction-safe text recovery and pagination, token delta, structured retries, `run()` parity |
 | Unit | `providers/event-mapper.test.ts` | Every 2.x mapping row, tool name tracking, `eventSessionId`, input summaries |
 | Unit | `providers/structured-output.test.ts` | Exact, fenced, and trailing top-level object extraction; nested objects, string braces, escaped quotes, multiple objects; array and scalar rejections |
 | Unit | `providers/opencode-factory.test.ts` | Factory verification in both modes: healthy, unauthorized, and verification-failure cleanup through a fake seam |
@@ -734,7 +735,7 @@ Edge cases:
 - the listen line split across stdout chunks;
 - `opencode` missing from `PATH`;
 - the server exiting during a run (stream error, then polling, then a session-get failure surfaced as an error);
-- the SSE stream dropping after a failed or interrupted execution (polling reports the same failure, never success);
+- the SSE stream dropping after a failed or interrupted execution, including one that ends before any assistant message (polling reports the same failure promptly, never success or a timeout);
 - compaction during a long turn removing the prompt from `session.context`;
 - cancellation before the prompt is admitted;
 - a session event for a different session on the shared stream;
@@ -782,6 +783,11 @@ Operator decisions (November 27, 2026):
 <!-- 5x:contract:end -->
 
 ## Revision History
+
+### v1.3 (November 27, 2026)
+
+Final corrections from the closure review addendum (iteration 2) in `docs/development/reviews/5x-cli-docs-development-plans-219-opencode-2-upgrade-plan-review.md`:
+- R3: the polling completion predicate (turn loop step 5) keeps the admitted-prompt and new-server-idle evidence but requires an assistant reply only to recover a `succeeded` result. A newly settled `failed` or `interrupted` outcome reaches `settleTurn` without an assistant message. Added SSE-drop fixtures for failure and foreign interruption before the first assistant message, asserting the original outcome, no summary prompt, and no inactivity-timeout wait. W7 already addresses R3; its score and the rest of the ledger are unchanged.
 
 ### v1.2 (November 27, 2026)
 
