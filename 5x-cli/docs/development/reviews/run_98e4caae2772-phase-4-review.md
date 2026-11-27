@@ -30,3 +30,23 @@
 **Risk:** The current render is correct, but its regression test can pass when an author step no longer validates/records its completion.  
 **Requirement:** Phase 4.3–4.4 requires checking the launch/child ID/completed result sequence before each step's own validation or recording, across all delegation modes.  
 **Evidence / correction:** In `5x-cli/test/unit/harnesses/opencode-skills.test.ts`, the four-mode lifecycle test searches to the end of the skill for `consumerIdx`. Its next-launch check compares against `resultIdx`, not the consumer. If the Step 2 `phase finish` consumer disappears from `5x-phase-execution`, Step 1 can borrow Step 2a's validation and the test still passes. The role checks also use nonzero counts, allowing a required site to disappear while another of the same role remains. Assert the planned launch sites per mode and require each matched consumer to appear before the next launch (or within the expected step), still reading `$RESULT`. No shipped workflow change is needed.
+
+## Addendum (2026-11-27) — Phase 4 closure
+
+**Reviewed range / context:** `9c8694cce4299c990a5211cc3decb3893c9677f5..49c6a79d7995bfb216b3b0e32bdbfe2fe1ba21ff` / `afdbda77-7008-4c2a-86fb-cffa531c8306`
+
+### Prior-finding outcomes
+
+| Finding ID | Outcome | Evidence |
+|---|---|---|
+| I1 | Addressed | `5x-cli/test/unit/harnesses/opencode-skills.test.ts:740–969` enumerates all ten planned launch sites, matches the exact role-filtered inventory in each mode, and checks each completed `$RESULT` against its designated consumer section. Initial implementation maps to Step 2 `phase finish`, quality retry uses its own consumer, and review fixes explicitly loop back to Step 2. Forward flow rejects a consumer after another launch. |
+
+### Verification
+
+- OpenCode and Cursor skill suites: 131 passed, 0 failed in the reviewed tree. Configured `phase finish` passed.
+- Verified the mutation transcript in the author tool log: removing the initial Step 2 `phase finish` consumer failed the pairing test in both native-author modes even though the retry consumer remained; removing the Step 2a launch failed both inventory and pairing checks in those modes. Neither mutation is present in the reviewed range.
+- The correction changes only the OpenCode skill test. The installed assets, live continuation evidence, and Cursor byte-identity results from the initial review remain applicable.
+
+### Updated readiness
+
+**Ready.** I1 is closed; the correction introduced no new findings. No credit claims are due.
