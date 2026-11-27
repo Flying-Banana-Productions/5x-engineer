@@ -467,9 +467,11 @@ describe("implementation review skill branches", () => {
 			createRenderContext(true),
 		).content;
 		expect(loaded).toContain("5x review corrections finish");
-		expect(loaded).toContain("task_id=");
+		expect(loaded).toContain("sessionID=$NATIVE_SUBTASK_ID");
+		expect(loaded).not.toContain("task_id");
 		expect(rendered).toContain("[[NATIVE_CONTINUE_PARAM]]");
-		expect(loaded).not.toContain("[[NATIVE_CONTINUE_PARAM]]");
+		expect(rendered).toContain("[[NATIVE_AWAIT_RESULT]]");
+		expect(loaded).not.toContain("[[");
 	});
 });
 

@@ -496,7 +496,6 @@ export async function initScaffold(params: InitParams): Promise<void> {
 		console.log("  Skipped .gitattributes (run records rule already present)");
 	}
 
-	console.log("  External TUI is opt-in: use --tui-listen");
 	console.log("  Interactive prompts always run in the CLI terminal");
 	console.log(
 		"  Run '5x harness install opencode --scope project' to install skills and subagent profiles",

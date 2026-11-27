@@ -80,6 +80,12 @@ describe("config-registry", () => {
 		expect(byKey.get("plans.branch")?.default).toBeUndefined();
 	});
 
+	test("opencode.url description names the external-server password env", () => {
+		const url = getConfigRegistry().find((e) => e.key === "opencode.url");
+		expect(url?.description).toContain("omit for local/managed OpenCode");
+		expect(url?.description).toContain("OPENCODE_PASSWORD");
+	});
+
 	test("deprecated keys are flagged", () => {
 		const byKey = new Map(getConfigRegistry().map((e) => [e.key, e]));
 		expect(byKey.get("maxAutoIterations")?.deprecated).toBe(true);

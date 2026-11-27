@@ -166,13 +166,13 @@ Read delegation mode (see the `5x` foundation skill):
 ```
 
 {{#if author_native}}
-- **Author:** native (`5x-plan-author` / `5x-code-author` via Task tool)
+- **Author:** native (`5x-plan-author` / `5x-code-author` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if author_invoke}}
 - **Author:** invoke (`5x invoke author ...`)
 {{/if}}
 {{#if reviewer_native}}
-- **Reviewer:** native (`5x-reviewer` via Task tool)
+- **Reviewer:** native (`5x-reviewer` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if reviewer_invoke}}
 - **Reviewer:** invoke (`5x invoke reviewer ...`)
@@ -343,7 +343,7 @@ RENDERED=$(5x template render author-issue-intake --run $PLAN_RUN \
   --var brief_dir=$BRIEF_DIR)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 
-RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-plan-author", prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 
 echo "$RESULT" | 5x protocol validate author --run $PLAN_RUN \
   --record --step author:issue-intake --phase plan --require-commit
@@ -391,8 +391,8 @@ RENDERED=$(5x template render author-generate-plan --run $PLAN_RUN \
   --var prd_path=$BRIEF_DIR/brief.md)
 ```
 
-Delegate `.data.prompt` to `5x-plan-author` via the Task tool and record it
-with `5x protocol validate author --run $PLAN_RUN --record --step author:generate-plan --phase plan`.
+Delegate `.data.prompt` to `5x-plan-author` via the [[NATIVE_DELEGATE_TOOL]] and record it
+with `5x protocol validate author --run $PLAN_RUN --record --step author:generate-plan --phase plan`.[[NATIVE_AWAIT_NOTE]]
 {{else}}
 ```bash
 RESULT=$(5x invoke author author-generate-plan --run $PLAN_RUN \

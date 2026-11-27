@@ -53,13 +53,14 @@ A **provider** executes workers launched through `5x invoke`.
 
 | Harness | Best fit | Worker execution |
 | --- | --- | --- |
-| `opencode` | OpenCode sessions with visible native child sessions | Native subagents by default; per-role invoke supported |
+| `opencode` | OpenCode 2.x sessions with visible native child sessions (requires OpenCode ≥ 2.4.2) | Native subagents by default; per-role invoke supported |
 | `cursor` | Cursor with native subagent support | Native subagents by default; project rules guide orchestration |
 | `universal` | Other tools that can load skills, or custom integrations | `5x invoke` through configured providers |
 
 Native execution uses the host tool's authentication and model support. Invoke
 execution needs the selected provider's executable/server and authentication.
-The OpenCode provider is bundled; other providers are plugins. See
+The OpenCode provider is bundled and, like the OpenCode harness, requires
+OpenCode 2.x; OpenCode 1.x is not supported. Other providers are plugins. See
 [setup and harnesses][getting-started] for paths, authentication, and scope choices.
 
 ## Quick start

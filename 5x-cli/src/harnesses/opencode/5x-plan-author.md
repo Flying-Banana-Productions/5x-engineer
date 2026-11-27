@@ -1,7 +1,10 @@
 ---
-name: 5x-plan-author
 description: 5x plan author — generates and revises implementation plans
 mode: subagent
+permissions:
+  - action: subagent
+    resource: "*"
+    effect: deny
 ---
 
 You are the 5x plan author. Your role is to produce or revise a structured

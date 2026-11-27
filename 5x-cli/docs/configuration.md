@@ -86,6 +86,66 @@ credentials, or configured server authentication. There is no universal API-key
 requirement. A provider source package in this repository is not proof it has
 been published to npm.
 
+### OpenCode provider
+
+The bundled `opencode` provider requires OpenCode 2.x, at least 2.4.2. Before
+each invocation it checks the server's version and fails with an upgrade hint
+for OpenCode 1.x (`opencode upgrade --major`) or an older 2.x
+(`opencode upgrade`).
+
+- **Managed mode** (no `opencode.url`, the default): 5x starts a private
+  `opencode serve` on `127.0.0.1` for the invocation, protected by a random
+  password only 5x holds, and stops it when the invocation ends. `opencode` must
+  be on `PATH`. 5x never starts, reuses, or restarts OpenCode's background
+  service (`opencode serve --service`), so your own OpenCode sessions are not
+  affected.
+- **External mode:** set `opencode.url` (or pass `--opencode-url <url>`) to use
+  a server you already run. If that server is password-protected, set its
+  password in the environment of the process that runs `5x` (not the server's):
+  5x reads `OPENCODE_PASSWORD`, falling back to `OPENCODE_SERVER_PASSWORD`, and
+  sends it with the username `opencode`. With neither set, 5x sends no
+  credentials, which works for an unprotected server; a protected server then
+  fails with "the OpenCode server requires a password — set OPENCODE_PASSWORD".
+  There is no `5x.toml` key for the password, so it stays out of committed
+  config.
+
+```toml
+[opencode]
+url = "http://127.0.0.1:4096"
+```
+
+```bash
+export OPENCODE_PASSWORD='<server password>'
+5x invoke author <template> --opencode-url http://127.0.0.1:4096 [options]
+```
+
+5x attributes each OpenCode turn to exactly one prompt it sent. It cannot
+attribute a turn on an external session that another client drives at the same
+time:
+
+- A turn on a session that is already running or has queued input fails with
+  `OpenCode session <id> is busy (running or has queued input)`, and sends no
+  prompt.
+- A turn whose execution also received other input fails with `OpenCode session
+  <id> received other input during this turn; the result is ambiguous`, rather
+  than returning another prompt's result.
+
+On timeout or cancellation, 5x cleans up only what the evidence shows the
+turn owns. The timeout or cancellation error alone does not mean the work
+stopped; read its note:
+
+- If the prompt has not been delivered, 5x attempts to cancel that queued
+  prompt by its exact id, then waits briefly for evidence of removal or
+  delivery. Confirmed removal needs nothing more.
+- If the prompt was delivered (its execution is running), managed mode
+  attempts to interrupt the private server's execution. On an external server
+  5x never interrupts the session; the execution may keep running, and the
+  error says it `was left running on the external server`.
+- If neither removal nor delivery is confirmed in time, including an
+  unresolved admission (for example, a lost reply), 5x interrupts nothing in
+  either mode, and the error says the prompt `may still be queued or run`. In
+  managed mode the private server is stopped when the provider closes.
+
 ### Timeouts and continuation
 
 `author.timeout` and `reviewer.timeout` are seconds for invoke execution; omitting

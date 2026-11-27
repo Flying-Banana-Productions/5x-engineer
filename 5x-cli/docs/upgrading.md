@@ -37,7 +37,20 @@ in [setup](getting-started.md#install-the-cli) to evaluate unreleased changes.
 
 ### 2. Migrate the project and synchronize the harness
 
-From the initialized project:
+If you use OpenCode (as a harness or as the `opencode` invoke provider), first
+upgrade OpenCode to 2.x. 5x 2.x requires OpenCode 2.x (at least 2.4.2) and does
+not support 1.x:
+
+```bash
+opencode upgrade --major
+opencode --version
+```
+
+The 2.x installer replaces the 1.x binary rather than installing beside it.
+If you use a password-protected external OpenCode 2.x server, set
+`OPENCODE_PASSWORD` in the environment that runs `5x`; see
+[configuration](configuration.md#opencode-provider). Then, from the initialized
+project:
 
 ```bash
 5x upgrade
@@ -50,6 +63,11 @@ it does not update the installed npm executable. It checks prompt overrides and
 reports harness freshness. Harness roots are report-only by default;
 `harness.autoSync = true` opts into lossless refresh, `--sync` explicitly requests
 it, and `--no-sync` prevents it for that invocation.
+
+OpenCode 2.x changed agent frontmatter and delegation tools, so an existing
+OpenCode harness reports stale until `5x harness sync opencode` (or `5x harness
+sync`) refreshes it. `5x doctor` warns (`opencode-outdated`) while OpenCode is
+older than the minimum.
 
 Plain `harness install` preserves existing agent files and does not establish a
 verified baseline for those files. Use sync. Review reported local modifications

@@ -128,13 +128,13 @@ the `5x` foundation skill — **Delegation mode precedence**):
 
 Confirm each role's path before delegating:
 {{#if author_native}}
-- **Author:** native (`5x-plan-author` via Task tool)
+- **Author:** native (`5x-plan-author` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if author_invoke}}
 - **Author:** invoke (`5x invoke author ...`)
 {{/if}}
 {{#if reviewer_native}}
-- **Reviewer:** native (`5x-reviewer` via Task tool)
+- **Reviewer:** native (`5x-reviewer` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if reviewer_invoke}}
 - **Reviewer:** invoke (`5x invoke reviewer ...`)
@@ -167,7 +167,7 @@ and skip to the appropriate step based on recorded history.
 ### Step 2: Generate the plan
 
 {{#if author_native}}
-Delegate to the plan author via the Task tool:
+Delegate to the plan author via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 RENDERED=$(5x template render author-generate-plan \
@@ -175,7 +175,7 @@ RENDERED=$(5x template render author-generate-plan \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-plan-author", prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 
 echo "$RESULT" | 5x protocol validate author \
   --record --step $STEP --phase plan

@@ -6,9 +6,15 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { createSqliteInvocationStore } from "../../../src/control-plane/index.js";
 import { createRunV1 } from "../../../src/db/operations-v1.js";
 import { runMigrations } from "../../../src/db/schema.js";
@@ -69,10 +75,14 @@ interface CmdResult {
 	exitCode: number;
 }
 
-function run5x(cwd: string, args: string[]): CmdResult {
+function run5x(
+	cwd: string,
+	args: string[],
+	env: Record<string, string | undefined> = cleanGitEnv(),
+): CmdResult {
 	const result = Bun.spawnSync(["bun", "run", BIN, ...args], {
 		cwd,
-		env: cleanGitEnv(),
+		env,
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -530,5 +540,36 @@ describe("5x doctor (integration)", () => {
 			}
 		},
 		{ timeout: 20000 },
+	);
+
+	test(
+		"fake 1.x opencode on PATH → opencode-outdated warn with the --major upgrade hint",
+		() => {
+			const dir = makeTmpDir();
+			const binDir = makeTmpDir();
+			try {
+				setupProject(dir);
+				const fake = join(binDir, "opencode");
+				writeFileSync(fake, "#!/bin/sh\necho 1.2.3\n");
+				chmodSync(fake, 0o755);
+				const env = cleanGitEnv();
+				env.PATH = `${binDir}${delimiter}${env.PATH ?? ""}`;
+
+				const result = run5x(dir, ["doctor"], env);
+				expect(result.exitCode).toBe(0);
+				const report = reportOf(result.stdout);
+				expect(report.ok).toBe(true);
+				const findings = report.checks.filter((c) => c.check === "opencode");
+				expect(findings).toHaveLength(1);
+				expect(findings[0]?.code).toBe("opencode-outdated");
+				expect(findings[0]?.status).toBe("warn");
+				expect(findings[0]?.remediation).toBe("opencode upgrade --major");
+				expect(String(findings[0]?.message)).toContain("found 1.2.3");
+			} finally {
+				cleanupDir(dir);
+				cleanupDir(binDir);
+			}
+		},
+		{ timeout: 15000 },
 	);
 });

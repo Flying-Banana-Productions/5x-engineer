@@ -10,11 +10,19 @@
  * model is set; otherwise they are omitted so OpenCode inherits the
  * primary agent's model.
  *
- * Tool naming verified against OpenCode documentation (March 2026):
- * Tool names in the `tools` frontmatter block use OpenCode's built-in
- * tool identifiers: write, edit, bash, read, grep, glob, list, webfetch.
- * These are NOT the same as Claude Code tool names (Read, Write, Bash, etc.)
- * or legacy names (read_file, write_file, run_terminal_cmd).
+ * OpenCode 2.x frontmatter (verified against OpenCode 2.4.2, November 2026):
+ * Templates use the 2.x-native fields `description`, `mode`, `permissions`,
+ * and (injected) `model`. They carry no `name:` (2.x derives the agent id
+ * from the filename and logs `name` as an ignored unsupported field) and no
+ * 1.x `tools:` block (a file mixing formats is read as 2.x and its `tools`
+ * block is ignored). `permissions:` is an ordered list of
+ * `{action, resource, effect}` rules appended after OpenCode's defaults:
+ * the orchestrator denies `edit`; the three subagents deny `subagent`.
+ *
+ * Rule actions use OpenCode 2.x tool ids: read, edit, shell, glob, grep,
+ * subagent, skill. (1.x `bash` became `shell`, `task` became `subagent`,
+ * and `write`/`patch` fold into `edit`.) These are NOT the same as Claude
+ * Code tool names (Read, Write, Bash, etc.).
  *
  * cwd frontmatter: OpenCode does NOT support a `cwd` frontmatter field.
  * The effective working directory is communicated via the post-render

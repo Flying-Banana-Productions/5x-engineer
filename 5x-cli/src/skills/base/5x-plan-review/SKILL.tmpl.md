@@ -151,9 +151,9 @@ PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-# 2. Launch subagent via Task tool (pass the native continuation parameter to continue the same reviewer)
-RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
+# 2. Launch subagent via [[NATIVE_DELEGATE_TOOL]] (pass the native continuation parameter to continue the same reviewer)
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-reviewer", prompt=$PROMPT,
+        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>[[NATIVE_AWAIT_RESULT]]
 
 # 3. Validate + record
 VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
@@ -161,8 +161,8 @@ VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
 GOVERNANCE_ROUTE=$(echo "$VALIDATED" | jq -r \
   '.data.result.governance.route // empty')
 
-# 4. Capture agent id for reuse in subsequent reviews
-NATIVE_SUBTASK_ID=<agent id from Task tool result>
+# 4. Capture [[NATIVE_CHILD_ID_NOUN]] for reuse in subsequent reviews
+NATIVE_SUBTASK_ID=[[NATIVE_CHILD_ID_SOURCE]]
 ```
 
 **Task reuse** is expected when `reviewer.continuePhaseSessions` is
@@ -171,7 +171,7 @@ the current phase, `5x template render` requires a continuation signal.
 For native reviewers pass **`--continue-native`** — this selects the
 `reviewer-plan-continued` template (which includes the diff since the
 prior review) without expecting a provider session id. Pass
-**`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the Task tool for
+**`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the [[NATIVE_DELEGATE_TOOL]] for
 subagent continuity. Use `--new-session` only for recovery
 (context loss, empty output).
 
@@ -216,13 +216,13 @@ the `5x` foundation skill — **Delegation mode precedence**):
 
 Confirm each role's path before delegating:
 {{#if author_native}}
-- **Author:** native (`5x-plan-author` via Task tool)
+- **Author:** native (`5x-plan-author` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if author_invoke}}
 - **Author:** invoke (`5x invoke author ...`)
 {{/if}}
 {{#if reviewer_native}}
-- **Reviewer:** native (`5x-reviewer` via Task tool)
+- **Reviewer:** native (`5x-reviewer` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if reviewer_invoke}}
 - **Reviewer:** invoke (`5x invoke reviewer ...`)
@@ -244,7 +244,7 @@ from `5x run state --plan $PLAN_PATH`.
 Track $ITERATION starting at 1. Read `maxReviewIterations` from `5x config show` for the maximum.
 {{#if reviewer_native}}
 Track $NATIVE_SUBTASK_ID (initially empty). When `reviewer.continuePhaseSessions`
-is enabled, pass **`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the Task tool on
+is enabled, pass **`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the [[NATIVE_DELEGATE_TOOL]] on
 subsequent reviews AND **`--continue-native`** on `5x template render` so
 it emits the `reviewer-plan-continued` variant (with the diff since the
 prior review). Never pass the native subtask id as `--session` — that
@@ -284,7 +284,7 @@ Before the first reviewer invocation, inspect `5x run state`:
 ### Step 1: Review
 
 {{#if reviewer_native}}
-Delegate to the reviewer via the Task tool:
+Delegate to the reviewer via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 RENDERED=$(5x template render reviewer-plan \
@@ -293,8 +293,8 @@ PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 
-RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-reviewer", prompt=$PROMPT,
+        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>[[NATIVE_AWAIT_RESULT]]
 
 VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
   --record --step $STEP --phase plan --iteration $ITERATION)
@@ -306,7 +306,7 @@ GOVERNANCE_ROUTE=$(echo "$VALIDATED" | jq -r \
 variant, which includes the commit range and plan diff since the prior
 review so the subagent can rebase its findings against the new state.
 
-Capture `$NATIVE_SUBTASK_ID` from the Task tool result for reuse in
+Capture `$NATIVE_SUBTASK_ID` from [[NATIVE_CHILD_ID_FROM]] result for reuse in
 subsequent reviews.
 {{else}}
 Delegate to the reviewer via `5x invoke`:
@@ -379,14 +379,14 @@ Before delegation, set `$FINAL_CORRECTIONS=true` only when the enforced route
 was `final_corrections`; otherwise set it to false.
 
 {{#if author_native}}
-Delegate to the plan author via the Task tool:
+Delegate to the plan author via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 RENDERED=$(5x template render author-process-plan-review)
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-RESULT=<Task tool: subagent_type="5x-plan-author", prompt=$PROMPT>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-plan-author", prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 
 echo "$RESULT" | 5x protocol validate author \
   --record --step $STEP --phase plan \

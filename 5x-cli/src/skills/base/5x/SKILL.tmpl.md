@@ -157,22 +157,21 @@ plan review, phase execution, or any other orchestration loop will fail.
 {{/if}}
 
 {{#if any_native}}
-### Native delegation (Task tool)
+### Native delegation ([[NATIVE_DELEGATE_TOOL]])
 
 **Use only when `<role>.delegationMode` is `native`.** If the role is
 `invoke`, use `5x invoke` instead — see below.
 
 These skills assume an opencode environment with the 5x harness installed.
-Available subagents are listed in the Task tool's `subagent_type` parameter:
+Available subagents are listed in the [[NATIVE_DELEGATE_TOOL]]'s `[[NATIVE_AGENT_PARAM]]` parameter:
 
-| `subagent_type` | Role |
+| `[[NATIVE_AGENT_PARAM]]` | Role |
 |---|---|
 | `5x-plan-author` | Generates and revises implementation plans |
 | `5x-code-author` | Implements code changes from approved plans |
 | `5x-reviewer` | Quality review, structured verdicts |
 
-Delegate work by rendering the prompt, launching a subagent via the Task
-tool, then validating and recording the result:
+Delegate work by rendering the prompt, launching a subagent via the [[NATIVE_DELEGATE_TOOL]], then validating and recording the result:
 
 ```bash
 # 1. Render the prompt (ambient run identity; pass --run only if needed)
@@ -181,15 +180,15 @@ RENDERED=$(5x template render <template> \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-# 2. Launch subagent via Task tool
-RESULT=<Task tool: subagent_type=<agent>, prompt=$PROMPT>
+# 2. Launch subagent via [[NATIVE_DELEGATE_TOOL]]
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]=<agent>, prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 
 # 3. Validate + record
 echo "$RESULT" | 5x protocol validate <role> \
   --record --step $STEP
 ```
 
-This pattern applies to **native** roles only.
+This pattern applies to **native** roles only.[[NATIVE_AWAIT_NOTE]]
 `5x protocol validate --record` is the single recording point.
 
 When using `--run`, do not pass `--var plan_path=...` unless you are

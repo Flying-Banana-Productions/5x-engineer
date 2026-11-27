@@ -8,6 +8,7 @@ import { dbCheck } from "./checks/db.js";
 import { harnessFreshnessCheck } from "./checks/harness-freshness.js";
 import { invocationsCheck } from "./checks/invocations.js";
 import { locksCheck } from "./checks/locks.js";
+import { opencodeCheck } from "./checks/opencode.js";
 import { promptsCheck } from "./checks/prompts.js";
 import { recordsCheck } from "./checks/records.js";
 import { runsCheck } from "./checks/runs.js";
@@ -17,6 +18,7 @@ import type { DoctorCheck, DoctorFinding, DoctorReport } from "./types.js";
 /** Built-in checks — plugin contribution deferred. */
 export const builtinDoctorChecks: DoctorCheck[] = [
 	harnessFreshnessCheck,
+	opencodeCheck,
 	locksCheck,
 	worktreesCheck,
 	runsCheck,

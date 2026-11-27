@@ -504,7 +504,8 @@ describe("5x harness install opencode --scope user", () => {
 
 				const restored = readFileSync(agentPath, "utf-8");
 				expect(restored).not.toBe("# tampered");
-				expect(restored).toContain("5x-reviewer");
+				// 2.x agents carry no `name:`; the id comes from the filename.
+				expect(restored).toContain("You are the 5x reviewer");
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -1370,8 +1371,8 @@ model = "anthropic/claude-opus-4-6"
 				const skillContent = readFileSync(skillPath, "utf-8");
 
 				// In mixed mode (author invoke, reviewer native):
-				// - Author steps should reference `5x invoke` (not Task tool)
-				// - Reviewer steps should reference Task tool
+				// - Author steps should reference `5x invoke` (not the subagent tool)
+				// - Reviewer steps should reference the `subagent` tool
 				// Since we can't easily distinguish which sections are author vs reviewer,
 				// we verify that BOTH patterns can be present (skill contains invoke path
 				// for author and native path for reviewer)
@@ -1379,8 +1380,12 @@ model = "anthropic/claude-opus-4-6"
 				// The skill should contain `5x invoke` (for author steps)
 				expect(skillContent).toContain("5x invoke");
 
-				// The skill should also contain Task tool references (for reviewer steps)
-				expect(skillContent).toContain("Task tool");
+				// The skill should also contain subagent tool references (for reviewer steps)
+				expect(skillContent).toContain("`subagent` tool");
+				expect(skillContent).toContain(
+					'LAUNCH=<`subagent` tool: agent="5x-reviewer"',
+				);
+				expect(skillContent).not.toContain('agent="5x-code-author"');
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -1389,7 +1394,7 @@ model = "anthropic/claude-opus-4-6"
 	);
 
 	test(
-		"install with default native/native config renders skills with Task tool only",
+		"install with default native/native config renders 2.x agents and subagent-tool skills",
 		async () => {
 			const tmp = makeTmpDir();
 			try {
@@ -1412,10 +1417,39 @@ model = "anthropic/claude-opus-4-6"
 				);
 				const skillContent = readFileSync(skillPath, "utf-8");
 
-				// In native/native mode, skills should ONLY reference Task tool
-				expect(skillContent).toContain("Task tool");
+				// In native/native mode, skills should ONLY reference the subagent tool
+				expect(skillContent).toContain("`subagent` tool");
+				expect(skillContent).toContain('agent="5x-code-author"');
+				expect(skillContent).toContain("sessionID=$NATIVE_SUBTASK_ID");
+				expect(skillContent).toContain(
+					"CHILD_SESSION_ID=<sessionID from LAUNCH>",
+				);
+				expect(skillContent).not.toContain("Task tool");
+				expect(skillContent).not.toContain("subagent_type");
+				expect(skillContent).not.toContain("task_id");
+				expect(skillContent).not.toContain("[[");
 				// Should NOT contain `5x invoke` for delegation (only in invoke paths)
 				expect(skillContent).not.toContain("5x invoke");
+
+				// Agents use OpenCode 2.x-native frontmatter
+				for (const agent of [
+					"5x-orchestrator",
+					"5x-plan-author",
+					"5x-code-author",
+					"5x-reviewer",
+				]) {
+					const content = readFileSync(
+						join(tmp, ".opencode", "agents", `${agent}.md`),
+						"utf-8",
+					);
+					const fm = content.split("\n---\n")[0] ?? "";
+					expect(fm).not.toMatch(/^name:/m);
+					expect(fm).not.toMatch(/^tools:/m);
+					const action = agent === "5x-orchestrator" ? "edit" : "subagent";
+					expect(fm).toContain(
+						`permissions:\n  - action: ${action}\n    resource: "*"\n    effect: deny`,
+					);
+				}
 			} finally {
 				cleanupDir(tmp);
 			}
@@ -1436,7 +1470,7 @@ model = "anthropic/claude-opus-4-6"
 				]);
 				expect(first.exitCode).toBe(0);
 
-				// Verify initial state: only Task tool references
+				// Verify initial state: only subagent tool references
 				const skillPath = join(
 					tmp,
 					".opencode",
@@ -1445,7 +1479,7 @@ model = "anthropic/claude-opus-4-6"
 					"SKILL.md",
 				);
 				const initialContent = readFileSync(skillPath, "utf-8");
-				expect(initialContent).toContain("Task tool");
+				expect(initialContent).toContain("`subagent` tool");
 				expect(initialContent).not.toContain("5x invoke");
 
 				// Change config to invoke/native
@@ -1471,7 +1505,7 @@ delegationMode = "native"
 				// Verify updated state: contains both patterns (mixed mode)
 				const updatedContent = readFileSync(skillPath, "utf-8");
 				expect(updatedContent).toContain("5x invoke");
-				expect(updatedContent).toContain("Task tool");
+				expect(updatedContent).toContain("`subagent` tool");
 			} finally {
 				cleanupDir(tmp);
 			}

@@ -19,8 +19,10 @@ import {
 	createProvider,
 	InvalidProviderError,
 	loadPlugin,
+	type OpenCodeFactoryDeps,
 	ProviderNotFoundError,
 } from "../../../src/providers/factory.js";
+import type { OpenCodeProvider } from "../../../src/providers/opencode.js";
 import type {
 	AgentEvent,
 	ProviderPlugin,
@@ -461,32 +463,44 @@ describe("ProviderPlugin contract validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("bundled opencode provider", () => {
-	test("opencode provider works via direct import (not plugin path)", async () => {
-		// Use external mode (dummy URL) to avoid spawning a real opencode server.
-		// The factory routing is the same — "opencode" is recognized as bundled.
-		const config = createMockConfig("opencode");
-		const externalConfig = {
-			...config,
+	test("opencode routes to the bundled factory without dynamic import or network I/O", async () => {
+		const calls: string[] = [];
+		const fake = {
+			async verify() {
+				calls.push("verify");
+			},
+			async close() {
+				calls.push("close");
+			},
+			async startSession() {
+				throw new Error("not used");
+			},
+			async resumeSession() {
+				throw new Error("not used");
+			},
+		};
+		const openCode: OpenCodeFactoryDeps = {
+			async createManaged() {
+				calls.push("createManaged");
+				return fake as unknown as OpenCodeProvider;
+			},
+			createExternal(url) {
+				calls.push(`createExternal:${url}`);
+				return fake as unknown as OpenCodeProvider;
+			},
+		};
+		const config = {
+			...createMockConfig("opencode"),
 			opencode: { url: "http://127.0.0.1:1" },
 		};
-		let provider: Awaited<ReturnType<typeof createProvider>> | undefined;
 
-		try {
-			provider = await createProvider(
-				"author",
-				externalConfig as Parameters<typeof createProvider>[1],
-			);
+		const provider = await createProvider(
+			"author",
+			config as Parameters<typeof createProvider>[1],
+			{ openCode },
+		);
 
-			// The OpenCode provider should be instantiated directly, not via dynamic import
-			expect(provider).toBeDefined();
-			expect(typeof provider.startSession).toBe("function");
-		} catch (err) {
-			// Should not reach here — external mode creation is synchronous and doesn't
-			// depend on a running server.
-			const msg = err instanceof Error ? err.message : String(err);
-			expect(msg).toContain("opencode");
-		} finally {
-			await provider?.close().catch(() => {});
-		}
+		expect(provider).toBe(fake as unknown as typeof provider);
+		expect(calls).toEqual(["createExternal:http://127.0.0.1:1", "verify"]);
 	});
 });

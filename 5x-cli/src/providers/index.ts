@@ -1,22 +1,15 @@
 // v1 Provider interface — re-exports
 
-export type {
-	EventMapperOptions,
-	EventMapperState,
-	SessionResolveContext,
-} from "./event-mapper.js";
+export type { EventMapperState } from "./event-mapper.js";
 // Event mapper
 export {
 	createEventMapperState,
-	createSessionResolveContext,
-	getEventSessionId,
-	MAX_TRACKED_DELTA_PART_IDS,
-	mapSseStreamToAgentEvents,
-	mapSseToAgentEvent,
-	resolveSessionIdWithContext,
+	eventSessionId,
+	mapOpenCodeEvent,
 	summarizeToolInput,
 } from "./event-mapper.js";
 // Factory
+export type { OpenCodeFactoryDeps } from "./factory.js";
 export {
 	createProvider,
 	InvalidProviderError,
@@ -42,9 +35,18 @@ export {
 	AgentCancellationError,
 	AgentTimeoutError,
 	anySignal,
+	MIN_OPENCODE_VERSION,
 	OpenCodeProvider,
 	parseModel,
+	parseServeListenUrl,
 } from "./opencode.js";
+// Structured output
+export type { StructuredExtractResult } from "./structured-output.js";
+export {
+	buildCorrectivePrompt,
+	buildStructuredOutputPrompt,
+	extractStructuredJson,
+} from "./structured-output.js";
 // Types
 export type {
 	AgentEvent,

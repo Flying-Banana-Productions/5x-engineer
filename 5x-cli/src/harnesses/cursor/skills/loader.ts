@@ -12,8 +12,21 @@ import {
 } from "../../../skills/renderer.js";
 import type { SkillMetadata } from "../../installer.js";
 
+/**
+ * Cursor native delegation is synchronous: the tool result is the child's
+ * answer. Each value reproduces the pre-token wording exactly so rendered
+ * Cursor skills stay byte-identical (terminology is adapted below).
+ */
 const CURSOR_SKILL_TOKENS: SkillTokenMap = {
 	NATIVE_CONTINUE_PARAM: "resume",
+	NATIVE_DELEGATE_TOOL: "Task tool",
+	NATIVE_AGENT_PARAM: "subagent_type",
+	NATIVE_LAUNCH_VAR: "RESULT",
+	NATIVE_AWAIT_RESULT: "",
+	NATIVE_CHILD_ID_SOURCE: "<agent id from Task tool result>",
+	NATIVE_CHILD_ID_NOUN: "agent id",
+	NATIVE_CHILD_ID_FROM: "the Task tool",
+	NATIVE_AWAIT_NOTE: "",
 };
 
 /**

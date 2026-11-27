@@ -13,6 +13,7 @@ import { parse as tomlParse } from "@decimalturn/toml-patch";
 import {
 	computeFingerprint,
 	type HarnessManifest,
+	hashContent,
 	MANIFEST_FILENAME,
 } from "../../../src/harnesses/manifest.js";
 import { PLAN_SCHEMA_AUTHORITY_INSTRUCTION } from "../../../src/plan-schema/document.js";
@@ -818,6 +819,75 @@ describe("5x upgrade harness freshness (Phase 7)", () => {
 				const manifest = readManifestFile(project);
 				expect(manifest.baseline).toBe("verified");
 				expect(manifest.inputs.authorModel).toBe("test/B");
+			} finally {
+				cleanupDir(project.dir);
+			}
+		},
+		{ timeout: 90000 },
+	);
+
+	test(
+		"pre-OpenCode-2.x agent frontmatter reports stale and harness sync restores the 2.x form",
+		async () => {
+			const project = await setupProject();
+			try {
+				expect(
+					(
+						await run5x(project, [
+							"harness",
+							"install",
+							"opencode",
+							"--scope",
+							"project",
+						])
+					).exitCode,
+				).toBe(0);
+
+				// Simulate an install made by a pre-2.x CLI: 1.x agent frontmatter
+				// (name: + tools:) recorded as the installed bytes, older cliVersion.
+				const agentRel = ["agents", "5x-orchestrator.md"] as const;
+				const agentPath = opencodePath(project, ...agentRel);
+				const current = readFileSync(agentPath, "utf-8");
+				const body = current.slice(current.indexOf("\n---\n") + 5);
+				const legacy = `---\nname: 5x-orchestrator\ndescription: Primary orchestrator for 5x plan generation, review, and phased implementation\nmode: primary\ntools:\n  write: false\n  edit: false\n---\n${body.replaceAll("`sessionID`", "`task_id`")}`;
+				writeFileSync(agentPath, legacy);
+				const manifest = readManifestFile(project);
+				const entry = manifest.assets.find((a) =>
+					a.path.endsWith(agentRel.join("/")),
+				);
+				expect(entry).toBeDefined();
+				if (entry) entry.sha256 = hashContent(legacy);
+				manifest.inputs.cliVersion = "1.3.0";
+				manifest.hash = computeFingerprint(manifest.inputs);
+				writeManifestFile(project, manifest);
+
+				const report = await runUpgrade(project.dir, [], project.home);
+				expect(report.exitCode).toBe(0);
+				expect(report.stdout).toContain("opencode (project): stale");
+				expect(report.stdout).not.toContain("→ synced");
+				expect(readFileSync(agentPath, "utf-8")).toBe(legacy);
+
+				const synced = await run5x(project, [
+					"harness",
+					"sync",
+					"opencode",
+					"--scope",
+					"project",
+				]);
+				expect(synced.exitCode, `${synced.stdout}\n${synced.stderr}`).toBe(0);
+				const restored = readFileSync(agentPath, "utf-8");
+				expect(restored).toBe(current);
+				const fm = restored.split("\n---\n")[0] ?? "";
+				expect(fm).not.toMatch(/^name:/m);
+				expect(fm).not.toMatch(/^tools:/m);
+				expect(fm).toContain(
+					'permissions:\n  - action: edit\n    resource: "*"\n    effect: deny',
+				);
+				expect(restored).not.toContain("task_id");
+
+				const after = await runUpgrade(project.dir, [], project.home);
+				expect(after.exitCode).toBe(0);
+				expect(after.stdout).not.toContain("opencode (project): stale");
 			} finally {
 				cleanupDir(project.dir);
 			}
@@ -1654,10 +1724,11 @@ describe("issue resolution workflow assets", () => {
 				expect(skill).toContain(
 					"--record --record-step author:issue-intake --phase plan",
 				);
-				expect(skill).not.toContain('subagent_type="5x-plan-author"');
+				expect(skill).not.toContain('agent="5x-plan-author"');
+				expect(skill).not.toContain("subagent_type");
 				expect(skill).not.toContain("**Author:** native");
 				expect(skill).toContain(
-					"**Reviewer:** native (`5x-reviewer` via Task tool)",
+					"**Reviewer:** native (`5x-reviewer` via `subagent` tool)",
 				);
 				expect(skill).not.toContain("**Reviewer:** invoke");
 				expectReceiptPreflightFirst(skill);
