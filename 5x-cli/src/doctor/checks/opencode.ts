@@ -13,6 +13,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { resolveCheckoutRoot } from "../../commands/control-plane.js";
 import { resolveLayeredConfig } from "../../config.js";
 import { opencodeLocationResolver } from "../../harnesses/locations.js";
 import { manifestPath } from "../../harnesses/manifest.js";
@@ -98,13 +99,23 @@ export const runOpenCodeVersion: OpenCodeVersionRunner = async () => {
 };
 
 /**
- * Extract the first `major.minor.patch` token from `opencode --version`
- * output. 1.x prints a bare `1.2.3`; 2.x prints `opencode v2.4.2`.
+ * A complete `opencode --version` line: 1.x prints a bare `1.2.3`; 2.x prints
+ * `opencode v2.4.2`. An optional pre-release / build suffix is allowed.
+ */
+const VERSION_LINE =
+	/^(?:opencode\s+)?v?(\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.+-]*)?$/i;
+
+/**
+ * Return the version from the first line of `opencode --version` output that
+ * is a complete version line. Version-like fragments inside other text (for
+ * example a launcher diagnostic) are not OpenCode version evidence.
  */
 export function parseOpenCodeVersionOutput(output: string): string | undefined {
-	const match = /(?:^|[^\w.])v?(\d+\.\d+\.\d+)/.exec(output);
-	if (!match?.[1]) return undefined;
-	return parseOpenCodeVersion(match[1]) ? match[1] : undefined;
+	for (const line of output.split(/\r?\n/)) {
+		const match = VERSION_LINE.exec(line.trim());
+		if (match?.[1] && parseOpenCodeVersion(match[1])) return match[1];
+	}
+	return undefined;
 }
 
 /** Why the check applies; empty when it does not. */
@@ -125,10 +136,14 @@ async function applicabilityReasons(
 	} catch {
 		// An unloadable config establishes no provider; manifests still apply.
 	}
+	// Project harness assets live in the current checkout (as for
+	// `5x harness install` and the freshness check), which in a linked worktree
+	// differs from the control-plane root used for layered config above.
+	const checkoutRoot = resolveCheckoutRoot(ctx.startDir) ?? ctx.startDir;
 	for (const scope of ["project", "user"] as const) {
 		const { rootDir } = opencodeLocationResolver.resolve(
 			scope,
-			ctx.projectRoot,
+			checkoutRoot,
 			ctx.homeDir,
 		);
 		if (existsSync(manifestPath(rootDir))) reasons.push(`harness:${scope}`);
@@ -162,7 +177,9 @@ export function createOpencodeCheck(deps: OpenCodeCheckDeps = {}): DoctorCheck {
 				},
 			];
 		}
-		if (result.kind !== "output") return [];
+		// Only a successful probe is version evidence; a failing launcher's
+		// diagnostics may mention unrelated versions.
+		if (result.kind !== "output" || result.exitCode !== 0) return [];
 
 		const found = parseOpenCodeVersionOutput(
 			`${result.stdout}\n${result.stderr}`,

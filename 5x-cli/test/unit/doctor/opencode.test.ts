@@ -81,6 +81,15 @@ function writeOpencodeManifest(
 	writeFileSync(join(rootDir, MANIFEST_FILENAME), "{}", "utf-8");
 }
 
+/** Process env without inherited GIT_* variables (e.g. from a git hook). */
+function gitEnv(): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (!key.startsWith("GIT_")) env[key] = value;
+	}
+	return env;
+}
+
 function runner(result: OpenCodeVersionResult) {
 	let calls = 0;
 	return {
@@ -109,6 +118,22 @@ describe("parseOpenCodeVersionOutput", () => {
 		expect(parseOpenCodeVersionOutput("")).toBeUndefined();
 		expect(parseOpenCodeVersionOutput("opencode dev")).toBeUndefined();
 		expect(parseOpenCodeVersionOutput("v2.4")).toBeUndefined();
+	});
+
+	test("ignores version-like fragments inside other text", () => {
+		expect(
+			parseOpenCodeVersionOutput("launcher needs Node 1.2.3\n"),
+		).toBeUndefined();
+		expect(
+			parseOpenCodeVersionOutput("warning: node v1.2.3 is unsupported"),
+		).toBeUndefined();
+		expect(parseOpenCodeVersionOutput("opencode 1.2.3 (dev)")).toBeUndefined();
+	});
+
+	test("finds a complete version line among other output lines", () => {
+		expect(
+			parseOpenCodeVersionOutput("notice: update available\nopencode v2.4.2\n"),
+		).toBe("2.4.2");
 	});
 });
 
@@ -209,6 +234,37 @@ describe("opencode doctor check", () => {
 		}
 	});
 
+	test("nonzero exit is not version evidence, even with a version-like line", async () => {
+		const ctx = defaultProviderProject();
+		for (const result of [
+			{
+				kind: "output",
+				stdout: "",
+				stderr: "launcher needs Node 1.2.3\n",
+				exitCode: 1,
+			},
+			{ kind: "output", stdout: "1.2.3\n", stderr: "", exitCode: 1 },
+		] as OpenCodeVersionResult[]) {
+			const findings = await createOpencodeCheck({
+				runVersion: runner(result).run,
+			}).run(ctx);
+			expect(findings).toEqual([]);
+		}
+	});
+
+	test("version-like noise on a successful probe reports nothing", async () => {
+		const ctx = defaultProviderProject();
+		const findings = await createOpencodeCheck({
+			runVersion: runner({
+				kind: "output",
+				stdout: "",
+				stderr: "launcher needs Node 1.2.3\n",
+				exitCode: 0,
+			}).run,
+		}).run(ctx);
+		expect(findings).toEqual([]);
+	});
+
 	test("unparseable output or a runner error reports nothing", async () => {
 		const ctx = defaultProviderProject();
 		for (const result of [
@@ -221,5 +277,70 @@ describe("opencode doctor check", () => {
 			}).run(ctx);
 			expect(findings).toEqual([]);
 		}
+	});
+
+	test("linked worktree: project manifest is resolved from the current checkout", async () => {
+		const mainDir = makeTmpDir("main");
+		const wtDir = join(makeTmpDir("wt-parent"), "linked");
+		const homeDir = makeTmpDir("home");
+		const git = (args: string[], cwd: string) => {
+			const res = Bun.spawnSync(["git", ...args], {
+				cwd,
+				env: {
+					...gitEnv(),
+					GIT_AUTHOR_NAME: "t",
+					GIT_AUTHOR_EMAIL: "t@example.com",
+					GIT_COMMITTER_NAME: "t",
+					GIT_COMMITTER_EMAIL: "t@example.com",
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			if (res.exitCode !== 0) {
+				throw new Error(`git ${args.join(" ")}: ${res.stderr.toString()}`);
+			}
+		};
+		writeFileSync(
+			join(mainDir, "5x.toml"),
+			'[author]\nprovider = "sample"\n\n[reviewer]\nprovider = "sample"\n',
+			"utf-8",
+		);
+		git(["init", "-q", "-b", "main"], mainDir);
+		git(["add", "5x.toml"], mainDir);
+		git(["commit", "-q", "-m", "init"], mainDir);
+		git(["worktree", "add", "-q", wtDir, "-b", "feature"], mainDir);
+
+		// Control-plane root is the main checkout; the manifest exists only in
+		// the linked checkout where `5x harness install` would have put it.
+		const linkedCtx: DoctorCheckContext = {
+			startDir: wtDir,
+			projectRoot: mainDir,
+			homeDir,
+			dbPath: join(mainDir, ".5x", "5x.db"),
+			dbRelPath: ".5x/5x.db",
+		};
+		writeOpencodeManifest({ ...linkedCtx, projectRoot: wtDir }, "project");
+
+		const linked = runner({ kind: "missing" });
+		const findings = await createOpencodeCheck({
+			runVersion: linked.run,
+		}).run(linkedCtx);
+		expect(linked.calls).toBe(1);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.code).toBe(OPENCODE_MISSING);
+		expect(findings[0]?.detail).toMatchObject({
+			appliesBecause: ["harness:project"],
+		});
+
+		// Inverse: from the main checkout, the linked checkout's manifest does
+		// not apply.
+		const main = runner({ kind: "missing" });
+		expect(
+			await createOpencodeCheck({ runVersion: main.run }).run({
+				...linkedCtx,
+				startDir: mainDir,
+			}),
+		).toEqual([]);
+		expect(main.calls).toBe(0);
 	});
 });
