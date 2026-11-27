@@ -65,14 +65,26 @@ describe("skill loader", () => {
 			.map((skill) => skill.content)
 			.join("\n\n");
 
-		expect(combined).toContain("task_id=");
+		expect(combined).toContain("sessionID=");
+		expect(combined).not.toContain("task_id");
 		expect(combined).not.toContain("resume=");
 	});
 
 	test("does not leak unresolved harness token placeholders", () => {
 		for (const skill of listSkills()) {
-			expect(skill.content).not.toContain("[[NATIVE_CONTINUE_PARAM]]");
+			expect(skill.content).not.toContain("[[");
 		}
+	});
+
+	test("names the 2.x subagent tool and agent parameter", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+
+		expect(combined).toContain("`subagent` tool");
+		expect(combined).toContain('agent="5x-reviewer"');
+		expect(combined).not.toContain("Task tool");
+		expect(combined).not.toContain("subagent_type");
 	});
 
 	test("all bundled skills have valid frontmatter", () => {
@@ -269,10 +281,13 @@ describe("5x foundational skill", () => {
 		expect(content).toContain("## Task Reuse");
 	});
 
-	test("documents Task tool delegation pattern", () => {
+	test("documents subagent tool delegation pattern", () => {
 		const content = getDefaultSkillRaw("5x");
-		expect(content).toContain("subagent_type");
-		expect(content).toContain("Task tool");
+		expect(content).toContain("`subagent` tool's `agent` parameter");
+		expect(content).toContain("LAUNCH=<`subagent` tool: agent=<agent>");
+		expect(content).toContain("Wait for that child's");
+		expect(content).not.toContain("subagent_type");
+		expect(content).not.toContain("Task tool");
 	});
 });
 
@@ -280,7 +295,7 @@ describe("5x foundational skill", () => {
 // Native-first delegation: 5x-plan skill
 // ---------------------------------------------------------------------------
 
-describe("5x-plan skill — Task tool delegation", () => {
+describe("5x-plan skill — subagent tool delegation", () => {
 	test("skill loads", () => {
 		const content = getDefaultSkillRaw("5x-plan");
 		expect(content).toBeTruthy();
@@ -296,9 +311,9 @@ describe("5x-plan skill — Task tool delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("delegates via Task tool, not 5x invoke", () => {
+	test("delegates via subagent tool, not 5x invoke", () => {
 		const content = getDefaultSkillRaw("5x-plan");
-		expect(content).toContain("Task tool");
+		expect(content).toContain("`subagent` tool");
 		expect(content).not.toContain("5x invoke");
 	});
 
@@ -339,7 +354,7 @@ describe("5x-plan skill — Task tool delegation", () => {
 // Native-first delegation: 5x-plan-review skill
 // ---------------------------------------------------------------------------
 
-describe("5x-plan-review skill — Task tool delegation", () => {
+describe("5x-plan-review skill — subagent tool delegation", () => {
 	test("references 5x template render command", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
 		expect(content).toContain("5x template render");
@@ -350,9 +365,9 @@ describe("5x-plan-review skill — Task tool delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("delegates via Task tool, not 5x invoke", () => {
+	test("delegates via subagent tool, not 5x invoke", () => {
 		const content = getDefaultSkillRaw("5x-plan-review");
-		expect(content).toContain("Task tool");
+		expect(content).toContain("`subagent` tool");
 		expect(content).not.toContain("5x invoke");
 	});
 
@@ -430,7 +445,7 @@ describe("5x-plan-review skill — Task tool delegation", () => {
 // Native-first delegation: 5x-phase-execution skill
 // ---------------------------------------------------------------------------
 
-describe("5x-phase-execution skill — Task tool delegation", () => {
+describe("5x-phase-execution skill — subagent tool delegation", () => {
 	test("references 5x template render command", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
 		expect(content).toContain("5x template render");
@@ -441,9 +456,9 @@ describe("5x-phase-execution skill — Task tool delegation", () => {
 		expect(content).toContain("5x protocol validate");
 	});
 
-	test("delegates via Task tool, not 5x invoke", () => {
+	test("delegates via subagent tool, not 5x invoke", () => {
 		const content = getDefaultSkillRaw("5x-phase-execution");
-		expect(content).toContain("Task tool");
+		expect(content).toContain("`subagent` tool");
 		expect(content).not.toContain("5x invoke");
 	});
 
@@ -555,10 +570,12 @@ describe("run watch guidance removed from native-first skills", () => {
 		expect(content).not.toContain("run watch");
 	});
 
-	test("Task tool delegation is referenced in all process skills", () => {
-		expect(getDefaultSkillRaw("5x-plan")).toContain("Task tool");
-		expect(getDefaultSkillRaw("5x-plan-review")).toContain("Task tool");
-		expect(getDefaultSkillRaw("5x-phase-execution")).toContain("Task tool");
+	test("subagent tool delegation is referenced in all process skills", () => {
+		expect(getDefaultSkillRaw("5x-plan")).toContain("`subagent` tool");
+		expect(getDefaultSkillRaw("5x-plan-review")).toContain("`subagent` tool");
+		expect(getDefaultSkillRaw("5x-phase-execution")).toContain(
+			"`subagent` tool",
+		);
 	});
 
 	test("no process skill references 5x invoke", () => {
@@ -679,4 +696,147 @@ describe("rendered templates — no subprocess-specific language in Non-Interact
 		expect(result.prompt).not.toContain("running as a subprocess");
 		expect(result.prompt).toContain("delegated non-interactive workflow");
 	});
+});
+
+// ---------------------------------------------------------------------------
+// OpenCode 2.x background delegation lifecycle, in all four delegation modes
+// ---------------------------------------------------------------------------
+
+const DELEGATION_MODES = [
+	{ label: "all-native", author: true, reviewer: true },
+	{ label: "all-invoke", author: false, reviewer: false },
+	{ label: "author-invoke/reviewer-native", author: false, reviewer: true },
+	{ label: "author-native/reviewer-invoke", author: true, reviewer: false },
+] as const;
+
+const AUTHOR_AGENTS = ["5x-plan-author", "5x-code-author", "<agent>"];
+const COMPLETION_RESULT =
+	"RESULT=<final JSON object from $CHILD_SESSION_ID's completion report>";
+/** A line that pipes a result into the recording/validation consumer. */
+const CONSUMER = /\|\s*5x (protocol validate|phase finish)\b/;
+
+interface LaunchSite {
+	skill: string;
+	line: number;
+	agent: string;
+}
+
+function launchSites(skill: string, lines: string[]): LaunchSite[] {
+	const sites: LaunchSite[] = [];
+	lines.forEach((text, line) => {
+		const m = text.match(/^LAUNCH=<`subagent` tool: agent=("([^"]+)"|<agent>)/);
+		if (m) sites.push({ skill, line, agent: m[2] ?? "<agent>" });
+	});
+	return sites;
+}
+
+describe("OpenCode background delegation lifecycle (four modes)", () => {
+	for (const mode of DELEGATION_MODES) {
+		describe(mode.label, () => {
+			const skills = listSkills(
+				createRenderContext(false, mode.author, mode.reviewer),
+			);
+
+			test("renders no unresolved tokens", () => {
+				for (const skill of skills) {
+					expect(skill.content).not.toContain("[[");
+				}
+			});
+
+			test("launch, child id, and completed RESULT precede the $RESULT consumer", () => {
+				let total = 0;
+				for (const skill of skills) {
+					const lines = skill.content.split("\n");
+					for (const site of launchSites(skill.name, lines)) {
+						total++;
+						// LAUNCH may span a continuation line before the child id.
+						let i = site.line + 1;
+						if (lines[i]?.trim().startsWith("sessionID=")) i++;
+						expect(lines[i]).toBe("CHILD_SESSION_ID=<sessionID from LAUNCH>");
+						const resultIdx = lines.indexOf(COMPLETION_RESULT, i);
+						expect(resultIdx).toBeGreaterThan(i);
+						// Only comments sit between the child id and RESULT.
+						for (const between of lines.slice(i + 1, resultIdx)) {
+							expect(between.startsWith("#")).toBe(true);
+						}
+						const consumerIdx = lines.findIndex(
+							(l, idx) => idx > resultIdx && CONSUMER.test(l),
+						);
+						expect(consumerIdx).toBeGreaterThan(resultIdx);
+						expect(lines[consumerIdx]).toContain('"$RESULT"');
+						// No other launch is started before this result is consumed.
+						const nextLaunch = lines.findIndex(
+							(l, idx) => idx > site.line && l.startsWith("LAUNCH=<"),
+						);
+						if (nextLaunch >= 0) {
+							expect(nextLaunch).toBeGreaterThan(resultIdx);
+						}
+					}
+					// Every consumer reads $RESULT; the acknowledgment is never validated.
+					for (const l of lines.filter((x) => CONSUMER.test(x))) {
+						expect(l).not.toContain("$LAUNCH");
+					}
+					expect(skill.content).not.toMatch(/\$LAUNCH\b/);
+				}
+				if (mode.author || mode.reviewer) {
+					expect(total).toBeGreaterThan(0);
+				}
+			});
+
+			test("native launch sites match the configured roles", () => {
+				const sites = skills.flatMap((skill) =>
+					launchSites(skill.name, skill.content.split("\n")),
+				);
+				const reviewerSites = sites.filter((s) => s.agent === "5x-reviewer");
+				const authorSites = sites.filter((s) =>
+					AUTHOR_AGENTS.includes(s.agent),
+				);
+				expect(reviewerSites.length > 0).toBe(mode.reviewer);
+				// The foundation skill's generic <agent> example renders whenever any
+				// role is native; role-specific author sites only for a native author.
+				expect(
+					authorSites.filter((s) => s.agent !== "<agent>").length > 0,
+				).toBe(mode.author);
+				if (!mode.author && !mode.reviewer) {
+					expect(sites).toHaveLength(0);
+				}
+			});
+
+			test("invoke-only renders contain no native tool or lifecycle lines", () => {
+				if (mode.author || mode.reviewer) return;
+				const combined = skills.map((s) => s.content).join("\n\n");
+				expect(combined).not.toContain("`subagent` tool");
+				expect(combined).not.toContain("LAUNCH=");
+				expect(combined).not.toContain("CHILD_SESSION_ID");
+			});
+
+			test("reviewer continuation passes sessionID from the saved child id", () => {
+				if (!mode.reviewer) return;
+				const planReview = skills.find((s) => s.name === "5x-plan-review");
+				const phase = skills.find((s) => s.name === "5x-phase-execution");
+				for (const skill of [planReview, phase]) {
+					const lines = (skill?.content ?? "").split("\n");
+					const sites = launchSites(skill?.name ?? "", lines).filter(
+						(s) => s.agent === "5x-reviewer",
+					);
+					expect(sites.length).toBeGreaterThan(0);
+					for (const site of sites) {
+						expect(lines[site.line + 1]?.trim()).toBe(
+							"sessionID=$NATIVE_SUBTASK_ID (omit if empty)>",
+						);
+					}
+				}
+				expect(planReview?.content).toContain(
+					"NATIVE_SUBTASK_ID=$CHILD_SESSION_ID",
+				);
+				expect(planReview?.content).toContain(
+					"Capture `$NATIVE_SUBTASK_ID` from `$CHILD_SESSION_ID`",
+				);
+				expect(phase?.content).toContain(
+					"set `$NATIVE_SUBTASK_ID` from `$CHILD_SESSION_ID`",
+				);
+				expect(planReview?.content).not.toContain("agent id from");
+			});
+		});
+	}
 });

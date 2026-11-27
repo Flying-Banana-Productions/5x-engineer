@@ -23,6 +23,8 @@ describe("invoke-path skill content", () => {
 		expect(invoke).not.toContain("Task tool");
 		expect(invoke).not.toContain("subagent_type");
 		expect(invoke).not.toContain("task_id");
+		// Native-only harness tokens never appear in invoke branches.
+		expect(invoke).not.toContain("[[");
 	});
 
 	test("invoke-rendered 5x foundation skill references session_id in gotchas", () => {

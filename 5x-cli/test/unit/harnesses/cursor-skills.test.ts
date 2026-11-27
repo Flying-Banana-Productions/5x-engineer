@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	listSkillNames,
 	listSkills,
@@ -6,6 +7,9 @@ import {
 import { parseSkillFrontmatter } from "../../../src/skills/frontmatter.js";
 import { listBaseSkillNames } from "../../../src/skills/loader.js";
 import { createRenderContext } from "../../../src/skills/renderer.js";
+import cursorRenderDigests from "../../fixtures/cursor-skill-render.sha256.json" with {
+	type: "json",
+};
 
 describe("cursor skills loader", () => {
 	test("loads all shared skills from shared base template names", () => {
@@ -47,8 +51,19 @@ describe("cursor skills loader", () => {
 
 	test("does not leak unresolved harness token placeholders", () => {
 		for (const skill of listSkills()) {
-			expect(skill.content).not.toContain("[[NATIVE_CONTINUE_PARAM]]");
+			expect(skill.content).not.toContain("[[");
 		}
+	});
+
+	test("keeps OpenCode 2.x background lifecycle wording out of Cursor renders", () => {
+		const combined = listSkills()
+			.map((skill) => skill.content)
+			.join("\n\n");
+		expect(combined).not.toContain("LAUNCH=");
+		expect(combined).not.toContain("CHILD_SESSION_ID");
+		expect(combined).not.toContain("completion report");
+		expect(combined).not.toContain("sessionID");
+		expect(combined).toContain("RESULT=<Cursor subagent invocation: subagent=");
 	});
 
 	test("does not retain opencode wording in cursor-rendered skills", () => {
@@ -124,4 +139,46 @@ describe("cursor skills loader", () => {
 		expect(invoke).toContain(invokeOptIn);
 		expect(invoke).not.toContain(nativeOptIn);
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Byte identity against the pre-OpenCode-2.x render
+// ---------------------------------------------------------------------------
+
+/**
+ * SHA-256 digests of every rendered Cursor skill, captured in all four
+ * delegation modes before the OpenCode 2.x delegation tokens were added
+ * (`test/fixtures/cursor-skill-render.sha256.json`). Cursor token values must
+ * reproduce the previous wording exactly, so the rendered bytes are unchanged.
+ * An intentional future Cursor wording change must regenerate the fixture.
+ */
+describe("cursor skill render byte identity", () => {
+	const MODES = {
+		"all-native": createRenderContext(true, true, true),
+		"all-invoke": createRenderContext(false, false, false),
+		"author-invoke-reviewer-native": createRenderContext(false, false, true),
+		"author-native-reviewer-invoke": createRenderContext(false, true, false),
+	} as const;
+	const digests = cursorRenderDigests as Record<
+		keyof typeof MODES,
+		Record<string, string>
+	>;
+
+	for (const [mode, ctx] of Object.entries(MODES) as Array<
+		[keyof typeof MODES, (typeof MODES)[keyof typeof MODES]]
+	>) {
+		test(`${mode}: rendered skills are byte-identical to the fixture`, () => {
+			const skills = listSkills(ctx);
+			expect(skills.map((s) => s.name).sort()).toEqual(
+				Object.keys(digests[mode]).sort(),
+			);
+			for (const skill of skills) {
+				const digest = createHash("sha256").update(skill.content).digest("hex");
+				expect({ skill: skill.name, digest }).toEqual({
+					skill: skill.name,
+					digest: digests[mode][skill.name] ?? "",
+				});
+			}
+		});
+	}
 });

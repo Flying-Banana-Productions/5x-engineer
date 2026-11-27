@@ -7,7 +7,28 @@
  */
 
 export const SKILL_TOKENS = {
+	/** Native continuation parameter on the delegation tool. */
 	NATIVE_CONTINUE_PARAM: "NATIVE_CONTINUE_PARAM",
+	/** Human-readable name of the native delegation tool. */
+	NATIVE_DELEGATE_TOOL: "NATIVE_DELEGATE_TOOL",
+	/** Delegation tool parameter that selects the subagent. */
+	NATIVE_AGENT_PARAM: "NATIVE_AGENT_PARAM",
+	/** Variable that receives the native delegation tool's return value. */
+	NATIVE_LAUNCH_VAR: "NATIVE_LAUNCH_VAR",
+	/**
+	 * Appended after a native launch pseudo-call. Harnesses whose delegation
+	 * returns only a launch acknowledgment use it to wait for the child's
+	 * completion report and set RESULT from it (may span several lines).
+	 */
+	NATIVE_AWAIT_RESULT: "NATIVE_AWAIT_RESULT",
+	/** Value assigned to $NATIVE_SUBTASK_ID at a continuation capture site. */
+	NATIVE_CHILD_ID_SOURCE: "NATIVE_CHILD_ID_SOURCE",
+	/** Noun for the captured continuation id in capture comments. */
+	NATIVE_CHILD_ID_NOUN: "NATIVE_CHILD_ID_NOUN",
+	/** Prose source of the continuation id ("from <value> result"). */
+	NATIVE_CHILD_ID_FROM: "NATIVE_CHILD_ID_FROM",
+	/** Optional sentence(s) about awaiting the child's completion report. */
+	NATIVE_AWAIT_NOTE: "NATIVE_AWAIT_NOTE",
 } as const;
 
 export type SkillTokenName = (typeof SKILL_TOKENS)[keyof typeof SKILL_TOKENS];

@@ -775,17 +775,17 @@ export const SKILL_TOKENS = {
 - Update `test/unit/skills/implementation-review-governance.test.ts`, `issue-resolution-skill.test.ts`, `invoke-content.test.ts`, `test/unit/harnesses/universal.test.ts`, `test/integration/commands/harness.test.ts`, and `upgrade.test.ts` where they assert literal "Task tool" / `subagent_type` / `task_id` / `RESULT=<Task tool` text for OpenCode renders.
 - `test/integration/commands/upgrade.test.ts`: after install, overwrite an agent file with the pre-change 1.x frontmatter; `harness sync opencode` must restore the 2.x form, and freshness must report stale before sync.
 
-- [ ] Capture a pre-change Cursor skill render fixture in all four delegation modes
-- [ ] Convert the four OpenCode agent templates to 2.x frontmatter and update orchestrator/reviewer wording
-- [ ] Add the background lifecycle rule to the orchestrator and replace its `task_id` continuation references (lines 73, 83, 88) with `sessionID`
-- [ ] Add `NATIVE_DELEGATE_TOOL` and `NATIVE_AGENT_PARAM`; update OpenCode and Cursor token maps; switch OpenCode continuation to `sessionID`
-- [ ] Add `NATIVE_LAUNCH_VAR`, `NATIVE_AWAIT_RESULT`, and `NATIVE_CHILD_ID_SOURCE` (plus any narrower capture tokens) with Cursor values that reproduce the current text
-- [ ] Replace hard-coded delegation wording, native launch sites, and continuation-id capture sites in the five base skill templates with tokens
-- [ ] Update `loader.ts` header and `src/harnesses/opencode/README.md`
-- [ ] Run the asset-impact greps and the four-mode render assertions, including launch-versus-completion and continuation
-- [ ] Update harness, skill, and upgrade tests listed above, including the Cursor byte-identity test
-- [ ] Verify effective installed assets against a live OpenCode 2.x server (`/api/agent`, `/api/skill`, server log)
-- [ ] Run the live installed-orchestrator native delegation and continuation exercise and record the result
+- [x] Capture a pre-change Cursor skill render fixture in all four delegation modes
+- [x] Convert the four OpenCode agent templates to 2.x frontmatter and update orchestrator/reviewer wording
+- [x] Add the background lifecycle rule to the orchestrator and replace its `task_id` continuation references (lines 73, 83, 88) with `sessionID`
+- [x] Add `NATIVE_DELEGATE_TOOL` and `NATIVE_AGENT_PARAM`; update OpenCode and Cursor token maps; switch OpenCode continuation to `sessionID`
+- [x] Add `NATIVE_LAUNCH_VAR`, `NATIVE_AWAIT_RESULT`, and `NATIVE_CHILD_ID_SOURCE` (plus any narrower capture tokens) with Cursor values that reproduce the current text
+- [x] Replace hard-coded delegation wording, native launch sites, and continuation-id capture sites in the five base skill templates with tokens
+- [x] Update `loader.ts` header and `src/harnesses/opencode/README.md`
+- [x] Run the asset-impact greps and the four-mode render assertions, including launch-versus-completion and continuation
+- [x] Update harness, skill, and upgrade tests listed above, including the Cursor byte-identity test
+- [x] Verify effective installed assets against a live OpenCode 2.x server (`/api/agent`, `/api/skill`, server log)
+- [x] Run the live installed-orchestrator native delegation and continuation exercise and record the result
 
 ## Phase 5: Documentation, release notes, and final verification
 

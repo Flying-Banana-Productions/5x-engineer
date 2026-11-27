@@ -267,6 +267,56 @@ describe("renderAgentTemplate — single template", () => {
 });
 
 // ---------------------------------------------------------------------------
+// OpenCode 2.x frontmatter
+// ---------------------------------------------------------------------------
+
+function frontmatterOf(content: string): string {
+	const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+	if (!match?.[1]) throw new Error("template has no frontmatter");
+	return match[1];
+}
+
+describe("OpenCode 2.x agent frontmatter", () => {
+	const SUBAGENT_DENY = [
+		"permissions:",
+		"  - action: subagent",
+		'    resource: "*"',
+		"    effect: deny",
+	].join("\n");
+
+	test("no template uses 1.x-only `name:` or `tools:` fields", () => {
+		for (const tmpl of listAgentTemplates()) {
+			const fm = frontmatterOf(tmpl.rawContent);
+			expect(fm).not.toMatch(/^name:/m);
+			expect(fm).not.toMatch(/^tools:/m);
+			expect(fm).toMatch(/^permissions:/m);
+		}
+	});
+
+	test("the three subagents deny the subagent tool", () => {
+		for (const name of ["5x-plan-author", "5x-code-author", "5x-reviewer"]) {
+			const fm = frontmatterOf(
+				renderAgentTemplate(name, { authorModel: "a/b", reviewerModel: "c/d" })
+					?.content ?? "",
+			);
+			expect(fm).toContain("mode: subagent");
+			expect(fm).toContain(SUBAGENT_DENY);
+			expect(fm).not.toContain("action: edit");
+		}
+	});
+
+	test("model injection keeps 2.x frontmatter intact", () => {
+		const content =
+			renderAgentTemplate("5x-reviewer", { reviewerModel: "openai/gpt-5" })
+				?.content ?? "";
+		expect(content.startsWith('---\nmodel: "openai/gpt-5"\ndescription:')).toBe(
+			true,
+		);
+		expect(frontmatterOf(content)).toContain(SUBAGENT_DENY);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Reviewer tool constraints
 // ---------------------------------------------------------------------------
 
@@ -279,9 +329,10 @@ describe("5x-reviewer template content", () => {
 		// Reviewer has no allowedTools/disallowedTools restrictions
 		expect(content).not.toContain("allowedTools");
 		expect(content).not.toContain("disallowedTools");
-		// No write:false or edit:false in the reviewer frontmatter
+		// No edit deny in the reviewer frontmatter (it writes its review file)
 		expect(content).not.toContain("write: false");
 		expect(content).not.toContain("edit: false");
+		expect(content).not.toContain("action: edit");
 	});
 
 	test("reviewer uses correct OpenCode tool names (not legacy names)", () => {
@@ -295,6 +346,9 @@ describe("5x-reviewer template content", () => {
 		expect(content).not.toContain("run_terminal_cmd");
 		expect(content).not.toContain("list_directory");
 		expect(content).not.toContain("search_files");
+		// 2.x renamed bash to shell
+		expect(content).toContain("`shell`");
+		expect(content).not.toContain("`bash`");
 	});
 
 	test("reviewer mode is subagent", () => {
@@ -308,12 +362,48 @@ describe("5x-reviewer template content", () => {
 // ---------------------------------------------------------------------------
 
 describe("5x-orchestrator template content", () => {
-	test("orchestrator disables write and edit tools", () => {
+	test("orchestrator denies edit through 2.x permissions", () => {
 		const result = renderAgentTemplate("5x-orchestrator", {});
 		expect(result).toBeDefined();
-		const content = result?.content;
-		expect(content).toContain("write: false");
-		expect(content).toContain("edit: false");
+		const fm = frontmatterOf(result?.content ?? "");
+		expect(fm).toContain(
+			[
+				"permissions:",
+				"  - action: edit",
+				'    resource: "*"',
+				"    effect: deny",
+			].join("\n"),
+		);
+		expect(fm).not.toContain("write: false");
+		expect(fm).not.toContain("action: subagent");
+	});
+
+	test("orchestrator uses the subagent tool and sessionID continuation", () => {
+		const content = renderAgentTemplate("5x-orchestrator", {})?.content ?? "";
+		expect(content).not.toContain("task_id");
+		expect(content).not.toContain("Task tool");
+		expect(content).toContain("`subagent` tool");
+		expect(content).toContain("fresh subagent (omit `sessionID`)");
+		expect(content).toContain(
+			"`subagent` tool's **`sessionID`** with the child `sessionID` saved from the\nprior launch acknowledgment",
+		);
+		expect(content).toContain("native subagent reuse via `sessionID`");
+		// The continuation id is never a provider session for template render.
+		expect(content).toContain(
+			"**Do not** pass that child `sessionID` to `5x template render --session`",
+		);
+	});
+
+	test("orchestrator states the background completion rule", () => {
+		const content = renderAgentTemplate("5x-orchestrator", {})?.content ?? "";
+		expect(content).toContain("Native subagents run in\n   the background");
+		expect(content).toContain("wait for that child's completion report");
+		expect(content).toContain("never the launch\n   acknowledgment");
+		expect(content).toContain("Delegate one step at a time");
+		expect(content).toContain(
+			"never\n   record another child session's report against the current step",
+		);
+		expect(content).toContain("Orchestrate yourself, don't outsource the loop");
 	});
 
 	test("orchestrator mode is primary", () => {

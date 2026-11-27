@@ -74,7 +74,7 @@ describe("5x-issue-resolution skill", () => {
 		test(`${combo.label} renders only its delegation branches`, () => {
 			const content = render(combo.ctx);
 			if (combo.authorNative) {
-				expect(content).toContain('subagent_type="5x-plan-author"');
+				expect(content).toContain('[[NATIVE_AGENT_PARAM]]="5x-plan-author"');
 				expect(content).toContain(
 					"5x protocol validate author --run $PLAN_RUN \\\n  --record --step author:issue-intake --phase plan --require-commit",
 				);
@@ -88,20 +88,24 @@ describe("5x-issue-resolution skill", () => {
 				);
 				expect(content).toContain(".data.result.result");
 				expect(content).not.toContain("5x protocol validate author");
-				expect(content).not.toContain('subagent_type="5x-plan-author"');
+				expect(content).not.toContain(
+					'[[NATIVE_AGENT_PARAM]]="5x-plan-author"',
+				);
 				expect(content).not.toContain("5x template render author-issue-intake");
 			}
 			if (combo.reviewerNative) {
-				expect(content).toContain("`5x-reviewer` via Task tool");
+				expect(content).toContain("`5x-reviewer` via [[NATIVE_DELEGATE_TOOL]]");
 				expect(content).not.toContain("`5x invoke reviewer ...`");
 			} else {
 				expect(content).toContain("`5x invoke reviewer ...`");
-				expect(content).not.toContain("`5x-reviewer` via Task tool");
+				expect(content).not.toContain(
+					"`5x-reviewer` via [[NATIVE_DELEGATE_TOOL]]",
+				);
 			}
 			const anyNative = combo.authorNative || combo.reviewerNative;
 			if (!anyNative) {
-				expect(content).not.toContain("Task tool");
-				expect(content).not.toContain("subagent_type");
+				expect(content).not.toContain("[[NATIVE_DELEGATE_TOOL]]");
+				expect(content).not.toContain("[[NATIVE_AGENT_PARAM]]");
 				expect(content).not.toContain("5x protocol validate");
 				expect(content).toContain("5x prompt choose");
 			} else {

@@ -118,10 +118,10 @@ worktree mapping, or `.5x/current-run` already identifies the run. Pass
 ### Task reuse (reviewer)
 
 Task reuse is optional and best-effort for the native reviewer. Capture
-the **native subtask id** returned by the Task tool after the first
+the **native subtask id** returned by the [[NATIVE_DELEGATE_TOOL]] after the first
 reviewer delegation in this phase as `$NATIVE_SUBTASK_ID`. For
 re-reviews (after author fixes), pass
-**`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the Task tool so
+**`[[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID`** on the [[NATIVE_DELEGATE_TOOL]] so
 the **same subagent** keeps conversational context. Do **not** pass that
 id to `5x template render --session` — `--session` takes a **provider
 session id** (a distinct concept used only on the invoke path), not a
@@ -133,7 +133,7 @@ If `reviewer.continuePhaseSessions` is enabled and a second
 **`--continue-native`** when a `reviewer-commit-continued` variant
 exists (it will include the diff since the prior review). If no
 continued variant exists, fall back to **`--new-session`** for CLI
-bookkeeping; native subagent continuity on the Task tool is unaffected.
+bookkeeping; native subagent continuity on the [[NATIVE_DELEGATE_TOOL]] is unaffected.
 
 The `## Context` block in the rendered prompt (appended by
 `5x template render` when `--run` resolves a worktree) informs native
@@ -186,13 +186,13 @@ config (see the `5x` foundation skill — **Delegation mode precedence**):
 
 Confirm each role's path before delegating:
 {{#if author_native}}
-- **Author:** native (`5x-code-author` via Task tool)
+- **Author:** native (`5x-code-author` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if author_invoke}}
 - **Author:** invoke (`5x invoke author ...`)
 {{/if}}
 {{#if reviewer_native}}
-- **Reviewer:** native (`5x-reviewer` via Task tool)
+- **Reviewer:** native (`5x-reviewer` via [[NATIVE_DELEGATE_TOOL]])
 {{/if}}
 {{#if reviewer_invoke}}
 - **Reviewer:** invoke (`5x invoke reviewer ...`)
@@ -271,7 +271,7 @@ Track $SESSION_ID = "" (for optional session reuse within this phase — invoke 
 #### Step 1: Author implements
 
 {{#if author_native}}
-Delegate to the code author via the Task tool:
+Delegate to the code author via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 RENDERED=$(5x template render author-next-phase \
@@ -282,7 +282,7 @@ BINDING_ID=$(echo "$RENDERED" | jq -r '.data.binding_id // empty')
 PRE_AUTHOR=$(echo "$RENDERED" | jq -r '.data.pre_author_commit // empty')
 PINNED_MODE=$(echo "$RENDERED" | jq -r '.data.pinned_mode // empty')
 
-RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-code-author", prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 ```
 {{else}}
 Delegate to the code author via `5x invoke`:
@@ -371,7 +371,7 @@ If $QUALITY_RETRIES exceeds `maxQualityRetries` (from `5x config show`):
   - abort: `5x run complete --run $FIVEX_RUN --status aborted`
 
 {{#if author_native}}
-Delegate fix to the code author via the Task tool:
+Delegate fix to the code author via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 RENDERED=$(5x template render author-fix-quality \
@@ -380,7 +380,7 @@ RENDERED=$(5x template render author-fix-quality \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-code-author", prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 ```
 {{else}}
 Delegate fix to the code author via `5x invoke`:
@@ -417,7 +417,7 @@ than `phase finish`.
 #### Step 3: Code review
 
 {{#if reviewer_native}}
-Delegate to the reviewer via the Task tool:
+Delegate to the reviewer via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 # Re-reviews: pass --continue-native to the render when continuing the
@@ -434,8 +434,8 @@ REVIEW_PATH=$(echo "$RENDERED" | jq -r '.data.variables.review_path')
 REVIEW_CONTEXT_ID=$(echo "$RENDERED" | jq -r '.data.review_context_id // empty')
 PINNED_MODE=$(echo "$RENDERED" | jq -r '.data.pinned_mode // empty')
 
-RESULT=<Task tool: subagent_type="5x-reviewer", prompt=$PROMPT,
-        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-reviewer", prompt=$PROMPT,
+        [[NATIVE_CONTINUE_PARAM]]=$NATIVE_SUBTASK_ID (omit if empty)>[[NATIVE_AWAIT_RESULT]]
 
 VALIDATED=$(echo "$RESULT" | 5x protocol validate reviewer \
   --record --step $STEP --phase $PHASE \
@@ -480,7 +480,7 @@ reviewer before proceeding:
     5x commit -m "review: phase $PHASE" --files $REVIEW_PATH
 
 {{#if reviewer_native}}
-After a successful review, set `$NATIVE_SUBTASK_ID` from the Task tool
+After a successful review, set `$NATIVE_SUBTASK_ID` from [[NATIVE_CHILD_ID_FROM]]
 result for optional **`[[NATIVE_CONTINUE_PARAM]]`** on the next reviewer delegation in this
 phase. Do not conflate with `5x template render --session` (CLI continuity
 for continued-template selection and invoke-mode provider session identity).
@@ -555,7 +555,7 @@ If $REVIEW_ITERATIONS exceeds `maxReviewIterations` (from `5x config show`):
   Go to Step 5a (Escalate) with "Maximum review iterations reached."
 
 {{#if author_native}}
-Delegate to the code author via the Task tool:
+Delegate to the code author via the [[NATIVE_DELEGATE_TOOL]]:
 
 ```bash
 RENDERED=$(5x template render author-process-impl-review \
@@ -563,7 +563,7 @@ RENDERED=$(5x template render author-process-impl-review \
 PROMPT=$(echo "$RENDERED" | jq -r '.data.prompt')
 STEP=$(echo "$RENDERED" | jq -r '.data.step_name')
 
-RESULT=<Task tool: subagent_type="5x-code-author", prompt=$PROMPT>
+[[NATIVE_LAUNCH_VAR]]=<[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]="5x-code-author", prompt=$PROMPT>[[NATIVE_AWAIT_RESULT]]
 ```
 {{else}}
 Delegate to the code author via `5x invoke`:

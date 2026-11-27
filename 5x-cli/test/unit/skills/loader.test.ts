@@ -65,12 +65,12 @@ describe("shared skill template loader", () => {
 		}
 	});
 
-	test("native output contains Task tool/subagent_type references", () => {
+	test("native output contains delegation tool/agent tokens", () => {
 		const native = renderAllSkillTemplates(createRenderContext(true))
 			.map((s) => s.content)
 			.join("\n\n");
-		expect(native).toContain("Task tool");
-		expect(native).toContain("subagent_type");
+		expect(native).toContain("[[NATIVE_DELEGATE_TOOL]]");
+		expect(native).toContain("[[NATIVE_AGENT_PARAM]]");
 	});
 
 	test("native output prefers native UI for human gates over 5x prompt in Tools sections", () => {
@@ -87,12 +87,12 @@ describe("shared skill template loader", () => {
 		expect(planReview).toContain("Human gates");
 	});
 
-	test("invoke output omits Task tool/subagent_type references", () => {
+	test("invoke output omits delegation tool/agent tokens", () => {
 		const invoke = renderAllSkillTemplates(createRenderContext(false))
 			.map((s) => s.content)
 			.join("\n\n");
-		expect(invoke).not.toContain("Task tool");
-		expect(invoke).not.toContain("subagent_type");
+		expect(invoke).not.toContain("[[NATIVE_DELEGATE_TOOL]]");
+		expect(invoke).not.toContain("[[NATIVE_AGENT_PARAM]]");
 	});
 
 	test("frontmatter is identical in native/invoke contexts", () => {
@@ -144,8 +144,8 @@ describe("shared skill template loader", () => {
 
 			// Foundation skill should have native delegation patterns
 			const foundation = renderSkillByName("5x", ctx).content;
-			expect(foundation).toContain("Task tool");
-			expect(foundation).toContain("subagent_type");
+			expect(foundation).toContain("[[NATIVE_DELEGATE_TOOL]]");
+			expect(foundation).toContain("[[NATIVE_AGENT_PARAM]]");
 			expect(foundation).not.toContain("5x invoke <author|reviewer>");
 		});
 
@@ -160,8 +160,10 @@ describe("shared skill template loader", () => {
 			// Foundation skill should have invoke patterns, not Task tool
 			const foundation = renderSkillByName("5x", ctx).content;
 			expect(foundation).toContain("5x invoke");
-			expect(foundation).not.toContain("Task tool: subagent_type");
-			expect(foundation).not.toContain("<Task tool:");
+			expect(foundation).not.toContain(
+				"[[NATIVE_DELEGATE_TOOL]]: [[NATIVE_AGENT_PARAM]]",
+			);
+			expect(foundation).not.toContain("<[[NATIVE_DELEGATE_TOOL]]:");
 		});
 
 		test("invoke/native (author invoke, reviewer native) renders correct mixed content", () => {
@@ -174,8 +176,8 @@ describe("shared skill template loader", () => {
 			expect(phaseExec).toContain("5x invoke author");
 
 			// Should contain native patterns for reviewer
-			expect(phaseExec).toContain("Task tool");
-			expect(phaseExec).toContain('subagent_type="5x-reviewer"');
+			expect(phaseExec).toContain("[[NATIVE_DELEGATE_TOOL]]");
+			expect(phaseExec).toContain('[[NATIVE_AGENT_PARAM]]="5x-reviewer"');
 		});
 
 		test("native/invoke (author native, reviewer invoke) renders correct mixed content", () => {
@@ -185,7 +187,7 @@ describe("shared skill template loader", () => {
 			const phaseExec = renderSkillByName("5x-phase-execution", ctx).content;
 
 			// Should contain native patterns for author
-			expect(phaseExec).toContain('subagent_type="5x-code-author"');
+			expect(phaseExec).toContain('[[NATIVE_AGENT_PARAM]]="5x-code-author"');
 
 			// Should contain invoke patterns for reviewer
 			expect(phaseExec).toContain("5x invoke reviewer");
@@ -256,10 +258,10 @@ describe("shared skill template loader", () => {
 			).content;
 
 			// Both should have the same native-only content
-			expect(legacy).toContain("Task tool");
-			expect(mixed).toContain("Task tool");
-			expect(legacy).toContain("subagent_type");
-			expect(mixed).toContain("subagent_type");
+			expect(legacy).toContain("[[NATIVE_DELEGATE_TOOL]]");
+			expect(mixed).toContain("[[NATIVE_DELEGATE_TOOL]]");
+			expect(legacy).toContain("[[NATIVE_AGENT_PARAM]]");
+			expect(mixed).toContain("[[NATIVE_AGENT_PARAM]]");
 
 			// Both should NOT have invoke patterns
 			expect(legacy).not.toContain("5x invoke author author-next-phase");
@@ -281,8 +283,8 @@ describe("shared skill template loader", () => {
 			expect(mixed).toContain("5x invoke author");
 
 			// Both should NOT have Task tool patterns
-			expect(legacy).not.toContain('subagent_type="5x-code-author"');
-			expect(mixed).not.toContain('subagent_type="5x-code-author"');
+			expect(legacy).not.toContain('[[NATIVE_AGENT_PARAM]]="5x-code-author"');
+			expect(mixed).not.toContain('[[NATIVE_AGENT_PARAM]]="5x-code-author"');
 		});
 
 		test("backward compatibility: invoke/invoke foundation skill excludes native harness section", () => {

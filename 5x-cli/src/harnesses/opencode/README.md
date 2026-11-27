@@ -2,6 +2,8 @@
 
 Bundled harness plugin for [OpenCode](https://opencode.ai). Installs 5x skills and native subagent profiles so the 5x orchestration workflow runs inside OpenCode's agent system.
 
+**Requires OpenCode 2.x.** The agent templates use 2.x-native frontmatter and the skills name 2.x tools (`subagent`, `sessionID`). After upgrading 5x or OpenCode, run `5x harness sync opencode` to refresh an existing install.
+
 ## Files
 
 ```
@@ -43,21 +45,33 @@ OpenCode uses `~/.config/opencode/` (XDG-style) for user scope, not `~/.opencode
 
 Four markdown templates with YAML frontmatter, bundled as static text imports:
 
-| Template | Mode | Role | Tools Restricted |
-|----------|------|------|-----------------|
-| `5x-orchestrator` | primary | (none) | `write: false`, `edit: false` |
-| `5x-plan-author` | subagent | author | no |
-| `5x-code-author` | subagent | author | no |
-| `5x-reviewer` | subagent | reviewer | no |
+| Template | Mode | Role | `permissions` rules |
+|----------|------|------|---------------------|
+| `5x-orchestrator` | primary | (none) | `{action: edit, resource: "*", effect: deny}` |
+| `5x-plan-author` | subagent | author | `{action: subagent, resource: "*", effect: deny}` |
+| `5x-code-author` | subagent | author | `{action: subagent, resource: "*", effect: deny}` |
+| `5x-reviewer` | subagent | reviewer | `{action: subagent, resource: "*", effect: deny}` |
 
-**Frontmatter fields** used by OpenCode:
-- `name` -- agent identifier
+**Frontmatter fields** (OpenCode 2.x format):
 - `description` -- shown in agent picker UI
 - `mode` -- `primary` (top-level) or `subagent` (invoked by primary)
 - `model` -- (injected at render time) provider/model string, e.g. `"anthropic/claude-sonnet-4-6"`
-- `tools` -- optional tool restrictions (only orchestrator uses this)
+- `permissions` -- ordered `{action, resource, effect}` rules, applied after OpenCode's defaults
 
-**Tool naming**: OpenCode uses its own tool identifiers (`write`, `edit`, `bash`, `read`, `grep`, `glob`, `list`, `webfetch`). These are not the same as Claude Code names (`Read`, `Write`, `Bash`) or legacy names (`read_file`, `write_file`).
+There is no `name` field: OpenCode 2.x derives the agent id from the filename and logs `name` as an ignored unsupported field. There is no 1.x `tools` block: a file that mixes formats is read as 2.x and its `tools` block is ignored, so tool restrictions are expressed as `permissions` rules. The orchestrator's `edit` deny keeps it from writing code; the subagents' `subagent` deny enforces that subagents never launch other subagents.
+
+**Tool naming**: rule actions use OpenCode 2.x tool ids (`read`, `edit`, `shell`, `glob`, `grep`, `subagent`, `skill`). 1.x `bash` became `shell`, `task` became `subagent`, and `write`/`patch` fold into `edit`. These are not the same as Claude Code names (`Read`, `Write`, `Bash`).
+
+### Background Delegation Lifecycle
+
+In OpenCode 2.x a `subagent` call always runs the child in the background. The tool result is a launch acknowledgment carrying the child `sessionID`, not the child's answer; the parent receives a completion report when the child goes idle. The orchestrator and the rendered skills therefore:
+
+1. Launch with the `subagent` tool (`agent=<5x agent>`, `prompt=...`) and save `CHILD_SESSION_ID` from the acknowledgment.
+2. Wait for the completion report from that `CHILD_SESSION_ID`, ignoring reports from other child sessions.
+3. Take the final author/reviewer JSON from that report as `RESULT`, and validate and record only `RESULT` (never the acknowledgment) against the step rendered for this delegation.
+4. Delegate one step at a time, and continue a reviewer by passing the saved child `sessionID` as the `subagent` tool's `sessionID` (never as `5x template render --session`).
+
+The skills render this through harness tokens (`src/skills/harness-tokens.ts`, mapped in `skills/loader.ts`); Cursor's synchronous Task-tool rendering is unchanged.
 
 ### Model Injection (`loader.ts`)
 

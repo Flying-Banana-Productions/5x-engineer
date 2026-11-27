@@ -1,0 +1,42 @@
+{
+	"all-native": {
+		"5x": "c390fb7318bdc420631f7f13d5e9efa624dfd9df04db2c89652fd9cf05f3d35d",
+		"5x-windows": "8cf90b5c82ac0992694d870c877f63616f46c5ab2c27bcf19c0231d46ef90a6a",
+		"5x-plan": "221c5879fdf3477afd6bec5c963c0710eb1b29e7b6bbaec5d846e43691f01117",
+		"5x-plan-review": "255a12f93c62a004a0b743293fd3c2186ba2051af3c6d34f25401595fc3c83f8",
+		"5x-phase-execution": "cd2209a2f24337607b42f3f80fac66f96f7c755395a1b8ee566176ddb22b2e71",
+		"5x-plan-migration": "0bf3c56e529383e21d401ddd282f481147a143889ce7e181bb5bac7e11f6e5c8",
+		"5x-issue-resolution": "acff55e5258b44faf70ae35641a3c6ea0120c8e4298b265a9f595e19e97f6816",
+		"5x-config": "5a0a5f014128e6c26998eccdc28ce8f9c6a2dce1ed3195e0cca89bec9d0807d4"
+	},
+	"all-invoke": {
+		"5x": "ae9b8730eec9e0392f13b18d8026a79bb52829d718f854e816fd062d8466818f",
+		"5x-windows": "8cf90b5c82ac0992694d870c877f63616f46c5ab2c27bcf19c0231d46ef90a6a",
+		"5x-plan": "7248a2e513607b3a4c2be4bd0019d491dc5769fc76e099b2eff17d3ed0fa0015",
+		"5x-plan-review": "65377b875670a970fa4fb1190aae9804e3b3225db989b016ba3e2f4be4444542",
+		"5x-phase-execution": "20cad234aa5d7180df81d31785ea7d249b8abc383bba523cde8254c15e231ad4",
+		"5x-plan-migration": "0bf3c56e529383e21d401ddd282f481147a143889ce7e181bb5bac7e11f6e5c8",
+		"5x-issue-resolution": "97c64e5b7b408af4c320007937f5b3e05a7b63be8ddf2676daedd830b1a5e5ee",
+		"5x-config": "5a0a5f014128e6c26998eccdc28ce8f9c6a2dce1ed3195e0cca89bec9d0807d4"
+	},
+	"author-invoke-reviewer-native": {
+		"5x": "0a7dab3f6933c468b029bd59a0f645cef5bbec673c89f7991441f2bec61d4b63",
+		"5x-windows": "8cf90b5c82ac0992694d870c877f63616f46c5ab2c27bcf19c0231d46ef90a6a",
+		"5x-plan": "c10855256d12738e3c3a2b14e656e0e8fa0dee6bf20c82f15c039aa46cb7e597",
+		"5x-plan-review": "34f5aad9e361eac9db361d79bfa887b5071733c6b502379e73f9f9353e357aa6",
+		"5x-phase-execution": "5e069cd42a14bb205f4c2870264292894fb853f214b99b3b285657122bce6fb6",
+		"5x-plan-migration": "0bf3c56e529383e21d401ddd282f481147a143889ce7e181bb5bac7e11f6e5c8",
+		"5x-issue-resolution": "21b1dec6ec127913ccfe24988d2f744e6da99f50cf07c176e403555413935922",
+		"5x-config": "5a0a5f014128e6c26998eccdc28ce8f9c6a2dce1ed3195e0cca89bec9d0807d4"
+	},
+	"author-native-reviewer-invoke": {
+		"5x": "30d3cf4197c1751b3ee92daa2075a580ed1fbe19be082bc9c114932016603c16",
+		"5x-windows": "8cf90b5c82ac0992694d870c877f63616f46c5ab2c27bcf19c0231d46ef90a6a",
+		"5x-plan": "cec32bca87a014db5daa44e9de86d4fee0d93fa5c7289fd90d7fa5f5f4e22932",
+		"5x-plan-review": "8d5dcaa4acfb6d70fd1356ce3e9a0ca322f31c819a8d2283fc55a6cf17e2faee",
+		"5x-phase-execution": "f330751f75aca32098fdf7ddc447e804b10788219050f651b3467d46f0471551",
+		"5x-plan-migration": "0bf3c56e529383e21d401ddd282f481147a143889ce7e181bb5bac7e11f6e5c8",
+		"5x-issue-resolution": "94d8ecc4593cb637f9b17ee8c5d13250a0cbfb9d87bd9e573fc8f500f66b4586",
+		"5x-config": "5a0a5f014128e6c26998eccdc28ce8f9c6a2dce1ed3195e0cca89bec9d0807d4"
+	}
+}
