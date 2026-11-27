@@ -49,3 +49,26 @@ The CHANGELOG lists the event mapper, listen parser, factory dependency type and
 
 - **PR handoff:** No PR was opened or pushed in this review. Copy the full verification summary above and the exact `opencode --version` output (`opencode v2.4.2`) into the future PR description, including the live question comparison and installed delegation transcript summary. The implementation commit message also records these results.
 - **Operator warning:** The informational plan header still says the Phase 2 amendment is pending review. It does not supersede the registered amendment in the bound review context; do not read it as a requirement to reopen approval.
+
+## Addendum (2026-11-27) — Phase 5 closure
+
+**Reviewed range / context:** `abc52ae820fdcdb032664262fbdd3ccb635267be..9be9318c60430217372ab5e52f00143f60e537b1`; context `e8a29cd0-d8fb-473a-9df4-8a96bdb354ac`. Reviewed the complete recorded diff. The effective plan and runtime code are unchanged in this range.
+
+### Prior-finding outcomes
+
+| Finding ID | Outcome | Evidence |
+|---|---|---|
+| P2.1 | Addressed | `docs/configuration.md:133–147` and `CHANGELOG.md:59–66` present exact-ID cancellation as an attempt, distinguish confirmed delivery from unresolved cleanup, and limit interruption to a managed private server after delivery. External sessions are never interrupted. |
+| P2.2 | Addressed | `docs/configuration.md:102–110`, `docs/upgrading.md:49–52`, and `CHANGELOG.md:24–31` state that the invoking 5x process needs credentials for a protected server. The configuration guide and changelog retain the fallback and missing-password message, and explain that an unprotected server can work without credentials. |
+| P2.3 | Addressed | `CHANGELOG.md:39–52` identifies the package-root `OpenCodeProvider` and `MIN_OPENCODE_VERSION` exports and separately identifies the mapper and helpers as internal exports, consistent with `package.json`, `src/index.ts`, and `src/providers/index.ts`. |
+
+### Updated readiness and credit realization
+
+**Readiness:** Ready. All three findings are addressed and the revision introduced no new blocker. No credit claims are due.
+
+The iteration-1 phase-finish journal records lint and the full test suite passing at `9be9318c` (4,490 passed, zero failed). The whitespace check on the three revised product documents passed. The prior typecheck, build, 61-test acceptance suite, live provider suite (5 passed, zero skipped, including the complete headless `question` comparison), and temp-project checks still apply: the correction changed no runtime code, harness assets, or tests. I verified the recorded evidence rather than rerunning the live exercise.
+
+### Nonblocking follow-ups
+
+- Delivery is evidence that execution began, not proof it is still active when cleanup runs. The parenthetical “its execution is running” in the configuration guide could be dropped for precision; the stated interrupt-attempt and no-interrupt rules are correct.
+- Carry forward the initial review’s verification summary and exact `opencode --version` output (`opencode v2.4.2`) to the future PR description, including the live comparison and installed orchestrator delegation/continuation evidence. No push or PR was performed.
