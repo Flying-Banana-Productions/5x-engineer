@@ -282,10 +282,10 @@ This phase runs first. It removes every remaining `@opencode-ai/sdk` importer ou
 
 ### 1.1 Tasks
 
-- [ ] Re-confirm no importers of `src/tui/*` or `src/utils/event-router.ts` in `src/`, `packages/`, or `test/` outside their own tests
-- [ ] Delete `src/tui/controller.ts`, `src/tui/permissions.ts`, `src/tui/detect.ts`, `src/utils/event-router.ts`, and `test/unit/tui/*` (`controller.test.ts`, `permissions.test.ts`, `phase4-integration.test.ts`)
-- [ ] Remove the `External TUI is opt-in: use --tui-listen` line at `src/commands/init.handler.ts:499` and any test asserting it
-- [ ] Remove the `tui/` entry from the AGENTS.md test directory layout
+- [x] Re-confirm no importers of `src/tui/*` or `src/utils/event-router.ts` in `src/`, `packages/`, or `test/` outside their own tests
+- [x] Delete `src/tui/controller.ts`, `src/tui/permissions.ts`, `src/tui/detect.ts`, `src/utils/event-router.ts`, and `test/unit/tui/*` (`controller.test.ts`, `permissions.test.ts`, `phase4-integration.test.ts`)
+- [x] Remove the `External TUI is opt-in: use --tui-listen` line at `src/commands/init.handler.ts:499` and any test asserting it
+- [x] Remove the `tui/` entry from the AGENTS.md test directory layout
 
 ## Phase 2: Provider port to `@opencode/client`
 

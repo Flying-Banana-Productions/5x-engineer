@@ -67,7 +67,6 @@ test/
 │   ├── providers/         # provider adapters
 │   ├── skills/            # skill content loading
 │   ├── templates/         # template loader
-│   ├── tui/               # TUI controller & permissions
 │   ├── utils/             # ansi, ndjson, parse-args, etc.
 │   └── *.test.ts          # config, env, git, output, paths, protocol, run-id
 ├── integration/
