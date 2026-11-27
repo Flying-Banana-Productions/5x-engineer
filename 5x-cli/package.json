@@ -57,9 +57,9 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "@decimalturn/toml-patch": "^1.0.2",
-    "@opencode-ai/sdk": "^1.2.6",
     "@commander-js/extra-typings": "^13.1.0",
+    "@decimalturn/toml-patch": "^1.0.2",
+    "@opencode/client": "2.4.2",
     "commander": "^13.1.0",
     "dotenv": "^16.6.1",
     "yaml": "^2.7.0",

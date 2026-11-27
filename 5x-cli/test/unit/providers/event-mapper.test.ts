@@ -1,536 +1,251 @@
 /**
- * Event Mapper Tests
+ * Tests for the OpenCode 2.x event mapper.
  *
- * Validates SSE → AgentEvent mapping for OpenCode events.
+ * Foreign-session isolation is asserted at the provider level in
+ * `opencode.test.ts`; this file covers the pure mapping rows.
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Event as OpenCodeEvent } from "@opencode-ai/sdk/v2";
+import type { OpenCodeEvent } from "@opencode/client";
 import {
 	createEventMapperState,
-	createSessionResolveContext,
-	getEventSessionId,
-	mapSseToAgentEvent,
-	resolveSessionIdWithContext,
+	eventSessionId,
+	mapOpenCodeEvent,
 	summarizeToolInput,
 } from "../../../src/providers/event-mapper.js";
 
-// ---------------------------------------------------------------------------
-// Tool Input Summary Tests
-// ---------------------------------------------------------------------------
+function ev(type: string, data: Record<string, unknown>): OpenCodeEvent {
+	return {
+		id: `evt_${type}`,
+		created: 0,
+		type,
+		data,
+	} as unknown as OpenCodeEvent;
+}
 
-describe("summarizeToolInput", () => {
-	test("bash tool extracts command", () => {
-		const input = { command: "ls -la" };
-		expect(summarizeToolInput("bash", input)).toBe("ls -la");
-	});
+const SID = "ses_a";
 
-	test("shell tool extracts command", () => {
-		const input = { command: "pwd" };
-		expect(summarizeToolInput("shell", input)).toBe("pwd");
-	});
-
-	test("edit tool extracts filePath", () => {
-		const input = { filePath: "/path/to/file.ts" };
-		expect(summarizeToolInput("edit", input)).toBe("/path/to/file.ts");
-	});
-
-	test("edit tool falls back to path", () => {
-		const input = { path: "/path/to/file.ts" };
-		expect(summarizeToolInput("edit", input)).toBe("/path/to/file.ts");
-	});
-
-	test("write tool extracts filePath", () => {
-		const input = { filePath: "/path/to/output.txt" };
-		expect(summarizeToolInput("write", input)).toBe("/path/to/output.txt");
-	});
-
-	test("read tool extracts filePath", () => {
-		const input = { filePath: "/path/to/read.txt" };
-		expect(summarizeToolInput("read", input)).toBe("/path/to/read.txt");
-	});
-
-	test("glob tool extracts pattern", () => {
-		const input = { pattern: "**/*.ts" };
-		expect(summarizeToolInput("glob", input)).toBe("**/*.ts");
-	});
-
-	test("grep tool extracts pattern", () => {
-		const input = { pattern: "TODO" };
-		expect(summarizeToolInput("grep", input)).toBe("TODO");
-	});
-
-	test("unknown tool shows keys", () => {
-		const input = { foo: "bar", baz: 123 };
-		const summary = summarizeToolInput("unknown", input);
-		expect(summary).toBe("{foo, baz}");
-	});
-
-	test("empty object returns empty string", () => {
-		expect(summarizeToolInput("any", {})).toBe("");
-	});
-
-	test("null/undefined input returns empty string", () => {
-		expect(summarizeToolInput("bash", null)).toBe("");
-		expect(summarizeToolInput("bash", undefined)).toBe("");
-	});
-
-	test("non-object input returns empty string", () => {
-		expect(summarizeToolInput("bash", "string")).toBe("");
-		expect(summarizeToolInput("bash", 123)).toBe("");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Session ID Resolution Tests
-// ---------------------------------------------------------------------------
-
-describe("getEventSessionId", () => {
-	test("extracts sessionID from properties", () => {
-		const event = {
-			type: "message.part.updated",
-			properties: { sessionID: "sess_123" },
-		} as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBe("sess_123");
-	});
-
-	test("extracts sessionId from properties", () => {
-		const event = {
-			type: "message.part.updated",
-			properties: { sessionId: "sess_456" },
-		} as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBe("sess_456");
-	});
-
-	test("extracts sessionID from info", () => {
-		const event = {
-			type: "message.part.updated",
-			properties: { info: { sessionID: "sess_789" } },
-		} as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBe("sess_789");
-	});
-
-	test("extracts id from session event", () => {
-		const event = {
-			type: "session.created",
-			properties: { info: { id: "sess_abc" } },
-		} as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBe("sess_abc");
-	});
-
-	test("extracts sessionID from part", () => {
-		const event = {
-			type: "message.part.updated",
-			properties: { part: { sessionID: "sess_def" } },
-		} as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBe("sess_def");
-	});
-
-	test("returns undefined for events without session info", () => {
-		const event = {
-			type: "unknown",
-			properties: { foo: "bar" },
-		} as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBeUndefined();
-	});
-
-	test("returns undefined for events without properties", () => {
-		const event = { type: "test" } as unknown as OpenCodeEvent;
-		expect(getEventSessionId(event)).toBeUndefined();
-	});
-});
-
-describe("resolveSessionIdWithContext", () => {
-	test("stores session ID in context when found directly", () => {
-		const ctx = createSessionResolveContext();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				sessionID: "sess_123",
-				part: { id: "part_1" },
-				info: { id: "msg_1" },
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = resolveSessionIdWithContext(event, ctx);
-
-		expect(result).toBe("sess_123");
-		expect(ctx.partToSession.get("part_1")).toBe("sess_123");
-		expect(ctx.messageToSession.get("msg_1")).toBe("sess_123");
-	});
-
-	test("resolves from part ID when direct ID not available", () => {
-		const ctx = createSessionResolveContext();
-		ctx.partToSession.set("part_1", "sess_123");
-
-		const event = {
-			type: "message.part.delta",
-			properties: { partID: "part_1" },
-		} as unknown as OpenCodeEvent;
-
-		const result = resolveSessionIdWithContext(event, ctx);
-
-		expect(result).toBe("sess_123");
-	});
-
-	test("resolves from message ID when part ID not in context", () => {
-		const ctx = createSessionResolveContext();
-		ctx.messageToSession.set("msg_1", "sess_456");
-
-		const event = {
-			type: "message.part.delta",
-			properties: { messageID: "msg_1" },
-		} as unknown as OpenCodeEvent;
-
-		const result = resolveSessionIdWithContext(event, ctx);
-
-		expect(result).toBe("sess_456");
-	});
-
-	test("stores part mapping from message context", () => {
-		const ctx = createSessionResolveContext();
-		ctx.messageToSession.set("msg_1", "sess_789");
-
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: { id: "part_2", messageID: "msg_1" },
-			},
-		} as unknown as OpenCodeEvent;
-
-		resolveSessionIdWithContext(event, ctx);
-
-		expect(ctx.partToSession.get("part_2")).toBe("sess_789");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Event Mapping Tests
-// ---------------------------------------------------------------------------
-
-describe("mapSseToAgentEvent", () => {
-	test("maps text delta from message.part.updated", () => {
+describe("mapOpenCodeEvent", () => {
+	test("session.text.delta → text", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "text", id: "part_1" },
-				delta: "Hello world",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({ type: "text", delta: "Hello world" });
-		expect(state.textPartIds.has("part_1")).toBe(true);
+		expect(
+			mapOpenCodeEvent(
+				ev("session.text.delta", { sessionID: SID, delta: "hello" }),
+				state,
+			),
+		).toEqual({ type: "text", delta: "hello" });
 	});
 
-	test("maps text from full part.text when no delta", () => {
+	test("empty text delta yields nothing", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "text", id: "part_1", text: "Hello" },
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({ type: "text", delta: "Hello" });
+		expect(
+			mapOpenCodeEvent(
+				ev("session.text.delta", { sessionID: SID, delta: "" }),
+				state,
+			),
+		).toBeUndefined();
 	});
 
-	test("maps reasoning delta from message.part.updated", () => {
+	test("session.reasoning.delta → reasoning", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "reasoning", id: "part_1" },
-				delta: "Thinking...",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({ type: "reasoning", delta: "Thinking..." });
-		expect(state.reasoningPartIds.has("part_1")).toBe(true);
+		expect(
+			mapOpenCodeEvent(
+				ev("session.reasoning.delta", { sessionID: SID, delta: "think" }),
+				state,
+			),
+		).toEqual({ type: "reasoning", delta: "think" });
 	});
 
-	test("maps tool_start for running tool", () => {
+	test("tool.input.started records the name; tool.called → tool_start", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: {
-					type: "tool",
-					tool: "bash",
-					state: { status: "running", input: { command: "ls -la" } },
-				},
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({
+		expect(
+			mapOpenCodeEvent(
+				ev("session.tool.input.started", {
+					sessionID: SID,
+					id: "call_1",
+					name: "shell",
+				}),
+				state,
+			),
+		).toBeUndefined();
+		expect(state.toolNames.get("call_1")).toBe("shell");
+		expect(
+			mapOpenCodeEvent(
+				ev("session.tool.called", {
+					sessionID: SID,
+					id: "call_1",
+					input: { command: "cat hello.txt" },
+				}),
+				state,
+			),
+		).toEqual({
 			type: "tool_start",
-			tool: "bash",
-			input_summary: "ls -la",
+			tool: "shell",
+			input_summary: "cat hello.txt",
 		});
 	});
 
-	test("maps tool_end for completed tool", () => {
+	test("tool.called without a preceding input.started falls back to unknown", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: {
-					type: "tool",
-					tool: "bash",
-					state: { status: "completed", output: "Success" },
-				},
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({
-			type: "tool_end",
-			tool: "bash",
-			output: "Success",
-			error: false,
-		});
+		expect(
+			mapOpenCodeEvent(
+				ev("session.tool.called", {
+					sessionID: SID,
+					id: "call_x",
+					input: { a: 1, b: 2 },
+				}),
+				state,
+			),
+		).toEqual({ type: "tool_start", tool: "unknown", input_summary: "{a, b}" });
 	});
 
-	test("maps tool_end for error tool", () => {
+	test("tool.success → tool_end with the first text content", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: {
-					type: "tool",
-					tool: "bash",
-					state: { status: "error", output: "Command failed" },
-				},
-			},
-		} as unknown as OpenCodeEvent;
+		state.toolNames.set("call_1", "read");
+		expect(
+			mapOpenCodeEvent(
+				ev("session.tool.success", {
+					sessionID: SID,
+					id: "call_1",
+					content: [
+						{ type: "file", uri: "file:///x" },
+						{ type: "text", text: "first" },
+						{ type: "text", text: "second" },
+					],
+				}),
+				state,
+			),
+		).toEqual({ type: "tool_end", tool: "read", output: "first" });
+	});
 
-		const result = mapSseToAgentEvent(event, state);
+	test("tool_end output is truncated to 500 chars", () => {
+		const state = createEventMapperState();
+		state.toolNames.set("call_1", "shell");
+		const mapped = mapOpenCodeEvent(
+			ev("session.tool.success", {
+				sessionID: SID,
+				id: "call_1",
+				content: [{ type: "text", text: "x".repeat(2000) }],
+			}),
+			state,
+		);
+		expect(mapped?.type).toBe("tool_end");
+		if (mapped?.type === "tool_end") expect(mapped.output.length).toBe(500);
+	});
 
-		expect(result).toEqual({
+	test("tool.failed → tool_end with error.message and error: true", () => {
+		const state = createEventMapperState();
+		state.toolNames.set("call_1", "shell");
+		const mapped = mapOpenCodeEvent(
+			ev("session.tool.failed", {
+				sessionID: SID,
+				id: "call_1",
+				error: { type: "denied", message: "y".repeat(800) },
+			}),
+			state,
+		);
+		expect(mapped).toEqual({
 			type: "tool_end",
-			tool: "bash",
-			output: "Command failed",
+			tool: "shell",
+			output: "y".repeat(500),
 			error: true,
 		});
 	});
 
-	test("deduplicates running tool events", () => {
+	test("step.failed and execution.failed → error", () => {
 		const state = createEventMapperState();
-		const event = {
-			type: "message.part.updated",
-			properties: {
-				part: {
-					type: "tool",
-					id: "tool_1",
-					tool: "bash",
-					state: { status: "running", input: { command: "ls" } },
-				},
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result1 = mapSseToAgentEvent(event, state);
-		expect(result1).toBeDefined();
-
-		const result2 = mapSseToAgentEvent(event, state);
-		expect(result2).toBeUndefined(); // Duplicate suppressed
+		expect(
+			mapOpenCodeEvent(
+				ev("session.step.failed", {
+					sessionID: SID,
+					error: { type: "x", message: "step broke" },
+				}),
+				state,
+			),
+		).toEqual({ type: "error", message: "step broke" });
+		expect(
+			mapOpenCodeEvent(
+				ev("session.execution.failed", {
+					sessionID: SID,
+					error: { type: "x", message: "exec broke" },
+				}),
+				state,
+			),
+		).toEqual({ type: "error", message: "exec broke" });
 	});
 
-	test("maps legacy message.part.delta to text", () => {
+	test("inbox and non-failure execution events map to nothing", () => {
 		const state = createEventMapperState();
-		state.textPartIds.add("part_1"); // Simulate prior registration
-
-		const event = {
-			type: "message.part.delta",
-			properties: {
-				partID: "part_1",
-				delta: " more text",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({ type: "text", delta: " more text" });
-	});
-
-	test("maps legacy message.part.delta with camelCase partId to text (P1.1 regression)", () => {
-		const state = createEventMapperState();
-		state.textPartIds.add("part_1"); // Simulate prior registration
-
-		const event = {
-			type: "message.part.delta",
-			properties: {
-				partId: "part_1", // camelCase variant
-				delta: " more text",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({ type: "text", delta: " more text" });
-	});
-
-	test("maps legacy message.part.delta with camelCase partId to reasoning (P1.1 regression)", () => {
-		const state = createEventMapperState();
-		state.reasoningPartIds.add("part_2"); // Simulate prior registration
-
-		const event = {
-			type: "message.part.delta",
-			properties: {
-				partId: "part_2", // camelCase variant
-				delta: " thinking...",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({ type: "reasoning", delta: " thinking..." });
-	});
-
-	test("suppresses delta if part was already handled via updated", () => {
-		const state = createEventMapperState();
-		state.textPartIds.add("part_1");
-		state.updatedDeltaPartIds.add("part_1"); // Already handled
-
-		const event = {
-			type: "message.part.delta",
-			properties: {
-				partID: "part_1",
-				delta: "text",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toBeUndefined();
-	});
-
-	test("maps session.error to error event", () => {
-		const state = createEventMapperState();
-		const event = {
-			type: "session.error",
-			properties: {
-				error: "Something went wrong",
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toEqual({
-			type: "error",
-			message: "Something went wrong",
-		});
-	});
-
-	test("returns undefined for unknown event types", () => {
-		const state = createEventMapperState();
-		const event = {
-			type: "unknown.event",
-			properties: { foo: "bar" },
-		} as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toBeUndefined();
-	});
-
-	test("returns undefined for events without properties", () => {
-		const state = createEventMapperState();
-		const event = { type: "message.part.updated" } as unknown as OpenCodeEvent;
-
-		const result = mapSseToAgentEvent(event, state);
-
-		expect(result).toBeUndefined();
+		for (const type of [
+			"session.inbox.enqueued",
+			"session.inbox.delivered",
+			"session.inbox.cancelled",
+			"session.execution.started",
+			"session.execution.succeeded",
+			"session.execution.interrupted",
+		]) {
+			expect(
+				mapOpenCodeEvent(ev(type, { sessionID: SID, inboxID: "msg_1" }), state),
+			).toBeUndefined();
+		}
 	});
 });
 
-// ---------------------------------------------------------------------------
-// State Management Tests
-// ---------------------------------------------------------------------------
+describe("eventSessionId", () => {
+	test("reads data.sessionID", () => {
+		expect(eventSessionId(ev("session.text.delta", { sessionID: SID }))).toBe(
+			SID,
+		);
+	});
 
-describe("createEventMapperState", () => {
-	test("creates empty state", () => {
-		const state = createEventMapperState();
+	test("reads data.form.sessionID for form.created", () => {
+		expect(
+			eventSessionId(
+				ev("form.created", {
+					form: { id: "frm_1", sessionID: "ses_form", title: "Q", fields: [] },
+				}),
+			),
+		).toBe("ses_form");
+	});
 
-		expect(state.textPartIds.size).toBe(0);
-		expect(state.reasoningPartIds.size).toBe(0);
-		expect(state.partTextById.size).toBe(0);
-		expect(state.updatedDeltaPartIds.size).toBe(0);
-		expect(state.runningToolSignatureById.size).toBe(0);
+	test("undefined for events with no session", () => {
+		expect(eventSessionId(ev("config.updated", {}))).toBeUndefined();
+		expect(
+			eventSessionId({ type: "server.connected" } as unknown as OpenCodeEvent),
+		).toBeUndefined();
 	});
 });
 
-describe("createSessionResolveContext", () => {
-	test("creates empty context", () => {
-		const ctx = createSessionResolveContext();
-
-		expect(ctx.partToSession.size).toBe(0);
-		expect(ctx.messageToSession.size).toBe(0);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Incremental Text Update Tests
-// ---------------------------------------------------------------------------
-
-describe("incremental text updates", () => {
-	test("emits only new text from full-text updates", () => {
-		const state = createEventMapperState();
-
-		// First update: "Hello"
-		const event1 = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "text", id: "part_1", text: "Hello" },
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result1 = mapSseToAgentEvent(event1, state);
-		expect(result1).toEqual({ type: "text", delta: "Hello" });
-
-		// Second update: "Hello world" - should only emit " world"
-		const event2 = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "text", id: "part_1", text: "Hello world" },
-			},
-		} as unknown as OpenCodeEvent;
-
-		const result2 = mapSseToAgentEvent(event2, state);
-		expect(result2).toEqual({ type: "text", delta: " world" });
+describe("summarizeToolInput", () => {
+	test("shell uses command", () => {
+		expect(summarizeToolInput("shell", { command: "ls -la" })).toBe("ls -la");
 	});
 
-	test("handles non-incremental updates gracefully", () => {
-		const state = createEventMapperState();
+	test("read prefers path over filePath", () => {
+		expect(summarizeToolInput("read", { path: "/a", filePath: "/b" })).toBe(
+			"/a",
+		);
+		expect(summarizeToolInput("read", { filePath: "/b" })).toBe("/b");
+	});
 
-		// First update
-		const event1 = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "text", id: "part_1", text: "Hello" },
-			},
-		} as unknown as OpenCodeEvent;
+	test("edit uses path", () => {
+		expect(summarizeToolInput("edit", { path: "src/x.ts" })).toBe("src/x.ts");
+	});
 
-		mapSseToAgentEvent(event1, state);
+	test("glob and grep use pattern", () => {
+		expect(summarizeToolInput("glob", { pattern: "**/*.ts" })).toBe("**/*.ts");
+		expect(summarizeToolInput("grep", { pattern: "foo" })).toBe("foo");
+	});
 
-		// Second update is completely different (not incremental)
-		const event2 = {
-			type: "message.part.updated",
-			properties: {
-				part: { type: "text", id: "part_1", text: "Goodbye" },
-			},
-		} as unknown as OpenCodeEvent;
+	test("subagent uses agent", () => {
+		expect(
+			summarizeToolInput("subagent", { agent: "5x-reviewer", prompt: "x" }),
+		).toBe("5x-reviewer");
+	});
 
-		const result2 = mapSseToAgentEvent(event2, state);
-		// No delta emitted because it's not incremental
-		expect(result2).toBeUndefined();
+	test("unknown tools list their keys", () => {
+		expect(summarizeToolInput("mystery", { a: 1, b: 2 })).toBe("{a, b}");
+		expect(summarizeToolInput("mystery", {})).toBe("");
+		expect(summarizeToolInput("mystery", null)).toBe("");
 	});
 });

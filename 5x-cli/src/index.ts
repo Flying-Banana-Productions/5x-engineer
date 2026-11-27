@@ -290,6 +290,7 @@ export {
 export {
 	AgentCancellationError,
 	AgentTimeoutError,
+	MIN_OPENCODE_VERSION,
 	OpenCodeProvider,
 } from "./providers/opencode.js";
 export type {

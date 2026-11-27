@@ -591,22 +591,22 @@ export function summarizeToolInput(tool: string, input: unknown): string;
 
   Uses `stdin: "ignore"` and `timeout: 120000`.
 
-- [ ] Replace `@opencode-ai/sdk` with an exact-pinned `@opencode/client` in `package.json` and `bun.lock`
-- [ ] Implement managed spawn (explicit `stdout`/`stderr` pipes, startup-timeout kill, continuous output draining), external auth, `verify()` version gate, and error mapping naming `MIN_OPENCODE_VERSION` in `src/providers/opencode.ts`
-- [ ] Implement headless `startSession`, `resumeSession` with `switchModel`, and `#variant` model parsing
-- [ ] Implement `runTurn` with subscription handshake, delivery-gated terminal events, and durable `idle`-entry polling fallback
-- [ ] Implement prompt ownership: pre-aborted short-circuit, per-provider in-flight session guard and idle/empty-inbox precheck with the busy error, `msg_5x` request id sent once with bounded admission and admission reconciliation (no resend), streamed and polled delivery tracking with the bounded `unknown` state, and ambiguous-overlap handling
-- [ ] Implement owned cleanup for timeout, cancellation, overlap, and unresolved admission: exact-id `session.inbox.cancel` with bounded reconciliation and re-cancel of a late admission, removal only on `inbox.cancelled`, `session.interrupt` only for a delivered turn on a managed provider's private server (never external, never decided from `session.active()`), left-running and unresolved notes, and bounded cleanup requests
-- [ ] Implement `settleTurn` as the single terminal-outcome handler for the streamed and polling paths
-- [ ] Implement `readTurnWindow` with the `session.context` fast path, paginated `session.message.list` fallback, closing-`idle` re-read, and missing-boundary and no-end errors, and window-scoped usage with fail-closed attribution in place of any `session.get` delta
-- [ ] Rebuild `runStreamed()` and `run()` on `runTurn`, keeping timeout and cancellation semantics
-- [ ] Add `src/providers/structured-output.ts` with the string-aware top-level scanner, and the structured summary with corrective retries
-- [ ] Rewrite `src/providers/event-mapper.ts` for 2.x events, with `eventSessionId` reading `data.form.sessionID` for `form.created`, and update `src/providers/index.ts` / `src/index.ts` exports
-- [ ] Make `createOpenCodeProvider` verify external providers and close on verify failure, through the `OpenCodeFactoryDeps` seam
+- [x] Replace `@opencode-ai/sdk` with an exact-pinned `@opencode/client` in `package.json` and `bun.lock`
+- [x] Implement managed spawn (explicit `stdout`/`stderr` pipes, startup-timeout kill, continuous output draining), external auth, `verify()` version gate, and error mapping naming `MIN_OPENCODE_VERSION` in `src/providers/opencode.ts`
+- [x] Implement headless `startSession`, `resumeSession` with `switchModel`, and `#variant` model parsing
+- [x] Implement `runTurn` with subscription handshake, delivery-gated terminal events, and durable `idle`-entry polling fallback
+- [x] Implement prompt ownership: pre-aborted short-circuit, per-provider in-flight session guard and idle/empty-inbox precheck with the busy error, `msg_5x` request id sent once with bounded admission and admission reconciliation (no resend), streamed and polled delivery tracking with the bounded `unknown` state, and ambiguous-overlap handling
+- [x] Implement owned cleanup for timeout, cancellation, overlap, and unresolved admission: exact-id `session.inbox.cancel` with bounded reconciliation and re-cancel of a late admission, removal only on `inbox.cancelled`, `session.interrupt` only for a delivered turn on a managed provider's private server (never external, never decided from `session.active()`), left-running and unresolved notes, and bounded cleanup requests
+- [x] Implement `settleTurn` as the single terminal-outcome handler for the streamed and polling paths
+- [x] Implement `readTurnWindow` with the `session.context` fast path, paginated `session.message.list` fallback, closing-`idle` re-read, and missing-boundary and no-end errors, and window-scoped usage with fail-closed attribution in place of any `session.get` delta
+- [x] Rebuild `runStreamed()` and `run()` on `runTurn`, keeping timeout and cancellation semantics
+- [x] Add `src/providers/structured-output.ts` with the string-aware top-level scanner, and the structured summary with corrective retries
+- [x] Rewrite `src/providers/event-mapper.ts` for 2.x events, with `eventSessionId` reading `data.form.sessionID` for `form.created`, and update `src/providers/index.ts` / `src/index.ts` exports
+- [x] Make `createOpenCodeProvider` verify external providers and close on verify failure, through the `OpenCodeFactoryDeps` seam
 - [ ] Run the live `question` deny-or-cancel case; if the deny does not stop forms, implement the `form.cancel` fallback keyed by `data.form.sessionID` and `data.form.id`, with matching and foreign-session form unit cases
-- [ ] Rewrite `opencode.test.ts` and `event-mapper.test.ts`; add `structured-output.test.ts` and `opencode-factory.test.ts`; update the `plugin-loading.test.ts` bundled case to use the fake seam
+- [x] Rewrite `opencode.test.ts` and `event-mapper.test.ts`; add `structured-output.test.ts` and `opencode-factory.test.ts`; update the `plugin-loading.test.ts` bundled case to use the fake seam
 - [ ] Add the opt-in live test with managed, authenticated external, and `question` deny-or-cancel cases. When opted in, it fails rather than skips on a missing or too-old binary. Pass it against local OpenCode 2.x, set `MIN_OPENCODE_VERSION` to the oldest release both provider cases passed on, and record that `opencode --version` in the PR description
-- [ ] Confirm `bun run build` compiles with the new dependency
+- [x] Confirm `bun run build` compiles with the new dependency
 
 ## Phase 3: Doctor OpenCode check and configuration
 

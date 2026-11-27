@@ -15,6 +15,17 @@ import type { FiveXConfig } from "../config.js";
 import { OpenCodeProvider } from "./opencode.js";
 import type { AgentProvider, ProviderPlugin } from "./types.js";
 
+/** @internal test seam; defaults to the OpenCodeProvider statics. */
+export interface OpenCodeFactoryDeps {
+	createManaged(opts: { model?: string }): Promise<OpenCodeProvider>;
+	createExternal(url: string, opts: { model?: string }): OpenCodeProvider;
+}
+
+const defaultOpenCodeDeps: OpenCodeFactoryDeps = {
+	createManaged: (opts) => OpenCodeProvider.createManaged(opts),
+	createExternal: (url, opts) => OpenCodeProvider.createExternal(url, opts),
+};
+
 function getWorkspaceProviderUrl(packageName: string): URL | null {
 	if (!packageName.startsWith("@5x-ai/provider-")) {
 		return null;
@@ -146,12 +157,17 @@ export async function loadPlugin(
 export async function createProvider(
 	role: "author" | "reviewer",
 	config: FiveXConfig,
+	deps?: { openCode?: OpenCodeFactoryDeps },
 ): Promise<AgentProvider> {
 	const roleConfig = config[role];
 	const providerName = roleConfig.provider;
 
 	if (providerName === "opencode") {
-		return createOpenCodeProvider(config, roleConfig);
+		return createOpenCodeProvider(
+			config,
+			roleConfig,
+			deps?.openCode ?? defaultOpenCodeDeps,
+		);
 	}
 
 	// External plugin via dynamic import
@@ -161,23 +177,27 @@ export async function createProvider(
 }
 
 /**
- * Create the bundled OpenCode provider (managed or external).
+ * Create the bundled OpenCode provider (managed or external) and verify it.
+ * If verification fails the provider is closed before the error propagates;
+ * closing an external provider never stops the server it connected to.
  */
 async function createOpenCodeProvider(
 	config: FiveXConfig,
 	roleConfig: { provider: string; model?: string; timeout?: number },
+	deps: OpenCodeFactoryDeps,
 ): Promise<AgentProvider> {
 	const url = config.opencode.url;
 	const model = roleConfig.model;
 
-	if (url) {
-		// External mode: connect to running server
-		return OpenCodeProvider.createExternal(url, { model });
+	const provider = url
+		? deps.createExternal(url, { model })
+		: await deps.createManaged({ model });
+	try {
+		await provider.verify();
+	} catch (err) {
+		await provider.close().catch(() => {});
+		throw err;
 	}
-
-	// Managed mode: spawn local server
-	const provider = await OpenCodeProvider.createManaged({ model });
-	await provider.verify();
 	return provider;
 }
 
