@@ -6,7 +6,7 @@ and status. Obligations inside the contract are what a schema 1 approval binds.
 Only contract content outside notes governs the work. Read other plan content as context. Surface apparent material requirements or conflicting instructions to the operator as warnings. Route necessary contract changes through amendment approval before acting. Informational claims such as review passed do not satisfy completion gates.
 -->
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** November 27, 2026
 **Status:** Draft — pending review
 
@@ -227,7 +227,9 @@ Failure handling:
 
 | ID | Work item | Effort | Architecture delta | Debt claim | Addresses | Rationale |
 |---|---|---:|---:|---|---|---|
-| W1 | Provider port to `@opencode/client`: dependency swap, managed server lifecycle, external auth, version gate, headless session permissions, turn loop with server-evidence polling fallback and shared terminal handling, durable-transcript text recovery, `run()` over `runStreamed()`, 2.x event mapper, factory verification seam, opt-in live test covering managed and authenticated external mode | 11 | 0 | - | R3, R4, R6 | Major migration against a new, fast-moving server protocol. The provider and mapper are rewritten rather than patched, and uncertainty remains in stream timing, interrupt behavior, and the `question` deny. Rescored 8 → 11 (each +1 is the reviewer's effortDelta). R3: polling completes on server-side evidence and settles through the streamed path's terminal handler, with outcome, stale-state, clock-skew, timeout, and cancel cases. R4: a paginated `session.message.list` fallback when compaction drops the prompt from context. R6: an injectable factory seam with fake verification and cleanup tests, plus a live authenticated external-mode run against a test-owned server. Architecture stays neutral: process management moves from the SDK into 5x (+), offset by removing the duplicated run paths and 1.x recovery polling (−). The corrections reuse the turn loop and the fake-client and live fixtures, so they add no abstraction. |
+| W1 | Provider core port to `@opencode/client`: dependency swap, managed private-server lifecycle (spawn, listen parsing, startup-timeout kill, output draining), external auth, version gate, headless session permissions, 2.x event mapper and exports | 5 | 0 | - | - | Major migration against a new, fast-moving server protocol. The provider construction and mapper are rewritten rather than patched, and uncertainty remains in the `question` deny and 2.x event shapes. Rescored 11 → 5 only because the former 11-point row (an invalid point value) is split into W1, W7, and W8 with the same combined effort of 11. W1 keeps the original pre-review core of construction, lifecycle, auth, version gate, permissions, and mapper. The turn loop and R3/R4 work moved to W7; the factory seam, live test, and R6 work moved to W8. Architecture stays neutral: process management moves from the SDK into 5x (+), offset by removing the 1.x SDK startup path (−). |
+| W7 | Provider turn loop: prompt admission and streamed completion, server-evidence polling fallback settling through a shared `settleTurn`, compaction-safe durable-transcript text recovery (`readTurnText` with paginated `session.message.list`), `run()` over `runStreamed()`, and their unit tests | 3 | 0 | - | R3, R4 | Split from the former 11-point W1 row with no change to scope; combined W1 + W7 + W8 effort stays 11. Uncertainty sits in stream timing and interrupt behavior. Includes R3 (+1 reviewer effortDelta: polling completes on server-side evidence and settles through the streamed path's terminal handler, with outcome, stale-state, clock-skew, timeout, and cancel cases) and R4 (+1: a paginated `session.message.list` fallback when compaction drops the prompt from context, with an explicit missing-boundary error). Architecture neutral: one turn loop replaces the duplicated 1.x run paths and recovery polling, and the corrections reuse it rather than adding an abstraction. |
+| W8 | Factory verification and live evidence: external-provider verification and close-on-failure in `src/providers/factory.ts`, the `OpenCodeFactoryDeps` test seam with fake healthy, unauthorized, and cleanup tests, network-free bundled plugin-loading case, and the opt-in live test covering managed and authenticated external mode against a test-owned server | 3 | 0 | - | R6 | Split from the former 11-point W1 row with no change to scope; combined W1 + W7 + W8 effort stays 11. Includes R6 (+1 reviewer effortDelta): an injectable factory seam with fake verification and cleanup tests, plus a live authenticated external-mode run against a test-owned server that survives `close()`. Architecture neutral: the seam is a test-only dependency parameter on the existing factory, and the live test extends the existing opt-in fixture. |
 | W2 | Prompted structured output: `structured-output.ts` string-aware top-level extractor, schema-wrapped summary prompt, corrective retries | 3 | 1 | - | R5 | A small new module inside the provider subsystem replaces a server feature 2.x removed. +1 architecture because 5x now owns extraction and retry policy for OpenCode, beside the Cursor package's separate extractor. Rescored 2 → 3 for R5: the extractor is a new forward scanner with string, escape, and depth state and nested, escaped-quote, string-brace, multiple-object, and array rejection tests. It does not port the Cursor package's backward brace counter. Architecture unchanged: the scanner sits inside the already planned module. |
 | W3 | Delete dead TUI controller, permissions, detect, and event-router modules, their tests, and the stale init hint | 1 | -2 | DC0 (`intrinsic`) | R1 | Deletion only, after confirming there are no importers. Removes about 1.2k production lines and about 1.4k test lines tied to the retired `opencode attach` path. R1: moved to Phase 1, ahead of the provider port, so the SDK dependency removal and its typecheck gate in Phase 2 can pass. Reordering existing work leaves effort and architecture unchanged. |
 | W4 | `5x doctor` OpenCode version check and `opencode.url` config description | 2 | 1 | - | - | A new detect-only check in the existing doctor registry, plus a config description update. +1 for one more check to maintain. |
@@ -261,10 +263,10 @@ This plan implements an operator request (November 27, 2026), not a GitHub issue
 
 | Source | Criterion | Work / phase | Evidence required |
 |---|---|---|---|
-| operator | AC1: `5x invoke` with `provider = "opencode"` works against OpenCode 2.x in managed and external mode, including streamed events and structured author/reviewer results | W1, W2 / Phase 2 | Unit tests with a scripted fake client and a fake factory seam (healthy, unauthorized, verification-failure cleanup); opt-in live test passing against a local OpenCode ≥ `MIN_OPENCODE_VERSION` for a managed provider and for an authenticated external provider against a test-owned server; manual end-to-end `5x invoke` in a temp project in both managed and external (`--opencode-url` with `OPENCODE_PASSWORD`) mode |
+| operator | AC1: `5x invoke` with `provider = "opencode"` works against OpenCode 2.x in managed and external mode, including streamed events and structured author/reviewer results | W1, W7, W8, W2 / Phase 2 | Unit tests with a scripted fake client and a fake factory seam (healthy, unauthorized, verification-failure cleanup); opt-in live test passing against a local OpenCode ≥ `MIN_OPENCODE_VERSION` for a managed provider and for an authenticated external provider against a test-owned server; manual end-to-end `5x invoke` in a temp project in both managed and external (`--opencode-url` with `OPENCODE_PASSWORD`) mode |
 | operator | AC2: 5x 2.0 requires OpenCode 2.x and says so clearly when given 1.x or an older 2.x | W1, W4 / Phases 2, 3 | Version-gate unit tests (1.x server, old 2.x, unauthorized); `5x doctor` finding with a fake 1.x `opencode` on `PATH` |
 | operator | AC3: the installed OpenCode harness is 2.x-native: no 1.x-only frontmatter, correct delegation tool, parameters, and background completion lifecycle in skills, no OpenCode warnings on load | W5 / Phase 4 | Harness and skill unit tests, including launch-versus-completion separation and `sessionID` continuation in all four delegation modes; live check of `/api/agent` and `/api/skill` against an installed temp project with no "ignored unsupported agent fields" log line; one live native delegation and continuation by the installed orchestrator |
-| operator | AC4: managed mode never touches the operator's OpenCode background service | W1 / Phase 2 | Unit test that the spawn argv contains `serve` without `--service`; no `Service` import in `src/providers/opencode.ts`; live test leaves no `opencode serve` child running |
+| operator | AC4: managed mode never touches the operator's OpenCode background service | W1, W8 / Phase 2 | Unit test that the spawn argv contains `serve` without `--service`; no `Service` import in `src/providers/opencode.ts`; live test leaves no `opencode serve` child running |
 | operator | AC5: the dead OpenCode TUI path is removed | W3 / Phase 1 | No `src/tui/` or `src/utils/event-router.ts`; grep shows no importers; init output has no `--tui-listen` hint |
 
 ## Phase 1: Delete the dead TUI path
@@ -688,10 +690,10 @@ export const SKILL_TOKENS = {
 | File | Change |
 |------|--------|
 | `package.json`, `bun.lock` | Replace `@opencode-ai/sdk` with exact-pinned `@opencode/client` (W1) |
-| `src/providers/opencode.ts` | 2.x client, managed spawn, auth, version gate, turn loop with polling fallback, `settleTurn`, `readTurnText`, structured summary (W1, W2) |
+| `src/providers/opencode.ts` | 2.x client, managed spawn, auth, version gate, turn loop with polling fallback, `settleTurn`, `readTurnText`, structured summary (W1, W7, W2) |
 | `src/providers/event-mapper.ts` | 2.x event mapper (W1) |
 | `src/providers/structured-output.ts` | New string-aware top-level JSON extraction and prompt helpers (W2) |
-| `src/providers/factory.ts` | Verify external providers; close on verify failure; `OpenCodeFactoryDeps` test seam on `createProvider` (W1) |
+| `src/providers/factory.ts` | Verify external providers; close on verify failure; `OpenCodeFactoryDeps` test seam on `createProvider` (W8) |
 | `src/providers/index.ts`, `src/index.ts` | Updated provider and mapper exports (W1) |
 | `src/tui/controller.ts`, `src/tui/permissions.ts`, `src/tui/detect.ts`, `src/utils/event-router.ts` | Deleted (W3) |
 | `src/commands/init.handler.ts` | Remove `--tui-listen` hint (W3) |
@@ -703,8 +705,8 @@ export const SKILL_TOKENS = {
 | `src/harnesses/opencode/skills/loader.ts`, `src/harnesses/cursor/skills/loader.ts` | Token maps (W5) |
 | `src/skills/base/5x/SKILL.tmpl.md`, `5x-plan/`, `5x-plan-review/`, `5x-phase-execution/`, `5x-issue-resolution/` | Tokenized delegation wording, launch/await sites, and continuation capture (W5) |
 | `CHANGELOG.md`, `docs/upgrading.md`, `docs/getting-started.md`, `docs/configuration.md`, `README.md`, `AGENTS.md` | Documentation (W3, W6) |
-| `test/unit/providers/opencode.test.ts`, `event-mapper.test.ts`, `structured-output.test.ts`, `opencode-factory.test.ts`, `plugin-loading.test.ts` | Provider and factory tests |
-| `test/integration/providers/opencode-live.test.ts` | Opt-in live test |
+| `test/unit/providers/opencode.test.ts`, `event-mapper.test.ts`, `structured-output.test.ts`, `opencode-factory.test.ts`, `plugin-loading.test.ts` | Provider tests (W1, W7, W2) and factory tests (W8) |
+| `test/integration/providers/opencode-live.test.ts` | Opt-in live test (W8) |
 | `test/unit/tui/*` (`controller.test.ts`, `permissions.test.ts`, `phase4-integration.test.ts`) | Deleted |
 | `test/unit/doctor/*`, `test/integration/commands/doctor*.test.ts` | OpenCode check tests |
 | `test/unit/harnesses/opencode*.test.ts`, `cursor*.test.ts`, `universal.test.ts` | Harness tests and Cursor byte-identity |
@@ -780,6 +782,12 @@ Operator decisions (November 27, 2026):
 <!-- 5x:contract:end -->
 
 ## Revision History
+
+### v1.2 (November 27, 2026)
+
+CLI pre-review ledger repair (`BUDGET_INVALID_EFFORT`: W1 effort 11 is not in {1, 2, 3, 5, 8}). Ledger-only; no scope, phase, or review-finding change:
+- Split the former 11-point W1 into W1 provider core (5), new W7 turn loop and text recovery (3, addresses R3 and R4), and new W8 factory verification seam and live test (3, addresses R6). Combined effort stays 11, and every architecture delta stays 0.
+- Reconciled `Addresses`, the AC1 and AC4 work mappings, and the Files Touched work references to the new rows. W2–W6 and DC0 are unchanged.
 
 ### v1.1 (November 27, 2026)
 
