@@ -34,11 +34,7 @@ import {
 	implementationCreditReconciliationKey,
 	implementationReviewObservationKey,
 } from "../review-budget/record-lines.js";
-import type {
-	BudgetAlert,
-	BudgetBand,
-	ParsedDeliveryBudget,
-} from "../review-budget/types.js";
+import type { ParsedDeliveryBudget } from "../review-budget/types.js";
 import { deriveInheritedBudgetGovernance } from "../review-governance/architecture-approval.js";
 import type { CodeDiffContext } from "../review-governance/code-diff.js";
 import {
@@ -305,9 +301,6 @@ function gateCausesFor(input: {
 	items: readonly VerdictItem[];
 	identities: ReadonlyMap<string, { findingId: string; fingerprint: string }>;
 	exemptionAuthorized: boolean;
-	inheritedRequiresHuman: boolean;
-	band: BudgetBand;
-	alerts: readonly BudgetAlert[];
 }): ImplementationObservationGateCause[] {
 	const causes: ImplementationObservationGateCause[] = [];
 	for (const item of input.items) {
@@ -342,13 +335,6 @@ function gateCausesFor(input: {
 		) {
 			causes.push({ kind: "semantic_human", ...identity });
 		}
-	}
-	if (input.inheritedRequiresHuman) {
-		causes.push({
-			kind: "inherited_budget",
-			band: input.band,
-			alerts: [...input.alerts],
-		});
 	}
 	return causes;
 }
@@ -713,25 +699,13 @@ export async function composeImplementationReviewerRecord(input: {
 			textGuard = preparedGuard.guard;
 		}
 	}
-	const inheritedBudgetGovernance = deriveInheritedBudgetGovernance(
-		binding,
-		inherited,
-	);
-	if (binding.mode === "enforced" && inheritedBudgetGovernance.requiresHuman) {
-		reviewed.governance.diagnostics.push({
-			code: "INHERITED_BUDGET_UNRESOLVED",
-			severity: "info",
-			message: `Bound source ${binding.sourceRunId} snapshot ${binding.sourceSnapshotId} has unresolved budget causes (band ${inherited.budgetBand}; alerts ${inheritedBudgetGovernance.effectiveAlerts.join(", ") || "none"}; P ${inherited.P}). No applicable bound approval covers these causes. Use review gate show to request plan revision; claim approvals do not authorize inherited architecture burden.`,
-		});
-	}
+	// The bound plan's budget is enforced where the ledger changes: source
+	// plan review before binding, and amendment plan review before
+	// registration. Implementation review records it as telemetry only.
 	const gateCauses = gateCausesFor({
 		items: input.verdict.items,
 		identities,
 		exemptionAuthorized,
-		inheritedRequiresHuman:
-			binding.mode === "enforced" && inheritedBudgetGovernance.requiresHuman,
-		band: inherited.budgetBand,
-		alerts: inheritedBudgetGovernance.effectiveAlerts,
 	});
 	let route = reviewed.governance.route;
 	let nextAction = reviewed.governance.nextAction;
@@ -873,6 +847,11 @@ export async function composeImplementationReviewerRecord(input: {
 	}
 	reviewed.governance.diagnostics.push(...reconciled.diagnostics);
 	gateCauses.push(...reconciled.gateCauses);
+	// Telemetry from the credit-aware reconciliation fold, so the recorded
+	// observation and the reconciliation report one budget.
+	const inheritedBudgetGovernance =
+		reconciled.record.budget.inheritedBudgetGovernance ??
+		deriveInheritedBudgetGovernance(binding, inherited);
 	if (route === "complete" && gateCauses.length > 0) {
 		route = "human_gate";
 		nextAction = "human_gate";

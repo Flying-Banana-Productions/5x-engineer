@@ -1104,7 +1104,7 @@ function assessApprovedSource(input: {
 	});
 	const budget = input.recordStore.listLines(input.sourceRunId, "budget");
 	const governing = foldGoverningReviewState({
-		b0: baseline.b0,
+		b0: baseline.b,
 		decisions: listed.decisions,
 		steps,
 		budget,
@@ -2677,7 +2677,7 @@ export async function prepareSourceApprovalFinalization(input: {
 		return payload ? [payload] : [];
 	});
 	const governing = foldGoverningReviewState({
-		b0: baseline.b0,
+		b0: baseline.b,
 		decisions: listed.decisions,
 		steps,
 		budget: input.recordStore.listLines(input.runId, "budget"),

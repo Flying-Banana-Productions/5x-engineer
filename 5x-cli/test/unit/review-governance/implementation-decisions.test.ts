@@ -514,6 +514,8 @@ describe("implementation review decisions", () => {
 				{ kind: "credit_unreconciled", claimIds: ["C2"] },
 			]),
 		).toEqual(["abort"]);
+		// Historical inherited-budget causes offer no decision of their own; a
+		// fresh implementation review supersedes them.
 		expect(
 			allowedImplementationChoices([
 				{
@@ -522,7 +524,7 @@ describe("implementation review decisions", () => {
 					alerts: ["credit_unrealized"],
 				},
 			]),
-		).toEqual(["revise_plan", "abort"]);
+		).toEqual(["abort"]);
 		// Boundary-changing findings arrive as plan_amendment causes: the
 		// amendment path, deferral, a restriction, or abort.
 		expect(

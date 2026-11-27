@@ -113,7 +113,7 @@ function repairGovernanceProjection(
 	if (!gate || gate.snapshotId !== pending.id) return;
 	const baseline = ctx.store.getBaseline(runId);
 	if (!baseline) return;
-	const state = governance.deriveGoverningState(runId, baseline.b0);
+	const state = governance.deriveGoverningState(runId, baseline.b);
 	ensureReviewGatePrompt({
 		promptStore,
 		gate,
@@ -333,7 +333,7 @@ export async function composePlanReviewerRecord(input: {
 	const governance = createReviewGovernanceStore(input.ctx.recordStore);
 	const decisions = governance.listDecisions(input.runId);
 	let governingState = baseline
-		? governance.deriveGoverningState(input.runId, baseline.b0)
+		? governance.deriveGoverningState(input.runId, baseline.b)
 		: undefined;
 
 	// An initial enforced verdict must fail before baseline capture.
@@ -385,7 +385,7 @@ export async function composePlanReviewerRecord(input: {
 		};
 	governingState ??= governance.deriveGoverningState(
 		input.runId,
-		activeBaseline.b0,
+		activeBaseline.b,
 	);
 	const priorSnapshot = snapshotsBefore
 		.filter((snapshot) => snapshot.id !== budget.pendingSnapshot.id)

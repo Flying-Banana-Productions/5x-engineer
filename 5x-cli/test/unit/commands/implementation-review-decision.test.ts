@@ -331,7 +331,7 @@ describe("implementation review decide", () => {
 		}
 	});
 
-	test("uncovered inherited burden offers an auditable plan revision without authorizing completion", async () => {
+	test("a historical inherited-budget gate no longer offers plan revision", async () => {
 		const { ctx, promptStore } = seed();
 		try {
 			const payload = observation({
@@ -371,12 +371,12 @@ describe("implementation review decide", () => {
 				ledgerHash: "ledger",
 				decisionsHash: "decisions",
 			});
-			legacyContext.allowedChoices = ["abort"];
+			legacyContext.allowedChoices = ["revise_plan", "abort"];
 			const legacyPrompt = promptStore.createPrompt({
 				runId: RUN,
 				kind: "choose",
-				message: "Historical abort-only gate",
-				options: ["abort"],
+				message: "Historical plan-revision gate",
+				options: ["revise_plan", "abort"],
 				defaultValue: null,
 				contextVersion: 1,
 				context: legacyContext,
@@ -388,7 +388,7 @@ describe("implementation review decide", () => {
 			);
 			if (!shown.open || !("allowedChoices" in shown) || !("promptId" in shown))
 				throw new Error("Expected inherited gate");
-			expect(shown.allowedChoices).toEqual(["revise_plan", "abort"]);
+			expect(shown.allowedChoices).toEqual(["abort"]);
 			expect(shown.eligibleFindings).toEqual([]);
 			expect(promptStore.getPrompt(legacyPrompt.id)?.abandonReason).toBe(
 				"superseded",
@@ -401,36 +401,23 @@ describe("implementation review decide", () => {
 					{ phase: "1" },
 				),
 			).toMatchObject({ promptId: shown.promptId });
-			const input = {
-				runId: RUN,
-				gateId: shown.gateId,
-				phase: "1",
-				payload: {
-					choice: "revise_plan" as const,
-					rationale: "Return the uncovered architecture burden to plan review",
-				},
-			};
-			const result = await submitReviewDecision(input, {
-				context: ctx,
-				promptStore,
-			});
-			expect(result).toMatchObject({
-				created: true,
-				nextAction: "plan_amendment",
-			});
-			expect(
-				deriveOpenImplementationGate(ctx.recordStore, RUN, "1"),
-			).toBeNull();
-			expect(
-				ctx.store.listImplementationReviews(RUN).at(-1)?.completionAuthorized,
-			).toBe(false);
-			expect(
-				await submitReviewDecision(input, { context: ctx, promptStore }),
-			).toMatchObject({ created: false, nextAction: "plan_amendment" });
-			expect(ctx.recordStore.listLines(RUN, "decisions")).toHaveLength(1);
-			expect(
-				reindexReviewGovernance(ctx.recordStore, ctx.db, RUN).diagnostics,
-			).toEqual([]);
+			// `revise_plan` stays decodable for recorded decisions but is not
+			// offered; a fresh implementation review supersedes this gate.
+			await expect(
+				submitReviewDecision(
+					{
+						runId: RUN,
+						gateId: shown.gateId,
+						phase: "1",
+						payload: {
+							choice: "revise_plan" as const,
+							rationale: "Return the burden to plan review",
+						},
+					},
+					{ context: ctx, promptStore },
+				),
+			).rejects.toMatchObject({ code: "REVIEW_DECISION_INVALID" });
+			expect(ctx.recordStore.listLines(RUN, "decisions")).toHaveLength(0);
 		} finally {
 			ctx.db.close();
 		}

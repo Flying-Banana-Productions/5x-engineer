@@ -1,4 +1,7 @@
-import type { RecordOrigin } from "../control-plane/record-types.js";
+import {
+	type RecordOrigin,
+	RecordStoreError,
+} from "../control-plane/record-types.js";
 import type { ReviewBudgetStore } from "../control-plane/review-budget-store.js";
 import { rawDeliveryBudgetSection } from "../parsers/delivery-budget.js";
 import { readAuthoritativeBudget } from "../plan-schema/authority.js";
@@ -22,7 +25,28 @@ export function ensurePlanReviewBaseline(input: {
 	origin: RecordOrigin;
 	warn: (message: string) => void;
 }): EnsurePlanReviewBaselineResult {
-	if (input.config.mode === "off") {
+	// A bound execution run measures amendment reviews against the approved
+	// binding: its governing baseline, thresholds, and pinned mode.
+	let binding: ReturnType<ReviewBudgetStore["getImplementationBinding"]>;
+	try {
+		binding = input.store.getImplementationBinding(input.runId);
+	} catch (error) {
+		if (
+			!(error instanceof RecordStoreError && error.code === "RUN_NOT_FOUND")
+		) {
+			return {
+				status: "error",
+				code: "IMPLEMENTATION_BINDING_UNREADABLE",
+				message:
+					error instanceof Error
+						? error.message
+						: "Implementation binding could not be read",
+			};
+		}
+		binding = null;
+	}
+	const mode = binding?.mode ?? input.config.mode;
+	if (mode === "off") {
 		return { status: "skipped", reason: "off" };
 	}
 	const existing = input.store.getBaseline(input.runId);
@@ -69,16 +93,19 @@ export function ensurePlanReviewBaseline(input: {
 					: parsed.message,
 		};
 	}
-	const { mode: _mode, ...configSnapshot } = input.config;
+	const { mode: _mode, ...configuredThresholds } = input.config;
 	const result = input.store.captureBaseline({
 		runId: input.runId,
 		captureKind: input.optIn ? "opt_in" : "initial",
 		parsed: parsed.value,
 		originalSection:
 			rawDeliveryBudgetSection(loaded.document.authorityMarkdown) ?? undefined,
-		configSnapshot,
-		mode: input.config.mode,
+		configSnapshot: binding
+			? structuredClone(binding.thresholds)
+			: configuredThresholds,
+		mode,
 		origin: input.origin,
+		...(binding ? { governingB: binding.governingB } : {}),
 	});
 	return result.created
 		? { status: "captured", baseline: result.baseline }
