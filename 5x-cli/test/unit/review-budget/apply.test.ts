@@ -542,3 +542,66 @@ describe("baselineAssessment contract", () => {
 		);
 	});
 });
+
+describe("amendment plan review on a bound execution run", () => {
+	test("measures the amended ledger against the binding, not a fresh baseline", () => {
+		const { store } = setup();
+		const thresholds = { ...DEFAULT_REVIEW_BUDGET_CONFIG, growthPercent: 20 };
+		store.saveImplementationBinding(
+			{
+				kind: "implementation-binding",
+				version: 1,
+				id: "binding-1",
+				executionRunId: "run1",
+				sourceRunId: "source",
+				sourceSnapshotId: "snap",
+				sourceBaselineId: "base",
+				approvedPlanCommit: "c".repeat(40),
+				approvedPlanHash: "sha256:plan",
+				approvedPlanBytes: "# Plan\n",
+				b0: 1,
+				governingB: 1,
+				mode: "enforced",
+				thresholds,
+				ledger: {
+					estimateConfidence: "high",
+					workItems: [],
+					surface: {
+						subsystems: 1,
+						productionFiles: 1,
+						persistentOrExternalBoundaries: 0,
+					},
+				},
+				effectiveDecisions: [],
+				phaseMap: [{ id: "1", heading: "Phase 1" }],
+				debtTargets: [],
+				ledgerHash: "ledger",
+				decisionsHash: "decisions",
+				createdAt: "2026-01-01 00:00:00",
+			},
+			origin,
+		);
+		// The configured mode is advisory; the binding pins enforced.
+		const result = apply(store, verdict());
+		if (result.status !== "applied") throw new Error(JSON.stringify(result));
+		const baseline = store.getBaseline("run1");
+		expect(baseline).toMatchObject({
+			b0: 3,
+			b: 1,
+			mode: "enforced",
+			configSnapshot: thresholds,
+		});
+		// Governing baseline 1: S 3, E 4 with the one point of credit, A 5.
+		// The amended plan forecasts 3 + 2 = 5 points.
+		expect(result.verdict.budget).toMatchObject({
+			B0: 3,
+			B: 1,
+			S: 3,
+			E: 4,
+			projectedEffort: 5,
+			budgetBand: "over_effective",
+			baselineDirection: "aligned",
+			requiresHuman: true,
+		});
+	});
+});

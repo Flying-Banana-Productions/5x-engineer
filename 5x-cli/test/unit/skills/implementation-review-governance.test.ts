@@ -312,8 +312,12 @@ describe("implementation review skill branches", () => {
 			expect(content).not.toContain("--confirm-preserved-phases");
 			expect(content).not.toContain("5x review implementation recover-plan\n");
 			expect(content).toContain("5x review decide --gate");
-			expect(content).toContain("revise_plan");
 			expect(content).toContain("inheritedBudgetGovernance");
+			expect(content).toContain(
+				"Implementation review does not gate on the bound plan's budget",
+			);
+			expect(content).toContain("`revise_plan` is no longer offered");
+			expect(content).toContain("binding's governing baseline");
 			expect(content).toContain("next unused");
 			expect(content).toContain("5x review implementation bind");
 			expect(content).toContain("pre_author_commit");

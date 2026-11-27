@@ -196,7 +196,7 @@ export async function showPlanReviewGate(
 			...(inconsistency ? { inconsistency } : {}),
 		};
 	}
-	const state = governance.deriveGoverningState(runId, baseline.b0);
+	const state = governance.deriveGoverningState(runId, baseline.b);
 	const eligibleFindings = [
 		...eligibleFindingMap(ctx, runId, gate.snapshotId, gate.causes).values(),
 	];
@@ -678,7 +678,7 @@ export async function submitPlanReviewDecision(
 			ctx,
 			promptStore,
 			runId: input.runId,
-			baselineB0: baseline.b0,
+			baselineB0: baseline.b,
 			decision: winner,
 			created: false,
 			abortRun: deps.abortRun,
@@ -710,7 +710,7 @@ export async function submitPlanReviewDecision(
 			`Review gate ${input.gateId} is not the current open gate`,
 		);
 	}
-	const governing = governance.deriveGoverningState(input.runId, baseline.b0);
+	const governing = governance.deriveGoverningState(input.runId, baseline.b);
 	const eligible = eligibleFindingMap(
 		ctx,
 		input.runId,
@@ -803,7 +803,7 @@ export async function submitPlanReviewDecision(
 			ctx,
 			promptStore,
 			runId: input.runId,
-			baselineB0: baseline.b0,
+			baselineB0: baseline.b,
 			decision: winner,
 			created: false,
 			abortRun: deps.abortRun,
@@ -813,7 +813,7 @@ export async function submitPlanReviewDecision(
 		ctx,
 		promptStore,
 		runId: input.runId,
-		baselineB0: baseline.b0,
+		baselineB0: baseline.b,
 		decision: proposed,
 		created: true,
 		abortRun: deps.abortRun,

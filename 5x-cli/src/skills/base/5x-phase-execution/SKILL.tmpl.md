@@ -614,13 +614,17 @@ completion does not lift them. A deferred or restricted finding leaves the
 next closure review's required outcomes. Re-raising it needs its decision id
 and materially new evidence.
 
-Applicable bound architecture approvals suppress inherited architecture causes;
-raw budget alerts may remain as telemetry. Read `inheritedBudgetGovernance`
-and its suppressed-alert decision references from the recorded review response.
-An uncovered inherited-budget gate offers `revise_plan` with a rationale. This
-pauses for plan revision/review (`nextAction: plan_amendment`); it does not
-authorize new scope, change the binding, or authorize phase completion. Do not
-use claim-scoped `approve_higher_burden` to waive inherited architecture.
+Implementation review does not gate on the bound plan's budget. The source
+plan review approved it, and amendment plan reviews re-check it before
+registration (see the amendment flow below). `inheritedBudgetGovernance` in
+the recorded review response is credit-aware telemetry: report it, but do not
+treat its band or alerts as a gate. Applicable bound architecture approvals
+appear as suppressed-alert decision references. A historical gate whose only
+cause is `inherited_budget` offers no decision except `abort`; do not abort
+for it. After `5x upgrade`, prepare a fresh review context through Step 3 and
+record a fresh review at the next unused iteration. The fresh review supersedes
+that gate. `revise_plan` is no longer offered; recorded `revise_plan` decisions
+remain readable and are superseded the same way.
 
 After upgrading an active run affected by approval carryover, prepare a fresh
 review context through Step 3 and record a fresh review at the next unused
@@ -647,7 +651,11 @@ approved source and cannot replace that binding or repair drift. Record
 `--claim-edit`, and repeatable `--resolution-ref`. Rationale prose is not scope.
 It cannot reopen an earlier phase, a completed phase, a claim edit, or a
 cross-phase resolution. Have the plan reviewer assess the exact committed hash
-from the trusted amendment context. A final-corrections author pass that changes
+from the trusted amendment context. That plan review measures the amended
+ledger against the binding's governing baseline, thresholds, and approved
+credit. An over-budget amendment routes to the ordinary plan review gate
+(for example `increase_budget` or `trade_scope`) before registration, not to a
+later implementation review. A final-corrections author pass that changes
 those bytes must be reassessed against the new exact hash before registration;
 do not reuse the previous assessment, and do not stop after final corrections.
 Initial plan reviews keep their existing final-correction shortcut. Register

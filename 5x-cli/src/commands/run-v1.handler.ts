@@ -1421,6 +1421,12 @@ function creditView(
 			positiveBurden: latest.budget.P,
 		};
 	}
+	// Before any reconciliation every approved intrinsic claim is still
+	// provisional; count it so the ceiling matches the reported credit.
+	const provisionalCredit = approvedIntrinsicClaims(binding).reduce(
+		(sum, claim) => sum + Math.abs(claim.approvedArchitectureDelta),
+		0,
+	);
 	const derived = deriveBudget({
 		B0: binding.b0,
 		B: binding.governingB,
@@ -1430,11 +1436,12 @@ function creditView(
 		assessments: [],
 		config: binding.thresholds,
 		semanticHumanRequired: false,
+		approvedClaimContribution: {
+			spendableN: provisionalCredit,
+			provisionalN: provisionalCredit,
+			realizedN: 0,
+		},
 	});
-	const provisionalCredit = approvedIntrinsicClaims(binding).reduce(
-		(sum, claim) => sum + Math.abs(claim.approvedArchitectureDelta),
-		0,
-	);
 	return {
 		grossEffort: derived.W,
 		inheritedBaseline: derived.B,
@@ -2898,7 +2905,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 						governingState = tryDeriveGoverningReviewState(
 							records,
 							gitRecord.summary.id,
-							archivedBaseline.b0,
+							archivedBaseline.b,
 							warn,
 						);
 						if (governingState)
@@ -3127,7 +3134,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 				const governingState = tryDeriveGoverningReviewState(
 					recordContext.recordStore,
 					run.id,
-					baseline.b0,
+					baseline.b,
 					warn,
 				);
 				governingBaseline = governingState?.governingBaseline;
@@ -3135,7 +3142,7 @@ export async function runV1State(params: RunStateParams): Promise<void> {
 					reviewGovernance = tryBuildReviewGovernanceState(
 						{
 							runId: run.id,
-							b0: baseline.b0,
+							b0: baseline.b,
 							recordStore: recordContext.recordStore,
 							reviewBudgetStore: reviewStore,
 							governingState,

@@ -86,7 +86,7 @@ export function buildPlanReviewPromptContext(input: {
 	if (!baseline || mode === "off") return null;
 	const snapshots = input.store.listSnapshots(input.runId);
 	const governance = createReviewGovernanceStore(input.recordStore);
-	const state = governance.deriveGoverningState(input.runId, baseline.b0);
+	const state = governance.deriveGoverningState(input.runId, baseline.b);
 	const priorFindings = persistedFindingsFromSnapshots(snapshots);
 	const decisions = governance.listDecisions(input.runId);
 	const deferredOrAcceptedRisks = state.history.flatMap((decision) =>

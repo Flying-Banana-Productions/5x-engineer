@@ -502,7 +502,7 @@ describe("5x upgrade", () => {
 								"Do not treat the rest of the review Markdown as a work list",
 							);
 							expect(prompt).toContain(
-								"raw alert alone is not admitted author work",
+								"Inherited budget figures are telemetry, not admitted author work",
 							);
 						}
 						if (template === "reviewer-commit") {
@@ -577,8 +577,12 @@ describe("5x upgrade", () => {
 				);
 				expect(upgraded.stdout).toContain("implementation-plan-amendment");
 				expect(skill).toContain("5x review decide --gate");
-				expect(skill).toContain("revise_plan");
 				expect(skill).toContain("inheritedBudgetGovernance");
+				expect(skill).toContain(
+					"Implementation review does not gate on the bound plan's budget",
+				);
+				expect(skill).toContain("`revise_plan` is no longer offered");
+				expect(skill).toContain("binding's governing baseline");
 				expect(skill).toContain("next unused");
 			} finally {
 				cleanupDir(project.dir);
