@@ -5,6 +5,71 @@ All notable changes to `@5x-ai/5x-cli` will be documented in this file.
 Format: categorized summary per release, newest first. Each entry is the
 source of truth for the corresponding GitHub Release.
 
+## 2.0.0-beta.2 (Unreleased)
+
+Next prerelease of the 2.0.0 line. It moves the bundled OpenCode provider and
+the OpenCode harness to OpenCode 2.x.
+
+### Breaking Changes
+
+- **OpenCode 2.x required** — 5x 2.x requires OpenCode 2.x, at least
+  `MIN_OPENCODE_VERSION` (2.4.2). There is no OpenCode 1.x support. The bundled
+  provider now uses `@opencode/client` (exact-pinned) instead of
+  `@opencode-ai/sdk` 1.x, and checks the server version in both managed and
+  external mode. A 1.x binary or server fails with "5x 2.x requires OpenCode ≥
+  2.4.2 (found 1.x) — run `opencode upgrade --major`"; an older 2.x asks for
+  `opencode upgrade`. Managed mode starts a private `opencode serve` for each
+  provider, protected by a random password, and never starts, reuses, or
+  restarts the OpenCode background service.
+- **External OpenCode servers authenticate with `OPENCODE_PASSWORD`** —
+  `opencode.url` / `--opencode-url` are unchanged. A password-protected server
+  reads its password from `OPENCODE_PASSWORD`, falling back to
+  `OPENCODE_SERVER_PASSWORD`. No password key is added to `5x.toml`. A missing
+  password fails with "the OpenCode server requires a password — set
+  OPENCODE_PASSWORD".
+- **OpenCode harness agents use 2.x frontmatter** — agents drop `name:` and the
+  1.x `tools:` block in favor of `permissions:` rules (the orchestrator denies
+  `edit`; subagents deny `subagent`). Skills name the 2.x `subagent` tool with
+  `agent` and `sessionID`, and wait for the child's background completion report
+  before validating its result. Run `5x harness sync opencode` (or `5x upgrade
+  --sync`) to refresh an existing install; freshness reports it as stale until
+  then.
+- **`OpenCodeProvider` and event-mapper exports changed** — the 1.x mapper
+  exports (`mapSseToAgentEvent`, `mapSseStreamToAgentEvents`,
+  `getEventSessionId`, `createSessionResolveContext`,
+  `resolveSessionIdWithContext`, `MAX_TRACKED_DELTA_PART_IDS`,
+  `EventMapperOptions`, `SessionResolveContext`) are replaced by
+  `mapOpenCodeEvent` and `eventSessionId` for 2.x events. New exports:
+  `MIN_OPENCODE_VERSION`, `parseServeListenUrl`, `OpenCodeFactoryDeps`, and the
+  structured-output helpers (`extractStructuredJson`,
+  `buildStructuredOutputPrompt`, `buildCorrectivePrompt`). `OpenCodeProvider`
+  wraps the 2.x client; structured output is prompted and parsed, with up to
+  two corrective prompts, because 2.x has no JSON-schema output format.
+- **OpenCode turns own exactly one prompt** — a turn on a session that is
+  already running or has queued input fails with a busy error, and a turn that
+  shares its execution with other input fails as ambiguous, instead of
+  returning another prompt's result. A turn whose prompt state cannot be
+  established (unresolved admission, or a prompt that left the inbox but is not
+  in the transcript) fails instead of succeeding. Token usage comes only from
+  the turn's own transcript window. On an external server, a timeout or
+  cancellation cancels the turn's own queued prompt but never interrupts the
+  session, so its execution may be left running; the error says so.
+- **TUI attach modules removed** — the unused `opencode attach` /
+  `--tui-listen` modules (`src/tui/*`, `src/utils/event-router.ts`) are deleted,
+  and `5x init` no longer prints the `--tui-listen` hint.
+
+### Features
+
+- **`5x doctor` OpenCode check** — when a role uses the `opencode` provider or
+  an OpenCode harness manifest exists, doctor runs `opencode --version` and
+  warns with `opencode-missing` or `opencode-outdated` (with the matching
+  `opencode upgrade --major` / `opencode upgrade` hint). It is detect-only.
+
+### Upgrade notes
+
+- Upgrade OpenCode to 2.x with `opencode upgrade --major`. The 2.x installer
+  replaces the 1.x binary. Then run `5x harness sync opencode`.
+
 ## 2.0.0-beta.1 (2026-11-18)
 
 First prerelease of the 2.0.0 line, published under the npm `beta` dist-tag

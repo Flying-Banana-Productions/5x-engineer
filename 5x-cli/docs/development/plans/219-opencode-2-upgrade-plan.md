@@ -832,9 +832,9 @@ export const SKILL_TOKENS = {
       - Then run the author invocation once without `OPENCODE_PASSWORD` and confirm the password error.
 5. `5x doctor` with OpenCode 2.x on `PATH` (no finding), then with a fake 1.x `opencode` first on `PATH` (`opencode-outdated`).
 
-- [ ] Update CHANGELOG, upgrading guide, getting started, configuration, README, and harness README
-- [ ] Run lint, typecheck, full test suite, build, and the AGENTS.md acceptance suite; fix regressions
-- [ ] Run the live provider test at `MIN_OPENCODE_VERSION` with no skipped case (including the headless `question` comparison), and the manual temp-project verification (installed delegation; managed and authenticated external author `5x invoke`; one unrecorded reviewer `5x invoke` per mode on the seeded run with an accepted `ReviewerVerdict`), recording results and the `opencode --version` in the PR description
+- [x] Update CHANGELOG, upgrading guide, getting started, configuration, README, and harness README
+- [x] Run lint, typecheck, full test suite, build, and the AGENTS.md acceptance suite; fix regressions
+- [x] Run the live provider test at `MIN_OPENCODE_VERSION` with no skipped case (including the headless `question` comparison), and the manual temp-project verification (installed delegation; managed and authenticated external author `5x invoke`; one unrecorded reviewer `5x invoke` per mode on the seeded run with an accepted `ReviewerVerdict`), recording results and the `opencode --version` in the PR description
 
 ## Files Touched
 

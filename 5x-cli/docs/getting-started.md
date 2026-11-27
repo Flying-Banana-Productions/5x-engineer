@@ -53,12 +53,18 @@ different execution modes per role; universal always delegates through invoke.
 
 ### OpenCode
 
-Install and authenticate [OpenCode](https://opencode.ai) first.
+Install and authenticate [OpenCode](https://opencode.ai) 2.x first. 5x 2.x
+requires OpenCode 2.x (at least 2.4.2); OpenCode 1.x is not supported. Check
+with `opencode --version`, and upgrade a 1.x install with
+`opencode upgrade --major`.
 
 ```bash
 5x harness install opencode --scope project
 opencode
 ```
+
+To attach to an OpenCode server you already run, start the client with
+`opencode --server <url>` instead of `opencode`.
 
 Select the `5x-orchestrator` agent. It loads the process skill and delegates to
 `5x-plan-author`, `5x-code-author`, and `5x-reviewer`. Native child sessions are
@@ -108,8 +114,11 @@ Universal installs skills at the agentskills.io convention paths. Host discovery
 is tool-dependent: if the tool does not discover `.agents/skills/`, point it at
 the installed `SKILL.md` files. It installs no native agent profiles. Workers use
 `5x invoke`, so install/authenticate the chosen provider and configure its models.
-OpenCode is the default invoke provider; it needs OpenCode available on `PATH`
-for managed local execution, or a configured external OpenCode server.
+OpenCode is the default invoke provider; it needs OpenCode 2.x available on
+`PATH` for managed local execution, or a configured external OpenCode 2.x
+server (see [configuration](configuration.md#opencode-provider) for
+`opencode.url` and `OPENCODE_PASSWORD`). `5x doctor` warns when the `opencode`
+binary is missing or older than the minimum.
 
 ## Install locations
 

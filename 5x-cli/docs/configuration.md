@@ -86,6 +86,54 @@ credentials, or configured server authentication. There is no universal API-key
 requirement. A provider source package in this repository is not proof it has
 been published to npm.
 
+### OpenCode provider
+
+The bundled `opencode` provider requires OpenCode 2.x, at least 2.4.2. Before
+each invocation it checks the server's version and fails with an upgrade hint
+for OpenCode 1.x (`opencode upgrade --major`) or an older 2.x
+(`opencode upgrade`).
+
+- **Managed mode** (no `opencode.url`, the default): 5x starts a private
+  `opencode serve` on `127.0.0.1` for the invocation, protected by a random
+  password only 5x holds, and stops it when the invocation ends. `opencode` must
+  be on `PATH`. 5x never starts, reuses, or restarts OpenCode's background
+  service (`opencode serve --service`), so your own OpenCode sessions are not
+  affected.
+- **External mode:** set `opencode.url` (or pass `--opencode-url <url>`) to use
+  a server you already run. OpenCode 2.x servers are password-protected; 5x
+  reads the password from `OPENCODE_PASSWORD`, falling back to
+  `OPENCODE_SERVER_PASSWORD`, and always uses the username `opencode`. There is
+  no `5x.toml` key for the password, so it stays out of committed config.
+
+```toml
+[opencode]
+url = "http://127.0.0.1:4096"
+```
+
+```bash
+export OPENCODE_PASSWORD='<server password>'
+5x invoke author <template> --opencode-url http://127.0.0.1:4096 [options]
+```
+
+5x attributes each OpenCode turn to exactly one prompt it sent. It cannot
+attribute a turn on an external session that another client drives at the same
+time:
+
+- A turn on a session that is already running or has queued input fails with
+  `OpenCode session <id> is busy (running or has queued input)`, and sends no
+  prompt.
+- A turn whose execution also received other input fails with `OpenCode session
+  <id> received other input during this turn; the result is ambiguous`, rather
+  than returning another prompt's result.
+
+On timeout or cancellation, a turn cancels its own queued prompt by its id and
+reports when removal cannot be confirmed. In managed mode it also interrupts
+the private server's running execution. On an external server it never
+interrupts a running execution, which may keep running; the error says the
+execution `was left running on the external server`. An unresolved prompt
+admission (for example, a lost reply) is reported as `may still be queued or
+run`, not assumed cancelled.
+
 ### Timeouts and continuation
 
 `author.timeout` and `reviewer.timeout` are seconds for invoke execution; omitting
